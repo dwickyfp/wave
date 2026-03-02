@@ -1,6 +1,6 @@
 # 🧪 End-to-End Testing Guide
 
-Comprehensive guide for running and developing end-to-end tests for better-chatbot using Playwright.
+Comprehensive guide for running and developing end-to-end tests for wave-chatbot using Playwright.
 
 ## Quick Start
 
@@ -105,11 +105,11 @@ Playwright is designed to run tests in parallel. This means that each test will 
 
 ```typescript
 // Most tests use single user authentication
-import { TEST_USERS } from '../constants/test-users';
-test.describe('Agent Creation', () => {
+import { TEST_USERS } from "../constants/test-users";
+test.describe("Agent Creation", () => {
   test.use({ storageState: TEST_USERS.editor.authFile });
 
-  test('should create agent', async ({ page }) => {
+  test("should create agent", async ({ page }) => {
     // Test logic here
   });
 });
@@ -118,11 +118,11 @@ test.describe('Agent Creation', () => {
 #### User 2 Only
 
 ```typescript
-import { TEST_USERS } from '../constants/test-users';
-test.describe('Agent Creation', () => {
+import { TEST_USERS } from "../constants/test-users";
+test.describe("Agent Creation", () => {
   test.use({ storageState: TEST_USERS.editor2.authFile });
 
-  test('should create agent', async ({ page }) => {
+  test("should create agent", async ({ page }) => {
     // Test logic here
   });
 });
@@ -133,9 +133,9 @@ test.describe('Agent Creation', () => {
 This is the most common use case for multi-user testing.
 
 ```typescript
-import { TEST_USERS } from '../constants/test-users';
-test.describe('Agent Sharing', () => {
-  test('user sharing workflow', async ({ browser }) => {
+import { TEST_USERS } from "../constants/test-users";
+test.describe("Agent Sharing", () => {
+  test("user sharing workflow", async ({ browser }) => {
     // User1 creates agent
     const user1Context = await browser.newContext({
       storageState: TEST_USERS.editor.authFile,
@@ -165,12 +165,12 @@ Always use `data-testid` attributes for stable selectors:
 
 ```typescript
 // ✅ Good - stable and semantic
-await page.getByTestId('agent-name-input').fill('My Agent');
-await page.getByTestId('agent-save-button').click();
+await page.getByTestId("agent-name-input").fill("My Agent");
+await page.getByTestId("agent-save-button").click();
 
 // ❌ Avoid - fragile and language-dependent
-await page.locator('input[placeholder="Enter agent name"]').fill('My Agent');
-await page.getByText('Save').click();
+await page.locator('input[placeholder="Enter agent name"]').fill("My Agent");
+await page.getByText("Save").click();
 ```
 
 ### Waiting Strategies
@@ -179,17 +179,19 @@ Use appropriate waiting strategies for reliability:
 
 ```typescript
 // Wait for network activity to settle
-await page.waitForLoadState('networkidle');
+await page.waitForLoadState("networkidle");
 
 // Wait for specific API responses
 const responsePromise = page.waitForResponse(
-  (response) => response.url().includes('/api/agent/') && response.request().method() === 'PUT'
+  (response) =>
+    response.url().includes("/api/agent/") &&
+    response.request().method() === "PUT",
 );
-await page.getByTestId('save-button').click();
+await page.getByTestId("save-button").click();
 await responsePromise;
 
 // Wait for navigation
-await page.waitForURL('**/agents', { timeout: 10000 });
+await page.waitForURL("**/agents", { timeout: 10000 });
 ```
 
 ### Unique Test Data
@@ -197,7 +199,8 @@ await page.waitForURL('**/agents', { timeout: 10000 });
 Generate unique data to avoid conflicts:
 
 ```typescript
-const testSuffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const testSuffix =
+  Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const agentName = `Test Agent ${testSuffix}`;
 ```
 
@@ -225,10 +228,10 @@ Add debug information to tests:
 
 ```typescript
 // Take screenshots for debugging
-await page.screenshot({ path: 'debug-agent-creation.png', fullPage: true });
+await page.screenshot({ path: "debug-agent-creation.png", fullPage: true });
 
 // Log page content
-console.log('Current URL:', page.url());
+console.log("Current URL:", page.url());
 const agents = await page.locator('[data-testid="agent-card-name"]').all();
 console.log(`Found ${agents.length} agents`);
 ```
@@ -267,24 +270,24 @@ Tests run automatically on GitHub Actions with:
 ### Test Template
 
 ```typescript
-import { test, expect } from '@playwright/test';
-import { TEST_USERS } from '../constants/test-users';
-test.describe('Your Feature', () => {
+import { test, expect } from "@playwright/test";
+import { TEST_USERS } from "../constants/test-users";
+test.describe("Your Feature", () => {
   test.use({ storageState: TEST_USERS.editor.authFile });
 
-  test('should perform action', async ({ page }) => {
+  test("should perform action", async ({ page }) => {
     // Navigate to page
-    await page.goto('/your-feature');
+    await page.goto("/your-feature");
 
     // Perform actions
-    await page.getByTestId('input-field').fill('test value');
-    await page.getByTestId('submit-button').click();
+    await page.getByTestId("input-field").fill("test value");
+    await page.getByTestId("submit-button").click();
 
     // Wait for response
-    await page.waitForURL('**/success', { timeout: 10000 });
+    await page.waitForURL("**/success", { timeout: 10000 });
 
     // Verify results
-    await expect(page.getByTestId('success-message')).toBeVisible();
+    await expect(page.getByTestId("success-message")).toBeVisible();
   });
 });
 ```
@@ -292,8 +295,8 @@ test.describe('Your Feature', () => {
 ### Multi-User Test Template
 
 ```typescript
-import { TEST_USERS } from '../constants/test-users';
-test('multi-user workflow', async ({ browser }) => {
+import { TEST_USERS } from "../constants/test-users";
+test("multi-user workflow", async ({ browser }) => {
   const testId = Date.now().toString(36);
 
   // User1 setup
@@ -304,7 +307,7 @@ test('multi-user workflow', async ({ browser }) => {
 
   try {
     // User1 actions
-    await user1Page.goto('/create');
+    await user1Page.goto("/create");
     // ... user1 workflow
   } finally {
     await user1Context.close();
@@ -312,13 +315,13 @@ test('multi-user workflow', async ({ browser }) => {
 
   // User2 verification
   const user2Context = await browser.newContext({
-    storageState: 'tests/.auth/user2.json',
+    storageState: "tests/.auth/user2.json",
   });
   const user2Page = await user2Context.newPage();
 
   try {
     // User2 actions
-    await user2Page.goto('/shared');
+    await user2Page.goto("/shared");
     // ... user2 workflow
   } finally {
     await user2Context.close();

@@ -1,6 +1,6 @@
-# Contributing to better-chatbot
+# Contributing to wave-chatbot
 
-Thank you for your interest in contributing to better-chatbot! We welcome contributions from the community and truly appreciate your effort to improve the project.
+Thank you for your interest in contributing to wave-chatbot! We welcome contributions from the community and truly appreciate your effort to improve the project.
 
 ---
 
@@ -41,8 +41,8 @@ This helps us:
 2. **Clone your fork** locally:
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/better-chatbot.git
-   cd better-chatbot
+   git clone https://github.com/YOUR_USERNAME/wave-chatbot.git
+   cd wave-chatbot
    ```
 
 3. **Create a new branch** for your changes:
@@ -80,7 +80,6 @@ If you are fixing a bug, please add tests to prevent the same bug from happening
    ```
 
    **E2E Test Requirements:**
-
    - PostgreSQL database (use `pnpm docker:pg` for quick setup)
    - At least one LLM provider API key (OpenAI, Anthropic, or Google)
    - `BETTER_AUTH_SECRET` environment variable set
@@ -140,7 +139,6 @@ We use [Release Please](https://github.com/googleapis/release-please) to automat
    ```
 
 3. **Open a Pull Request**:
-
    - **Title**: Must follow the Conventional Commit format
    - **Description**: Explain what you changed, why you made the change, and how the changes were verified and tested.
    - Link to related issues, if any
@@ -193,5 +191,5 @@ When submitting **Issues** or **Pull Requests**:
 
 ## Thank You
 
-We sincerely appreciate your contribution to better-chatbot.
+We sincerely appreciate your contribution to wave-chatbot.
 Let’s build a powerful, well tested and lightweight AI experience together! 🚀
