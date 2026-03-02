@@ -105,6 +105,7 @@
     "placeholder": "何でも聞くか @mention してください",
     "Tool": {
       "webSearching": "ウェブを検索中...",
+      "webSearchError": "ウェブ検索に失敗しました",
       "searchedTheWeb": "ウェブを検索しました",
       "toolModeDescription": "ツールの使用方法を選択:\n• 自動: AIがツールの使用を自動で決定\n• 手動: ツール使用前に許可を求める\n• なし: すべてのツールを無効化",
       "toolsSetupDescription": "チャットボットが使用できるツールを選択してください。\nチャットボットは選択されたツールを自分の判断で使用します。\n\n@mention を使って特定のツールの使用を強制することもできます。",
@@ -163,6 +164,9 @@
       "chat": "チャット",
 
       "renameChat": "名前を変更",
+      "branchChat": "チャットを分岐",
+      "chatBranched": "チャットが分岐されました",
+      "failedToBranchChat": "チャットの分岐に失敗しました",
       "deleteChat": "チャットを削除",
       "deleteUnarchivedChats": "アーカイブされていないチャットをすべて削除",
       "confirmDeleteUnarchivedChats": "アーカイブされていないすべてのチャットを削除してもよろしいですか？",

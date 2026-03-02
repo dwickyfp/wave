@@ -225,6 +225,7 @@
     "placeholder": "Ask anything or @mention",
     "Tool": {
       "webSearching": "Searching the Web...",
+      "webSearchError": "Web search failed",
       "searchedTheWeb": "Searched the Web",
       "toolsSetupDescription": "Select tools that the chatbot can use.\nThe chatbot will use selected tools based on its own judgment.\n\nYou can also force the use of specific tools through @mention.",
       "selectToolMode": "Select a tool mode",
@@ -284,6 +285,9 @@
       "chat": "Chat",
       "renameChat": "Rename",
       "exportChat": "Share Link",
+      "branchChat": "Branch Chat",
+      "chatBranched": "Chat branched",
+      "failedToBranchChat": "Failed to branch chat",
       "deleteChat": "Delete Chat",
       "deleteUnarchivedChats": "Delete All Unarchived Chats",
       "confirmDeleteUnarchivedChats": "Are you sure you want to delete all unarchived chats?",

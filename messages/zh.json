@@ -106,6 +106,7 @@
     "placeholder": "询问任何问题或 @mention",
     "Tool": {
       "webSearching": "正在搜索网络...",
+      "webSearchError": "网络搜索失败",
       "searchedTheWeb": "搜索网络",
       "toolModeDescription": "选择工具使用方式:\n• 自动: AI 自动决定何时使用工具\n• 手动: 使用工具前询问许可\n• 无: 禁用所有工具",
       "toolsSetupDescription": "选择聊天机器人可以使用的工具。\n聊天机器人将根据自己的判断使用选定的工具。\n\n您也可以通过 @mention 强制使用特定工具。",
@@ -163,6 +164,9 @@
     "Thread": {
       "chat": "聊天",
       "renameChat": "重命名",
+      "branchChat": "分支聊天",
+      "chatBranched": "聊天已分支",
+      "failedToBranchChat": "分支聊天失败",
       "deleteChat": "删除聊天",
       "deleteUnarchivedChats": "删除所有未归档的聊天",
       "confirmDeleteUnarchivedChats": "您确定要删除所有未归档的聊天吗？",

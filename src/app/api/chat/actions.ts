@@ -23,7 +23,7 @@ import {
   mcpServerCustomizationRepository,
 } from "lib/db/repository";
 import { customModelProvider } from "lib/ai/models";
-import { toAny } from "lib/utils";
+import { generateUUID, toAny } from "lib/utils";
 import { McpServerCustomizationsPrompt, MCPToolInfo } from "app-types/mcp";
 import { serverCache } from "lib/cache";
 import { CacheKeys } from "lib/cache/cache-keys";
@@ -128,9 +128,9 @@ export async function generateExampleToolSchemaAction(options: {
       additionalProperties: false,
     }),
   );
-  const { output } = await generateText({
+  const { experimental_output: output } = await generateText({
     model,
-    output: Output.object({ schema }),
+    experimental_output: Output.object({ schema }),
     prompt: generateExampleToolSchemaPrompt({
       toolInfo: options.toolInfo,
       prompt: options.prompt,
@@ -203,11 +203,11 @@ export async function generateObjectAction({
   };
   schema: JSONSchema7 | ObjectJsonSchema7;
 }) {
-  const { output } = await generateText({
+  const { experimental_output: output } = await generateText({
     model: customModelProvider.getModel(model),
     system: prompt.system,
     prompt: prompt.user || "",
-    output: Output.object({ schema: jsonSchemaToZod(schema) }),
+    experimental_output: Output.object({ schema: jsonSchemaToZod(schema) }),
   });
   return output;
 }
@@ -224,6 +224,49 @@ export async function rememberAgentAction(
     await serverCache.set(key, cachedAgent);
   }
   return cachedAgent as Agent | undefined;
+}
+
+export async function forkThreadAction(
+  threadId: string,
+  upToMessageId?: string,
+) {
+  const userId = await getUserId();
+
+  const thread = await chatRepository.selectThread(threadId);
+  if (!thread || thread.userId !== userId) {
+    throw new Error("Unauthorized");
+  }
+
+  let messages = await chatRepository.selectMessagesByThreadId(threadId);
+
+  if (upToMessageId) {
+    const cutoffIndex = messages.findIndex((m) => m.id === upToMessageId);
+    if (cutoffIndex !== -1) {
+      messages = messages.slice(0, cutoffIndex + 1);
+    }
+  }
+
+  const newThreadId = generateUUID();
+
+  await chatRepository.insertThread({
+    id: newThreadId,
+    title: thread.title ? `Branch: ${thread.title}` : "Branch",
+    userId,
+  });
+
+  if (messages.length > 0) {
+    const now = Date.now();
+    await chatRepository.insertMessages(
+      messages.map((msg, index) => ({
+        ...msg,
+        id: generateUUID(),
+        threadId: newThreadId,
+        createdAt: new Date(now + index),
+      })),
+    );
+  }
+
+  return newThreadId;
 }
 
 export async function exportChatAction({

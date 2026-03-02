@@ -1,10 +1,15 @@
 "use client";
-import { deleteThreadAction, updateThreadAction } from "@/app/api/chat/actions";
+import {
+  deleteThreadAction,
+  forkThreadAction,
+  updateThreadAction,
+} from "@/app/api/chat/actions";
 import { appStore } from "@/app/store";
 import { useToRef } from "@/hooks/use-latest";
 import {
   Archive,
   ChevronRight,
+  GitBranch,
   Loader,
   PencilLine,
   Trash,
@@ -73,6 +78,36 @@ export function ThreadDropdown({
   const [open, setOpen] = useState(false);
 
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isBranching, setIsBranching] = useState(false);
+
+  const handleBranch = async () => {
+    setIsBranching(true);
+    try {
+      const newThreadId = await forkThreadAction(threadId);
+      setOpen(false);
+      toast.success(t("Chat.Thread.chatBranched"));
+      const now = Date.now();
+      mutate(
+        "/api/thread",
+        (current: any[] = []) => [
+          {
+            id: newThreadId,
+            title: beforeTitle ? `Branch: ${beforeTitle}` : "Branch",
+            createdAt: new Date(),
+            lastMessageAt: now,
+            userId: "",
+          },
+          ...current.filter((item) => item.id !== newThreadId),
+        ],
+        { revalidate: true },
+      );
+      push.current(`/chat/${newThreadId}`);
+    } catch (error: any) {
+      toast.error(error?.message || t("Chat.Thread.failedToBranchChat"));
+    } finally {
+      setIsBranching(false);
+    }
+  };
 
   const handleUpdate = async (title: string) => {
     safe()
@@ -202,6 +237,21 @@ export function ThreadDropdown({
                     )}
                   </DropdownMenuContent>
                 </DropdownMenu>
+              </CommandItem>
+              <CommandItem
+                disabled={isBranching}
+                className="cursor-pointer p-0"
+              >
+                <div
+                  className="flex items-center gap-2 w-full px-2 py-1 rounded"
+                  onClick={handleBranch}
+                >
+                  <GitBranch className="text-foreground" />
+                  <span className="mr-4">{t("Chat.Thread.branchChat")}</span>
+                  {isBranching && (
+                    <Loader className="ml-auto h-4 w-4 animate-spin" />
+                  )}
+                </div>
               </CommandItem>
             </CommandGroup>
             <CommandSeparator />

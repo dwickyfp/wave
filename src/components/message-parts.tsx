@@ -17,6 +17,7 @@ import {
   EllipsisIcon,
   FileIcon,
   Download,
+  GitBranch,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { Button } from "ui/button";
@@ -34,7 +35,10 @@ import { SelectModel } from "./select-model";
 import {
   deleteMessageAction,
   deleteMessagesByChatIdAfterTimestampAction,
+  forkThreadAction,
 } from "@/app/api/chat/actions";
+import { useRouter } from "next/navigation";
+import { mutate } from "swr";
 
 import { toast } from "sonner";
 import { safe } from "ts-safe";
@@ -73,6 +77,7 @@ interface UserMessagePartProps {
   part: TextMessagePart;
   isLast: boolean;
   message: UIMessage;
+  threadId?: string;
   setMessages?: UseChatHelpers<UIMessage>["setMessages"];
   sendMessage?: UseChatHelpers<UIMessage>["sendMessage"];
   status?: UseChatHelpers<UIMessage>["status"];
@@ -113,6 +118,7 @@ export const UserMessagePart = memo(
     isLast,
     status,
     message,
+    threadId,
     setMessages,
     sendMessage,
     readonly,
@@ -120,8 +126,10 @@ export const UserMessagePart = memo(
   }: UserMessagePartProps) {
     const { copied, copy } = useCopy();
     const t = useTranslations();
+    const router = useRouter();
     const [mode, setMode] = useState<"view" | "edit">("view");
     const [isDeleting, setIsDeleting] = useState(false);
+    const [isBranching, setIsBranching] = useState(false);
     const [expanded, setExpanded] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
     const scrolledRef = useRef(false);
@@ -131,6 +139,34 @@ export const UserMessagePart = memo(
       expanded || !isLongText
         ? part.text
         : truncateString(part.text, MAX_TEXT_LENGTH);
+
+    const handleBranch = useCallback(async () => {
+      if (!threadId) return;
+      setIsBranching(true);
+      try {
+        const newThreadId = await forkThreadAction(threadId, message.id);
+        const now = Date.now();
+        mutate(
+          "/api/thread",
+          (current: any[] = []) => [
+            {
+              id: newThreadId,
+              title: "Branch",
+              createdAt: new Date(),
+              lastMessageAt: now,
+              userId: "",
+            },
+            ...current.filter((item) => item.id !== newThreadId),
+          ],
+          { revalidate: true },
+        );
+        router.push(`/chat/${newThreadId}`);
+      } catch (error: any) {
+        toast.error(error?.message || t("Chat.Thread.failedToBranchChat"));
+      } finally {
+        setIsBranching(false);
+      }
+    }, [threadId, message.id]);
 
     const deleteMessage = useCallback(async () => {
       if (!setMessages) return;
@@ -245,6 +281,29 @@ export const UserMessagePart = memo(
                   <TooltipContent side="bottom">Edit</TooltipContent>
                 </Tooltip>
 
+                {threadId && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        disabled={isBranching}
+                        onClick={handleBranch}
+                        variant="ghost"
+                        size="icon"
+                        className="size-3! p-4!"
+                      >
+                        {isBranching ? (
+                          <Loader className="animate-spin" />
+                        ) : (
+                          <GitBranch />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      {t("Chat.Thread.branchChat")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -300,6 +359,9 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   const [isLoading, setIsLoading] = useState(false);
   const agentList = appStore((state) => state.agentList);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isBranching, setIsBranching] = useState(false);
+  const router = useRouter();
+  const t = useTranslations();
   const ref = useRef<HTMLDivElement>(null);
   const metadata = message.metadata as ChatMetadata | undefined;
 
@@ -329,6 +391,34 @@ export const AssistMessagePart = memo(function AssistMessagePart({
       .watch(() => setIsDeleting(false))
       .unwrap();
   }, [message.id]);
+
+  const handleBranch = useCallback(async () => {
+    if (!threadId) return;
+    setIsBranching(true);
+    try {
+      const newThreadId = await forkThreadAction(threadId, message.id);
+      const now = Date.now();
+      mutate(
+        "/api/thread",
+        (current: any[] = []) => [
+          {
+            id: newThreadId,
+            title: "Branch",
+            createdAt: new Date(),
+            lastMessageAt: now,
+            userId: "",
+          },
+          ...current.filter((item) => item.id !== newThreadId),
+        ],
+        { revalidate: true },
+      );
+      router.push(`/chat/${newThreadId}`);
+    } catch (error: any) {
+      toast.error(error?.message || t("Chat.Thread.failedToBranchChat"));
+    } finally {
+      setIsBranching(false);
+    }
+  }, [threadId, message.id]);
 
   const handleModelChange = (model: ChatModel) => {
     if (!setMessages || !sendMessage || !prevMessage) return;
@@ -409,6 +499,26 @@ export const AssistMessagePart = memo(function AssistMessagePart({
                 </TooltipTrigger>
                 <TooltipContent>Change Model</TooltipContent>
               </Tooltip>
+              {threadId && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      disabled={isBranching}
+                      onClick={handleBranch}
+                      className="size-3! p-4!"
+                    >
+                      {isBranching ? (
+                        <Loader className="animate-spin" />
+                      ) : (
+                        <GitBranch />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>{t("Chat.Thread.branchChat")}</TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button

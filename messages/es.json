@@ -105,6 +105,7 @@
     "placeholder": "Pregunta cualquier cosa o @menciona",
     "Tool": {
       "webSearching": "Buscando en la web...",
+      "webSearchError": "Error en la búsqueda web",
       "searchedTheWeb": "Buscado en la web",
       "toolModeDescription": "Elije cómo se usan las herramientas:\n• Auto: La IA decide cuándo usar herramientas\n• Manual: Pide permiso antes de usar herramientas\n• Ninguno: Desactiva todas las herramientas",
       "toolsSetupDescription": "Selecciona las herramientas que el chatbot puede usar.\nEl chatbot utilizará las herramientas seleccionadas según su propio juicio.\n\nTambién puedes forzar el uso de herramientas específicas a través de @mention.",
@@ -163,6 +164,9 @@
       "chat": "Chat",
 
       "renameChat": "Renombrar",
+      "branchChat": "Bifurcar chat",
+      "chatBranched": "Chat bifurcado",
+      "failedToBranchChat": "Error al bifurcar el chat",
       "deleteChat": "Eliminar Chat",
       "deleteUnarchivedChats": "Eliminar Todos los Chats No Archivados",
       "confirmDeleteUnarchivedChats": "¿Estás seguro de que quieres eliminar todos los chats no archivados?",

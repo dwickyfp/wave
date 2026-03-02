@@ -225,6 +225,7 @@
     "placeholder": "Spør om hva som helst eller @nevn",
     "Tool": {
       "webSearching": "Søker på nettet...",
+      "webSearchError": "Nettsøk mislyktes",
       "searchedTheWeb": "Søkte på nettet",
       "toolsSetupDescription": "Velg verktøy som chatboten kan bruke.\nChatboten vil bruke valgte verktøy basert på egen vurdering.\n\nDu kan også tvinge bruk av spesifikke verktøy gjennom @nevning.",
       "selectToolMode": "Velg en verktøymodus",
@@ -284,6 +285,9 @@
       "chat": "Chat",
       "renameChat": "Gi nytt navn",
       "exportChat": "Del lenke",
+      "branchChat": "Forgren chat",
+      "chatBranched": "Chat forgrenet",
+      "failedToBranchChat": "Kunne ikke forgrene chatten",
       "deleteChat": "Slett chat",
       "deleteUnarchivedChats": "Slett alle uarkiverte chatter",
       "confirmDeleteUnarchivedChats": "Er du sikker på at du vil slette alle uarkiverte chatter?",

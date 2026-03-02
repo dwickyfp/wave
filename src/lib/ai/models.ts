@@ -38,8 +38,8 @@ const staticModels = {
     "opus-4.5": openrouter("anthropic/claude-opus-4-5"),
   },
   xai: {
-    "grok-4-1-fast": openrouter("x-ai/grok-4-1-fast"),
-    "grok-4-1": openrouter("x-ai/grok-4-1"),
+    "grok-4-1-fast": openrouter("x-ai/grok-4.1-fast"),
+    "grok-4-1": openrouter("x-ai/grok-4.1"),
     "grok-3-mini": openrouter("x-ai/grok-3-mini"),
   },
   ollama: {
