@@ -1,6 +1,6 @@
 "use client";
 
-import { isToolUIPart, type UIMessage } from "ai";
+import { isStaticToolUIPart, type UIMessage } from "ai";
 import { memo, useMemo, useState } from "react";
 import equal from "lib/equal";
 
@@ -121,7 +121,7 @@ const PurePreviewMessage = ({
               );
             }
 
-            if (isToolUIPart(part)) {
+            if (isStaticToolUIPart(part)) {
               const isLast = isLastMessage && isLastPart;
               const isManualToolInvocation =
                 (message.metadata as ChatMetadata)?.toolChoice == "manual" &&

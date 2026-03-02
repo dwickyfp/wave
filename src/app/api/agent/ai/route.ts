@@ -1,4 +1,4 @@
-import { streamObject } from "ai";
+import { streamText, Output } from "ai";
 
 import { customModelProvider } from "lib/ai/models";
 import { buildAgentGenerationPrompt } from "lib/ai/prompts";
@@ -81,11 +81,11 @@ export async function POST(request: Request) {
 
     const system = buildAgentGenerationPrompt(Array.from(toolNames));
 
-    const result = streamObject({
+    const result = streamText({
       model: customModelProvider.getModel(chatModel),
       system,
       prompt: message,
-      schema: dynamicAgentTable,
+      output: Output.object({ schema: dynamicAgentTable }),
     });
 
     return result.toTextStreamResponse();

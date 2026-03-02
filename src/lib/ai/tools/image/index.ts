@@ -2,6 +2,7 @@ import {
   FilePart,
   ImagePart,
   ModelMessage,
+  ToolApprovalResponse,
   ToolResultPart,
   tool as createTool,
   generateText,
@@ -26,7 +27,6 @@ export type ImageToolResult = {
 };
 
 export const nanoBananaTool = createTool({
-  name: ImageToolName,
   description: `Generate, edit, or composite images based on the conversation context. This tool automatically analyzes recent messages to create images without requiring explicit input parameters. It includes all user-uploaded images from the recent conversation and only the most recent AI-generated image to avoid confusion. Use the 'mode' parameter to specify the operation type: 'create' for new images, 'edit' for modifying existing images, or 'composite' for combining multiple images. Use this when the user requests image creation, modification, or visual content generation.`,
   inputSchema: z.object({
     mode: z
@@ -114,7 +114,6 @@ export const nanoBananaTool = createTool({
 });
 
 export const openaiImageTool = createTool({
-  name: ImageToolName,
   description: `Generate, edit, or composite images based on the conversation context. This tool automatically analyzes recent messages to create images without requiring explicit input parameters. It includes all user-uploaded images from the recent conversation and only the most recent AI-generated image to avoid confusion. Use the 'mode' parameter to specify the operation type: 'create' for new images, 'edit' for modifying existing images, or 'composite' for combining multiple images. Use this when the user requests image creation, modification, or visual content generation.`,
   inputSchema: z.object({
     mode: z
@@ -194,10 +193,13 @@ export const openaiImageTool = createTool({
   },
 });
 
-function convertToImageToolPartToImagePart(part: ToolResultPart): ImagePart[] {
+function convertToImageToolPartToImagePart(
+  part: ToolResultPart | ToolApprovalResponse,
+): ImagePart[] {
+  if (part.type !== "tool-result") return [];
   if (part.toolName !== ImageToolName) return [];
   if (!toAny(part).output?.value?.images?.length) return [];
-  const result = part.output.value as ImageToolResult;
+  const result = toAny(part.output).value as ImageToolResult;
   return result.images.map((image) => ({
     type: "image",
     image: image.url,
@@ -205,10 +207,13 @@ function convertToImageToolPartToImagePart(part: ToolResultPart): ImagePart[] {
   }));
 }
 
-function convertToImageToolPartToFilePart(part: ToolResultPart): FilePart[] {
+function convertToImageToolPartToFilePart(
+  part: ToolResultPart | ToolApprovalResponse,
+): FilePart[] {
+  if (part.type !== "tool-result") return [];
   if (part.toolName !== ImageToolName) return [];
   if (!toAny(part).output?.value?.images?.length) return [];
-  const result = part.output.value as ImageToolResult;
+  const result = toAny(part.output).value as ImageToolResult;
   return result.images.map((image) => ({
     type: "file",
     mediaType: image.mimeType!,

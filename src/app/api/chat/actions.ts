@@ -1,8 +1,8 @@
 "use server";
 
 import {
-  generateObject,
   generateText,
+  Output,
   jsonSchema,
   LanguageModel,
   type UIMessage,
@@ -128,16 +128,16 @@ export async function generateExampleToolSchemaAction(options: {
       additionalProperties: false,
     }),
   );
-  const { object } = await generateObject({
+  const { output } = await generateText({
     model,
-    schema,
+    output: Output.object({ schema }),
     prompt: generateExampleToolSchemaPrompt({
       toolInfo: options.toolInfo,
       prompt: options.prompt,
     }),
   });
 
-  return object;
+  return output;
 }
 
 export async function rememberMcpServerCustomizationsAction(userId: string) {
@@ -203,13 +203,13 @@ export async function generateObjectAction({
   };
   schema: JSONSchema7 | ObjectJsonSchema7;
 }) {
-  const result = await generateObject({
+  const { output } = await generateText({
     model: customModelProvider.getModel(model),
     system: prompt.system,
     prompt: prompt.user || "",
-    schema: jsonSchemaToZod(schema),
+    output: Output.object({ schema: jsonSchemaToZod(schema) }),
   });
-  return result.object;
+  return output;
 }
 
 export async function rememberAgentAction(

@@ -1,6 +1,6 @@
 "use client";
 
-import { getToolName, isToolUIPart, TextPart } from "ai";
+import { getStaticToolName, isStaticToolUIPart, TextPart } from "ai";
 import { DEFAULT_VOICE_TOOLS, UIMessageWithCompleted } from "lib/ai/speech";
 
 import {
@@ -593,7 +593,7 @@ function ConversationView({
                         ))}
                     </p>
                   );
-                } else if (isToolUIPart(part)) {
+                } else if (isStaticToolUIPart(part)) {
                   return (
                     <ToolMessagePart
                       key={index}
@@ -621,8 +621,8 @@ function CompactMessageView({
 }) {
   const { toolParts, textPart } = useMemo(() => {
     const toolParts = messages
-      .filter((msg) => msg.parts.some(isToolUIPart))
-      .map((msg) => msg.parts.find(isToolUIPart));
+      .filter((msg) => msg.parts.some(isStaticToolUIPart))
+      .map((msg) => msg.parts.find(isStaticToolUIPart));
 
     const textPart = messages.findLast((msg) => msg.role === "assistant")
       ?.parts[0] as TextPart;
@@ -646,7 +646,7 @@ function CompactMessageView({
                   >
                     <WrenchIcon className="size-3.5" />
                     <span className="text-sm font-bold min-w-0 truncate mr-auto">
-                      {getToolName(toolPart)}
+                      {getStaticToolName(toolPart)}
                     </span>
                     {isExecuting ? (
                       <Loader className="size-3.5 animate-spin" />
@@ -657,7 +657,7 @@ function CompactMessageView({
                 </div>
               </DialogTrigger>
               <DialogContent className="z-50 md:max-w-2xl! max-h-[80vh] overflow-y-auto p-8">
-                <DialogTitle>{getToolName(toolPart)}</DialogTitle>
+                <DialogTitle>{getStaticToolName(toolPart)}</DialogTitle>
                 <div className="flex flex-row gap-4 text-sm ">
                   <div className="w-1/2 min-w-0 flex flex-col">
                     <div className="flex items-center gap-2 mb-2 pt-2 pb-1 z-10">

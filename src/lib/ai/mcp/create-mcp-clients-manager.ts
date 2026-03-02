@@ -19,7 +19,7 @@ import { safe } from "ts-safe";
 import { McpServerTable } from "lib/db/pg/schema.pg";
 import { createMCPToolId } from "./mcp-tool-id";
 import globalLogger from "logger";
-import { jsonSchema, ToolCallOptions } from "ai";
+import { jsonSchema, ToolExecutionOptions } from "ai";
 import { createMemoryMCPConfigStorage } from "./memory-mcp-config-storage";
 import { colorize } from "consola/utils";
 
@@ -160,7 +160,7 @@ export class MCPClientsManager {
                     _originToolName: tool.name,
                     _mcpServerName: clientName,
                     _mcpServerId: id,
-                    execute: (params, options: ToolCallOptions) => {
+                    execute: (params, options: ToolExecutionOptions) => {
                       options?.abortSignal?.throwIfAborted();
                       return this.toolCall(id, tool.name, params);
                     },

@@ -5,10 +5,10 @@ import {
   Tool,
   jsonSchema,
   tool as createTool,
-  isToolUIPart,
+  isStaticToolUIPart,
   UIMessagePart,
   ToolUIPart,
-  getToolName,
+  getStaticToolName,
   UIMessageStreamWriter,
 } from "ai";
 import {
@@ -119,7 +119,7 @@ export function manualToolExecuteByLastMessage(
 ) {
   const { input } = part;
 
-  const toolName = getToolName(part);
+  const toolName = getStaticToolName(part);
 
   const tool = tools[toolName];
   return safe(() => {
@@ -171,7 +171,7 @@ export function extractInProgressToolPart(message: UIMessage): ToolUIPart[] {
   if ((message.metadata as ChatMetadata)?.toolChoice != "manual") return [];
   return message.parts.filter(
     (part) =>
-      isToolUIPart(part) &&
+      isStaticToolUIPart(part) &&
       part.state == "output-available" &&
       ManualToolConfirmTag.isMaybe(part.output),
   ) as ToolUIPart[];
@@ -467,7 +467,7 @@ export const convertToSavePart = <T extends UIMessagePart<any, any>>(
     exclude(part as any, ["providerMetadata", "callProviderMetadata"]) as T,
   )
     .map((v) => {
-      if (isToolUIPart(v) && v.state.startsWith("output")) {
+      if (isStaticToolUIPart(v) && v.state.startsWith("output")) {
         if (VercelAIWorkflowToolStreamingResultTag.isMaybe(v.output)) {
           return {
             ...v,

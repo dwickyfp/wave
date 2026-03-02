@@ -38,12 +38,13 @@ export async function POST(request: Request) {
     const userPreferences =
       (await getUserPreferences(session.user.id)) || undefined;
 
+    const modelMessages = await convertToModelMessages(messages);
     return streamText({
       model,
       system: `${buildUserSystemPrompt(session.user, userPreferences)} ${
         instructions ? `\n\n${instructions}` : ""
       }`.trim(),
-      messages: convertToModelMessages(messages),
+      messages: modelMessages,
       experimental_transform: smoothStream({ chunking: "word" }),
     }).toUIMessageStreamResponse();
   } catch (error: any) {
