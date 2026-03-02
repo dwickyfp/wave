@@ -6,7 +6,7 @@ import { experimental_useObject } from "@ai-sdk/react";
 import { ChatModel } from "app-types/chat";
 import { AgentGenerateSchema } from "app-types/agent";
 import { handleErrorWithToast } from "ui/shared-toast";
-import { CommandIcon, CornerRightUpIcon } from "lucide-react";
+import { CommandIcon, CornerRightUpIcon, NetworkIcon } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -16,6 +16,8 @@ import {
 } from "ui/dialog";
 import { Button } from "ui/button";
 import { Textarea } from "ui/textarea";
+import { Switch } from "ui/switch";
+import { Label } from "ui/label";
 import { MessageLoading } from "ui/message-loading";
 import { SelectModel } from "@/components/select-model";
 import { appStore } from "@/app/store";
@@ -39,6 +41,7 @@ export function GenerateAgentDialog({
   );
   const [generateAgentPrompt, setGenerateAgentPrompt] = useState("");
   const [submittedPrompt, setSubmittedPrompt] = useState("");
+  const [enableSubAgents, setEnableSubAgents] = useState(false);
 
   const { submit, isLoading, object } = experimental_useObject({
     api: "/api/agent/ai",
@@ -50,7 +53,7 @@ export function GenerateAgentDialog({
       if (event.object) {
         onAgentChange(event.object);
         if (event.object.tools && onToolsGenerated) {
-          onToolsGenerated(event.object.tools);
+          onToolsGenerated(event.object.tools as string[]);
         }
       }
       // Close dialog after generation completes
@@ -67,7 +70,8 @@ export function GenerateAgentDialog({
     submit({
       message: generateAgentPrompt,
       chatModel: generateModel,
-    });
+      enableSubAgents,
+    } as any);
     setGenerateAgentPrompt(""); // Clear textarea immediately after submit
     // Don't close dialog immediately - will close in onFinish
   };
@@ -102,6 +106,31 @@ export function GenerateAgentDialog({
                 <MessageLoading className="size-4" />
               )}
             </p>
+          </div>
+
+          {/* Enable SubAgents toggle */}
+          <div className="flex items-start gap-3 px-4 py-3 rounded-lg border bg-secondary/30">
+            <NetworkIcon className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
+            <div className="flex flex-col gap-1 flex-1 min-w-0">
+              <Label
+                htmlFor="enable-subagents-switch"
+                className="text-sm font-medium cursor-pointer"
+              >
+                Enable SubAgents
+              </Label>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                AI will design an orchestrator agent with specialized subagents
+                that work as a team. Each subagent gets its own instructions and
+                tools, and the main agent will know when to delegate to each
+                one.
+              </p>
+            </div>
+            <Switch
+              id="enable-subagents-switch"
+              checked={enableSubAgents}
+              disabled={isLoading}
+              onCheckedChange={setEnableSubAgents}
+            />
           </div>
 
           <div className="relative flex flex-col border rounded-lg p-4">

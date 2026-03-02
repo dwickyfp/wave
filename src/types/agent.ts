@@ -105,6 +105,17 @@ export type AgentRepository = {
   ): Promise<boolean>;
 };
 
+export const AgentGenerateSubAgentSchema = z.object({
+  name: z.string().describe("Subagent name"),
+  description: z.string().describe("What this subagent specializes in"),
+  instructions: z.string().describe("Subagent system instructions"),
+  tools: z
+    .array(z.string())
+    .describe("Required tool names for this subagent")
+    .optional()
+    .default([]),
+});
+
 export const AgentGenerateSchema = z.object({
   name: z.string().describe("Agent name"),
   description: z.string().describe("Agent description"),
@@ -113,6 +124,12 @@ export const AgentGenerateSchema = z.object({
   tools: z
     .array(z.string())
     .describe("Agent allowed tools name")
+    .optional()
+    .default([]),
+  subAgentsEnabled: z.boolean().optional().default(false),
+  subAgents: z
+    .array(AgentGenerateSubAgentSchema)
+    .describe("Generated subagents for this orchestrator agent")
     .optional()
     .default([]),
 });

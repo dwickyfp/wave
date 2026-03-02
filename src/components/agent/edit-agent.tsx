@@ -166,6 +166,50 @@ export default function EditAgent({
     [mcpList, workflowToolList, setAgent],
   );
 
+  // Returns ChatMention[] for a list of raw tool name strings.
+  // Used when applying AI-generated subagents whose tools are plain strings.
+  const resolveMentionsFromNames = useCallback(
+    (toolNames: string[]): ChatMention[] => {
+      const mentions: ChatMention[] = [];
+
+      objectFlow(DefaultToolName).forEach((toolName) => {
+        if (toolNames.includes(toolName)) {
+          mentions.push({
+            type: "defaultTool",
+            name: toolName,
+            label: toolName,
+          });
+        }
+      });
+
+      (mcpList as (MCPServerInfo & { id: string })[])?.forEach((mcp) => {
+        mcp.toolInfo.forEach((tool) => {
+          if (toolNames.includes(tool.name)) {
+            mentions.push({
+              type: "mcpTool",
+              serverName: mcp.name,
+              name: tool.name,
+              serverId: mcp.id,
+            });
+          }
+        });
+      });
+
+      (workflowToolList as WorkflowSummary[])?.forEach((workflow) => {
+        if (toolNames.includes(workflow.name)) {
+          mentions.push({
+            type: "workflow",
+            name: workflow.name,
+            workflowId: workflow.id,
+          });
+        }
+      });
+
+      return mentions;
+    },
+    [mcpList, workflowToolList],
+  );
+
   const saveAgent = useCallback(() => {
     if (initialAgent) {
       safe(() => setIsSaving(true))
@@ -295,37 +339,70 @@ export default function EditAgent({
     isBookmarkToggleLoading,
   ]);
 
-  const handleAgentChange = useCallback((generatedData: any) => {
-    if (textareaRef.current) {
-      textareaRef.current.scrollTo({
-        top: textareaRef.current.scrollHeight,
+  const handleAgentChange = useCallback(
+    (generatedData: any) => {
+      if (textareaRef.current) {
+        textareaRef.current.scrollTo({
+          top: textareaRef.current.scrollHeight,
+        });
+      }
+      setAgent((prev) => {
+        const update: Partial<Agent> = {};
+        objectFlow(generatedData).forEach((data, key) => {
+          if (key === "name") {
+            update.name = data as string;
+          }
+          if (key === "description") {
+            update.description = data as string;
+          }
+          if (key === "instructions") {
+            update.instructions = {
+              ...prev.instructions,
+              systemPrompt: data as string,
+            };
+          }
+          if (key === "role") {
+            update.instructions = {
+              ...prev.instructions,
+              role: data as string,
+            };
+          }
+        });
+        return { ...prev, ...update };
       });
-    }
-    setAgent((prev) => {
-      const update: Partial<Agent> = {};
-      objectFlow(generatedData).forEach((data, key) => {
-        if (key === "name") {
-          update.name = data as string;
-        }
-        if (key === "description") {
-          update.description = data as string;
-        }
-        if (key === "instructions") {
-          update.instructions = {
-            ...prev.instructions,
-            systemPrompt: data as string,
-          };
-        }
-        if (key === "role") {
-          update.instructions = {
-            ...prev.instructions,
-            role: data as string,
-          };
-        }
-      });
-      return { ...prev, ...update };
-    });
-  }, []);
+
+      // Handle generated subagents from the AI
+      if (generatedData?.subAgentsEnabled === true) {
+        setSubAgentsEnabled(true);
+      }
+      if (
+        Array.isArray(generatedData?.subAgents) &&
+        generatedData.subAgents.length > 0
+      ) {
+        const generated = (generatedData.subAgents as any[])
+          .filter((sa) => sa?.name)
+          .map((sa, i) => ({
+            id: `generated-${i}-${Date.now()}`,
+            agentId: "",
+            name: sa.name ?? "",
+            description: sa.description ?? "",
+            instructions: sa.instructions ?? "",
+            tools: resolveMentionsFromNames(
+              Array.isArray(sa.tools)
+                ? (sa.tools as string[]).filter(Boolean)
+                : [],
+            ),
+            enabled: true,
+            sortOrder: i,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }));
+        setSubAgents(generated);
+        setSubAgentsEnabled(true);
+      }
+    },
+    [resolveMentionsFromNames],
+  );
 
   const isLoadingTool = useMemo(() => {
     return isMcpLoading || isWorkflowLoading;

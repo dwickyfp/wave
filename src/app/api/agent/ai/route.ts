@@ -1,7 +1,10 @@
-import { streamText, Output } from "ai";
+import { streamObject } from "ai";
 
 import { customModelProvider } from "lib/ai/models";
-import { buildAgentGenerationPrompt } from "lib/ai/prompts";
+import {
+  buildAgentGenerationPrompt,
+  buildAgentWithSubAgentsGenerationPrompt,
+} from "lib/ai/prompts";
 import globalLogger from "logger";
 import { ChatModel } from "app-types/chat";
 
@@ -23,12 +26,19 @@ export async function POST(request: Request) {
   try {
     const json = await request.json();
 
-    const { chatModel, message = "hello" } = json as {
+    const {
+      chatModel,
+      message = "hello",
+      enableSubAgents = false,
+    } = json as {
       chatModel?: ChatModel;
       message: string;
+      enableSubAgents?: boolean;
     };
 
-    logger.info(`chatModel: ${chatModel?.provider}/${chatModel?.model}`);
+    logger.info(
+      `chatModel: ${chatModel?.provider}/${chatModel?.model} enableSubAgents: ${enableSubAgents}`,
+    );
 
     const session = await getSession();
     if (!session) {
@@ -38,7 +48,6 @@ export async function POST(request: Request) {
     const toolNames = new Set<string>();
 
     await safe(loadAppDefaultTools)
-
       .ifOk((appTools) => {
         objectFlow(appTools).forEach((_, toolName) => {
           toolNames.add(toolName);
@@ -62,30 +71,56 @@ export async function POST(request: Request) {
       })
       .unwrap();
 
+    const toolNamesArray = Array.from(toolNames);
+    const toolEnum =
+      toolNamesArray.length > 0
+        ? z.enum([toolNamesArray[0], ...toolNamesArray.slice(1)] as [
+            string,
+            ...string[],
+          ])
+        : z.enum([""] as [string]);
+
     const dynamicAgentTable = AgentGenerateSchema.extend({
       tools: z
-        .array(
-          z.enum(
-            Array.from(toolNames).length > 0
-              ? ([
-                  Array.from(toolNames)[0],
-                  ...Array.from(toolNames).slice(1),
-                ] as [string, ...string[]])
-              : ([""] as [string]),
-          ),
-        )
+        .array(toolEnum)
         .describe("Agent allowed tools name")
         .nullable()
         .default([]),
+      ...(enableSubAgents
+        ? {
+            subAgentsEnabled: z.literal(true).default(true),
+            subAgents: z
+              .array(
+                z.object({
+                  name: z.string().describe("Subagent name"),
+                  description: z
+                    .string()
+                    .describe("What this subagent specializes in"),
+                  instructions: z
+                    .string()
+                    .describe("Subagent system instructions"),
+                  tools: z
+                    .array(toolEnum)
+                    .describe("Required tool names for this subagent")
+                    .nullable()
+                    .default([]),
+                }),
+              )
+              .describe("Specialized subagents for this orchestrator")
+              .default([]),
+          }
+        : {}),
     });
 
-    const system = buildAgentGenerationPrompt(Array.from(toolNames));
+    const system = enableSubAgents
+      ? buildAgentWithSubAgentsGenerationPrompt(toolNamesArray)
+      : buildAgentGenerationPrompt(toolNamesArray);
 
-    const result = streamText({
+    const result = streamObject({
       model: customModelProvider.getModel(chatModel),
       system,
       prompt: message,
-      output: Output.object({ schema: dynamicAgentTable }),
+      schema: dynamicAgentTable,
     });
 
     return result.toTextStreamResponse();
