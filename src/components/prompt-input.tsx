@@ -338,7 +338,7 @@ export default function PromptInput({
         file.mimeType,
         supportedFileMimeTypes,
       );
-      const link = file.url || file.dataUrl || "";
+      const link = file.dataUrl || file.url || "";
       if (!link) return acc;
       if (isFileSupported) {
         acc.push({

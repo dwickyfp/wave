@@ -6,6 +6,15 @@ import { useFileUpload } from "@/hooks/use-presigned-upload";
 import { generateUUID } from "@/lib/utils";
 import { toast } from "sonner";
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export function useThreadFileUploader(threadId?: string) {
   const appStoreMutate = appStore((s) => s.mutate);
   const { upload } = useFileUpload();
@@ -47,7 +56,10 @@ export function useThreadFileUploader(threadId?: string) {
         }));
 
         try {
-          const uploaded = await upload(file);
+          const [uploaded, dataUrl] = await Promise.all([
+            upload(file),
+            readFileAsDataUrl(file),
+          ]);
           if (uploaded) {
             appStoreMutate((prev) => ({
               threadFiles: {
@@ -57,6 +69,7 @@ export function useThreadFileUploader(threadId?: string) {
                     ? {
                         ...f,
                         url: uploaded.url,
+                        dataUrl,
                         isUploading: false,
                         progress: 100,
                       }
