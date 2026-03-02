@@ -1,446 +1,364 @@
-> [!WARNING]
-> The author of this project has paused development until February, however, I (@brrock) will try and address vulnerabilities and issues. If you are contributing, you might have to wait until development continues.
-> <img width="1184" height="576" alt="thumbnail" loading="lazy" src="https://github.com/user-attachments/assets/d6ba80ff-a62a-4920-b266-85c4a89d6076" />
+# Wave Chatbot
 
 [![MCP Supported](https://img.shields.io/badge/MCP-Supported-00c853)](https://modelcontextprotocol.io/introduction)
 [![Local First](https://img.shields.io/badge/Local-First-blue)](https://localfirstweb.dev/)
+[![AI SDK](https://img.shields.io/badge/AI_SDK-v6-blueviolet)](https://sdk.vercel.ai/)
 [![Discord](https://img.shields.io/discord/1374047276074537103?label=Discord&logo=discord&color=5865F2)](https://discord.gg/gCRu69Upnp)
 
-[![Deploy with Vercel](https://vercel.com/button)](<https://vercel.com/new/clone?repository-url=https://github.com/cgoinglove/wave-chatbot&env=BETTER_AUTH_SECRET&env=OPENAI_API_KEY&env=GOOGLE_GENERATIVE_AI_API_KEY&env=ANTHROPIC_API_KEY&envDescription=BETTER_AUTH_SECRET+is+required+(enter+any+secret+value).+At+least+one+LLM+provider+API+key+(OpenAI,+Claude,+or+Google)+is+required,+but+you+can+add+all+of+them.+See+the+link+below+for+details.&envLink=https://github.com/cgoinglove/wave-chatbot/blob/main/.env.example&demo-title=wave-chatbot&demo-description=An+Open-Source+Chatbot+Template+Built+With+Next.js+and+the+AI+SDK+by+Vercel.&products=[{"type":"integration","protocol":"storage","productSlug":"neon","integrationSlug":"neon"},{"type":"integration","protocol":"storage","productSlug":"upstash-kv","integrationSlug":"upstash"},{"type":"blob"}]>)
+[![Deploy with Vercel](https://vercel.com/button)](<https://vercel.com/new/clone?repository-url=https://github.com/cgoinglove/wave-chatbot&env=BETTER_AUTH_SECRET&env=OPENAI_API_KEY&env=GOOGLE_GENERATIVE_AI_API_KEY&env=ANTHROPIC_API_KEY&envDescription=BETTER_AUTH_SECRET+is+required+(enter+any+random+secret+value).+At+least+one+LLM+provider+API+key+(OpenAI,+Claude,+or+Google)+is+required.&envLink=https://github.com/cgoinglove/wave-chatbot/blob/main/.env.example&demo-title=wave-chatbot&demo-description=An+Open-Source+Chatbot+Built+With+Next.js+and+the+AI+SDK+by+Vercel.&products=[{"type":"integration","protocol":"storage","productSlug":"neon","integrationSlug":"neon"},{"type":"integration","protocol":"storage","productSlug":"upstash-kv","integrationSlug":"upstash"},{"type":"blob"}]>)
 
-🚀 **[Live Demo](https://wave-chatbot-demo.vercel.app/)** | See the experience in action in the [preview](#preview) below!
+**Wave Chatbot** is an open-source AI chatbot for individuals and teams, inspired by ChatGPT, Claude, Grok, and Gemini. Built with **[Vercel AI SDK v6](https://sdk.vercel.ai/)** and **Next.js**, it combines the best capabilities of leading AI services into a single customizable platform.
 
-#### Demo Chats
-
-- **MCP Tools Demo:** [Chat with Tools](https://wave-chatbot-demo.vercel.app/export/a4820921-8012-496b-8a5d-13757050bafe)
-- **Image Generation Demo:** [Chat with Image Generation](https://wave-chatbot-demo.vercel.app/export/452ad745-9efb-49ae-9114-10db15f1b827)
-
-## Quick Start 🚀
-
-> **Get your app running in minutes! No installation or payment required.**
-
-You only need **one AI Provider API Key** (OpenAI, Claude, Gemini, etc.). Everything else runs on free tiers - database, file storage, and hosting.
-
-👉 **[Click this guide to deploy your site with just a few clicks](docs/tips-guides/vercel.md)**
+**[Live Demo](https://wave-chatbot-demo.vercel.app/)**
 
 ---
 
-**Wave Chatbot** - A better open-source AI chatbot for individuals and teams, inspired by ChatGPT, Claude, Grok, and Gemini.
-
-• **Multi-AI Support** - Integrates all major LLMs: OpenAI, Anthropic, Google, xAI, Ollama, and more  
-• **Powerful Tools** - MCP protocol, web search, JS/Python code execution, data visualization  
-• **Image Generation** - Create and edit images with AI models (OpenAI, Google Gemini, xAI)  
-• **Automation** - Custom agents, visual workflows, artifact generation  
-• **Collaboration** - Share agents, workflows, and MCP configurations with your team  
-• **Voice Assistant** - Realtime voice chat with full MCP tool integration  
-• **Intuitive UX** - Instantly invoke any feature with `@mention`  
-• **Quick Start** - Deploy free with Vercel Deploy button
-
-Built with Vercel AI SDK and Next.js, combining the best features of leading AI services into one platform.
-
 ## Table of Contents
 
-- [Table of Contents](#table-of-contents)
-- [Preview](#preview)
-  - [🧩 Browser Automation with Playwright MCP](#-browser-automation-with-playwright-mcp)
-  - [🔗 Visual Workflows as Custom Tools](#-visual-workflows-as-custom-tools)
-  - [🤖 Custom Agents](#-custom-agents)
-  - [🎙️ Realtime Voice Assistant + MCP Tools](#️-realtime-voice-assistant--mcp-tools)
-  - [⚡️ Quick Tool Mentions (`@`) \& Presets](#️-quick-tool-mentions---presets)
-  - [🧭 Tool Choice Mode](#-tool-choice-mode)
-  - [🛠️ Default Tools](#️-default-tools)
-    - [🌐 Web Search](#-web-search)
-    - [⚡️ JS,PYTHON Executor](#️-jspython-executor)
-    - [📊 Data Visualization Tools](#-data-visualization-tools)
+- [Features Overview](#features-overview)
 - [Getting Started](#getting-started)
-  - [Quick Start (Docker Compose Version) 🐳](#quick-start-docker-compose-version-)
-  - [Quick Start (Local Version) 🚀](#quick-start-local-version-)
+  - [Quick Start with Docker](#quick-start-with-docker)
+  - [Quick Start (Local)](#quick-start-local)
   - [Environment Variables](#environment-variables)
-- [📘 Guides](#-guides)
-  - [🔌 MCP Server Setup \& Tool Testing](#-mcp-server-setup--tool-testing)
-  - [🐳 Docker Hosting Guide](#-docker-hosting-guide)
-  - [▲ Vercel Hosting Guide](#-vercel-hosting-guide)
-  - [🗂️ File Storage Drivers](#️-file-storage-drivers)
-  - [🎯 System Prompts \& Chat Customization](#-system-prompts--chat-customization)
-  - [🔐 OAuth Sign-In Setup](#-oauth-sign-in-setup)
-  - [🕵🏿 Adding openAI like providers](#-adding-openai-like-providers)
-  - [🧪 E2E Testing Guide](#-e2e-testing-guide)
-- [💡 Tips](#-tips)
-  - [💬 Temporary Chat Windows](#-temporary-chat-windows)
-- [🗺️ Roadmap](#️-roadmap)
-- [🙌 Contributing](#-contributing)
-- [💬 Join Our Discord](#-join-our-discord)
+- [Feature Details](#feature-details)
+  - [Custom Agents](#custom-agents)
+  - [Agent-to-Agent (Sub-Agents)](#agent-to-agent-sub-agents)
+  - [Visual Workflows](#visual-workflows)
+  - [MCP Tool Integration](#mcp-tool-integration)
+  - [@mention & Tool Presets](#mention--tool-presets)
+  - [Tool Choice Mode](#tool-choice-mode)
+  - [Built-in Tools](#built-in-tools)
+  - [Voice Assistant](#voice-assistant)
+- [Guides](#guides)
+- [Tips](#tips)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [Support](#support)
 
-> This project is evolving at lightning speed! ⚡️ We're constantly shipping new features and smashing bugs. **Star this repo** to join the ride and stay in the loop with the latest updates!
+---
 
-## Preview
+## Features Overview
 
-Get a feel for the UX — here's a quick look at what's possible.
+| Category          | Features                                                                                  |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| **AI Providers**  | OpenAI, Anthropic, Google, xAI, Ollama, OpenRouter, and any OpenAI-compatible provider    |
+| **Agents**        | Custom agents with system prompts, tool access, and agent-to-agent (sub-agent) delegation |
+| **Tools**         | MCP protocol, web search, JS/Python execution, data visualization, image generation       |
+| **Workflows**     | Visual node-based workflows as callable tools                                             |
+| **Voice**         | Realtime voice assistant with full MCP tool integration                                   |
+| **UX**            | `@mention` to invoke any tool, agent, or workflow instantly                               |
+| **Collaboration** | Share agents, workflows, and MCP configurations with your team                            |
+| **Deployment**    | One-click Vercel deploy, Docker Compose, or local setup                                   |
 
-### 🧩 Browser Automation with Playwright MCP
-
-![preview](https://github.com/user-attachments/assets/e4febb04-26d5-45da-a7bb-f7d452d333c2)
-
-**Example:** Control a web browser using Microsoft's [playwright-mcp](https://github.com/microsoft/playwright-mcp) tool.
-
-- The LLM autonomously decides how to use tools from the MCP server, calling them multiple times to complete a multi-step task and return a final message.
-
-Sample prompt:
-
-```prompt
-1. Use the @tool('web-search') to look up information about “modelcontetprotocol.”
-
-2. Then, using : @mcp("playwright")
-   - navigate Google (https://www.google.com)
-   - Click the “Login” button
-   - Enter my email address (neo.cgoing@gmail.com)
-   - Clock the "Next"  button
-   - Close the browser
-```
-
-<br/>
-
-### 🔗 Visual Workflows as Custom Tools
-
-<img width="1912" height="953" alt="workflow" loading="lazy" src="https://github.com/user-attachments/assets/e69e72e8-595c-480e-b519-4531f4c6331f" />
-
-<img width="1567" alt="workflow-mention" loading="lazy" src="https://github.com/user-attachments/assets/cf3e1339-ee44-4615-a71d-f6b46833e41f" />
-
-**Example:** Create custom workflows that become callable tools in your chat conversations.
-
-- Build visual workflows by connecting LLM nodes (for AI reasoning) and Tool nodes (for MCP tool execution)
-- Publish workflows to make them available as `@workflow_name` tools in chat
-- Chain complex multi-step processes into reusable, automated sequences
-
-<br/>
-
-### 🤖 Custom Agents
-
-<img width="1567" alt="agent-example" loading="lazy" src="https://github.com/user-attachments/assets/d0a325c0-ff1e-4038-b6bf-fcf57659a5c1" />
-
-**Example:** Create specialized AI agents with custom instructions and tool access.
-
-- Define custom agents with specific system prompts and available tools
-- Easily invoke agents in chat using `@agent_name`
-- Build task-specific assistants like a GitHub Manager agent with issue/PR tools and project context
-
-For instance, create a GitHub Manager agent by:
-
-- Providing GitHub tools (issue/PR creation, comments, queries)
-- Adding project details to the system prompt
-- Calling it with `@github_manager` to manage your repository
-
-<br/>
-
-### 🎙️ Realtime Voice Assistant + MCP Tools
-
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/e2657b8c-ce0b-40dd-80b6-755324024973" width="100%" />
-</p>
-
-This demo showcases a **realtime voice-based chatbot assistant** built with OpenAI's new Realtime API — now extended with full **MCP tool integration**.
-Talk to the assistant naturally, and watch it execute tools in real time.
-
-### ⚡️ Quick Tool Mentions (`@`) & Presets
-
-<img width="1225" alt="image" src="https://github.com/user-attachments/assets/dfe76b3b-c3d8-436e-8a7c-7b23292e234c" loading="lazy"/>
-
-Quickly call tool during chat by typing `@toolname`.
-No need to memorize — just type `@` and pick from the list!
-
-**Tool Selection vs. Mentions (`@`) — When to Use What:**
-
-- **Tool Selection**: Make frequently used tools always available to the LLM across all chats. Great for convenience and maintaining consistent context over time.
-- **Mentions (`@`)**: Temporarily bind only the mentioned tools for that specific response. Since only the mentioned tools are sent to the LLM, this saves tokens and can improve speed and accuracy.
-
-Each method has its own strengths — use them together to balance efficiency and performance.
-
-You can also create **tool presets** by selecting only the MCP servers or tools you need.
-Switch between presets instantly with a click — perfect for organizing tools by task or workflow.
-
-### 🧭 Tool Choice Mode
-
-<img width="1225" alt="image" src="https://github.com/user-attachments/assets/8fc64c6a-30c9-41a4-a5e5-4e8804f73473" loading="lazy"/>
-
-Control how tools are used in each chat with **Tool Choice Mode** — switch anytime with `⌘P`.
-
-- **Auto:** The model automatically calls tools when needed.
-- **Manual:** The model will ask for your permission before calling a tool.
-- **None:** Tool usage is disabled completely.
-
-This lets you flexibly choose between autonomous, guided, or tool-free interaction depending on the situation.
-
-### 🛠️ Default Tools
-
-#### 🌐 Web Search
-
-<img width="1034" height="940" alt="web-search" src="https://github.com/user-attachments/assets/261037d9-e1a7-44ad-b45e-43780390a94e" />
-
-Built-in web search powered by [Exa AI](https://exa.ai). Search the web with semantic AI and extract content from URLs directly in your chats.
-
-- **Optional:** Add `EXA_API_KEY` to `.env` to enable web search
-- **Free Tier:** 1,000 requests/month at no cost, no credit card required
-- **Easy Setup:** Get your API key instantly at [dashboard.exa.ai](https://dashboard.exa.ai)
-
-#### 🎨 Image Generation
-
-<img width="1034" height="940" loading="lazy" alt="image-generation" src="https://github.com/user-attachments/assets/b081c837-8948-4f4d-a2f4-c8630cf0eaa2" />
-
-Built-in image generation and editing capabilities powered by AI models. Create, edit, and modify images directly in your chats.
-
-- **Supported Operations:** Image generation, editing, and composition
-- **Current Models:** Gemini Nano Banana, OpenAI
-
-#### ⚡️ JS,PYTHON Executor
-
-<img width="1225" alt="js-executor-preview" src="https://github.com/user-attachments/assets/7deed824-e70b-46d4-a294-de20ed4dc869" loading="lazy"/>
-
-It is a simple JS execution tool.
-
-#### 📊 Data Visualization Tools
-
-**Interactive Tables**: Create feature-rich data tables with advanced functionality:
-
-- **Sorting & Filtering**: Sort by any column, filter data in real-time
-- **Search & Highlighting**: Global search with automatic text highlighting
-- **Export Options**: Export to CSV or Excel format with lazy-loaded libraries
-- **Column Management**: Show/hide columns with visibility controls
-- **Pagination**: Handle large datasets with built-in pagination
-- **Data Type Support**: Proper formatting for strings, numbers, dates, and booleans
-
-**Chart Generation**: Visualize data with various chart types (bar, line, pie charts)
-
-> Additionally, many other tools are provided, such as an HTTP client for API requests and more.
-
-<br/>
-
-…and there's even more waiting for you.
-Try it out and see what else it can do!
-
-<br/>
+---
 
 ## Getting Started
 
 > This project uses [pnpm](https://pnpm.io/) as the recommended package manager.
 
 ```bash
-# If you don't have pnpm:
+# Install pnpm if you don't have it
 npm install -g pnpm
 ```
 
-### Quick Start (Docker Compose Version) 🐳
+You only need **one AI provider API key** (OpenAI, Claude, Gemini, etc.) to get started. Database, file storage, and hosting all have free tiers.
+
+### Quick Start with Docker
+
+```bash
+# 1. Install dependencies (also generates .env file)
+pnpm i
+
+# 2. Fill in at least one LLM provider API key in .env
+
+# 3. Start all services including PostgreSQL
+pnpm docker-compose:up
+```
+
+### Quick Start (Local)
 
 ```bash
 # 1. Install dependencies
 pnpm i
 
-# 2. Enter only the LLM PROVIDER API key(s) you want to use in the .env file at the project root.
-# Example: The app works with just OPENAI_API_KEY filled in.
-# (The .env file is automatically created when you run pnpm i.)
-
-# 3. Build and start all services (including PostgreSQL) with Docker Compose
-pnpm docker-compose:up
-
-```
-
-### Quick Start (Local Version) 🚀
-
-```bash
-pnpm i
-
-#(Optional) Start a local PostgreSQL instance
-# If you already have your own PostgreSQL running, you can skip this step.
-# In that case, make sure to update the PostgreSQL URL in your .env file.
+# 2. Start a local PostgreSQL instance (skip if you have your own)
 pnpm docker:pg
 
-# Enter required information in the .env file
-# The .env file is created automatically. Just fill in the required values.
-# For the fastest setup, provide at least one LLM provider's API key (e.g., OPENAI_API_KEY, CLAUDE_API_KEY, GEMINI_API_KEY, etc.) and the PostgreSQL URL you want to use.
+# 3. Fill in required values in .env (at minimum: one LLM API key + POSTGRES_URL)
 
+# 4. Build and start
 pnpm build:local && pnpm start
-
-# (Recommended for most cases. Ensures correct cookie settings.)
-# For development mode with hot-reloading and debugging, you can use:
-# pnpm dev
 ```
 
-Alternative: Use Docker Compose for DB only (run app via pnpm)
+For development with hot-reload:
 
 ```bash
-# Start Postgres only via compose
-# Ensure your .env includes: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB matching POSTGRES_URL
-docker compose -f docker/compose.yml up -d postgres
-
-# Apply migrations
-pnpm db:migrate
-
-
-# Run app locally
-pnpm dev   # or: pnpm build && pnpm start
+pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser to get started.
+Alternative: Docker for DB only, run app via pnpm:
+
+```bash
+docker compose -f docker/compose.yml up -d postgres
+pnpm db:migrate
+pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) to get started.
 
 ### Environment Variables
 
-The `pnpm i` command generates a `.env` file. Add your API keys there.
+Running `pnpm i` automatically generates a `.env` file. Fill in the values below:
 
 ```dotenv
-# === LLM Provider API Keys ===
-# You only need to enter the keys for the providers you plan to use
-GOOGLE_GENERATIVE_AI_API_KEY=****
-OPENAI_API_KEY=****
-XAI_API_KEY=****
-ANTHROPIC_API_KEY=****
-OPENROUTER_API_KEY=****
+# === LLM Providers (fill in at least one) ===
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+GOOGLE_GENERATIVE_AI_API_KEY=
+XAI_API_KEY=
+OPENROUTER_API_KEY=
 OLLAMA_BASE_URL=http://localhost:11434/api
 
-
-
-# Secret for Better Auth (generate with: npx @better-auth/cli@latest secret)
+# === Auth ===
+# Generate with: npx @better-auth/cli@latest secret
 BETTER_AUTH_SECRET=****
-
-# (Optional)
-# URL for Better Auth (the URL you access the app from)
 BETTER_AUTH_URL=
 
 # === Database ===
-# If you don't have PostgreSQL running locally, start it with: pnpm docker:pg
 POSTGRES_URL=postgres://your_username:your_password@localhost:5432/your_database_name
 
-# (Optional)
-# === Tools ===
-# Exa AI for web search and content extraction (optional, but recommended for @web and research features)
-EXA_API_KEY=your_exa_api_key_here
+# === Tools (Optional) ===
+# Exa AI for web search — free tier: 1,000 req/month
+EXA_API_KEY=
 
-
-# Whether to use file-based MCP config (default: false)
+# MCP config mode (default: false = database-driven)
 FILE_BASED_MCP_CONFIG=false
 
 # === File Storage ===
-# Vercel Blob is the default storage driver (works in both local dev and production)
-# Pull the token locally with `vercel env pull`
 FILE_STORAGE_TYPE=vercel-blob
 FILE_STORAGE_PREFIX=uploads
 BLOB_READ_WRITE_TOKEN=
 
-# -- S3 (coming soon) --
-# FILE_STORAGE_TYPE=s3
-# FILE_STORAGE_PREFIX=uploads
-# FILE_STORAGE_S3_BUCKET=
-# FILE_STORAGE_S3_REGION=
-
-# (Optional)
-# === OAuth Settings ===
-# Fill in these values only if you want to enable Google/GitHub/Microsoft login
-
-#GitHub
+# === OAuth (optional) ===
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 
-#Google
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
-# Set to 1 to force account selection
 GOOGLE_FORCE_ACCOUNT_SELECTION=
 
-
-# Microsoft
 MICROSOFT_CLIENT_ID=
 MICROSOFT_CLIENT_SECRET=
-# Optional Tenant Id
 MICROSOFT_TENANT_ID=
-# Set to 1 to force account selection
 MICROSOFT_FORCE_ACCOUNT_SELECTION=
 
-# Set this to 1 to disable user sign-ups.
+# Set to 1 to disable new user sign-ups
 DISABLE_SIGN_UP=
 
-# Set this to 1 to disallow adding MCP servers.
+# Set to 1 to prevent users from adding MCP servers
 NOT_ALLOW_ADD_MCP_SERVERS=
 ```
 
-<br/>
+---
 
-## 📘 Guides
+## Feature Details
 
-Step-by-step setup guides for running and configuring wave-chatbot.
+### Custom Agents
 
-#### [🔌 MCP Server Setup & Tool Testing](./docs/tips-guides/mcp-server-setup-and-tool-testing.md)
+Create specialized AI agents with their own identity, instructions, and tools.
 
-- How to add and configure MCP servers in your environment
+- Define a **system prompt** to give the agent a role and context
+- Assign specific tools (MCP servers, workflows, built-in tools) the agent can use
+- Invoke any agent in chat with `@agent_name`
 
-#### [🐳 Docker Hosting Guide](./docs/tips-guides/docker.md)
+**Example:** A GitHub Manager agent with issue/PR tools and repository context — call it with `@github_manager` to manage your repo directly from the chat.
 
-- How to self-host the chatbot using Docker, including environment configuration.
+---
 
-#### [▲ Vercel Hosting Guide](./docs/tips-guides/vercel.md)
+### Agent-to-Agent (Sub-Agents)
 
-- Deploy the chatbot to Vercel with simple setup steps for production use.
+Sub-agents extend custom agents with **hierarchical delegation** — a parent agent can autonomously hand off tasks to specialized child agents.
 
-#### [🗂️ File Storage Drivers](./docs/tips-guides/file-storage.md)
+Built on **Vercel AI SDK v6's `ToolLoopAgent`**, each sub-agent runs as an independent tool within its parent's tool set.
 
-- Cloud-based file storage with Vercel Blob (default) for seamless uploads in both development and production. S3 support coming soon.
+**How it works:**
 
-#### [🎯 System Prompts & Chat Customization](./docs/tips-guides/system-prompts-and-customization.md)
+1. Define sub-agents for a parent agent, each with its own instructions and tools
+2. When the parent agent receives a task, it can delegate subtasks to relevant sub-agents
+3. Each sub-agent runs its own autonomous loop (up to 10 steps), streaming results back in real time
+4. The parent agent incorporates the sub-agent's output and continues reasoning
 
-- Personalize your chatbot experience with custom system prompts, user preferences, and MCP tool instructions
+**Key details:**
 
-#### [🔐 OAuth Sign-In Setup](./docs/tips-guides/oauth.md)
+- Sub-agents are stored per-agent and loaded dynamically at chat time
+- Each sub-agent is exposed to the parent as a tool: `subagent_{name}_{id}`
+- Sub-agents support streaming with real-time progress UI (`SubAgentProgress` component)
+- Sub-agents can be enabled/disabled individually
+- **AI generation:** Describe the sub-agent you want and the system will auto-generate its name, description, instructions, and tool selection
 
-- Configure Google, GitHub, and Microsoft OAuth for secure user login support.
+**Example use case:** A research assistant agent delegates to:
 
-#### [🕵🏿 Adding openAI like providers](docs/tips-guides/adding-openAI-like-providers.md)
+- A `web_researcher` sub-agent (with web search tools)
+- A `data_analyst` sub-agent (with JS execution and chart tools)
+- A `summarizer` sub-agent (text-only, focused on synthesis)
 
-- Adding openAI like ai providers
+The parent orchestrates across all three, producing a final comprehensive answer.
 
-#### [🧪 E2E Testing Guide](./docs/tips-guides/e2e-testing-guide.md)
+---
 
-- Comprehensive end-to-end testing with Playwright including multi-user scenarios, agent visibility testing, and CI/CD integration
-  <br/>
+### Visual Workflows
 
-## 💡 Tips
+Build node-based workflows that become callable tools in chat.
 
-#### [💬 Temporary Chat Windows](./docs/tips-guides/temporary_chat.md)
+- **LLM nodes** — AI reasoning steps
+- **Tool nodes** — MCP tool execution steps
+- Connect nodes to create multi-step automated sequences
+- Publish a workflow to make it available as `@workflow_name` in chat
+- Chain complex processes into reusable, shareable automations
 
-- Open lightweight popup chats for quick side questions or testing — separate from your main thread.
+---
 
-## 🗺️ Roadmap
+### MCP Tool Integration
 
-Planned features coming soon to wave-chatbot:
+Full support for the [Model Context Protocol](https://modelcontextprotocol.io/introduction).
 
-- [x] **File Upload & Storage** (Vercel Blob integration)
-- [x] **Image Generation**
-- [ ] **Collaborative Document Editing** (like OpenAI Canvas: user & assistant co-editing)
-- [ ] **RAG (Retrieval-Augmented Generation)**
-- [ ] **Web-based Compute** (with [WebContainers](https://webcontainers.io) integration)
+- Connect any MCP server (local or remote)
+- Tools from MCP servers automatically appear in the tool selector
+- Use `@mcp("server_name")` in chat to scope a message to specific MCP tools
+- Browser automation example with [playwright-mcp](https://github.com/microsoft/playwright-mcp):
 
-💡 If you have suggestions or need specific features, please create an [issue](https://github.com/cgoinglove/wave-chatbot/issues)!
+```prompt
+Using @mcp("playwright"):
+- Navigate to https://www.google.com
+- Click the search bar and type "model context protocol"
+- Take a screenshot
+```
 
-## 💖 Support
+---
 
-If this project has been helpful to you, please consider supporting its development:
+### @mention & Tool Presets
 
-- ⭐ **Star** this repository
-- 🐛 **Report** bugs and suggest features
-- 💰 **[Become a sponsor](https://github.com/sponsors/cgoinglove)** to support ongoing development
+Type `@` in any chat input to instantly invoke tools, agents, or workflows.
 
-Your support helps maintain and improve this project. Thank you! 🙏
+- **`@tool_name`** — Temporarily bind specific tools for that message only (saves tokens, improves accuracy)
+- **`@agent_name`** — Switch to a custom agent for the response
+- **`@workflow_name`** — Run a published workflow as a tool
 
-## 🙌 Contributing
+**Tool Presets** let you save named groups of tools and switch between them instantly — useful for organizing tools by task type (e.g., "research mode", "coding mode").
 
-We welcome all contributions! Bug reports, feature ideas, code improvements — everything helps us build the best local AI assistant.
+**Tool Selection** (persistent) vs **@mentions** (per-message):
 
-> **⚠️ Please read our [Contributing Guide](./CONTRIBUTING.md) before submitting any Pull Requests or Issues.** This helps us work together more effectively and saves time for everyone.
+- Use **Tool Selection** to keep frequently needed tools always available across all chats
+- Use **@mentions** to temporarily scope a message to specific tools without cluttering the model's context
 
-**For detailed contribution guidelines**, please see our [Contributing Guide](./CONTRIBUTING.md).
+---
 
-**Language Translations:** Help us make the chatbot accessible to more users by adding new language translations. See [language.md](./messages/language.md) for instructions on how to contribute translations.
+### Tool Choice Mode
 
-Let's build it together 🚀
+Control how the model uses tools in each chat. Switch anytime with `Cmd+P`.
 
-## 💬 Join Our Discord
+| Mode       | Behavior                                           |
+| ---------- | -------------------------------------------------- |
+| **Auto**   | Model calls tools when it decides they're needed   |
+| **Manual** | Model asks your permission before calling any tool |
+| **None**   | Tool usage is completely disabled                  |
+
+---
+
+### Built-in Tools
+
+**Web Search** — Powered by [Exa AI](https://exa.ai)
+
+- Semantic web search and URL content extraction
+- Free tier: 1,000 requests/month (no credit card required)
+- Enable by adding `EXA_API_KEY` to `.env`
+
+**Image Generation**
+
+- Generate and edit images directly in chat
+- Supported models: OpenAI, Google Gemini, xAI
+
+**JS & Python Executor**
+
+- Run JavaScript or Python snippets inline within the conversation
+
+**Data Visualization**
+
+- **Interactive tables** with sorting, filtering, search, column visibility, CSV/Excel export, and pagination
+- **Charts** — bar, line, pie, and more via built-in chart tools
+
+**HTTP Client** — Make API requests directly from chat
+
+---
+
+### Voice Assistant
+
+A realtime voice-based assistant powered by OpenAI's Realtime API, extended with full MCP tool integration.
+
+- Talk naturally — the assistant listens and responds in real time
+- Full access to all configured MCP tools during voice sessions
+- Watch tool execution happen live while the conversation continues
+
+---
+
+## Guides
+
+Step-by-step setup guides for specific topics:
+
+| Guide                                                                                      | Description                                               |
+| ------------------------------------------------------------------------------------------ | --------------------------------------------------------- |
+| [MCP Server Setup & Tool Testing](./docs/tips-guides/mcp-server-setup-and-tool-testing.md) | Add and configure MCP servers                             |
+| [Docker Hosting](./docs/tips-guides/docker.md)                                             | Self-host with Docker including environment setup         |
+| [Vercel Hosting](./docs/tips-guides/vercel.md)                                             | Deploy to Vercel in a few clicks                          |
+| [File Storage Drivers](./docs/tips-guides/file-storage.md)                                 | Configure Vercel Blob or S3 for uploads                   |
+| [System Prompts & Customization](./docs/tips-guides/system-prompts-and-customization.md)   | Custom system prompts, user preferences, MCP instructions |
+| [OAuth Sign-In Setup](./docs/tips-guides/oauth.md)                                         | Google, GitHub, and Microsoft login configuration         |
+| [Adding OpenAI-Compatible Providers](docs/tips-guides/adding-openAI-like-providers.md)     | Connect any OpenAI-compatible API endpoint                |
+| [E2E Testing Guide](./docs/tips-guides/e2e-testing-guide.md)                               | Playwright tests, multi-user scenarios, CI/CD integration |
+
+---
+
+## Tips
+
+**[Temporary Chat Windows](./docs/tips-guides/temporary_chat.md)** — Open lightweight popup chats for quick questions or testing without affecting your main thread.
+
+---
+
+## Roadmap
+
+- [x] File Upload & Storage (Vercel Blob)
+- [x] Image Generation
+- [x] Agent-to-Agent (Sub-Agents)
+- [ ] Collaborative Document Editing (user & assistant co-editing, like OpenAI Canvas)
+- [ ] RAG (Retrieval-Augmented Generation)
+- [ ] Web-based Compute (via [WebContainers](https://webcontainers.io))
+
+Have a feature request? Open an [issue](https://github.com/cgoinglove/wave-chatbot/issues).
+
+---
+
+## Contributing
+
+All contributions are welcome — bug reports, feature ideas, and code improvements.
+
+> **Read the [Contributing Guide](./CONTRIBUTING.md) before submitting a PR or Issue.**
+
+**Translations:** Help make the chatbot accessible in more languages. See [language.md](./messages/language.md) for instructions.
+
+---
+
+## Support
+
+If this project has been useful to you:
+
+- Star this repository
+- Report bugs and suggest features via [issues](https://github.com/cgoinglove/wave-chatbot/issues)
+- [Become a sponsor](https://github.com/sponsors/cgoinglove) to support ongoing development
+
+---
+
+## Join Our Discord
 
 [![Discord](https://img.shields.io/discord/1374047276074537103?label=Discord&logo=discord&color=5865F2)](https://discord.gg/gCRu69Upnp)
 
-Connect with the community, ask questions, and get support on our official Discord server!
+Connect with the community, ask questions, and get support.
