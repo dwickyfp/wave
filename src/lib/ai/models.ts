@@ -76,6 +76,7 @@ const staticModels = {
     "deepseek-r1:free": openrouter("deepseek/deepseek-r1-0528:free"),
     "deepseek-v3:free": openrouter("deepseek/deepseek-chat-v3-0324:free"),
     "gemini-2.0-flash-exp:free": openrouter("google/gemini-2.0-flash-exp:free"),
+    "grok-4.1-fast": openrouter("x-ai/grok-4.1-fast"),
   },
 };
 
@@ -96,6 +97,7 @@ const staticSupportImageInputModels = {
   ...staticModels.xai,
   ...staticModels.openai,
   ...staticModels.anthropic,
+  "grok-4.1-fast": staticModels.openRouter["grok-4.1-fast"],
 };
 
 const staticFilePartSupportByModel = new Map<
@@ -149,6 +151,10 @@ registerFileSupport(staticModels.xai["grok-3-mini"], XAI_FILE_MIME_TYPES);
 registerFileSupport(
   staticModels.openRouter["gemini-2.0-flash-exp:free"],
   GEMINI_FILE_MIME_TYPES,
+);
+registerFileSupport(
+  staticModels.openRouter["grok-4.1-fast"],
+  XAI_FILE_MIME_TYPES,
 );
 
 const openaiCompatibleProviders = openaiCompatibleModelsSafeParse(
