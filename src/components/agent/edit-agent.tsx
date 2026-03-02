@@ -10,6 +10,7 @@ import { useWorkflowToolList } from "@/hooks/queries/use-workflow-tool-list";
 import { useObjectState } from "@/hooks/use-object-state";
 import { useBookmark } from "@/hooks/queries/use-bookmark";
 import { Agent, AgentCreateSchema, AgentUpdateSchema } from "app-types/agent";
+import { SubAgent } from "app-types/subagent";
 import { ChatMention } from "app-types/chat";
 import { MCPServerInfo } from "app-types/mcp";
 import { WorkflowSummary } from "app-types/workflow";
@@ -36,6 +37,7 @@ import { ShareableActions, Visibility } from "@/components/shareable-actions";
 import { GenerateAgentDialog } from "./generate-agent-dialog";
 import { AgentIconPicker } from "./agent-icon-picker";
 import { AgentToolSelector } from "./agent-tool-selector";
+import { SubAgentSection } from "./subagent-section";
 import {
   RandomDataGeneratorExample,
   WeatherExample,
@@ -88,6 +90,13 @@ export default function EditAgent({
   const [isSaving, setIsSaving] = useState(false);
   const [isVisibilityChangeLoading, setIsVisibilityChangeLoading] =
     useState(false);
+
+  const [subAgents, setSubAgents] = useState<SubAgent[]>(
+    initialAgent?.subAgents ?? [],
+  );
+  const [subAgentsEnabled, setSubAgentsEnabled] = useState<boolean>(
+    initialAgent?.subAgentsEnabled ?? false,
+  );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -160,8 +169,15 @@ export default function EditAgent({
   const saveAgent = useCallback(() => {
     if (initialAgent) {
       safe(() => setIsSaving(true))
-        .map(() => AgentUpdateSchema.parse({ ...agent }))
-        .map(JSON.stringify)
+        .map(() => AgentUpdateSchema.parse({ ...agent, subAgentsEnabled }))
+        .map((parsed) =>
+          JSON.stringify({
+            ...parsed,
+            subAgents: subAgents.map(
+              ({ id, agentId, createdAt, updatedAt, ...rest }) => rest,
+            ),
+          }),
+        )
         .map(async (body) =>
           fetcher(`/api/agent/${initialAgent.id}`, {
             method: "PUT",
@@ -177,8 +193,17 @@ export default function EditAgent({
         .watch(() => setIsSaving(false));
     } else {
       safe(() => setIsSaving(true))
-        .map(() => AgentCreateSchema.parse({ ...agent, userId }))
-        .map(JSON.stringify)
+        .map(() =>
+          AgentCreateSchema.parse({ ...agent, userId, subAgentsEnabled }),
+        )
+        .map((parsed) =>
+          JSON.stringify({
+            ...parsed,
+            subAgents: subAgents.map(
+              ({ id, agentId, createdAt, updatedAt, ...rest }) => rest,
+            ),
+          }),
+        )
         .map(async (body) => {
           return fetcher(`/api/agent`, {
             method: "POST",
@@ -193,7 +218,16 @@ export default function EditAgent({
         .ifFail(handleErrorWithToast)
         .watch(() => setIsSaving(false));
     }
-  }, [agent, userId, mutateAgents, router, initialAgent, t]);
+  }, [
+    agent,
+    userId,
+    mutateAgents,
+    router,
+    initialAgent,
+    t,
+    subAgents,
+    subAgentsEnabled,
+  ]);
 
   const updateVisibility = useCallback(
     async (visibility: Visibility) => {
@@ -527,6 +561,20 @@ export default function EditAgent({
                 }
               />
             )}
+          </div>
+
+          <div className="flex gap-2 flex-col border-t pt-4 mt-2">
+            <SubAgentSection
+              agentId={initialAgent?.id}
+              subAgents={subAgents}
+              subAgentsEnabled={subAgentsEnabled}
+              isLoadingTools={isLoadingTool}
+              hasEditAccess={hasEditAccess}
+              onChange={(newSubAgents, newEnabled) => {
+                setSubAgents(newSubAgents);
+                setSubAgentsEnabled(newEnabled);
+              }}
+            />
           </div>
         </div>
 

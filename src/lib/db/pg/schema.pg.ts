@@ -12,11 +12,12 @@ import {
   unique,
   varchar,
   index,
+  integer,
 } from "drizzle-orm/pg-core";
 import { isNotNull } from "drizzle-orm";
 import { DBWorkflow, DBEdge, DBNode } from "app-types/workflow";
 import { UIMessage } from "ai";
-import { ChatMetadata } from "app-types/chat";
+import { ChatMetadata, ChatMention } from "app-types/chat";
 import { TipTapMentionJsonContent } from "@/types/util";
 
 export const ChatThreadTable = pgTable("chat_thread", {
@@ -53,9 +54,33 @@ export const AgentTable = pgTable("agent", {
   })
     .notNull()
     .default("private"),
+  subAgentsEnabled: boolean("sub_agents_enabled").notNull().default(false),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const SubAgentTable = pgTable(
+  "sub_agent",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description"),
+    instructions: text("instructions"),
+    tools: json("tools").$type<ChatMention[]>().default([]),
+    enabled: boolean("enabled").notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("sub_agent_agent_id_idx").on(table.agentId)],
+);
 
 export const BookmarkTable = pgTable(
   "bookmark",
@@ -331,6 +356,7 @@ export type ChatThreadEntity = typeof ChatThreadTable.$inferSelect;
 export type ChatMessageEntity = typeof ChatMessageTable.$inferSelect;
 
 export type AgentEntity = typeof AgentTable.$inferSelect;
+export type SubAgentEntity = typeof SubAgentTable.$inferSelect;
 export type UserEntity = typeof UserTable.$inferSelect;
 export type SessionEntity = typeof SessionTable.$inferSelect;
 

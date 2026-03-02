@@ -72,6 +72,7 @@ firstTimeStorage.set(false);
 
 export default function ChatBot({ threadId, initialMessages }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const { uploadFiles } = useThreadFileUploader(threadId);
   const handleFileDrop = useCallback(
@@ -333,6 +334,7 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
     const { scrollTop, scrollHeight, clientHeight } = container;
     const isScrollAtBottom = scrollHeight - scrollTop - clientHeight < 50;
 
+    isAtBottomRef.current = isScrollAtBottom;
     setIsAtBottom(isScrollAtBottom);
     handleFocus();
   }, [handleFocus]);
@@ -370,6 +372,15 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
         behavior: "instant",
       });
   }, [isInitialThreadEntry]);
+
+  useEffect(() => {
+    if (isAtBottomRef.current) {
+      containerRef.current?.scrollTo({
+        top: containerRef.current.scrollHeight,
+        behavior: "instant",
+      });
+    }
+  }, [messages]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

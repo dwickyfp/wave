@@ -726,6 +726,17 @@ const ImageGeneratorToolInvocation = dynamic(
   },
 );
 
+const SubAgentProgress = dynamic(
+  () =>
+    import("./tool-invocation/subagent-progress").then(
+      (mod) => mod.SubAgentProgress,
+    ),
+  {
+    ssr: false,
+    loading,
+  },
+);
+
 // Local shortcuts for tool invocation approval/rejection
 const approveToolInvocationShortcut: Shortcut = {
   description: "approveToolInvocation",
@@ -869,6 +880,10 @@ export const ToolMessagePart = memo(
     );
 
     const CustomToolComponent = useMemo(() => {
+      if (toolName.startsWith("subagent_")) {
+        return <SubAgentProgress part={part} />;
+      }
+
       if (
         toolName === DefaultToolName.WebSearch ||
         toolName === DefaultToolName.WebContent

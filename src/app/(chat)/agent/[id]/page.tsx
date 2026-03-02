@@ -1,5 +1,5 @@
 import EditAgent from "@/components/agent/edit-agent";
-import { agentRepository } from "lib/db/repository";
+import { agentRepository, subAgentRepository } from "lib/db/repository";
 import { getSession } from "auth/server";
 import { notFound, redirect } from "next/navigation";
 
@@ -21,7 +21,10 @@ export default async function AgentPage({
   }
 
   // Fetch the agent data on the server
-  const agent = await agentRepository.selectAgentById(id, session.user.id);
+  const [agent, subAgents] = await Promise.all([
+    agentRepository.selectAgentById(id, session.user.id),
+    subAgentRepository.selectSubAgentsByAgentId(id),
+  ]);
 
   if (!agent) {
     notFound();
@@ -33,7 +36,7 @@ export default async function AgentPage({
   return (
     <EditAgent
       key={id}
-      initialAgent={agent}
+      initialAgent={{ ...agent, subAgents }}
       userId={session.user.id}
       isOwner={isOwner}
       hasEditAccess={hasEditAccess}

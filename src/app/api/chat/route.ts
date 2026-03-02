@@ -11,7 +11,11 @@ import {
 
 import { customModelProvider, isToolCallUnsupportedModel } from "lib/ai/models";
 
-import { agentRepository, chatRepository } from "lib/db/repository";
+import {
+  agentRepository,
+  chatRepository,
+  subAgentRepository,
+} from "lib/db/repository";
 import globalLogger from "logger";
 import {
   buildMcpServerCustomizationsSystemPrompt,
@@ -49,6 +53,7 @@ import { nanoBananaTool, openaiImageTool } from "lib/ai/tools/image";
 import { ImageToolName } from "lib/ai/tools";
 import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
 import { serverFileStorage } from "lib/file-storage";
+import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -231,6 +236,35 @@ export async function POST(request: Request) {
             }),
           )
           .orElse({});
+
+        const agentWithSubAgents =
+          agent?.subAgentsEnabled && agent.id
+            ? {
+                ...agent,
+                subAgents: await subAgentRepository.selectSubAgentsByAgentId(
+                  agent.id,
+                ),
+              }
+            : agent;
+
+        const SUBAGENT_TOOLS = await safe()
+          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
+          .map(
+            errorIf(
+              () =>
+                !agentWithSubAgents?.subAgentsEnabled &&
+                "Subagents not enabled",
+            ),
+          )
+          .map(() =>
+            loadSubAgentTools(
+              agentWithSubAgents!,
+              dataStream,
+              request.signal,
+              chatModel,
+            ),
+          )
+          .orElse({});
         const inProgressToolParts = extractInProgressToolPart(message);
         if (inProgressToolParts.length) {
           await Promise.all(
@@ -279,6 +313,7 @@ export async function POST(request: Request) {
         const vercelAITooles = safe({
           ...MCP_TOOLS,
           ...WORKFLOW_TOOLS,
+          ...SUBAGENT_TOOLS,
         })
           .map((t) => {
             const bindingTools =

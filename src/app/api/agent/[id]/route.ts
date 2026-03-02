@@ -1,7 +1,8 @@
-import { agentRepository } from "lib/db/repository";
+import { agentRepository, subAgentRepository } from "lib/db/repository";
 import { getSession } from "auth/server";
 import { z } from "zod";
 import { AgentUpdateSchema } from "app-types/agent";
+import { SubAgentCreateSchema } from "app-types/subagent";
 import { serverCache } from "lib/cache";
 import { CacheKeys } from "lib/cache/cache-keys";
 import { canEditAgent, canDeleteAgent } from "lib/auth/permissions";
@@ -24,7 +25,8 @@ export async function GET(
   }
 
   const agent = await agentRepository.selectAgentById(id, session.user.id);
-  return Response.json(agent);
+  const subAgents = await subAgentRepository.selectSubAgentsByAgentId(id);
+  return Response.json({ ...agent, subAgents });
 }
 
 export async function PUT(
@@ -49,7 +51,11 @@ export async function PUT(
   try {
     const { id } = await params;
     const body = await request.json();
-    const data = AgentUpdateSchema.parse(body);
+
+    // Extract subAgents from body before parsing the agent schema
+    const { subAgents: subAgentsRaw, ...agentBody } = body;
+
+    const data = AgentUpdateSchema.parse(agentBody);
 
     // Check access for write operations
     const hasAccess = await agentRepository.checkAccess(id, session.user.id);
@@ -69,7 +75,16 @@ export async function PUT(
     const agent = await agentRepository.updateAgent(id, session.user.id, data);
     serverCache.delete(CacheKeys.agentInstructions(agent.id));
 
-    return Response.json(agent);
+    // Sync subagents if provided in the payload
+    let subAgents = await subAgentRepository.selectSubAgentsByAgentId(id);
+    if (Array.isArray(subAgentsRaw)) {
+      const parsedSubAgents = subAgentsRaw.map((sa: unknown) =>
+        SubAgentCreateSchema.parse(sa),
+      );
+      subAgents = await subAgentRepository.syncSubAgents(id, parsedSubAgents);
+    }
+
+    return Response.json({ ...agent, subAgents });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return Response.json(

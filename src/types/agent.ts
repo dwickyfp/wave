@@ -1,6 +1,7 @@
 import z from "zod";
 import { ChatMentionSchema } from "./chat";
 import { VisibilitySchema } from "./util";
+import type { SubAgent } from "./subagent";
 
 export type AgentIcon = {
   type: "emoji";
@@ -28,6 +29,7 @@ export const AgentCreateSchema = z
     userId: z.string(),
     instructions: AgentInstructionsSchema,
     visibility: VisibilitySchema.optional().default("private"),
+    subAgentsEnabled: z.boolean().optional().default(false),
   })
   .strip();
 export const AgentUpdateSchema = z
@@ -43,6 +45,7 @@ export const AgentUpdateSchema = z
       .optional(),
     instructions: AgentInstructionsSchema.optional(),
     visibility: VisibilitySchema.optional(),
+    subAgentsEnabled: z.boolean().optional(),
   })
   .strip();
 
@@ -66,10 +69,12 @@ export type AgentSummary = {
   userName?: string;
   userAvatar?: string;
   isBookmarked?: boolean;
+  subAgentsEnabled?: boolean;
 };
 
 export type Agent = AgentSummary & {
   instructions: z.infer<typeof AgentInstructionsSchema>;
+  subAgents?: SubAgent[];
 };
 
 export type AgentRepository = {

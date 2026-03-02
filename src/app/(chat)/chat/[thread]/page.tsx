@@ -15,6 +15,10 @@ export default async function Page({
 }: { params: Promise<{ thread: string }> }) {
   const { thread: threadId } = await params;
 
+  const uuidRegex =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(threadId)) redirect("/", RedirectType.replace);
+
   const thread = await fetchThread(threadId);
 
   if (!thread) redirect("/", RedirectType.replace);
