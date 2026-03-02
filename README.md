@@ -348,11 +348,3 @@ All contributions are welcome — bug reports, feature ideas, and code improveme
 If this project has been useful to you:
 
 - Star this repository
-
----
-
-## Join Our Discord
-
-[![Discord](https://img.shields.io/discord/1374047276074537103?label=Discord&logo=discord&color=5865F2)](https://discord.gg/gCRu69Upnp)
-
-Connect with the community, ask questions, and get support.
