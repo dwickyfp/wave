@@ -3,6 +3,7 @@
 ## Architecture Overview
 
 Next.js 16 App Router application (`src/app/`) with three route groups:
+
 - `(auth)/` – public sign-in/sign-up pages
 - `(chat)/` – protected chat UI, agents, MCP, workflow builder
 - `api/` – REST API routes; each domain folder has `route.ts` + `actions.ts` for business logic
@@ -13,15 +14,15 @@ Next.js 16 App Router application (`src/app/`) with three route groups:
 
 ## Key Directories
 
-| Path | Purpose |
-|------|---------|
-| `src/lib/db/pg/schema.pg.ts` | Single source of truth for all DB tables |
-| `src/lib/db/pg/repositories/` | One repository class per domain (agents, chats, MCP, workflows…) |
-| `src/lib/ai/` | AI provider setup, model registry, tool kit, MCP client |
-| `src/lib/auth/` | Better Auth config; `auth-instance.ts` (server), `client.ts` (browser-safe) |
-| `src/types/` | Shared TypeScript types; Zod schemas in `src/lib/validations/` |
-| `src/app/store/` | Zustand stores – `index.ts` (global app state), `workflow.store.ts` |
-| `messages/` | i18n JSON files for 7 locales (next-intl) |
+| Path                          | Purpose                                                                     |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `src/lib/db/pg/schema.pg.ts`  | Single source of truth for all DB tables                                    |
+| `src/lib/db/pg/repositories/` | One repository class per domain (agents, chats, MCP, workflows…)            |
+| `src/lib/ai/`                 | AI provider setup, model registry, tool kit, MCP client                     |
+| `src/lib/auth/`               | Better Auth config; `auth-instance.ts` (server), `client.ts` (browser-safe) |
+| `src/types/`                  | Shared TypeScript types; Zod schemas in `src/lib/validations/`              |
+| `src/app/store/`              | Zustand stores – `index.ts` (global app state), `workflow.store.ts`         |
+| `messages/`                   | i18n JSON files for 7 locales (next-intl)                                   |
 
 ## Developer Workflows
 
