@@ -15,6 +15,7 @@ import {
   agentRepository,
   chatRepository,
   subAgentRepository,
+  snowflakeAgentRepository,
 } from "lib/db/repository";
 import globalLogger from "logger";
 import {
@@ -54,6 +55,10 @@ import { ImageToolName } from "lib/ai/tools";
 import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
 import { serverFileStorage } from "lib/file-storage";
 import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
+import {
+  callSnowflakeCortexStream,
+  type SnowflakeCortexMessage,
+} from "lib/snowflake/client";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -186,6 +191,87 @@ export async function POST(request: Request) {
     )?.agentId;
 
     const agent = await rememberAgentAction(agentId, session.user.id);
+
+    // ── Snowflake Intelligence intercept ────────────────────────────────────
+    // When the agent is a Snowflake Cortex agent, bypass the LLM entirely and
+    // proxy the conversation directly to the Snowflake Cortex Agent API.
+    if ((agent as any)?.agentType === "snowflake_cortex") {
+      const sfConfig =
+        await snowflakeAgentRepository.selectSnowflakeConfigByAgentId(
+          agent!.id,
+        );
+
+      if (!sfConfig) {
+        return Response.json(
+          { message: "Snowflake configuration not found for this agent" },
+          { status: 404 },
+        );
+      }
+
+      // Convert Vercel AI SDK UIMessages → Snowflake Cortex message format
+      const sfMessages: SnowflakeCortexMessage[] = messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: (m.parts as any[])
+            .filter((p) => p.type === "text")
+            .map((p) => ({ type: "text" as const, text: p.text as string })),
+        }))
+        .filter((m) => m.content.length > 0);
+
+      const sfMetadata: ChatMetadata = {
+        agentId: agent!.id,
+        toolChoice: "none",
+        toolCount: 0,
+        chatModel,
+      };
+
+      logger.info(`Snowflake Intelligence agent: ${agent!.name}`);
+
+      const sfStream = createUIMessageStream({
+        execute: async ({ writer: dataStream }) => {
+          const msgId = generateUUID();
+          dataStream.write({ type: "text-start", id: msgId });
+          for await (const chunk of callSnowflakeCortexStream({
+            config: sfConfig,
+            messages: sfMessages,
+          })) {
+            dataStream.write({ type: "text-delta", delta: chunk, id: msgId });
+          }
+          dataStream.write({ type: "text-end", id: msgId });
+        },
+        generateId: generateUUID,
+        onFinish: async ({ responseMessage }) => {
+          if (responseMessage.id === message.id) {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              ...responseMessage,
+              parts: responseMessage.parts.map(convertToSavePart),
+              metadata: sfMetadata,
+            });
+          } else {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: message.role,
+              parts: message.parts.map(convertToSavePart),
+              id: message.id,
+            });
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: responseMessage.role,
+              id: responseMessage.id,
+              parts: responseMessage.parts.map(convertToSavePart),
+              metadata: sfMetadata,
+            });
+          }
+        },
+        onError: handleError,
+        originalMessages: messages,
+      });
+
+      return createUIMessageStreamResponse({ stream: sfStream });
+    }
+    // ── end Snowflake intercept ────────────────────────────────────────────
 
     if (agent?.instructions?.mentions) {
       mentions.push(...agent.instructions.mentions);

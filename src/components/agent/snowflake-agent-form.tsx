@@ -8,7 +8,14 @@ import { useMutateAgents } from "@/hooks/queries/use-agents";
 import { fetcher } from "lib/utils";
 import { safe } from "ts-safe";
 import { handleErrorWithToast } from "ui/shared-toast";
-import { Loader, Snowflake, Eye, EyeOff } from "lucide-react";
+import {
+  Loader,
+  Snowflake,
+  Eye,
+  EyeOff,
+  KeyRound,
+  ChevronDown,
+} from "lucide-react";
 import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
@@ -26,7 +33,9 @@ type SnowflakeFormState = {
   accountLocator: string;
   account: string;
   snowflakeUser: string;
+  snowflakeRole: string;
   privateKeyPem: string;
+  privateKeyPassphrase: string;
   database: string;
   schema: string;
   cortexAgentName: string;
@@ -39,7 +48,9 @@ const defaultFormState = (): SnowflakeFormState => ({
   accountLocator: "",
   account: "",
   snowflakeUser: "",
+  snowflakeRole: "",
   privateKeyPem: "",
+  privateKeyPassphrase: "",
   database: "",
   schema: "",
   cortexAgentName: "",
@@ -66,6 +77,8 @@ export default function SnowflakeAgentForm({
 
   const [isSaving, setIsSaving] = useState(false);
   const [showPrivateKey, setShowPrivateKey] = useState(false);
+  const [showPassphrase, setShowPassphrase] = useState(false);
+  const [showKeyChange, setShowKeyChange] = useState(false);
 
   const [form, setForm] = useState<SnowflakeFormState>(() => {
     if (initialAgent && initialConfig) {
@@ -76,8 +89,12 @@ export default function SnowflakeAgentForm({
         accountLocator: initialConfig.accountLocator,
         account: initialConfig.account,
         snowflakeUser: initialConfig.snowflakeUser,
+        snowflakeRole: initialConfig.snowflakeRole ?? "",
         // The private key is redacted on load; user must re-enter to change it
         privateKeyPem: "••••••••",
+        privateKeyPassphrase: initialConfig.privateKeyPassphrase
+          ? "••••••••"
+          : "",
         database: initialConfig.database,
         schema: initialConfig.schema,
         cortexAgentName: initialConfig.cortexAgentName,
@@ -117,9 +134,18 @@ export default function SnowflakeAgentForm({
             database: form.database,
             schema: form.schema,
             cortexAgentName: form.cortexAgentName,
+            ...(form.snowflakeRole
+              ? { snowflakeRole: form.snowflakeRole }
+              : {}),
           };
           if (form.privateKeyPem && form.privateKeyPem !== "••••••••") {
             configUpdate.privateKeyPem = form.privateKeyPem;
+          }
+          if (
+            form.privateKeyPassphrase &&
+            form.privateKeyPassphrase !== "••••••••"
+          ) {
+            configUpdate.privateKeyPassphrase = form.privateKeyPassphrase;
           }
           await fetcher(`/api/agent/snowflake/${initialAgent.id}`, {
             method: "PUT",
@@ -145,6 +171,8 @@ export default function SnowflakeAgentForm({
           account: form.account,
           snowflakeUser: form.snowflakeUser,
           privateKeyPem: form.privateKeyPem,
+          privateKeyPassphrase: form.privateKeyPassphrase || undefined,
+          snowflakeRole: form.snowflakeRole || undefined,
           database: form.database,
           schema: form.schema,
           cortexAgentName: form.cortexAgentName,
@@ -289,59 +317,164 @@ export default function SnowflakeAgentForm({
                 className="hover:bg-input placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
               />
             </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="sf-role">
+                Snowflake Role{" "}
+                <span className="text-muted-foreground font-normal text-xs">
+                  (required for Cortex Agent access)
+                </span>
+              </Label>
+              <Input
+                id="sf-role"
+                placeholder="e.g. SYSADMIN"
+                value={form.snowflakeRole}
+                disabled={isSaving || !hasEditAccess}
+                readOnly={!hasEditAccess}
+                onChange={(e) =>
+                  setField("snowflakeRole", e.target.value.toUpperCase())
+                }
+                className="hover:bg-input placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
+              />
+            </div>
           </div>
 
           {/* Private key (sensitive field) */}
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="sf-private-key">
-                RSA Private Key{" "}
-                <span className="text-muted-foreground font-normal text-xs">
-                  (PEM/PKCS8 format)
-                </span>
-              </Label>
+          {isEditing && !showKeyChange ? (
+            /* Edit mode — show status row, hide the actual key */
+            <div className="flex items-center justify-between rounded-lg bg-muted px-4 py-3">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <KeyRound className="size-4 text-blue-500" />
+                <span>RSA private key: configured</span>
+                {initialConfig?.privateKeyPassphrase && (
+                  <span className="text-xs opacity-70">· passphrase set</span>
+                )}
+              </div>
               {hasEditAccess && (
                 <Button
                   type="button"
                   variant="ghost"
                   size="sm"
-                  className="h-6 px-2 text-xs"
-                  onClick={() => setShowPrivateKey((v) => !v)}
+                  className="h-7 px-2 text-xs gap-1"
+                  onClick={() => {
+                    setShowKeyChange(true);
+                    setField("privateKeyPem", "");
+                    setField("privateKeyPassphrase", "");
+                  }}
                 >
-                  {showPrivateKey ? (
-                    <EyeOff className="size-3.5 mr-1" />
-                  ) : (
-                    <Eye className="size-3.5 mr-1" />
-                  )}
-                  {showPrivateKey ? "Hide" : "Show"}
+                  <ChevronDown className="size-3.5" />
+                  Change key
                 </Button>
               )}
             </div>
-            <Textarea
-              id="sf-private-key"
-              placeholder={`-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----`}
-              value={form.privateKeyPem}
-              disabled={isSaving || !hasEditAccess}
-              readOnly={!hasEditAccess}
-              onChange={(e) => setField("privateKeyPem", e.target.value)}
-              rows={5}
-              className={`font-mono text-xs p-4 hover:bg-input min-h-28 resize-none placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0! ${
-                !showPrivateKey ? "blur-sm" : ""
-              }`}
-              style={!showPrivateKey ? { filter: "blur(3px)" } : undefined}
-              onFocus={() => {
-                if (form.privateKeyPem === "••••••••") {
-                  setField("privateKeyPem", "");
-                }
-              }}
-            />
-            {isEditing && (
-              <p className="text-xs text-muted-foreground">
-                Leave unchanged to keep the current key. Paste a new key to
-                replace it.
-              </p>
-            )}
-          </div>
+          ) : (
+            /* Create mode or change-key expanded */
+            <>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="sf-private-key">
+                    RSA Private Key{" "}
+                    <span className="text-muted-foreground font-normal text-xs">
+                      (PEM/PKCS8 format)
+                    </span>
+                  </Label>
+                  <div className="flex items-center gap-1">
+                    {hasEditAccess && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => setShowPrivateKey((v) => !v)}
+                      >
+                        {showPrivateKey ? (
+                          <EyeOff className="size-3.5 mr-1" />
+                        ) : (
+                          <Eye className="size-3.5 mr-1" />
+                        )}
+                        {showPrivateKey ? "Hide" : "Show"}
+                      </Button>
+                    )}
+                    {isEditing && showKeyChange && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 px-2 text-xs text-muted-foreground"
+                        onClick={() => {
+                          setShowKeyChange(false);
+                          setShowPrivateKey(false);
+                          setShowPassphrase(false);
+                          setField("privateKeyPem", "••••••••");
+                          setField(
+                            "privateKeyPassphrase",
+                            initialConfig?.privateKeyPassphrase
+                              ? "••••••••"
+                              : "",
+                          );
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                <Textarea
+                  id="sf-private-key"
+                  placeholder={`-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----`}
+                  value={form.privateKeyPem}
+                  disabled={isSaving || !hasEditAccess}
+                  readOnly={!hasEditAccess}
+                  onChange={(e) => setField("privateKeyPem", e.target.value)}
+                  rows={5}
+                  className={`font-mono text-xs p-4 hover:bg-input min-h-28 resize-none placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0! ${
+                    !showPrivateKey ? "blur-sm" : ""
+                  }`}
+                  style={!showPrivateKey ? { filter: "blur(3px)" } : undefined}
+                />
+              </div>
+
+              {/* Private key passphrase (optional, for encrypted keys) */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="sf-passphrase">
+                    Key Passphrase{" "}
+                    <span className="text-muted-foreground font-normal text-xs">
+                      (only if your private key is encrypted)
+                    </span>
+                  </Label>
+                  {hasEditAccess && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => setShowPassphrase((v) => !v)}
+                    >
+                      {showPassphrase ? (
+                        <EyeOff className="size-3.5 mr-1" />
+                      ) : (
+                        <Eye className="size-3.5 mr-1" />
+                      )}
+                      {showPassphrase ? "Hide" : "Show"}
+                    </Button>
+                  )}
+                </div>
+                <Input
+                  id="sf-passphrase"
+                  type={showPassphrase ? "text" : "password"}
+                  placeholder="Leave empty if key is unencrypted"
+                  value={form.privateKeyPassphrase}
+                  disabled={isSaving || !hasEditAccess}
+                  readOnly={!hasEditAccess}
+                  onChange={(e) =>
+                    setField("privateKeyPassphrase", e.target.value)
+                  }
+                  className="hover:bg-input placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <Separator />

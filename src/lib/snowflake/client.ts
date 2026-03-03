@@ -18,10 +18,14 @@ export type SnowflakeCortexResult = {
 /**
  * Builds the Snowflake Cortex Agent API URL from the config.
  * Uses the full account format (MYORG-MYACCOUNT) for the URL host.
+ * Appends the optional role as a query parameter when provided.
  */
 export function buildCortexApiUrl(config: SnowflakeAgentConfig): string {
-  const { account, database, schema, cortexAgentName } = config;
-  return `https://${account}.snowflakecomputing.com/api/v2/databases/${database}/schemas/${schema}/agents/${cortexAgentName}:run`;
+  const { account, database, schema, cortexAgentName, snowflakeRole } = config;
+  const base = `https://${account}.snowflakecomputing.com/api/v2/databases/${database}/schemas/${schema}/agents/${cortexAgentName}:run`;
+  return snowflakeRole
+    ? `${base}?role=${encodeURIComponent(snowflakeRole)}`
+    : base;
 }
 
 /**
@@ -123,6 +127,7 @@ export async function callSnowflakeCortex(
     config.accountLocator,
     config.snowflakeUser,
     config.privateKeyPem,
+    config.privateKeyPassphrase ?? undefined,
   );
 
   const apiUrl = buildCortexApiUrl(config);
@@ -178,6 +183,7 @@ export async function* callSnowflakeCortexStream(
     config.accountLocator,
     config.snowflakeUser,
     config.privateKeyPem,
+    config.privateKeyPassphrase ?? undefined,
   );
 
   const apiUrl = buildCortexApiUrl(config);

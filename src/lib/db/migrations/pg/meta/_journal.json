@@ -141,6 +141,20 @@
       "when": 1772503736520,
       "tag": "0019_overjoyed_gwen_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1772506043209,
+      "tag": "0020_powerful_mulholland_black",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1772507072148,
+      "tag": "0021_hot_lilith",
+      "breakpoints": true
     }
   ]
 }

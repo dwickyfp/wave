@@ -85,9 +85,13 @@ export const SnowflakeAgentConfigTable = pgTable("snowflake_agent_config", {
   snowflakeUser: text("snowflake_user").notNull(),
   // RSA private key in PEM/PKCS8 format (stored as text, handle with care)
   privateKeyPem: text("private_key_pem").notNull(),
+  // Optional passphrase for encrypted (PKCS8 encrypted) private keys
+  privateKeyPassphrase: text("private_key_passphrase"),
   database: text("database").notNull(),
   schema: text("schema").notNull(),
   cortexAgentName: text("cortex_agent_name").notNull(),
+  // Optional Snowflake role for the Cortex Agent REST API (?role=...)
+  snowflakeRole: text("snowflake_role"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),

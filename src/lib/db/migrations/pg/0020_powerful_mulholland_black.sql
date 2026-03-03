@@ -1,0 +1,1 @@
+ALTER TABLE "snowflake_agent_config" ADD COLUMN "private_key_passphrase" text;

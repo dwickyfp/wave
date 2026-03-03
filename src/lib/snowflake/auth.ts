@@ -6,16 +6,21 @@ import crypto from "node:crypto";
  *
  * @param accountLocator - Short account locator (e.g. ABC12345) — used as upper case
  * @param user - Snowflake username — used as upper case
- * @param privateKeyPem - RSA private key in PEM/PKCS8 format
+ * @param privateKeyPem - RSA private key in PEM/PKCS8 format (encrypted or unencrypted)
+ * @param passphrase - Optional passphrase if the key is encrypted (BEGIN ENCRYPTED PRIVATE KEY)
  * @returns Signed JWT token string
  */
 export function generateSnowflakeJwt(
   accountLocator: string,
   user: string,
   privateKeyPem: string,
+  passphrase?: string,
 ): string {
-  // Load the private key
-  const privateKey = crypto.createPrivateKey(privateKeyPem);
+  // Load the private key — use the object form so an optional passphrase can be supplied
+  // for keys that start with "-----BEGIN ENCRYPTED PRIVATE KEY-----"
+  const privateKey = crypto.createPrivateKey(
+    passphrase ? { key: privateKeyPem, passphrase } : privateKeyPem,
+  );
 
   // Derive the public key from the private key to compute its fingerprint
   const publicKey = crypto.createPublicKey(privateKey);

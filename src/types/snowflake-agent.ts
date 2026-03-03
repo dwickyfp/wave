@@ -16,9 +16,21 @@ export const SnowflakeAgentConfigCreateSchema = z.object({
     .string()
     .min(1, "RSA private key is required")
     .describe("RSA private key in PEM/PKCS8 format"),
+  privateKeyPassphrase: z
+    .string()
+    .optional()
+    .describe(
+      "Passphrase for encrypted private key. Leave empty if key is unencrypted.",
+    ),
   database: z.string().min(1, "Database name is required"),
   schema: z.string().min(1, "Schema name is required"),
   cortexAgentName: z.string().min(1, "Cortex agent name is required"),
+  snowflakeRole: z
+    .string()
+    .optional()
+    .describe(
+      "Snowflake role to use when calling the Cortex Agent API. Defaults to the user's DEFAULT_ROLE if not set.",
+    ),
 });
 
 export const SnowflakeAgentConfigUpdateSchema =
