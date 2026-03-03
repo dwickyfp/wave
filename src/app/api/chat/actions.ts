@@ -240,10 +240,11 @@ export async function forkThreadAction(
   let messages = await chatRepository.selectMessagesByThreadId(threadId);
 
   if (upToMessageId) {
-    const cutoffIndex = messages.findIndex((m) => m.id === upToMessageId);
-    if (cutoffIndex !== -1) {
-      messages = messages.slice(0, cutoffIndex + 1);
+    const cutoffMessage = messages.find((m) => m.id === upToMessageId);
+    if (!cutoffMessage) {
+      throw new Error("Message not found");
     }
+    messages = messages.filter((m) => m.createdAt <= cutoffMessage.createdAt);
   }
 
   const newThreadId = generateUUID();
