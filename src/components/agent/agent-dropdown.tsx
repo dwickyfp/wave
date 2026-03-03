@@ -51,7 +51,11 @@ export function AgentDropdown({ agent, children, side, align }: Props) {
               {isOwner && (
                 <CommandItem className="cursor-pointer p-0">
                   <Link
-                    href={`/agent/${agent.id}`}
+                    href={
+                      agent.agentType === "snowflake_cortex"
+                        ? `/agent/snowflake/${agent.id}`
+                        : `/agent/${agent.id}`
+                    }
                     className="flex items-center gap-2 w-full px-2 py-1 rounded"
                   >
                     <PencilLine className="text-foreground" />
