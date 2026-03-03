@@ -106,12 +106,37 @@ export async function createSnowflakeThread(
     );
   }
 
-  // Snowflake returns the thread UUID as a bare JSON value — the docs show it
-  // as a string but some API versions may return a number.  Normalise to string
-  // for consistent DB storage; Number() coercion is applied when sending back.
-  const raw: unknown = await response.json();
-  const threadId = String(raw);
-  return threadId;
+  // Read as text to avoid JS Number precision loss for large 64-bit IDs.
+  const rawText = await response.text();
+  const trimmed = rawText.trim();
+
+  // The Snowflake docs show the response as a bare string ("1234567890"),
+  // but in practice the API returns a full metadata object:
+  //   { "thread_id": 9571668, "thread_name": "", ... }
+  // Use regex to extract the numeric thread_id value directly from the raw
+  // text so we never pass the value through JSON.parse / Number() and risk
+  // silently rounding large 64-bit integers.
+
+  // Case 1: metadata object — { ..., "thread_id" : <number>, ... }
+  const objMatch = trimmed.match(/"thread_id"\s*:\s*("?)(\d+)\1/);
+  if (objMatch) {
+    return objMatch[2];
+  }
+
+  // Case 2: bare quoted string — "1234567890"
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    const inner = trimmed.slice(1, trimmed.length - 1);
+    if (/^\d+$/.test(inner)) return inner;
+  }
+
+  // Case 3: bare number — 1234567890
+  if (/^\d+$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  throw new Error(
+    `Snowflake Threads API returned unexpected thread ID format: ${rawText}`,
+  );
 }
 
 /** Maximum rows to include in a rendered markdown table. */
@@ -341,15 +366,20 @@ export async function* callSnowflakeCortexStream(
     ? messages.filter((m) => m.role === "user").slice(-1)
     : messages;
 
-  const body: Record<string, unknown> = { messages: messagesPayload };
+  // Build the JSON request body.  When using threads, thread_id must be sent
+  // as a raw integer literal — NOT via Number() — because Snowflake uses 64-bit
+  // integer IDs that can exceed Number.MAX_SAFE_INTEGER and JSON.stringify on a
+  // JS Number would silently emit a rounded value, causing Snowflake to reject
+  // the thread reference (and the conversation would not appear in monitoring).
+  let bodyStr: string;
   if (threadId !== undefined) {
-    // Snowflake expects thread_id as an integer, not a string.
-    // createSnowflakeThread returns the raw JSON value (may be numeric string);
-    // always coerce to number before sending.
-    body.thread_id = Number(threadId);
     // parent_message_id: 0 = start of thread; subsequent turns use last
     // successful assistant message_id.
-    body.parent_message_id = parentMessageId ?? 0;
+    const pmid = parentMessageId ?? 0;
+    // Inject thread_id as a raw numeric literal to preserve all digits.
+    bodyStr = `{"thread_id":${threadId},"parent_message_id":${pmid},"messages":${JSON.stringify(messagesPayload)}}`;
+  } else {
+    bodyStr = JSON.stringify({ messages: messagesPayload });
   }
 
   const response = await fetch(apiUrl, {
@@ -360,7 +390,7 @@ export async function* callSnowflakeCortexStream(
       "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
       Accept: "text/event-stream",
     },
-    body: JSON.stringify(body),
+    body: bodyStr,
   });
 
   if (!response.ok) {
@@ -471,11 +501,13 @@ export async function* callSnowflakeCortexStream(
 
             // ── Thread metadata — captures message_id per role ────────
             case "metadata": {
-              if (typeof data.message_id === "number") {
-                if (data.role === "user") {
-                  threadMsgIds.user = data.message_id;
-                } else if (data.role === "assistant") {
-                  threadMsgIds.assistant = data.message_id;
+              // SSE payload is { metadata: { message_id, role } }
+              const meta = data.metadata ?? data;
+              if (typeof meta.message_id === "number") {
+                if (meta.role === "user") {
+                  threadMsgIds.user = meta.message_id;
+                } else if (meta.role === "assistant") {
+                  threadMsgIds.assistant = meta.message_id;
                 }
               }
               break;

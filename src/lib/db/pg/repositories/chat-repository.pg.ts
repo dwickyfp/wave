@@ -65,6 +65,8 @@ export const pgChatRepository: ChatRepository = {
       title: thread.chat_thread.title,
       userId: thread.chat_thread.userId,
       createdAt: thread.chat_thread.createdAt,
+      snowflakeThreadId: thread.chat_thread.snowflakeThreadId,
+      snowflakeParentMessageId: thread.chat_thread.snowflakeParentMessageId,
       userPreferences: thread.user?.preferences ?? undefined,
       messages,
     };
@@ -129,7 +131,11 @@ export const pgChatRepository: ChatRepository = {
     id: string,
     thread: Partial<Omit<ChatThread, "id" | "createdAt">>,
   ): Promise<ChatThread> => {
-    const set: Record<string, unknown> = {};
+    // Build the set object using explicit Drizzle column references so the ORM
+    // correctly maps each field to its SQL column name.  A plain
+    // Record<string,unknown> is NOT processed by Drizzle — it silently ignores
+    // keys it cannot type-check against the table schema.
+    const set: Partial<typeof ChatThreadTable.$inferInsert> = {};
     if (thread.title !== undefined) set.title = thread.title;
     if (thread.snowflakeThreadId !== undefined)
       set.snowflakeThreadId = thread.snowflakeThreadId;

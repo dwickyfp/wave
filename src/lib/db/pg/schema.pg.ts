@@ -13,6 +13,7 @@ import {
   varchar,
   index,
   integer,
+  bigint,
 } from "drizzle-orm/pg-core";
 import { isNotNull } from "drizzle-orm";
 import { DBWorkflow, DBEdge, DBNode } from "app-types/workflow";
@@ -36,7 +37,10 @@ export const ChatThreadTable = pgTable("chat_thread", {
   // The assistant message_id returned by Snowflake for the last successful
   // turn.  Used as parent_message_id for the next agent:run call.
   // 0 means "start of thread" (first user turn).
-  snowflakeParentMessageId: integer("snowflake_parent_message_id"),
+  // Must be bigint because Snowflake message IDs exceed 32-bit int range.
+  snowflakeParentMessageId: bigint("snowflake_parent_message_id", {
+    mode: "number",
+  }),
 });
 
 export const ChatMessageTable = pgTable("chat_message", {
