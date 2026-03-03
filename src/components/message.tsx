@@ -143,7 +143,7 @@ const PurePreviewMessage = ({
                   }
                   addToolResult={addToolResult}
                   key={key}
-                  part={part}
+                  part={part as any}
                   setMessages={setMessages}
                 />
               );
