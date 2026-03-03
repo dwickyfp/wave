@@ -1,28 +1,28 @@
 "use client";
 
-import { memo, PropsWithChildren, useState, Fragment } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import rehypeKatex from "rehype-katex";
-import { PreBlock } from "./pre-block";
 import { isJson, isString, toAny } from "lib/utils";
-import JsonView from "ui/json-view";
 import {
   ChevronLeft,
   ChevronRight,
   FileSpreadsheet,
   LinkIcon,
 } from "lucide-react";
+import { Fragment, PropsWithChildren, memo, useState } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import { Button } from "ui/button";
+import JsonView from "ui/json-view";
 import {
   Table,
-  TableHeader,
   TableBody,
-  TableRow,
-  TableHead,
   TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
 } from "ui/table";
-import { Button } from "ui/button";
+import { PreBlock, SnowflakePreBlock } from "./pre-block";
 
 const FadeIn = memo(({ children }: PropsWithChildren) => {
   return <span className="fade-in animate-in duration-1000">{children} </span>;
@@ -377,14 +377,31 @@ const components: Partial<Components> = {
   },
 };
 
-const NonMemoizedMarkdown = ({ children }: { children: string }) => {
+const snowflakeComponents: Partial<Components> = {
+  ...components,
+  pre: ({ children }) => (
+    <div className="px-4 py-2">
+      <SnowflakePreBlock>{children}</SnowflakePreBlock>
+    </div>
+  ),
+};
+
+const NonMemoizedMarkdown = ({
+  children,
+  variant,
+}: {
+  children: string;
+  variant?: "snowflake";
+}) => {
+  const activeComponents =
+    variant === "snowflake" ? snowflakeComponents : components;
   return (
     <article className="w-full h-full relative">
       {isJson(children) ? (
         <JsonView data={children} />
       ) : (
         <ReactMarkdown
-          components={components}
+          components={activeComponents}
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex]}
         >
@@ -397,5 +414,7 @@ const NonMemoizedMarkdown = ({ children }: { children: string }) => {
 
 export const Markdown = memo(
   NonMemoizedMarkdown,
-  (prevProps, nextProps) => prevProps.children === nextProps.children,
+  (prevProps, nextProps) =>
+    prevProps.children === nextProps.children &&
+    prevProps.variant === nextProps.variant,
 );

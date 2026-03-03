@@ -1,65 +1,65 @@
 import {
+  Tool,
+  UIMessage,
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   smoothStream,
   stepCountIs,
   streamText,
-  Tool,
-  UIMessage,
 } from "ai";
 
 import { customModelProvider, isToolCallUnsupportedModel } from "lib/ai/models";
 
 import {
-  agentRepository,
-  chatRepository,
-  subAgentRepository,
-  snowflakeAgentRepository,
-} from "lib/db/repository";
-import globalLogger from "logger";
-import {
-  buildMcpServerCustomizationsSystemPrompt,
-  buildUserSystemPrompt,
-  buildToolCallUnsupportedModelSystemPrompt,
-} from "lib/ai/prompts";
-import {
-  chatApiSchemaRequestBodySchema,
   ChatMention,
   ChatMetadata,
+  chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
+import {
+  buildMcpServerCustomizationsSystemPrompt,
+  buildToolCallUnsupportedModelSystemPrompt,
+  buildUserSystemPrompt,
+} from "lib/ai/prompts";
+import {
+  agentRepository,
+  chatRepository,
+  snowflakeAgentRepository,
+  subAgentRepository,
+} from "lib/db/repository";
+import globalLogger from "logger";
 
 import { errorIf, safe } from "ts-safe";
 
+import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
+import { getSession } from "auth/server";
+import { colorize } from "consola/utils";
+import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
+import { ImageToolName } from "lib/ai/tools";
+import { nanoBananaTool, openaiImageTool } from "lib/ai/tools/image";
+import { serverFileStorage } from "lib/file-storage";
 import {
-  excludeToolExecution,
-  handleError,
-  manualToolExecuteByLastMessage,
-  mergeSystemPrompt,
-  extractInProgressToolPart,
-  filterMcpServerCustomizations,
-  loadMcpTools,
-  loadWorkFlowTools,
-  loadAppDefaultTools,
-  convertToSavePart,
-} from "./shared.chat";
+  type SnowflakeCortexMessage,
+  callSnowflakeCortexStream,
+  createSnowflakeThread,
+} from "lib/snowflake/client";
+import { generateUUID } from "lib/utils";
 import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
 } from "./actions";
-import { getSession } from "auth/server";
-import { colorize } from "consola/utils";
-import { generateUUID } from "lib/utils";
-import { nanoBananaTool, openaiImageTool } from "lib/ai/tools/image";
-import { ImageToolName } from "lib/ai/tools";
-import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
-import { serverFileStorage } from "lib/file-storage";
-import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import {
-  callSnowflakeCortexStream,
-  createSnowflakeThread,
-  type SnowflakeCortexMessage,
-} from "lib/snowflake/client";
+  convertToSavePart,
+  excludeToolExecution,
+  extractInProgressToolPart,
+  filterMcpServerCustomizations,
+  handleError,
+  loadAppDefaultTools,
+  loadMcpTools,
+  loadWorkFlowTools,
+  manualToolExecuteByLastMessage,
+  mergeSystemPrompt,
+} from "./shared.chat";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -331,6 +331,20 @@ export async function POST(request: Request) {
                 dataStream.write({
                   type: "text-delta",
                   delta: event.markdown,
+                  id: textId,
+                });
+                break;
+
+              case "chart":
+                // Vega-Lite chart specs are injected as a fenced vegalite code
+                // block so the markdown renderer can render them inline
+                if (!textOpen) {
+                  dataStream.write({ type: "text-start", id: textId });
+                  textOpen = true;
+                }
+                dataStream.write({
+                  type: "text-delta",
+                  delta: `\n\`\`\`vegalite\n${event.spec}\n\`\`\`\n`,
                   id: textId,
                 });
                 break;

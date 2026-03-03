@@ -1,5 +1,28 @@
-import { generateSnowflakeJwt } from "./auth";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import type { SnowflakeAgentConfig } from "app-types/snowflake-agent";
+import { generateSnowflakeJwt } from "./auth";
+
+/** Absolute path of the SSE log file written during every stream. */
+const SSE_LOG_PATH = path.join(process.cwd(), "logs", "snowflake-sse.log");
+
+/**
+ * Appends a single SSE log entry to the log file.
+ * The directory is created on demand so we never crash on a missing folder.
+ */
+function appendSseLog(eventType: string, rawData: string): void {
+  try {
+    const dir = path.dirname(SSE_LOG_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const ts = new Date().toISOString();
+    const line = `[${ts}] event=${eventType || "(none)"} data=${rawData}\n`;
+    fs.appendFileSync(SSE_LOG_PATH, line, "utf8");
+  } catch {
+    // Best-effort — never let logging break the stream
+  }
+}
 
 export type SnowflakeCortexMessage = {
   role: "user" | "assistant";
@@ -152,6 +175,7 @@ async function parseSseResponseStream(
         currentEventType = trimmed.slice(6).trim();
       } else if (trimmed.startsWith("data:")) {
         const raw = trimmed.slice(5).trim();
+        appendSseLog(currentEventType, raw);
         if (!raw || raw === "[DONE]") continue;
         try {
           const data = JSON.parse(raw);
@@ -268,6 +292,8 @@ export type SnowflakeStreamEvent =
   | { type: "reasoning-delta"; delta: string }
   /** Markdown table converted from a Snowflake result_set */
   | { type: "table"; markdown: string }
+  /** Vega-Lite chart spec JSON string from a data_to_chart tool result */
+  | { type: "chart"; spec: string }
   /** Token usage + model emitted at end of stream */
   | {
       type: "metadata";
@@ -373,6 +399,7 @@ export async function* callSnowflakeCortexStream(
         currentEventType = trimmed.slice(6).trim();
       } else if (trimmed.startsWith("data:")) {
         const raw = trimmed.slice(5).trim();
+        appendSseLog(currentEventType, raw);
         if (!raw || raw === "[DONE]") continue;
         try {
           const data = JSON.parse(raw);
@@ -420,6 +447,15 @@ export async function* callSnowflakeCortexStream(
                 };
               }
               break;
+
+            // ── Chart spec from data_to_chart tool ───────────────────
+            case "response.chart": {
+              const raw = data.chart_spec;
+              if (typeof raw === "string" && raw.trim()) {
+                yield { type: "chart", spec: raw };
+              }
+              break;
+            }
 
             // ── Tool call info ────────────────────────────────────────
             case "response.tool_use": {

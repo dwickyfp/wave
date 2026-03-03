@@ -1,84 +1,84 @@
 "use client";
 
-import { FileUIPart, getToolName, ToolUIPart, UIMessage } from "ai";
+import { useCopy } from "@/hooks/use-copy";
+import type { UseChatHelpers } from "@ai-sdk/react";
+import { FileUIPart, ToolUIPart, UIMessage, getToolName } from "ai";
+import { cn, safeJSONParse, truncateString } from "lib/utils";
 import {
   Check,
-  Copy,
-  Loader,
-  Pencil,
   ChevronDownIcon,
-  ChevronUp,
-  RefreshCw,
-  X,
-  Trash2,
   ChevronRight,
-  TriangleAlert,
-  HammerIcon,
+  ChevronUp,
+  Copy,
+  Download,
   EllipsisIcon,
   FileIcon,
-  Download,
   GitBranch,
-  ThumbsUp,
+  HammerIcon,
+  Loader,
+  Pencil,
+  RefreshCw,
   ThumbsDown,
+  ThumbsUp,
+  Trash2,
+  TriangleAlert,
+  X,
 } from "lucide-react";
-import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
-import { Button } from "ui/button";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "ui/badge";
-import { Textarea } from "ui/textarea";
-import { Markdown } from "./markdown";
-import { cn, safeJSONParse, truncateString } from "lib/utils";
+import { Button } from "ui/button";
 import JsonView from "ui/json-view";
-import { useMemo, useState, memo, useEffect, useRef, useCallback } from "react";
+import { Textarea } from "ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
+import { Markdown } from "./markdown";
 import { MessageEditor } from "./message-editor";
-import type { UseChatHelpers } from "@ai-sdk/react";
-import { useCopy } from "@/hooks/use-copy";
 
-import { AnimatePresence, motion } from "framer-motion";
-import { SelectModel } from "./select-model";
 import {
   deleteMessageAction,
+  deleteMessageFeedbackAction,
   deleteMessagesByChatIdAfterTimestampAction,
   forkThreadAction,
-  submitMessageFeedbackAction,
   getMessageFeedbackAction,
-  deleteMessageFeedbackAction,
+  submitMessageFeedbackAction,
 } from "@/app/api/chat/actions";
+import { AnimatePresence, motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { mutate } from "swr";
+import { SelectModel } from "./select-model";
 
-import { toast } from "sonner";
-import { safe } from "ts-safe";
 import {
+  ChatFeedbackType,
   ChatMetadata,
   ChatModel,
-  ChatFeedbackType,
   ManualToolConfirmTag,
 } from "app-types/chat";
+import { toast } from "sonner";
+import { safe } from "ts-safe";
 
-import { useTranslations } from "next-intl";
 import { extractMCPToolId } from "lib/ai/mcp/mcp-tool-id";
+import { useTranslations } from "next-intl";
 import { Separator } from "ui/separator";
 
-import { TextShimmer } from "ui/text-shimmer";
-import equal from "lib/equal";
 import {
   VercelAIWorkflowToolStreamingResult,
   VercelAIWorkflowToolStreamingResultTag,
 } from "app-types/workflow";
-import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { DefaultToolName, ImageToolName } from "lib/ai/tools";
+import equal from "lib/equal";
 import {
   Shortcut,
   getShortcutKeyList,
   isShortcutEvent,
 } from "lib/keyboard-shortcuts";
+import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
+import { TextShimmer } from "ui/text-shimmer";
 
-import { WorkflowInvocation } from "./tool-invocation/workflow-invocation";
-import dynamic from "next/dynamic";
-import { notify } from "lib/notify";
-import { ModelProviderIcon } from "ui/model-provider-icon";
 import { appStore } from "@/app/store";
 import { BACKGROUND_COLORS, EMOJI_DATA } from "lib/const";
+import { notify } from "lib/notify";
+import dynamic from "next/dynamic";
+import { ModelProviderIcon } from "ui/model-provider-icon";
+import { WorkflowInvocation } from "./tool-invocation/workflow-invocation";
 
 type MessagePart = UIMessage["parts"][number];
 type TextMessagePart = Extract<MessagePart, { type: "text" }>;
@@ -540,7 +540,15 @@ export const AssistMessagePart = memo(function AssistMessagePart({
           "opacity-50 border border-destructive bg-card rounded-lg": isError,
         })}
       >
-        <Markdown>{part.text}</Markdown>
+        <Markdown
+          variant={
+            metadata?.chatModel?.provider === "snowflake"
+              ? "snowflake"
+              : undefined
+          }
+        >
+          {part.text}
+        </Markdown>
       </div>
       {showActions && (
         <div className="flex flex-col gap-1 w-full">
