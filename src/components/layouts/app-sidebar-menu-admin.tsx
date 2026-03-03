@@ -63,7 +63,9 @@ const AppSidebarAdmin = () => {
           </SidebarMenuButton>
         </SidebarMenuItem>
       </Tooltip>
-      {isOpen && (
+      <div
+        className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? "max-h-40 opacity-100" : "max-h-0 opacity-0"}`}
+      >
         <SidebarMenuSub className="mb-2">
           {adminNavItems.map((item) => (
             <SidebarMenuSubItem key={item.id}>
@@ -80,7 +82,7 @@ const AppSidebarAdmin = () => {
             </SidebarMenuSubItem>
           ))}
         </SidebarMenuSub>
-      )}
+      </div>
     </SidebarMenu>
   );
 };
