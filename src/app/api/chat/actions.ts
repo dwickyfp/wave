@@ -298,3 +298,22 @@ export async function exportChatAction({
     expiresAt: expiresAt ?? undefined,
   });
 }
+
+export async function submitMessageFeedbackAction(
+  messageId: string,
+  type: "like" | "dislike",
+  reason?: string,
+) {
+  const userId = await getUserId();
+  return chatRepository.upsertMessageFeedback(messageId, userId, type, reason);
+}
+
+export async function getMessageFeedbackAction(messageId: string) {
+  const userId = await getUserId();
+  return chatRepository.getMessageFeedback(messageId, userId);
+}
+
+export async function deleteMessageFeedbackAction(messageId: string) {
+  const userId = await getUserId();
+  return chatRepository.deleteMessageFeedback(messageId, userId);
+}

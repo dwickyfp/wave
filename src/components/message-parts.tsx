@@ -18,10 +18,13 @@ import {
   FileIcon,
   Download,
   GitBranch,
+  ThumbsUp,
+  ThumbsDown,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { Button } from "ui/button";
 import { Badge } from "ui/badge";
+import { Textarea } from "ui/textarea";
 import { Markdown } from "./markdown";
 import { cn, safeJSONParse, truncateString } from "lib/utils";
 import JsonView from "ui/json-view";
@@ -36,13 +39,21 @@ import {
   deleteMessageAction,
   deleteMessagesByChatIdAfterTimestampAction,
   forkThreadAction,
+  submitMessageFeedbackAction,
+  getMessageFeedbackAction,
+  deleteMessageFeedbackAction,
 } from "@/app/api/chat/actions";
 import { useRouter } from "next/navigation";
 import { mutate } from "swr";
 
 import { toast } from "sonner";
 import { safe } from "ts-safe";
-import { ChatMetadata, ChatModel, ManualToolConfirmTag } from "app-types/chat";
+import {
+  ChatMetadata,
+  ChatModel,
+  ChatFeedbackType,
+  ManualToolConfirmTag,
+} from "app-types/chat";
 
 import { useTranslations } from "next-intl";
 import { extractMCPToolId } from "lib/ai/mcp/mcp-tool-id";
@@ -364,9 +375,69 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   const ref = useRef<HTMLDivElement>(null);
   const metadata = message.metadata as ChatMetadata | undefined;
 
+  const [feedback, setFeedback] = useState<ChatFeedbackType | null>(null);
+  const [isCling, setIsCling] = useState(false);
+  const [showDislikePanel, setShowDislikePanel] = useState(false);
+  const [dislikeReason, setDislikeReason] = useState("");
+  const [isFeedbackSubmitting, setIsFeedbackSubmitting] = useState(false);
+
   const agent = useMemo(() => {
     return agentList.find((a) => a.id === metadata?.agentId);
   }, [metadata, agentList]);
+
+  useEffect(() => {
+    getMessageFeedbackAction(message.id)
+      .then((fb) => {
+        if (fb) setFeedback(fb.type as ChatFeedbackType);
+      })
+      .catch(() => {});
+  }, [message.id]);
+
+  const handleLike = useCallback(async () => {
+    if (feedback === "like") {
+      setFeedback(null);
+      await deleteMessageFeedbackAction(message.id).catch(() => {});
+      return;
+    }
+    setFeedback("like");
+    setShowDislikePanel(false);
+    setIsCling(true);
+    setTimeout(() => setIsCling(false), 500);
+    await submitMessageFeedbackAction(message.id, "like").catch(() => {});
+  }, [feedback, message.id]);
+
+  const handleDislike = useCallback(() => {
+    if (feedback === "dislike") {
+      setFeedback(null);
+      setShowDislikePanel(false);
+      deleteMessageFeedbackAction(message.id).catch(() => {});
+      return;
+    }
+    setShowDislikePanel((prev) => !prev);
+  }, [feedback, message.id]);
+
+  const handleDislikeSubmit = useCallback(async () => {
+    setIsFeedbackSubmitting(true);
+    try {
+      await submitMessageFeedbackAction(
+        message.id,
+        "dislike",
+        dislikeReason || undefined,
+      );
+      setFeedback("dislike");
+      setShowDislikePanel(false);
+      setDislikeReason("");
+    } catch {
+      toast.error("Failed to submit feedback");
+    } finally {
+      setIsFeedbackSubmitting(false);
+    }
+  }, [message.id, dislikeReason]);
+
+  const handleDislikeNotNow = useCallback(() => {
+    setShowDislikePanel(false);
+    setDislikeReason("");
+  }, []);
 
   const deleteMessage = useCallback(async () => {
     if (!setMessages) return;
@@ -463,217 +534,308 @@ export const AssistMessagePart = memo(function AssistMessagePart({
         <Markdown>{part.text}</Markdown>
       </div>
       {showActions && (
-        <div className="flex w-full">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                data-testid="message-edit-button"
-                variant="ghost"
-                size="icon"
-                className="size-3! p-4!"
-                onClick={() => copy(part.text)}
-              >
-                {copied ? <Check /> : <Copy />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Copy</TooltipContent>
-          </Tooltip>
-          {!readonly && (
-            <>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div>
-                    <SelectModel onSelect={handleModelChange}>
-                      <Button
-                        data-testid="message-edit-button data-[state=open]:bg-secondary!"
-                        variant="ghost"
-                        size="icon"
-                        className="size-3! p-4!"
-                      >
-                        {<RefreshCw />}
-                      </Button>
-                    </SelectModel>
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>Change Model</TooltipContent>
-              </Tooltip>
-              {threadId && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      disabled={isBranching}
-                      onClick={handleBranch}
-                      className="size-3! p-4!"
-                    >
-                      {isBranching ? (
-                        <Loader className="animate-spin" />
-                      ) : (
-                        <GitBranch />
-                      )}
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>{t("Chat.Thread.branchChat")}</TooltipContent>
-                </Tooltip>
-              )}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={isDeleting}
-                    onClick={deleteMessage}
-                    className="size-3! p-4! hover:text-destructive"
-                  >
-                    {isDeleting ? (
-                      <Loader className="animate-spin" />
-                    ) : (
-                      <Trash2 />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent className="text-destructive">
-                  Delete Message
-                </TooltipContent>
-              </Tooltip>
-            </>
-          )}
-
-          {metadata && (
+        <div className="flex flex-col gap-1 w-full">
+          <div className="flex w-full">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  data-testid="message-edit-button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-3! p-4!"
+                  onClick={() => copy(part.text)}
+                >
+                  {copied ? <Check /> : <Copy />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Copy</TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-3! p-4! opacity-0 group-hover/message:opacity-100 transition-opacity duration-300"
+                  className="size-3! p-4!"
+                  onClick={handleLike}
                 >
-                  <EllipsisIcon />
+                  <ThumbsUp
+                    key={isCling ? "cling" : "idle"}
+                    className={cn(
+                      "transition-colors duration-200",
+                      feedback === "like" ? "text-blue-500" : "",
+                      isCling && "animate-cling",
+                    )}
+                  />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent className="p-4 w-72 bg-card border shadow-lg">
-                <div className="space-y-4">
-                  {agent && (
-                    <>
-                      <div className="space-y-2">
-                        <h4 className="text-sm font-semibold text-foreground">
-                          Agent
-                        </h4>
-                        <div className="flex gap-3 items-center">
-                          <div
-                            className="p-1.5 rounded-full ring-2 ring-border/50 bg-background shadow-sm"
-                            style={{
-                              backgroundColor:
-                                agent.icon?.style?.backgroundColor ||
-                                BACKGROUND_COLORS[0],
-                            }}
-                          >
-                            <Avatar className="size-3">
-                              <AvatarImage
-                                src={agent.icon?.value || EMOJI_DATA[0]}
-                              />
-                              <AvatarFallback className="bg-transparent text-xs">
-                                {agent.name[0]}
-                              </AvatarFallback>
-                            </Avatar>
-                          </div>
-                          <span className="font-medium text-sm">
-                            {agent.name}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="border-t border-border/50" />
-                    </>
-                  )}
-
-                  {metadata.chatModel && (
-                    <>
-                      <div className="space-y-2">
-                        <h4 className="text-sm font-semibold text-foreground">
-                          Model
-                        </h4>
-                        <div className="flex gap-3 items-center">
-                          <ModelProviderIcon
-                            provider={metadata.chatModel.provider}
-                            className="size-5 flex-shrink-0"
-                          />
-                          <div className="space-y-0.5 flex-1">
-                            <div className="text-sm font-medium text-foreground">
-                              {metadata.chatModel.provider}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              {metadata.chatModel.model}
-                              {metadata.toolCount !== undefined &&
-                                metadata.toolCount > 0 && (
-                                  <span className="ml-2">
-                                    • {metadata.toolCount} tools
-                                  </span>
-                                )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="border-t border-border/50" />
-                    </>
-                  )}
-
-                  {metadata.usage && (
-                    <>
-                      <div className="flex flex-col gap-2">
-                        <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                          Token Usage
-                          <span className="text-xs text-muted-foreground font-normal">
-                            {
-                              message.parts.filter(
-                                (v) => v.type != "step-start",
-                              ).length
-                            }{" "}
-                            Steps
-                          </span>
-                        </h4>
-                        <p className="px-2 mb-2 text-xs text-muted-foreground">
-                          High input token usage may occur when many tools are
-                          available.
-                        </p>
-                        <div className="space-y-2">
-                          {metadata.usage.inputTokens !== undefined && (
-                            <div className="flex items-center justify-between py-1 px-2 rounded-md bg-muted/30">
-                              <span className="text-xs text-muted-foreground">
-                                Input
-                              </span>
-                              <span className="text-xs font-mono font-medium">
-                                {metadata.usage.inputTokens.toLocaleString()}
-                              </span>
-                            </div>
-                          )}
-                          {metadata.usage.outputTokens !== undefined && (
-                            <div className="flex items-center justify-between py-1 px-2 rounded-md bg-muted/30">
-                              <span className="text-xs text-muted-foreground">
-                                Output
-                              </span>
-                              <span className="text-xs font-mono font-medium">
-                                {metadata.usage.outputTokens.toLocaleString()}
-                              </span>
-                            </div>
-                          )}
-                          {metadata.usage.totalTokens !== undefined && (
-                            <div className="flex items-center justify-between py-1.5 px-2 rounded-md bg-primary/10 border border-primary/20">
-                              <span className="text-xs font-medium text-primary">
-                                Total
-                              </span>
-                              <span className="text-xs font-mono font-bold text-primary">
-                                {metadata.usage.totalTokens.toLocaleString()}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
+              <TooltipContent>
+                {feedback === "like" ? "Remove like" : "Like"}
               </TooltipContent>
             </Tooltip>
-          )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-3! p-4!"
+                  onClick={handleDislike}
+                >
+                  <ThumbsDown
+                    className={cn(
+                      "transition-colors duration-200",
+                      feedback === "dislike" ? "text-red-500" : "",
+                    )}
+                  />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {feedback === "dislike" ? "Remove dislike" : "Dislike"}
+              </TooltipContent>
+            </Tooltip>
+            {!readonly && (
+              <>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <div>
+                      <SelectModel onSelect={handleModelChange}>
+                        <Button
+                          data-testid="message-edit-button data-[state=open]:bg-secondary!"
+                          variant="ghost"
+                          size="icon"
+                          className="size-3! p-4!"
+                        >
+                          {<RefreshCw />}
+                        </Button>
+                      </SelectModel>
+                    </div>
+                  </TooltipTrigger>
+                  <TooltipContent>Change Model</TooltipContent>
+                </Tooltip>
+                {threadId && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        disabled={isBranching}
+                        onClick={handleBranch}
+                        className="size-3! p-4!"
+                      >
+                        {isBranching ? (
+                          <Loader className="animate-spin" />
+                        ) : (
+                          <GitBranch />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {t("Chat.Thread.branchChat")}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      disabled={isDeleting}
+                      onClick={deleteMessage}
+                      className="size-3! p-4! hover:text-destructive"
+                    >
+                      {isDeleting ? (
+                        <Loader className="animate-spin" />
+                      ) : (
+                        <Trash2 />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent className="text-destructive">
+                    Delete Message
+                  </TooltipContent>
+                </Tooltip>
+              </>
+            )}
+
+            {metadata && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-3! p-4! opacity-0 group-hover/message:opacity-100 transition-opacity duration-300"
+                  >
+                    <EllipsisIcon />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent className="p-4 w-72 bg-card border shadow-lg">
+                  <div className="space-y-4">
+                    {agent && (
+                      <>
+                        <div className="space-y-2">
+                          <h4 className="text-sm font-semibold text-foreground">
+                            Agent
+                          </h4>
+                          <div className="flex gap-3 items-center">
+                            <div
+                              className="p-1.5 rounded-full ring-2 ring-border/50 bg-background shadow-sm"
+                              style={{
+                                backgroundColor:
+                                  agent.icon?.style?.backgroundColor ||
+                                  BACKGROUND_COLORS[0],
+                              }}
+                            >
+                              <Avatar className="size-3">
+                                <AvatarImage
+                                  src={agent.icon?.value || EMOJI_DATA[0]}
+                                />
+                                <AvatarFallback className="bg-transparent text-xs">
+                                  {agent.name[0]}
+                                </AvatarFallback>
+                              </Avatar>
+                            </div>
+                            <span className="font-medium text-sm">
+                              {agent.name}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="border-t border-border/50" />
+                      </>
+                    )}
+
+                    {metadata.chatModel && (
+                      <>
+                        <div className="space-y-2">
+                          <h4 className="text-sm font-semibold text-foreground">
+                            Model
+                          </h4>
+                          <div className="flex gap-3 items-center">
+                            <ModelProviderIcon
+                              provider={metadata.chatModel.provider}
+                              className="size-5 flex-shrink-0"
+                            />
+                            <div className="space-y-0.5 flex-1">
+                              <div className="text-sm font-medium text-foreground">
+                                {metadata.chatModel.provider}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {metadata.chatModel.model}
+                                {metadata.toolCount !== undefined &&
+                                  metadata.toolCount > 0 && (
+                                    <span className="ml-2">
+                                      • {metadata.toolCount} tools
+                                    </span>
+                                  )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="border-t border-border/50" />
+                      </>
+                    )}
+
+                    {metadata.usage && (
+                      <>
+                        <div className="flex flex-col gap-2">
+                          <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                            Token Usage
+                            <span className="text-xs text-muted-foreground font-normal">
+                              {
+                                message.parts.filter(
+                                  (v) => v.type != "step-start",
+                                ).length
+                              }{" "}
+                              Steps
+                            </span>
+                          </h4>
+                          <p className="px-2 mb-2 text-xs text-muted-foreground">
+                            High input token usage may occur when many tools are
+                            available.
+                          </p>
+                          <div className="space-y-2">
+                            {metadata.usage.inputTokens !== undefined && (
+                              <div className="flex items-center justify-between py-1 px-2 rounded-md bg-muted/30">
+                                <span className="text-xs text-muted-foreground">
+                                  Input
+                                </span>
+                                <span className="text-xs font-mono font-medium">
+                                  {metadata.usage.inputTokens.toLocaleString()}
+                                </span>
+                              </div>
+                            )}
+                            {metadata.usage.outputTokens !== undefined && (
+                              <div className="flex items-center justify-between py-1 px-2 rounded-md bg-muted/30">
+                                <span className="text-xs text-muted-foreground">
+                                  Output
+                                </span>
+                                <span className="text-xs font-mono font-medium">
+                                  {metadata.usage.outputTokens.toLocaleString()}
+                                </span>
+                              </div>
+                            )}
+                            {metadata.usage.totalTokens !== undefined && (
+                              <div className="flex items-center justify-between py-1.5 px-2 rounded-md bg-primary/10 border border-primary/20">
+                                <span className="text-xs font-medium text-primary">
+                                  Total
+                                </span>
+                                <span className="text-xs font-mono font-bold text-primary">
+                                  {metadata.usage.totalTokens.toLocaleString()}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+          <AnimatePresence>
+            {showDislikePanel && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+                className="overflow-hidden"
+              >
+                <div className="mt-1 p-3 rounded-lg border border-border bg-muted/30 flex flex-col gap-2">
+                  <p className="text-xs text-muted-foreground font-medium">
+                    What was the issue with this response? (optional)
+                  </p>
+                  <Textarea
+                    value={dislikeReason}
+                    onChange={(e) => setDislikeReason(e.target.value)}
+                    placeholder="Describe the issue..."
+                    className="text-sm resize-none min-h-[72px] bg-background"
+                    disabled={isFeedbackSubmitting}
+                  />
+                  <div className="flex gap-2 justify-end">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleDislikeNotNow}
+                      disabled={isFeedbackSubmitting}
+                    >
+                      Not Now
+                    </Button>
+                    <Button
+                      variant="default"
+                      size="sm"
+                      onClick={handleDislikeSubmit}
+                      disabled={isFeedbackSubmitting}
+                    >
+                      {isFeedbackSubmitting ? (
+                        <Loader className="animate-spin size-3 mr-1" />
+                      ) : null}
+                      Submit
+                    </Button>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       )}
       <div ref={ref} className="min-w-0" />

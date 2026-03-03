@@ -446,6 +446,35 @@ export const ChatExportCommentTable = pgTable("chat_export_comment", {
     .default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const ChatMessageFeedbackTable = pgTable(
+  "chat_message_feedback",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    messageId: text("message_id")
+      .notNull()
+      .references(() => ChatMessageTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    type: varchar("type", { enum: ["like", "dislike"] }).notNull(),
+    reason: text("reason"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.messageId, table.userId),
+    index("chat_message_feedback_message_id_idx").on(table.messageId),
+    index("chat_message_feedback_user_id_idx").on(table.userId),
+  ],
+);
+
+export type ChatMessageFeedbackEntity =
+  typeof ChatMessageFeedbackTable.$inferSelect;
+
 export type ArchiveEntity = typeof ArchiveTable.$inferSelect;
 export type ArchiveItemEntity = typeof ArchiveItemTable.$inferSelect;
 export type BookmarkEntity = typeof BookmarkTable.$inferSelect;

@@ -1,4 +1,10 @@
-import { ChatMessage, ChatRepository, ChatThread } from "app-types/chat";
+import {
+  ChatMessage,
+  ChatMessageFeedback,
+  ChatFeedbackType,
+  ChatRepository,
+  ChatThread,
+} from "app-types/chat";
 
 import { pgDb as db } from "../db.pg";
 import {
@@ -6,6 +12,7 @@ import {
   ChatThreadTable,
   UserTable,
   ArchiveItemTable,
+  ChatMessageFeedbackTable,
 } from "../schema.pg";
 
 import { and, desc, eq, gte, sql } from "drizzle-orm";
@@ -262,5 +269,65 @@ export const pgChatRepository: ChatRepository = {
         and(eq(ChatThreadTable.id, id), eq(ChatThreadTable.userId, userId)),
       );
     return Boolean(result);
+  },
+
+  upsertMessageFeedback: async (
+    messageId: string,
+    userId: string,
+    type: ChatFeedbackType,
+    reason?: string,
+  ): Promise<ChatMessageFeedback> => {
+    const [result] = await db
+      .insert(ChatMessageFeedbackTable)
+      .values({
+        messageId,
+        userId,
+        type,
+        reason: reason ?? null,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [
+          ChatMessageFeedbackTable.messageId,
+          ChatMessageFeedbackTable.userId,
+        ],
+        set: {
+          type,
+          reason: reason ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return result as ChatMessageFeedback;
+  },
+
+  getMessageFeedback: async (
+    messageId: string,
+    userId: string,
+  ): Promise<ChatMessageFeedback | null> => {
+    const [result] = await db
+      .select()
+      .from(ChatMessageFeedbackTable)
+      .where(
+        and(
+          eq(ChatMessageFeedbackTable.messageId, messageId),
+          eq(ChatMessageFeedbackTable.userId, userId),
+        ),
+      );
+    return (result as ChatMessageFeedback) ?? null;
+  },
+
+  deleteMessageFeedback: async (
+    messageId: string,
+    userId: string,
+  ): Promise<void> => {
+    await db
+      .delete(ChatMessageFeedbackTable)
+      .where(
+        and(
+          eq(ChatMessageFeedbackTable.messageId, messageId),
+          eq(ChatMessageFeedbackTable.userId, userId),
+        ),
+      );
   },
 };

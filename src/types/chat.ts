@@ -12,6 +12,18 @@ export type ChatMetadata = {
   agentId?: string;
 };
 
+export type ChatFeedbackType = "like" | "dislike";
+
+export type ChatMessageFeedback = {
+  id: string;
+  messageId: string;
+  userId: string;
+  type: ChatFeedbackType;
+  reason?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type ChatModel = {
   provider: string;
   model: string;
@@ -162,6 +174,20 @@ export type ChatRepository = {
   insertMessages(
     messages: PartialBy<ChatMessage, "createdAt">[],
   ): Promise<ChatMessage[]>;
+
+  upsertMessageFeedback(
+    messageId: string,
+    userId: string,
+    type: ChatFeedbackType,
+    reason?: string,
+  ): Promise<ChatMessageFeedback>;
+
+  getMessageFeedback(
+    messageId: string,
+    userId: string,
+  ): Promise<ChatMessageFeedback | null>;
+
+  deleteMessageFeedback(messageId: string, userId: string): Promise<void>;
 };
 
 export const ManualToolConfirmTag = tag<{
