@@ -248,11 +248,13 @@ export async function forkThreadAction(
 
   const newThreadId = generateUUID();
 
-  await chatRepository.insertThread({
+  const insertedThread = await chatRepository.insertThread({
     id: newThreadId,
     title: thread.title ? `Branch: ${thread.title}` : "Branch",
     userId,
   });
+
+  let lastMessageAt = insertedThread.createdAt.getTime();
 
   if (messages.length > 0) {
     const now = Date.now();
@@ -264,9 +266,16 @@ export async function forkThreadAction(
         createdAt: new Date(now + index),
       })),
     );
+    lastMessageAt = now + messages.length - 1;
   }
 
-  return newThreadId;
+  return {
+    id: insertedThread.id,
+    title: insertedThread.title,
+    userId: insertedThread.userId,
+    createdAt: insertedThread.createdAt,
+    lastMessageAt,
+  };
 }
 
 export async function exportChatAction({

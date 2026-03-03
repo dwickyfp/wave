@@ -144,23 +144,22 @@ export const UserMessagePart = memo(
       if (!threadId) return;
       setIsBranching(true);
       try {
-        const newThreadId = await forkThreadAction(threadId, message.id);
-        const now = Date.now();
+        const forkedThread = await forkThreadAction(threadId, message.id);
         mutate(
           "/api/thread",
           (current: any[] = []) => [
             {
-              id: newThreadId,
-              title: "Branch",
-              createdAt: new Date(),
-              lastMessageAt: now,
-              userId: "",
+              id: forkedThread.id,
+              title: forkedThread.title,
+              createdAt: forkedThread.createdAt,
+              lastMessageAt: forkedThread.lastMessageAt,
+              userId: forkedThread.userId,
             },
-            ...current.filter((item) => item.id !== newThreadId),
+            ...current.filter((item) => item.id !== forkedThread.id),
           ],
           { revalidate: true },
         );
-        router.push(`/chat/${newThreadId}`);
+        router.push(`/chat/${forkedThread.id}`);
       } catch (error: any) {
         toast.error(error?.message || t("Chat.Thread.failedToBranchChat"));
       } finally {
@@ -396,23 +395,22 @@ export const AssistMessagePart = memo(function AssistMessagePart({
     if (!threadId) return;
     setIsBranching(true);
     try {
-      const newThreadId = await forkThreadAction(threadId, message.id);
-      const now = Date.now();
+      const forkedThread = await forkThreadAction(threadId, message.id);
       mutate(
         "/api/thread",
         (current: any[] = []) => [
           {
-            id: newThreadId,
-            title: "Branch",
-            createdAt: new Date(),
-            lastMessageAt: now,
-            userId: "",
+            id: forkedThread.id,
+            title: forkedThread.title,
+            createdAt: forkedThread.createdAt,
+            lastMessageAt: forkedThread.lastMessageAt,
+            userId: forkedThread.userId,
           },
-          ...current.filter((item) => item.id !== newThreadId),
+          ...current.filter((item) => item.id !== forkedThread.id),
         ],
         { revalidate: true },
       );
-      router.push(`/chat/${newThreadId}`);
+      router.push(`/chat/${forkedThread.id}`);
     } catch (error: any) {
       toast.error(error?.message || t("Chat.Thread.failedToBranchChat"));
     } finally {

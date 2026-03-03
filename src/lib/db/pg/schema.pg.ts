@@ -26,7 +26,9 @@ export const ChatThreadTable = pgTable("chat_thread", {
   userId: uuid("user_id")
     .notNull()
     .references(() => UserTable.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const ChatMessageTable = pgTable("chat_message", {
@@ -37,7 +39,9 @@ export const ChatMessageTable = pgTable("chat_message", {
   role: text("role").notNull().$type<UIMessage["role"]>(),
   parts: json("parts").notNull().array().$type<UIMessage["parts"]>(),
   metadata: json("metadata").$type<ChatMetadata>(),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const AgentTable = pgTable("agent", {
@@ -55,8 +59,12 @@ export const AgentTable = pgTable("agent", {
     .notNull()
     .default("private"),
   subAgentsEnabled: boolean("sub_agents_enabled").notNull().default(false),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const SubAgentTable = pgTable(
@@ -72,10 +80,10 @@ export const SubAgentTable = pgTable(
     tools: json("tools").$type<ChatMention[]>().default([]),
     enabled: boolean("enabled").notNull().default(true),
     sortOrder: integer("sort_order").notNull().default(0),
-    createdAt: timestamp("created_at")
+    createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: timestamp("updated_at")
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
@@ -93,7 +101,7 @@ export const BookmarkTable = pgTable(
     itemType: varchar("item_type", {
       enum: ["agent", "workflow", "mcp"],
     }).notNull(),
-    createdAt: timestamp("created_at")
+    createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
@@ -118,12 +126,16 @@ export const McpServerTable = pgTable("mcp_server", {
     .notNull()
     .default("private"),
   toolInfo: json("tool_info").$type<MCPToolInfo[]>(),
-  toolInfoUpdatedAt: timestamp("tool_info_updated_at"),
+  toolInfoUpdatedAt: timestamp("tool_info_updated_at", { withTimezone: true }),
   lastConnectionStatus: varchar("last_connection_status", {
     enum: ["connected", "error"],
   }),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const UserTable = pgTable("user", {
@@ -134,11 +146,15 @@ export const UserTable = pgTable("user", {
   password: text("password"),
   image: text("image"),
   preferences: json("preferences").default({}).$type<UserPreferences>(),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
   banned: boolean("banned"),
   banReason: text("ban_reason"),
-  banExpires: timestamp("ban_expires"),
+  banExpires: timestamp("ban_expires", { withTimezone: true }),
   role: text("role").notNull().default("user"),
 });
 
@@ -147,10 +163,14 @@ export const UserTable = pgTable("user", {
 
 export const SessionTable = pgTable("session", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
-  expiresAt: timestamp("expires_at").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   token: text("token").notNull().unique(),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
   userId: uuid("user_id")
@@ -170,23 +190,31 @@ export const AccountTable = pgTable("account", {
   accessToken: text("access_token"),
   refreshToken: text("refresh_token"),
   idToken: text("id_token"),
-  accessTokenExpiresAt: timestamp("access_token_expires_at"),
-  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at", {
+    withTimezone: true,
+  }),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+    withTimezone: true,
+  }),
   scope: text("scope"),
   password: text("password"),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const VerificationTable = pgTable("verification", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
   identifier: text("identifier").notNull(),
   value: text("value").notNull(),
-  expiresAt: timestamp("expires_at").notNull(),
-  createdAt: timestamp("created_at").$defaultFn(
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).$defaultFn(
     () => /* @__PURE__ */ new Date(),
   ),
-  updatedAt: timestamp("updated_at").$defaultFn(
+  updatedAt: timestamp("updated_at", { withTimezone: true }).$defaultFn(
     () => /* @__PURE__ */ new Date(),
   ),
 });
@@ -204,10 +232,10 @@ export const McpToolCustomizationTable = pgTable(
       .notNull()
       .references(() => McpServerTable.id, { onDelete: "cascade" }),
     prompt: text("prompt"),
-    createdAt: timestamp("created_at")
+    createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: timestamp("updated_at")
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
@@ -225,10 +253,10 @@ export const McpServerCustomizationTable = pgTable(
       .notNull()
       .references(() => McpServerTable.id, { onDelete: "cascade" }),
     prompt: text("prompt"),
-    createdAt: timestamp("created_at")
+    createdAt: timestamp("created_at", { withTimezone: true })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
-    updatedAt: timestamp("updated_at")
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .default(sql`CURRENT_TIMESTAMP`)
       .notNull(),
   },
@@ -250,8 +278,12 @@ export const WorkflowTable = pgTable("workflow", {
   userId: uuid("user_id")
     .notNull()
     .references(() => UserTable.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const WorkflowNodeDataTable = pgTable(
@@ -269,10 +301,10 @@ export const WorkflowNodeDataTable = pgTable(
     nodeConfig: json("node_config")
       .$type<Partial<DBNode["nodeConfig"]>>()
       .default({}),
-    createdAt: timestamp("created_at")
+    createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: timestamp("updated_at")
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
@@ -292,7 +324,9 @@ export const WorkflowEdgeTable = pgTable("workflow_edge", {
     .notNull()
     .references(() => WorkflowNodeDataTable.id, { onDelete: "cascade" }),
   uiConfig: json("ui_config").$type<DBEdge["uiConfig"]>().default({}),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const ArchiveTable = pgTable("archive", {
@@ -302,8 +336,12 @@ export const ArchiveTable = pgTable("archive", {
   userId: uuid("user_id")
     .notNull()
     .references(() => UserTable.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const ArchiveItemTable = pgTable(
@@ -317,7 +355,9 @@ export const ArchiveItemTable = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => UserTable.id, { onDelete: "cascade" }),
-    addedAt: timestamp("added_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    addedAt: timestamp("added_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
   },
   (t) => [index("archive_item_item_id_idx").on(t.itemId)],
 );
@@ -334,10 +374,10 @@ export const McpOAuthSessionTable = pgTable(
     tokens: json("tokens"),
     codeVerifier: text("code_verifier"),
     state: text("state").unique(), // OAuth state parameter for current flow (unique for security)
-    createdAt: timestamp("created_at")
+    createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: timestamp("updated_at")
+    updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
@@ -380,10 +420,10 @@ export const ChatExportTable = pgTable("chat_export", {
       metadata?: ChatMetadata;
     }>
   >(),
-  exportedAt: timestamp("exported_at")
+  exportedAt: timestamp("exported_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
-  expiresAt: timestamp("expires_at"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
 });
 
 export const ChatExportCommentTable = pgTable("chat_export_comment", {
@@ -398,8 +438,12 @@ export const ChatExportCommentTable = pgTable("chat_export_comment", {
     onDelete: "cascade",
   }),
   content: json("content").notNull().$type<TipTapMentionJsonContent>(),
-  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
 export type ArchiveEntity = typeof ArchiveTable.$inferSelect;

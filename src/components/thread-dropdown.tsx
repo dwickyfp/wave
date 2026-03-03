@@ -83,25 +83,24 @@ export function ThreadDropdown({
   const handleBranch = async () => {
     setIsBranching(true);
     try {
-      const newThreadId = await forkThreadAction(threadId);
+      const forkedThread = await forkThreadAction(threadId);
       setOpen(false);
       toast.success(t("Chat.Thread.chatBranched"));
-      const now = Date.now();
       mutate(
         "/api/thread",
         (current: any[] = []) => [
           {
-            id: newThreadId,
-            title: beforeTitle ? `Branch: ${beforeTitle}` : "Branch",
-            createdAt: new Date(),
-            lastMessageAt: now,
-            userId: "",
+            id: forkedThread.id,
+            title: forkedThread.title,
+            createdAt: forkedThread.createdAt,
+            lastMessageAt: forkedThread.lastMessageAt,
+            userId: forkedThread.userId,
           },
-          ...current.filter((item) => item.id !== newThreadId),
+          ...current.filter((item) => item.id !== forkedThread.id),
         ],
         { revalidate: true },
       );
-      push.current(`/chat/${newThreadId}`);
+      push.current(`/chat/${forkedThread.id}`);
     } catch (error: any) {
       toast.error(error?.message || t("Chat.Thread.failedToBranchChat"));
     } finally {
