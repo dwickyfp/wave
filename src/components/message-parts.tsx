@@ -434,10 +434,19 @@ export const AssistMessagePart = memo(function AssistMessagePart({
     }
   }, [message.id, dislikeReason]);
 
-  const handleDislikeNotNow = useCallback(() => {
-    setShowDislikePanel(false);
-    setDislikeReason("");
-  }, []);
+  const handleDislikeNotNow = useCallback(async () => {
+    setIsFeedbackSubmitting(true);
+    try {
+      await submitMessageFeedbackAction(message.id, "dislike");
+      setFeedback("dislike");
+      setShowDislikePanel(false);
+      setDislikeReason("");
+    } catch {
+      toast.error("Failed to submit feedback");
+    } finally {
+      setIsFeedbackSubmitting(false);
+    }
+  }, [message.id]);
 
   const deleteMessage = useCallback(async () => {
     if (!setMessages) return;
