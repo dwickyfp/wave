@@ -50,6 +50,7 @@ export interface AppState {
   openShortcutsPopup: boolean;
   openChatPreferences: boolean;
   openUserSettings: boolean;
+  openSettings: boolean;
   mcpCustomizationPopup?: MCPServerInfo & { id: string };
   temporaryChat: {
     isOpen: boolean;
@@ -85,6 +86,7 @@ const initialState: AppState = {
   toolChoice: "auto",
   allowedMcpServers: undefined,
   openUserSettings: false,
+  openSettings: false,
   allowedAppDefaultToolkit: [
     AppDefaultToolkit.Code,
     AppDefaultToolkit.Visualization,

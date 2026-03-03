@@ -1,6 +1,6 @@
 import { smoothStream, streamText } from "ai";
 
-import { customModelProvider } from "lib/ai/models";
+import { getDbModel } from "lib/ai/provider-factory";
 import { CREATE_THREAD_TITLE_PROMPT } from "lib/ai/prompts";
 import globalLogger from "logger";
 import { ChatModel } from "app-types/chat";
@@ -36,8 +36,14 @@ export async function POST(request: Request) {
       `chatModel: ${chatModel?.provider}/${chatModel?.model}, threadId: ${threadId}`,
     );
 
+    const dbModelResult = await getDbModel(chatModel);
+    if (!dbModelResult) {
+      // Title generation is optional — skip silently if model not configured
+      return new Response("", { status: 200 });
+    }
+
     const result = streamText({
-      model: customModelProvider.getModel(chatModel),
+      model: dbModelResult.model,
       system: CREATE_THREAD_TITLE_PROMPT,
       experimental_transform: smoothStream({ chunking: "word" }),
       prompt: message,

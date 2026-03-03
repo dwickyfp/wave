@@ -22,7 +22,7 @@ import {
   mcpMcpToolCustomizationRepository,
   mcpServerCustomizationRepository,
 } from "lib/db/repository";
-import { customModelProvider } from "lib/ai/models";
+import { getDbModel } from "lib/ai/provider-factory";
 import { generateUUID, toAny } from "lib/utils";
 import { McpServerCustomizationsPrompt, MCPToolInfo } from "app-types/mcp";
 import { serverCache } from "lib/cache";
@@ -119,7 +119,9 @@ export async function generateExampleToolSchemaAction(options: {
   toolInfo: MCPToolInfo;
   prompt?: string;
 }) {
-  const model = customModelProvider.getModel(options.model);
+  const dbModelResult = await getDbModel(options.model);
+  if (!dbModelResult) throw new Error("Model is not configured.");
+  const model = dbModelResult.model;
 
   const schema = jsonSchema(
     toAny({
@@ -203,8 +205,10 @@ export async function generateObjectAction({
   };
   schema: JSONSchema7 | ObjectJsonSchema7;
 }) {
+  const dbModelResult = await getDbModel(model);
+  if (!dbModelResult) throw new Error("Model is not configured.");
   const { experimental_output: output } = await generateText({
-    model: customModelProvider.getModel(model),
+    model: dbModelResult.model,
     system: prompt.system,
     prompt: prompt.user || "",
     experimental_output: Output.object({ schema: jsonSchemaToZod(schema) }),

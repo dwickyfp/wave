@@ -59,6 +59,16 @@ const UserSettingsPopup = dynamic(
   },
 );
 
+const SettingsPopup = dynamic(
+  () =>
+    import("@/components/settings/settings-popup").then(
+      (mod) => mod.SettingsPopup,
+    ),
+  {
+    ssr: false,
+  },
+);
+
 export function AppPopupProvider({
   userSettingsComponent,
 }: {
@@ -69,6 +79,7 @@ export function AppPopupProvider({
       <KeyboardShortcutsPopup />
       <ChatPreferencesPopup />
       <UserSettingsPopup userSettingsComponent={userSettingsComponent} />
+      <SettingsPopup />
       <ChatBotVoice />
       <ChatBotTemporary />
       <McpCustomizationPopup />

@@ -525,3 +525,69 @@ export type ChatMessageFeedbackEntity =
 export type ArchiveEntity = typeof ArchiveTable.$inferSelect;
 export type ArchiveItemEntity = typeof ArchiveItemTable.$inferSelect;
 export type BookmarkEntity = typeof BookmarkTable.$inferSelect;
+
+// ─── LLM Provider & Model Configuration ───────────────────────────────────────
+
+export const LlmProviderConfigTable = pgTable("llm_provider_config", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  name: text("name").notNull().unique(), // "openrouter" | "openai" | "anthropic" | ...
+  displayName: text("display_name").notNull(),
+  apiKey: text("api_key"),
+  baseUrl: text("base_url"),
+  enabled: boolean("enabled").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const LlmModelConfigTable = pgTable(
+  "llm_model_config",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => LlmProviderConfigTable.id, { onDelete: "cascade" }),
+    apiName: text("api_name").notNull(),
+    uiName: text("ui_name").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    supportsTools: boolean("supports_tools").notNull().default(true),
+    supportsImageInput: boolean("supports_image_input")
+      .notNull()
+      .default(false),
+    supportsImageGeneration: boolean("supports_image_generation")
+      .notNull()
+      .default(false),
+    supportsFileInput: boolean("supports_file_input").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique().on(t.providerId, t.uiName),
+    index("llm_model_config_provider_id_idx").on(t.providerId),
+  ],
+);
+
+export const SystemSettingsTable = pgTable("system_settings", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  key: text("key").notNull().unique(),
+  value: json("value"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type LlmProviderConfigEntity =
+  typeof LlmProviderConfigTable.$inferSelect;
+export type LlmModelConfigEntity = typeof LlmModelConfigTable.$inferSelect;
+export type SystemSettingsEntity = typeof SystemSettingsTable.$inferSelect;

@@ -1,4 +1,4 @@
-import { customModelProvider } from "lib/ai/models";
+import { getDbModel } from "lib/ai/provider-factory";
 import {
   ConditionNodeData,
   OutputNodeData,
@@ -86,7 +86,10 @@ export const llmNodeExecutor: NodeExecutor<LLMNodeData> = async ({
   node,
   state,
 }) => {
-  const model = customModelProvider.getModel(node.model);
+  const dbModelResult = await getDbModel(node.model);
+  if (!dbModelResult)
+    throw new Error(`Model "${node.model?.model}" is not configured.`);
+  const model = dbModelResult.model;
 
   // Convert TipTap JSON messages to AI SDK format, resolving mentions to actual data
   const messages: Omit<UIMessage, "id">[] = node.messages.map((message) =>
@@ -212,8 +215,12 @@ export const toolNodeExecutor: NodeExecutor<ToolNodeData> = async ({
         ).parts[0]?.text
       : undefined;
 
+    const toolNodeDbModel = await getDbModel(node.model);
+    if (!toolNodeDbModel)
+      throw new Error(`Model "${node.model?.model}" is not configured.`);
+
     const response = await generateText({
-      model: customModelProvider.getModel(node.model),
+      model: toolNodeDbModel.model,
       toolChoice: "required", // Force the model to call the tool
       prompt: prompt || "",
       tools: {

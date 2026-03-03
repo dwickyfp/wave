@@ -5,7 +5,7 @@ import {
   smoothStream,
   streamText,
 } from "ai";
-import { customModelProvider } from "lib/ai/models";
+import { getDbModel } from "lib/ai/provider-factory";
 import globalLogger from "logger";
 import { buildUserSystemPrompt } from "lib/ai/prompts";
 import { getUserPreferences } from "lib/user/server";
@@ -34,13 +34,23 @@ export async function POST(request: Request) {
       instructions?: string;
     };
     logger.info(`model: ${chatModel?.provider}/${chatModel?.model}`);
-    const model = customModelProvider.getModel(chatModel);
+
+    const dbModelResult = await getDbModel(chatModel);
+    if (!dbModelResult) {
+      return Response.json(
+        {
+          message: `Model "${chatModel?.model}" is not configured. Please set it up in Settings → AI Providers.`,
+        },
+        { status: 503 },
+      );
+    }
+
     const userPreferences =
       (await getUserPreferences(session.user.id)) || undefined;
 
     const modelMessages = await convertToModelMessages(messages);
     return streamText({
-      model,
+      model: dbModelResult.model,
       system: `${buildUserSystemPrompt(session.user, userPreferences)} ${
         instructions ? `\n\n${instructions}` : ""
       }`.trim(),

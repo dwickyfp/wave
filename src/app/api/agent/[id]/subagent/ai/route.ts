@@ -1,5 +1,5 @@
 import { streamText, Output } from "ai";
-import { customModelProvider } from "lib/ai/models";
+import { getDbModel } from "lib/ai/provider-factory";
 import { buildSubAgentGenerationPrompt } from "lib/ai/prompts";
 import globalLogger from "logger";
 import { ChatModel } from "app-types/chat";
@@ -97,8 +97,19 @@ export async function POST(
 
     const system = buildSubAgentGenerationPrompt(Array.from(toolNames));
 
+    const dbModelResult = await getDbModel(chatModel);
+    if (!dbModelResult) {
+      return Response.json(
+        {
+          message:
+            "Model is not configured. Please set it up in Settings → AI Providers.",
+        },
+        { status: 503 },
+      );
+    }
+
     const result = streamText({
-      model: customModelProvider.getModel(chatModel),
+      model: dbModelResult.model,
       system,
       prompt: message,
       output: Output.object({ schema: dynamicSubAgentSchema }),

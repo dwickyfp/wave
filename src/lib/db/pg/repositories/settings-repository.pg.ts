@@ -1,0 +1,325 @@
+import { pgDb as db } from "../db.pg";
+import {
+  LlmModelConfigTable,
+  LlmProviderConfigTable,
+  SystemSettingsTable,
+} from "../schema.pg";
+import { eq, and } from "drizzle-orm";
+import {
+  LlmModelConfig,
+  LlmProviderConfig,
+  LlmModelConfigInput,
+  LlmProviderUpsertInput,
+} from "app-types/settings";
+
+const MASKED_KEY = "••••••••";
+
+function maskApiKey(key: string | null | undefined): string | null {
+  if (!key) return null;
+  return MASKED_KEY;
+}
+
+function mapModelRow(
+  row: typeof LlmModelConfigTable.$inferSelect,
+): LlmModelConfig {
+  return {
+    id: row.id,
+    providerId: row.providerId,
+    apiName: row.apiName,
+    uiName: row.uiName,
+    enabled: row.enabled,
+    supportsTools: row.supportsTools,
+    supportsImageInput: row.supportsImageInput,
+    supportsImageGeneration: row.supportsImageGeneration,
+    supportsFileInput: row.supportsFileInput,
+    sortOrder: row.sortOrder,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export const pgSettingsRepository = {
+  // ─── Providers ──────────────────────────────────────────────────────────────
+
+  async getProviders(
+    opts: { enabledOnly?: boolean } = {},
+  ): Promise<LlmProviderConfig[]> {
+    const rows = await db
+      .select()
+      .from(LlmProviderConfigTable)
+      .orderBy(LlmProviderConfigTable.displayName);
+
+    const filtered = opts.enabledOnly ? rows.filter((r) => r.enabled) : rows;
+
+    const result: LlmProviderConfig[] = [];
+    for (const row of filtered) {
+      const models = await db
+        .select()
+        .from(LlmModelConfigTable)
+        .where(eq(LlmModelConfigTable.providerId, row.id))
+        .orderBy(LlmModelConfigTable.sortOrder, LlmModelConfigTable.uiName);
+
+      result.push({
+        id: row.id,
+        name: row.name,
+        displayName: row.displayName,
+        apiKeyMasked: maskApiKey(row.apiKey),
+        baseUrl: row.baseUrl,
+        enabled: row.enabled,
+        models: models.map(mapModelRow),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      });
+    }
+    return result;
+  },
+
+  async getProviderByName(
+    name: string,
+  ): Promise<{
+    id: string;
+    apiKey: string | null;
+    baseUrl: string | null;
+    enabled: boolean;
+  } | null> {
+    const [row] = await db
+      .select()
+      .from(LlmProviderConfigTable)
+      .where(eq(LlmProviderConfigTable.name, name));
+    if (!row) return null;
+    return {
+      id: row.id,
+      apiKey: row.apiKey,
+      baseUrl: row.baseUrl,
+      enabled: row.enabled,
+    };
+  },
+
+  async getProviderById(id: string): Promise<LlmProviderConfig | null> {
+    const [row] = await db
+      .select()
+      .from(LlmProviderConfigTable)
+      .where(eq(LlmProviderConfigTable.id, id));
+    if (!row) return null;
+
+    const models = await db
+      .select()
+      .from(LlmModelConfigTable)
+      .where(eq(LlmModelConfigTable.providerId, row.id))
+      .orderBy(LlmModelConfigTable.sortOrder, LlmModelConfigTable.uiName);
+
+    return {
+      id: row.id,
+      name: row.name,
+      displayName: row.displayName,
+      apiKeyMasked: maskApiKey(row.apiKey),
+      baseUrl: row.baseUrl,
+      enabled: row.enabled,
+      models: models.map(mapModelRow),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  },
+
+  async upsertProvider(
+    data: LlmProviderUpsertInput & { id?: string },
+  ): Promise<LlmProviderConfig> {
+    const now = new Date();
+    const [row] = await db
+      .insert(LlmProviderConfigTable)
+      .values({
+        name: data.name,
+        displayName: data.displayName,
+        apiKey: data.apiKey ?? null,
+        baseUrl: data.baseUrl ?? null,
+        enabled: data.enabled ?? true,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: LlmProviderConfigTable.name,
+        set: {
+          displayName: data.displayName,
+          // Only update apiKey if a new value is explicitly provided
+          ...(data.apiKey !== undefined ? { apiKey: data.apiKey } : {}),
+          baseUrl: data.baseUrl ?? null,
+          enabled: data.enabled ?? true,
+          updatedAt: now,
+        },
+      })
+      .returning();
+
+    const models = await db
+      .select()
+      .from(LlmModelConfigTable)
+      .where(eq(LlmModelConfigTable.providerId, row.id))
+      .orderBy(LlmModelConfigTable.sortOrder);
+
+    return {
+      id: row.id,
+      name: row.name,
+      displayName: row.displayName,
+      apiKeyMasked: maskApiKey(row.apiKey),
+      baseUrl: row.baseUrl,
+      enabled: row.enabled,
+      models: models.map(mapModelRow),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  },
+
+  async updateProvider(
+    id: string,
+    data: Partial<LlmProviderUpsertInput>,
+  ): Promise<LlmProviderConfig | null> {
+    const now = new Date();
+    const [row] = await db
+      .update(LlmProviderConfigTable)
+      .set({
+        ...(data.displayName !== undefined
+          ? { displayName: data.displayName }
+          : {}),
+        ...(data.apiKey !== undefined ? { apiKey: data.apiKey } : {}),
+        ...(data.baseUrl !== undefined ? { baseUrl: data.baseUrl } : {}),
+        ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
+        updatedAt: now,
+      })
+      .where(eq(LlmProviderConfigTable.id, id))
+      .returning();
+    if (!row) return null;
+
+    const models = await db
+      .select()
+      .from(LlmModelConfigTable)
+      .where(eq(LlmModelConfigTable.providerId, row.id))
+      .orderBy(LlmModelConfigTable.sortOrder);
+
+    return {
+      id: row.id,
+      name: row.name,
+      displayName: row.displayName,
+      apiKeyMasked: maskApiKey(row.apiKey),
+      baseUrl: row.baseUrl,
+      enabled: row.enabled,
+      models: models.map(mapModelRow),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  },
+
+  async deleteProvider(id: string): Promise<void> {
+    await db
+      .delete(LlmProviderConfigTable)
+      .where(eq(LlmProviderConfigTable.id, id));
+  },
+
+  // ─── Models ─────────────────────────────────────────────────────────────────
+
+  async getModelsByProvider(providerId: string): Promise<LlmModelConfig[]> {
+    const rows = await db
+      .select()
+      .from(LlmModelConfigTable)
+      .where(eq(LlmModelConfigTable.providerId, providerId))
+      .orderBy(LlmModelConfigTable.sortOrder, LlmModelConfigTable.uiName);
+    return rows.map(mapModelRow);
+  },
+
+  async getModelForChat(
+    providerName: string,
+    uiName: string,
+  ): Promise<{
+    apiName: string;
+    supportsTools: boolean;
+    supportsImageInput: boolean;
+    supportsFileInput: boolean;
+  } | null> {
+    const [providerRow] = await db
+      .select({ id: LlmProviderConfigTable.id })
+      .from(LlmProviderConfigTable)
+      .where(
+        and(
+          eq(LlmProviderConfigTable.name, providerName),
+          eq(LlmProviderConfigTable.enabled, true),
+        ),
+      );
+    if (!providerRow) return null;
+
+    const [modelRow] = await db
+      .select()
+      .from(LlmModelConfigTable)
+      .where(
+        and(
+          eq(LlmModelConfigTable.providerId, providerRow.id),
+          eq(LlmModelConfigTable.uiName, uiName),
+          eq(LlmModelConfigTable.enabled, true),
+        ),
+      );
+    if (!modelRow) return null;
+
+    return {
+      apiName: modelRow.apiName,
+      supportsTools: modelRow.supportsTools,
+      supportsImageInput: modelRow.supportsImageInput,
+      supportsFileInput: modelRow.supportsFileInput,
+    };
+  },
+
+  async createModel(
+    providerId: string,
+    data: LlmModelConfigInput,
+  ): Promise<LlmModelConfig> {
+    const [row] = await db
+      .insert(LlmModelConfigTable)
+      .values({
+        providerId,
+        apiName: data.apiName,
+        uiName: data.uiName,
+        enabled: data.enabled ?? true,
+        supportsTools: data.supportsTools ?? true,
+        supportsImageInput: data.supportsImageInput ?? false,
+        supportsImageGeneration: data.supportsImageGeneration ?? false,
+        supportsFileInput: data.supportsFileInput ?? false,
+        sortOrder: data.sortOrder ?? 0,
+        updatedAt: new Date(),
+      })
+      .returning();
+    return mapModelRow(row);
+  },
+
+  async updateModel(
+    id: string,
+    data: Partial<LlmModelConfigInput>,
+  ): Promise<LlmModelConfig | null> {
+    const [row] = await db
+      .update(LlmModelConfigTable)
+      .set({ ...data, updatedAt: new Date() })
+      .where(eq(LlmModelConfigTable.id, id))
+      .returning();
+    if (!row) return null;
+    return mapModelRow(row);
+  },
+
+  async deleteModel(id: string): Promise<void> {
+    await db.delete(LlmModelConfigTable).where(eq(LlmModelConfigTable.id, id));
+  },
+
+  // ─── System Settings ────────────────────────────────────────────────────────
+
+  async getSetting(key: string): Promise<unknown> {
+    const [row] = await db
+      .select()
+      .from(SystemSettingsTable)
+      .where(eq(SystemSettingsTable.key, key));
+    return row?.value ?? null;
+  },
+
+  async upsertSetting(key: string, value: unknown): Promise<void> {
+    const now = new Date();
+    await db
+      .insert(SystemSettingsTable)
+      .values({ key, value: value as any, updatedAt: now })
+      .onConflictDoUpdate({
+        target: SystemSettingsTable.key,
+        set: { value: value as any, updatedAt: now },
+      });
+  },
+};

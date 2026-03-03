@@ -9,7 +9,7 @@ import {
   streamText,
 } from "ai";
 
-import { customModelProvider, isToolCallUnsupportedModel } from "lib/ai/models";
+import { getDbModel } from "lib/ai/provider-factory";
 
 import {
   ChatMention,
@@ -87,7 +87,16 @@ export async function POST(request: Request) {
       attachments = [],
     } = chatApiSchemaRequestBodySchema.parse(json);
 
-    const model = customModelProvider.getModel(chatModel!);
+    const dbModelResult = await getDbModel(chatModel!);
+    if (!dbModelResult) {
+      return Response.json(
+        {
+          message: `Model "${chatModel?.model}" is not configured. Please set it up in Settings → AI Providers.`,
+        },
+        { status: 503 },
+      );
+    }
+    const model = dbModelResult.model;
 
     let thread = await chatRepository.selectThreadDetails(id);
 
@@ -183,7 +192,7 @@ export async function POST(request: Request) {
 
     messages.push(message);
 
-    const supportToolCall = !isToolCallUnsupportedModel(model);
+    const supportToolCall = dbModelResult.supportsTools;
 
     const agentId = (
       mentions.find((m) => m.type === "agent") as Extract<

@@ -162,6 +162,13 @@
       "when": 1772514270674,
       "tag": "0022_salty_timeslip",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1772600000000,
+      "tag": "0023_settings_tables",
+      "breakpoints": true
     }
   ]
 }
