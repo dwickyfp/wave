@@ -1,5 +1,16 @@
+import fs from "node:fs";
+import path from "node:path";
 import { generateSnowflakeJwt } from "./auth";
 import type { SnowflakeAgentConfig } from "app-types/snowflake-agent";
+
+const SSE_DEBUG_LOG = path.join(process.cwd(), "snowflake-sse-debug.log");
+
+function sseLog(label: string, data: unknown): void {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] ${label}\n${typeof data === "string" ? data : JSON.stringify(data, null, 2)}\n${"─".repeat(80)}\n`;
+  fs.appendFileSync(SSE_DEBUG_LOG, line, "utf8");
+  console.log(`[Snowflake SSE] ${label}`);
+}
 
 export type SnowflakeCortexMessage = {
   role: "user" | "assistant";
@@ -28,10 +39,43 @@ export function buildCortexApiUrl(config: SnowflakeAgentConfig): string {
     : base;
 }
 
+/** Maximum rows to include in a rendered markdown table. */
+const MAX_TABLE_ROWS = 50;
+
+/**
+ * Converts a Snowflake result_set object (from a `response.table` SSE event)
+ * into a GitHub-Flavored Markdown table string.
+ */
+function resultSetToMarkdown(resultSet: {
+  data: string[][];
+  resultSetMetaData?: {
+    numRows?: number;
+    rowType?: Array<{ name: string }>;
+  };
+}): string {
+  const cols = resultSet.resultSetMetaData?.rowType?.map((c) => c.name) ?? [];
+  const allRows = resultSet.data ?? [];
+  const totalRows = resultSet.resultSetMetaData?.numRows ?? allRows.length;
+  const rows = allRows.slice(0, MAX_TABLE_ROWS);
+
+  if (cols.length === 0 || rows.length === 0) return "";
+
+  const header = `| ${cols.join(" | ")} |`;
+  const sep = `| ${cols.map(() => "---").join(" | ")} |`;
+  const body = rows
+    .map((row) => `| ${row.map((v) => String(v ?? "")).join(" | ")} |`)
+    .join("\n");
+
+  let out = `\n${header}\n${sep}\n${body}\n`;
+  if (totalRows > MAX_TABLE_ROWS) {
+    out += `\n> Showing ${MAX_TABLE_ROWS} of ${totalRows} rows.\n`;
+  }
+  return out;
+}
+
 /**
  * Parses a Server-Sent Events (SSE) streaming response body from Snowflake Cortex
- * and collects all text deltas into a single string.
- * Ported from executor.py::_parse_sse_response.
+ * and collects only real answer text (skipping thinking/planning events).
  */
 async function parseSseResponseStream(
   body: ReadableStream<Uint8Array>,
@@ -40,6 +84,7 @@ async function parseSseResponseStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let fullText = "";
+  let currentEventType = "";
 
   while (true) {
     const { done, value } = await reader.read();
@@ -47,38 +92,28 @@ async function parseSseResponseStream(
 
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
-    // Keep the last partial line in buffer
     buffer = lines.pop() ?? "";
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith("data:")) {
+      if (trimmed.startsWith("event:")) {
+        currentEventType = trimmed.slice(6).trim();
+      } else if (trimmed.startsWith("data:")) {
         const raw = trimmed.slice(5).trim();
         if (!raw || raw === "[DONE]") continue;
         try {
           const data = JSON.parse(raw);
-          // Snowflake Cortex SSE events contain a "text" field for response deltas
-          if (typeof data.text === "string") {
+          if (
+            currentEventType === "response.text.delta" &&
+            typeof data.text === "string"
+          ) {
             fullText += data.text;
+          } else if (currentEventType === "response.table" && data.result_set) {
+            fullText += resultSetToMarkdown(data.result_set);
           }
         } catch {
           // Ignore malformed JSON lines
         }
-      }
-    }
-  }
-
-  // Process any remaining buffer
-  if (buffer.trim().startsWith("data:")) {
-    const raw = buffer.trim().slice(5).trim();
-    if (raw && raw !== "[DONE]") {
-      try {
-        const data = JSON.parse(raw);
-        if (typeof data.text === "string") {
-          fullText += data.text;
-        }
-      } catch {
-        // Ignore
       }
     }
   }
@@ -171,12 +206,31 @@ export async function callSnowflakeCortex(
 }
 
 /**
+ * Discriminated union of every event that callSnowflakeCortexStream can yield.
+ * The route handler uses the `type` to decide how to write to the DataStream.
+ */
+export type SnowflakeStreamEvent =
+  /** Chunk of the real answer text */
+  | { type: "text-delta"; delta: string }
+  /** Chunk that belongs in the reasoning/thinking section */
+  | { type: "reasoning-delta"; delta: string }
+  /** Markdown table converted from a Snowflake result_set */
+  | { type: "table"; markdown: string }
+  /** Token usage + model emitted at end of stream */
+  | {
+      type: "metadata";
+      model: string;
+      inputTokens: number;
+      outputTokens: number;
+    };
+
+/**
  * Calls the Snowflake Cortex Agent API with streaming support.
- * Yields text chunks as they arrive from the SSE stream.
+ * Yields typed SnowflakeStreamEvent objects as they arrive from the SSE stream.
  */
 export async function* callSnowflakeCortexStream(
   options: SnowflakeCortexCallOptions,
-): AsyncGenerator<string> {
+): AsyncGenerator<SnowflakeStreamEvent> {
   const { config, messages } = options;
 
   const token = generateSnowflakeJwt(
@@ -213,6 +267,14 @@ export async function* callSnowflakeCortexStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let eventIndex = 0;
+  let currentEventType = "";
+
+  // Write a session header so each request is easy to find in the log
+  sseLog(
+    `═══ NEW REQUEST ═══ agent=${config.cortexAgentName} messages=${messages.length}`,
+    "",
+  );
 
   while (true) {
     const { done, value } = await reader.read();
@@ -224,13 +286,96 @@ export async function* callSnowflakeCortexStream(
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith("data:")) {
+
+      if (trimmed.startsWith("event:")) {
+        // Track SSE event type — used to decide how to handle the next data: line
+        currentEventType = trimmed.slice(6).trim();
+        sseLog(`meta line`, trimmed);
+      } else if (trimmed.startsWith("data:")) {
         const raw = trimmed.slice(5).trim();
         if (!raw || raw === "[DONE]") continue;
         try {
           const data = JSON.parse(raw);
-          if (typeof data.text === "string" && data.text) {
-            yield data.text;
+          sseLog(
+            `event #${eventIndex++} (seq=${data.sequence_number ?? "?"} sseType=${currentEventType})`,
+            data,
+          );
+
+          switch (currentEventType) {
+            // ── Real answer text ─────────────────────────────────────
+            case "response.text.delta":
+              if (typeof data.text === "string" && data.text) {
+                yield { type: "text-delta", delta: data.text };
+              }
+              break;
+
+            // ── Table result ──────────────────────────────────────────
+            case "response.table": {
+              if (data.result_set) {
+                const markdown = resultSetToMarkdown(data.result_set);
+                if (markdown) yield { type: "table", markdown };
+              }
+              break;
+            }
+
+            // ── Thinking text chunks ──────────────────────────────────
+            case "response.thinking.delta":
+              if (typeof data.text === "string" && data.text) {
+                yield { type: "reasoning-delta", delta: data.text };
+              }
+              break;
+
+            // ── Status / planning steps ───────────────────────────────
+            case "response.status":
+              if (typeof data.message === "string" && data.message) {
+                yield {
+                  type: "reasoning-delta",
+                  delta: `\n\n**${data.message}**\n`,
+                };
+              }
+              break;
+
+            // ── Tool execution status ─────────────────────────────────
+            case "response.tool_result.status":
+              if (typeof data.message === "string" && data.message) {
+                yield {
+                  type: "reasoning-delta",
+                  delta: `\n_${data.message}_\n`,
+                };
+              }
+              break;
+
+            // ── Tool call info ────────────────────────────────────────
+            case "response.tool_use": {
+              const name = data.name ?? data.type ?? "tool";
+              const query =
+                data.input?.original_query ?? data.input?.query ?? "";
+              yield {
+                type: "reasoning-delta",
+                delta: `\n🔧 **${name}**${query ? `: _"${query}"_` : ""}\n`,
+              };
+              break;
+            }
+
+            // ── Final assembled message — extract token metadata ──────
+            case "response": {
+              const consumed = data.metadata?.usage?.tokens_consumed?.[0];
+              if (consumed) {
+                yield {
+                  type: "metadata",
+                  model: consumed.model_name ?? "",
+                  inputTokens: consumed.input_tokens?.total ?? 0,
+                  outputTokens: consumed.output_tokens?.total ?? 0,
+                };
+              }
+              break;
+            }
+
+            // response.thinking (full), response.text (full — already
+            // streamed via deltas), response.tool_result (raw data —
+            // already rendered via response.table), done: all skipped.
+            default:
+              break;
           }
         } catch {
           // Ignore malformed JSON lines

@@ -58,11 +58,16 @@ export async function POST(
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of callSnowflakeCortexStream({
+          for await (const event of callSnowflakeCortexStream({
             config,
             messages,
           })) {
-            controller.enqueue(encoder.encode(chunk));
+            // Only forward visible content — skip reasoning/metadata
+            if (event.type === "text-delta") {
+              controller.enqueue(encoder.encode(event.delta));
+            } else if (event.type === "table") {
+              controller.enqueue(encoder.encode(event.markdown));
+            }
           }
         } catch (err) {
           console.error("Snowflake Cortex streaming error:", err);

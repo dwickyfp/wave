@@ -85,7 +85,7 @@ export async function POST(request: Request) {
       attachments = [],
     } = chatApiSchemaRequestBodySchema.parse(json);
 
-    const model = customModelProvider.getModel(chatModel);
+    const model = customModelProvider.getModel(chatModel!);
 
     let thread = await chatRepository.selectThreadDetails(id);
 
@@ -226,22 +226,127 @@ export async function POST(request: Request) {
         chatModel,
       };
 
+      // Captures metadata emitted at end of Snowflake stream (usage + model).
+      // Set inside execute, read inside onFinish — both share this closure.
+      const sfCapture = {
+        usage: null as {
+          model: string;
+          input: number;
+          output: number;
+        } | null,
+      };
+
       logger.info(`Snowflake Intelligence agent: ${agent!.name}`);
 
       const sfStream = createUIMessageStream({
         execute: async ({ writer: dataStream }) => {
-          const msgId = generateUUID();
-          dataStream.write({ type: "text-start", id: msgId });
-          for await (const chunk of callSnowflakeCortexStream({
+          const textId = generateUUID();
+          const reasoningId = generateUUID();
+          let textOpen = false;
+          let reasoningOpen = false;
+
+          for await (const event of callSnowflakeCortexStream({
             config: sfConfig,
             messages: sfMessages,
           })) {
-            dataStream.write({ type: "text-delta", delta: chunk, id: msgId });
+            switch (event.type) {
+              case "reasoning-delta":
+                // Once text has started, discard reasoning deltas — they are
+                // post-answer status events from Snowflake and must not open
+                // a second reasoning block after the answer.
+                if (textOpen) break;
+                if (!reasoningOpen) {
+                  dataStream.write({
+                    type: "reasoning-start",
+                    id: reasoningId,
+                  });
+                  reasoningOpen = true;
+                }
+                dataStream.write({
+                  type: "reasoning-delta",
+                  delta: event.delta,
+                  id: reasoningId,
+                });
+                break;
+
+              case "text-delta":
+                // Close reasoning part before opening text
+                if (reasoningOpen) {
+                  dataStream.write({ type: "reasoning-end", id: reasoningId });
+                  reasoningOpen = false;
+                }
+                if (!textOpen) {
+                  dataStream.write({ type: "text-start", id: textId });
+                  textOpen = true;
+                }
+                dataStream.write({
+                  type: "text-delta",
+                  delta: event.delta,
+                  id: textId,
+                });
+                break;
+
+              case "table":
+                // Tables go into the text part as markdown
+                if (!textOpen) {
+                  dataStream.write({ type: "text-start", id: textId });
+                  textOpen = true;
+                }
+                dataStream.write({
+                  type: "text-delta",
+                  delta: event.markdown,
+                  id: textId,
+                });
+                break;
+
+              case "metadata":
+                sfCapture.usage = {
+                  model: event.model,
+                  input: event.inputTokens,
+                  output: event.outputTokens,
+                };
+                break;
+            }
           }
-          dataStream.write({ type: "text-end", id: msgId });
+
+          // Close any still-open parts
+          if (reasoningOpen)
+            dataStream.write({ type: "reasoning-end", id: reasoningId });
+          if (textOpen) {
+            dataStream.write({ type: "text-end", id: textId });
+          } else {
+            // Safety: ensure at least an empty text part so the message renders
+            dataStream.write({ type: "text-start", id: textId });
+            dataStream.write({ type: "text-end", id: textId });
+          }
         },
         generateId: generateUUID,
         onFinish: async ({ responseMessage }) => {
+          // Populate metadata from the captured Snowflake usage/model info
+          if (sfCapture.usage) {
+            sfMetadata.usage = {
+              inputTokens: sfCapture.usage.input,
+              outputTokens: sfCapture.usage.output,
+              totalTokens: sfCapture.usage.input + sfCapture.usage.output,
+              inputTokenDetails: {
+                noCacheTokens: undefined,
+                cacheReadTokens: undefined,
+                cacheWriteTokens: undefined,
+              },
+              outputTokenDetails: {
+                textTokens: undefined,
+                reasoningTokens: undefined,
+              },
+            };
+            const currentProvider = sfMetadata.chatModel?.provider;
+            if (sfCapture.usage.model && currentProvider) {
+              sfMetadata.chatModel = {
+                provider: currentProvider,
+                model: sfCapture.usage.model,
+              };
+            }
+          }
+
           if (responseMessage.id === message.id) {
             await chatRepository.upsertMessage({
               threadId: thread!.id,
@@ -347,7 +452,7 @@ export async function POST(request: Request) {
               agentWithSubAgents!,
               dataStream,
               request.signal,
-              chatModel,
+              chatModel!,
             ),
           )
           .orElse({});
