@@ -92,7 +92,7 @@ export async function createSnowflakeThread(
 }
 
 /** Maximum rows to include in a rendered markdown table. */
-const MAX_TABLE_ROWS = 50;
+const MAX_TABLE_ROWS = 1500;
 
 /**
  * Converts a Snowflake result_set object (from a `response.table` SSE event)
