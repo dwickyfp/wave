@@ -78,9 +78,8 @@ import { mutate } from "swr";
 import { handleErrorWithToast } from "ui/shared-toast";
 import { useAgents } from "@/hooks/queries/use-agents";
 import { redriectMcpOauth } from "lib/ai/mcp/oauth-redirect";
-import { GeminiIcon } from "ui/gemini-icon";
 import { useChatModels } from "@/hooks/queries/use-chat-models";
-import { OpenAIIcon } from "ui/openai-icon";
+import { ChatModel } from "app-types/chat";
 
 interface ToolSelectDropdownProps {
   align?: "start" | "end" | "center";
@@ -89,7 +88,7 @@ interface ToolSelectDropdownProps {
   mentions?: ChatMention[];
   onSelectWorkflow?: (workflow: WorkflowSummary) => void;
   onSelectAgent?: (agent: AgentSummary) => void;
-  onGenerateImage?: (provider?: "google" | "openai") => void;
+  onGenerateImage?: (model?: ChatModel) => void;
   className?: string;
 }
 
@@ -1051,10 +1050,22 @@ function ImageGeneratorSelector({
   onGenerateImage,
   modelInfo,
 }: {
-  onGenerateImage?: (provider?: "google" | "openai") => void;
+  onGenerateImage?: (model?: ChatModel) => void;
   modelInfo?: { isToolCallUnsupported?: boolean };
 }) {
   const t = useTranslations("Chat");
+  const { data: providers } = useChatModels();
+
+  const imageModels = useMemo(
+    () =>
+      (providers ?? []).flatMap((p) =>
+        (p.imageGenerationModels ?? []).map((m) => ({
+          provider: p.provider,
+          model: m.name,
+        })),
+      ),
+    [providers],
+  );
 
   return (
     <DropdownMenuGroup>
@@ -1065,22 +1076,28 @@ function ImageGeneratorSelector({
         </DropdownMenuSubTrigger>
         <DropdownMenuPortal>
           <DropdownMenuSubContent>
-            <DropdownMenuItem
-              disabled={modelInfo?.isToolCallUnsupported}
-              onClick={() => onGenerateImage?.("google")}
-              className="cursor-pointer"
-            >
-              <GeminiIcon className="mr-2 size-4" />
-              Gemini (Nano Banana)
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={modelInfo?.isToolCallUnsupported}
-              onClick={() => onGenerateImage?.("openai")}
-              className="cursor-pointer"
-            >
-              <OpenAIIcon className="mr-2 size-4" />
-              OpenAI
-            </DropdownMenuItem>
+            {imageModels.length === 0 ? (
+              <div className="text-sm text-muted-foreground px-4 py-6 text-center">
+                No image generation models configured.
+              </div>
+            ) : (
+              imageModels.map((m) => (
+                <DropdownMenuItem
+                  key={`${m.provider}/${m.model}`}
+                  disabled={modelInfo?.isToolCallUnsupported}
+                  onClick={() => onGenerateImage?.(m)}
+                  className="cursor-pointer"
+                >
+                  <ImagesIcon className="mr-2 size-4 text-muted-foreground" />
+                  <div className="flex flex-col">
+                    <span>{m.model}</span>
+                    <span className="text-xs text-muted-foreground capitalize">
+                      {m.provider}
+                    </span>
+                  </div>
+                </DropdownMenuItem>
+              ))
+            )}
           </DropdownMenuSubContent>
         </DropdownMenuPortal>
       </DropdownMenuSub>

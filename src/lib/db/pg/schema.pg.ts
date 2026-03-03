@@ -561,6 +561,11 @@ export const LlmModelConfigTable = pgTable(
       .notNull()
       .default(false),
     supportsFileInput: boolean("supports_file_input").notNull().default(false),
+    modelType: varchar("model_type", {
+      enum: ["llm", "image_generation", "embedding", "reranking"],
+    })
+      .notNull()
+      .default("llm"),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

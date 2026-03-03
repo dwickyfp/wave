@@ -2,6 +2,8 @@ import { z } from "zod";
 
 // ─── LLM Provider ─────────────────────────────────────────────────────────────
 
+export type ModelType = "llm" | "image_generation" | "embedding" | "reranking";
+
 export type LlmProviderName =
   | "openrouter"
   | "openai"
@@ -22,6 +24,7 @@ export type LlmModelConfig = {
   supportsImageInput: boolean;
   supportsImageGeneration: boolean;
   supportsFileInput: boolean;
+  modelType: ModelType;
   sortOrder: number;
   createdAt: Date;
   updatedAt: Date;
@@ -67,6 +70,9 @@ export const LlmModelConfigZodSchema = z.object({
   supportsImageInput: z.boolean().default(false),
   supportsImageGeneration: z.boolean().default(false),
   supportsFileInput: z.boolean().default(false),
+  modelType: z
+    .enum(["llm", "image_generation", "embedding", "reranking"])
+    .default("llm"),
   sortOrder: z.number().int().default(0),
 });
 

@@ -8,10 +8,11 @@ export const GET = async () => {
 
     const providerList = dbProviders
       .filter((p) => p.models.some((m) => m.enabled))
-      .map((p) => ({
-        provider: p.name,
-        models: p.models
-          .filter((m) => m.enabled)
+      .map((p) => {
+        const enabledModels = p.models.filter((m) => m.enabled);
+
+        const llmModels = enabledModels
+          .filter((m) => !m.modelType || m.modelType === "llm")
           .map((m) => ({
             name: m.uiName,
             isToolCallUnsupported: !m.supportsTools,
@@ -25,9 +26,23 @@ export const GET = async () => {
                   "application/pdf",
                 ]
               : [],
-          })),
-        hasAPIKey: !!p.apiKeyMasked,
-      }))
+          }));
+
+        const imageGenerationModels = enabledModels
+          .filter((m) => m.modelType === "image_generation")
+          .map((m) => ({
+            name: m.uiName,
+            supportsImageInput: m.supportsImageInput,
+          }));
+
+        return {
+          provider: p.name,
+          models: llmModels,
+          imageGenerationModels,
+          hasAPIKey: !!p.apiKeyMasked,
+        };
+      })
+      .filter((p) => p.models.length > 0 || p.imageGenerationModels.length > 0)
       .sort((a, b) => {
         if (a.hasAPIKey && !b.hasAPIKey) return -1;
         if (!a.hasAPIKey && b.hasAPIKey) return 1;

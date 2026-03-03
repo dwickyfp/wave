@@ -25,6 +25,7 @@ import {
 import {
   agentRepository,
   chatRepository,
+  settingsRepository,
   snowflakeAgentRepository,
   subAgentRepository,
 } from "lib/db/repository";
@@ -37,7 +38,7 @@ import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
 import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import { ImageToolName } from "lib/ai/tools";
-import { nanoBananaTool, openaiImageTool } from "lib/ai/tools/image";
+import { createDbImageTool } from "lib/ai/tools/image";
 import { serverFileStorage } from "lib/file-storage";
 import {
   type SnowflakeCortexMessage,
@@ -485,7 +486,7 @@ export async function POST(request: Request) {
       mentions.push(...agent.instructions.mentions);
     }
 
-    const useImageTool = Boolean(imageTool?.model);
+    const useImageTool = Boolean(imageTool?.provider && imageTool?.model);
 
     const isToolCallAllowed =
       supportToolCall &&
@@ -599,14 +600,32 @@ export async function POST(request: Request) {
           !supportToolCall && buildToolCallUnsupportedModelSystemPrompt,
         );
 
-        const IMAGE_TOOL: Record<string, Tool> = useImageTool
-          ? {
-              [ImageToolName]:
-                imageTool?.model === "google"
-                  ? nanoBananaTool
-                  : openaiImageTool,
-            }
-          : {};
+        const IMAGE_TOOL: Record<string, Tool> = await (async (): Promise<
+          Record<string, Tool>
+        > => {
+          if (!useImageTool) return {};
+          try {
+            const providerConfig = await settingsRepository.getProviderByName(
+              imageTool!.provider!,
+            );
+            if (!providerConfig?.enabled) return {};
+            const modelConfig = await settingsRepository.getModelForChat(
+              imageTool!.provider!,
+              imageTool!.model!,
+            );
+            if (!modelConfig) return {};
+            return {
+              [ImageToolName]: createDbImageTool(
+                imageTool!.provider!,
+                modelConfig.apiName,
+                providerConfig.apiKey,
+                providerConfig.baseUrl,
+              ),
+            };
+          } catch {
+            return {};
+          }
+        })();
         const vercelAITooles = safe({
           ...MCP_TOOLS,
           ...WORKFLOW_TOOLS,
@@ -639,7 +658,9 @@ export async function POST(request: Request) {
           `allowedMcpTools: ${allowedMcpTools.length ?? 0}, allowedAppDefaultToolkit: ${allowedAppDefaultToolkit?.length ?? 0}`,
         );
         if (useImageTool) {
-          logger.info(`binding tool count Image: ${imageTool?.model}`);
+          logger.info(
+            `binding tool count Image: ${imageTool?.provider}/${imageTool?.model}`,
+          );
         } else {
           logger.info(
             `binding tool count APP_DEFAULT: ${Object.keys(APP_DEFAULT_TOOLS ?? {}).length}, MCP: ${Object.keys(MCP_TOOLS ?? {}).length}, Workflow: ${Object.keys(WORKFLOW_TOOLS ?? {}).length}`,

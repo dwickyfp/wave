@@ -39,7 +39,7 @@ export interface AppState {
     [threadId: string]: UploadedFile[];
   };
   threadImageToolModel: {
-    [threadId: string]: string | undefined;
+    [threadId: string]: ChatModel | undefined;
   };
   toolPresets: {
     allowedMcpServers?: Record<string, AllowedMCPServer>;

@@ -4,16 +4,21 @@ import {
   ModelMessage,
   ToolApprovalResponse,
   ToolResultPart,
+  Tool,
   tool as createTool,
   generateText,
+  generateImage,
 } from "ai";
-import { generateImageWithNanoBanana } from "lib/ai/image/generate-image";
+import {
+  generateImageWithNanoBanana,
+  generateImageWithXAI,
+} from "lib/ai/image/generate-image";
 import { serverFileStorage } from "lib/file-storage";
 import { safe, watchError } from "ts-safe";
 import z from "zod";
 import { ImageToolName } from "..";
 import logger from "logger";
-import { openai } from "@ai-sdk/openai";
+import { openai, createOpenAI } from "@ai-sdk/openai";
 import { toAny } from "lib/utils";
 
 export type ImageToolResult = {
@@ -68,33 +73,28 @@ export const nanoBananaTool = createTool({
       });
 
       const resultImages = await safe(images.images)
-        .map((images) => {
-          return Promise.all(
-            images.map(async (image) => {
-              const uploadedImage = await serverFileStorage.upload(
+        .map((imgs) =>
+          Promise.all(
+            imgs.map(async (image) => {
+              const mimeType = image.mimeType ?? "image/png";
+              const uploaded = await serverFileStorage.upload(
                 Buffer.from(image.base64, "base64"),
-                {
-                  contentType: image.mimeType,
-                },
+                { contentType: mimeType },
               );
+              const buf = await serverFileStorage.download(uploaded.key);
               return {
-                url: uploadedImage.sourceUrl,
-                mimeType: image.mimeType,
+                url: `data:${mimeType};base64,${buf.toString("base64")}`,
+                mimeType,
               };
             }),
-          );
-        })
+          ),
+        )
         .watch(
           watchError((e) => {
             logger.error(e);
-            logger.info(`upload image failed. using base64`);
+            logger.info("upload/download image failed");
           }),
         )
-        .ifFail(() => {
-          throw new Error(
-            "Image generation was successful, but file upload failed. Please check your file upload configuration and try again.",
-          );
-        })
         .unwrap();
 
       return {
@@ -166,17 +166,19 @@ export const openaiImageTool = createTool({
     for (const toolResult of result.staticToolResults) {
       if (toolResult.toolName === "image_generation") {
         const base64Image = toolResult.output.result;
-        const uploadedImage = await serverFileStorage
-          .upload(Buffer.from(base64Image, "base64"), {
-            contentType: "image/webp",
-          })
-          .catch(() => {
-            throw new Error(
-              "Image generation was successful, but file upload failed. Please check your file upload configuration and try again.",
-            );
-          });
+        const mimeType = "image/webp";
+        const uploaded = await serverFileStorage.upload(
+          Buffer.from(base64Image, "base64"),
+          { contentType: mimeType },
+        );
+        const buf = await serverFileStorage.download(uploaded.key);
         return {
-          images: [{ url: uploadedImage.sourceUrl, mimeType: "image/webp" }],
+          images: [
+            {
+              url: `data:${mimeType};base64,${buf.toString("base64")}`,
+              mimeType,
+            },
+          ],
           mode,
           model: "gpt-image-1-mini",
           guide:
@@ -219,4 +221,279 @@ function convertToImageToolPartToFilePart(
     mediaType: image.mimeType!,
     data: image.url,
   }));
+}
+
+/**
+ * Creates a dynamic image generation tool backed by a DB-configured provider/model.
+ * Dispatches to the appropriate SDK based on providerName.
+ */
+export function createDbImageTool(
+  providerName: string,
+  modelApiName: string,
+  apiKey: string | null | undefined,
+  baseUrl?: string | null,
+): Tool {
+  const DESCRIPTION = `Generate, edit, or composite images based on the conversation context. This tool automatically analyzes recent messages to create images without requiring explicit input parameters. It includes all user-uploaded images from the recent conversation and only the most recent AI-generated image to avoid confusion. Use the 'mode' parameter to specify the operation type: 'create' for new images, 'edit' for modifying existing images, or 'composite' for combining multiple images. Use this when the user requests image creation, modification, or visual content generation.`;
+
+  const uploadAndBase64 = async (
+    generatedImages: { base64: string; mimeType?: string }[],
+  ) =>
+    Promise.all(
+      generatedImages.map(async (image) => {
+        const mimeType = image.mimeType ?? "image/png";
+        const uploaded = await serverFileStorage
+          .upload(Buffer.from(image.base64, "base64"), {
+            contentType: mimeType,
+          })
+          .catch(() => {
+            throw new Error(
+              "Image generation was successful, but file upload failed. Please check your file upload configuration and try again.",
+            );
+          });
+        const buf = await serverFileStorage.download(uploaded.key);
+        return {
+          url: `data:${mimeType};base64,${buf.toString("base64")}`,
+          mimeType,
+        };
+      }),
+    );
+
+  const extractPrompt = (messages: ModelMessage[]): string => {
+    const last = [...messages].reverse().find((m) => m.role === "user");
+    if (!last) return "";
+    const content = last.content;
+    if (typeof content === "string") return content;
+    return (content as any[])
+      .filter((p) => p.type === "text")
+      .map((p) => p.text)
+      .join(" ");
+  };
+
+  return createTool({
+    description: DESCRIPTION,
+    inputSchema: z.object({
+      mode: z
+        .enum(["create", "edit", "composite"])
+        .optional()
+        .default("create")
+        .describe(
+          "Image generation mode: 'create' for new images, 'edit' for modifying existing images, 'composite' for combining multiple images",
+        ),
+    }),
+    execute: async ({ mode }, { messages, abortSignal }) => {
+      const provider = providerName.toLowerCase();
+
+      // Google (Gemini) — passes full message context
+      if (provider === "google") {
+        let hasFoundImage = false;
+        const latestMessages = messages
+          .slice(-6)
+          .reverse()
+          .map((m) => {
+            if (m.role !== "tool") return m;
+            if (hasFoundImage) return m;
+            const fileParts = m.content.flatMap(
+              convertToImageToolPartToFilePart,
+            );
+            if (fileParts.length === 0) return m;
+            hasFoundImage = true;
+            return { ...m, role: "assistant", content: fileParts };
+          })
+          .filter((v) => Boolean((v as any)?.content?.length))
+          .reverse() as ModelMessage[];
+
+        const generated = await generateImageWithNanoBanana({
+          prompt: "",
+          abortSignal,
+          messages: latestMessages,
+          apiKey,
+          model: modelApiName,
+        });
+        const resultImages = await uploadAndBase64(generated.images);
+        return {
+          images: resultImages,
+          mode,
+          model: modelApiName,
+          guide:
+            resultImages.length > 0
+              ? "The image has been successfully generated and is now displayed above. If you need any edits, modifications, or adjustments to the image, please let me know."
+              : "I apologize, but the image generation was not successful. Please provide more specific details about what you'd like to see.",
+        } satisfies ImageToolResult;
+      }
+
+      // OpenAI — uses native imageGeneration tool via generateText
+      if (provider === "openai") {
+        const openaiProvider = apiKey ? createOpenAI({ apiKey }) : openai;
+        let hasFoundImage = false;
+        const latestMessages = messages
+          .slice(-6)
+          .reverse()
+          .flatMap((m) => {
+            if (m.role !== "tool") return m;
+            if (hasFoundImage) return m;
+            const imageParts = m.content.flatMap(
+              convertToImageToolPartToImagePart,
+            );
+            if (imageParts.length === 0) return m;
+            hasFoundImage = true;
+            return [{ role: "user", content: imageParts }, m] as ModelMessage[];
+          })
+          .filter((v) => Boolean((v as any)?.content?.length))
+          .reverse() as ModelMessage[];
+
+        const result = await generateText({
+          model: openaiProvider("gpt-4.1-mini"),
+          abortSignal,
+          messages: latestMessages,
+          tools: {
+            image_generation: openaiProvider.tools.imageGeneration({
+              outputFormat: "webp",
+              model: modelApiName,
+            }),
+          },
+          toolChoice: "required",
+        });
+
+        for (const toolResult of result.staticToolResults) {
+          if (toolResult.toolName === "image_generation") {
+            const base64Image = toolResult.output.result;
+            const mimeType = "image/webp";
+            const uploaded = await serverFileStorage
+              .upload(Buffer.from(base64Image, "base64"), {
+                contentType: mimeType,
+              })
+              .catch(() => {
+                throw new Error(
+                  "Image generation was successful, but file upload failed. Please check your file upload configuration and try again.",
+                );
+              });
+            const buf = await serverFileStorage.download(uploaded.key);
+            return {
+              images: [
+                {
+                  url: `data:${mimeType};base64,${buf.toString("base64")}`,
+                  mimeType,
+                },
+              ],
+              mode,
+              model: modelApiName,
+              guide:
+                "The image has been successfully generated and is now displayed above. If you need any edits, modifications, or adjustments to the image, please let me know.",
+            } satisfies ImageToolResult;
+          }
+        }
+        return { images: [], mode, model: modelApiName, guide: "" };
+      }
+
+      // xAI (Grok) — prompt-based
+      if (provider === "xai") {
+        const prompt = extractPrompt(messages);
+        const generated = await generateImageWithXAI({
+          prompt,
+          abortSignal,
+          apiKey,
+          model: modelApiName,
+        });
+        const resultImages = await uploadAndBase64(generated.images);
+        return {
+          images: resultImages,
+          mode,
+          model: modelApiName,
+          guide:
+            resultImages.length > 0
+              ? "The image has been successfully generated and is now displayed above. If you need any edits, modifications, or adjustments to the image, please let me know."
+              : "Image generation was not successful. Please try again with a more specific prompt.",
+        } satisfies ImageToolResult;
+      }
+
+      // OpenRouter — uses chat completions with modalities parameter
+      // OpenRouter image models (Flux, Gemini, etc.) do NOT support the
+      // /v1/images/generations endpoint. They require /api/v1/chat/completions
+      // with `modalities: ["image", "text"]` or `["image"]`.
+      if (provider === "openrouter") {
+        const prompt = extractPrompt(messages);
+        const openrouterBaseUrl =
+          baseUrl?.replace(/\/$/, "") ?? "https://openrouter.ai/api/v1";
+        const response = await fetch(`${openrouterBaseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey ?? ""}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: modelApiName,
+            messages: [{ role: "user", content: prompt }],
+            modalities: ["image", "text"],
+          }),
+          signal: abortSignal,
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.text().catch(() => "");
+          throw new Error(
+            `OpenRouter image generation failed (${response.status}): ${errorBody}`,
+          );
+        }
+
+        const data = await response.json();
+        const message = data?.choices?.[0]?.message;
+        const rawImages: { image_url?: { url?: string } }[] =
+          message?.images ?? [];
+
+        if (!rawImages.length) {
+          return { images: [], mode, model: modelApiName, guide: "" };
+        }
+
+        // OpenRouter returns data:image/...;base64,... URLs — upload to MinIO then serve back as base64
+        const rawBase64Images = rawImages
+          .map((img) => {
+            const dataUrl = img?.image_url?.url ?? "";
+            const match = dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+            if (!match) return null;
+            return { base64: match[2], mimeType: match[1] };
+          })
+          .filter(Boolean) as { base64: string; mimeType: string }[];
+        const resultImages = await uploadAndBase64(rawBase64Images);
+
+        return {
+          images: resultImages,
+          mode,
+          model: modelApiName,
+          guide:
+            resultImages.length > 0
+              ? "The image has been successfully generated and is now displayed above. If you need any edits, modifications, or adjustments to the image, please let me know."
+              : "Image generation was not successful. Please try again with a more specific prompt.",
+        } satisfies ImageToolResult;
+      }
+
+      // Fallback: OpenAI-compatible prompt-based (e.g. local SDXLs, custom endpoints)
+      // Note: createOpenAICompatible does not expose .image(); use createOpenAI
+      // with a custom baseURL instead, which works for any OpenAI-compatible endpoint.
+      const compatProvider = createOpenAI({
+        apiKey: apiKey ?? "",
+        baseURL: baseUrl ?? undefined,
+      });
+      const prompt = extractPrompt(messages);
+      const result = await generateImage({
+        model: compatProvider.image(modelApiName),
+        prompt,
+        abortSignal,
+      });
+      const resultImages = await uploadAndBase64(
+        result.images.map((img) => ({
+          base64: Buffer.from(img.uint8Array).toString("base64"),
+          mimeType: img.mediaType,
+        })),
+      );
+      return {
+        images: resultImages,
+        mode,
+        model: modelApiName,
+        guide:
+          resultImages.length > 0
+            ? "The image has been successfully generated and is now displayed above. If you need any edits, modifications, or adjustments to the image, please let me know."
+            : "Image generation was not successful. Please try again with a more specific prompt.",
+      } satisfies ImageToolResult;
+    },
+  });
 }

@@ -10,6 +10,7 @@ import {
   LlmProviderConfig,
   LlmModelConfigInput,
   LlmProviderUpsertInput,
+  ModelType,
 } from "app-types/settings";
 
 const MASKED_KEY = "••••••••";
@@ -32,6 +33,7 @@ function mapModelRow(
     supportsImageInput: row.supportsImageInput,
     supportsImageGeneration: row.supportsImageGeneration,
     supportsFileInput: row.supportsFileInput,
+    modelType: (row.modelType as ModelType) ?? "llm",
     sortOrder: row.sortOrder,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -74,9 +76,7 @@ export const pgSettingsRepository = {
     return result;
   },
 
-  async getProviderByName(
-    name: string,
-  ): Promise<{
+  async getProviderByName(name: string): Promise<{
     id: string;
     apiKey: string | null;
     baseUrl: string | null;
@@ -278,6 +278,7 @@ export const pgSettingsRepository = {
         supportsImageInput: data.supportsImageInput ?? false,
         supportsImageGeneration: data.supportsImageGeneration ?? false,
         supportsFileInput: data.supportsFileInput ?? false,
+        modelType: data.modelType ?? "llm",
         sortOrder: data.sortOrder ?? 0,
         updatedAt: new Date(),
       })

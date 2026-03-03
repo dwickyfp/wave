@@ -210,9 +210,7 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
             : latestRef.current.allowedMcpServers,
           mentions: latestRef.current.mentions,
           message: sanitizedLastMessage,
-          imageTool: {
-            model: latestRef.current.threadImageToolModel[threadId],
-          },
+          imageTool: latestRef.current.threadImageToolModel[threadId],
           attachments,
         };
         return { body: requestBody };

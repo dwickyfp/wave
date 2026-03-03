@@ -7,8 +7,8 @@ import {
 import { safe, watchError } from "ts-safe";
 import { getBase64Data } from "lib/file-storage/storage-utils";
 import { serverFileStorage } from "lib/file-storage";
-import { openai } from "@ai-sdk/openai";
-import { xai } from "@ai-sdk/xai";
+import { openai, createOpenAI } from "@ai-sdk/openai";
+import { createXai, xai } from "@ai-sdk/xai";
 
 import {
   FilePart,
@@ -24,6 +24,10 @@ type GenerateImageOptions = {
   messages?: ModelMessage[];
   prompt: string;
   abortSignal?: AbortSignal;
+  /** Override API key (falls back to env var) */
+  apiKey?: string | null;
+  /** Override model name (falls back to default) */
+  model?: string | null;
 };
 
 type GeneratedImage = {
@@ -38,8 +42,12 @@ export type GeneratedImageResult = {
 export async function generateImageWithOpenAI(
   options: GenerateImageOptions,
 ): Promise<GeneratedImageResult> {
+  const provider = options.apiKey
+    ? createOpenAI({ apiKey: options.apiKey })
+    : openai;
+  const modelName = options.model || "gpt-image-1-mini";
   return experimental_generateImage({
-    model: openai.image("gpt-image-1-mini"),
+    model: provider.image(modelName),
     abortSignal: options.abortSignal,
     prompt: options.prompt,
   }).then((res) => {
@@ -58,8 +66,10 @@ export async function generateImageWithOpenAI(
 export async function generateImageWithXAI(
   options: GenerateImageOptions,
 ): Promise<GeneratedImageResult> {
+  const provider = options.apiKey ? createXai({ apiKey: options.apiKey }) : xai;
+  const modelName = options.model || "grok-2-image";
   return experimental_generateImage({
-    model: xai.image("grok-2-image"),
+    model: provider.image(modelName),
     abortSignal: options.abortSignal,
     prompt: options.prompt,
   }).then((res) => {
@@ -75,10 +85,12 @@ export async function generateImageWithXAI(
 export const generateImageWithNanoBanana = async (
   options: GenerateImageOptions,
 ): Promise<GeneratedImageResult> => {
-  const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  const apiKey = options.apiKey || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (!apiKey) {
     throw new Error("GOOGLE_GENERATIVE_AI_API_KEY is not set");
   }
+
+  const modelName = options.model || "gemini-2.5-flash-image";
 
   const ai = new GoogleGenAI({
     apiKey: apiKey,
@@ -96,7 +108,7 @@ export const generateImageWithNanoBanana = async (
   }
   const response = await ai.models
     .generateContent({
-      model: "gemini-2.5-flash-image",
+      model: modelName,
       config: {
         abortSignal: options.abortSignal,
         responseModalities: ["IMAGE"],

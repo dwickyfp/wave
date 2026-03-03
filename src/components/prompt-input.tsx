@@ -222,8 +222,8 @@ export default function PromptInput({
   );
 
   const handleGenerateImage = useCallback(
-    (provider?: "google" | "openai") => {
-      if (!provider) {
+    (model?: ChatModel) => {
+      if (!model) {
         appStoreMutate({
           threadImageToolModel: {},
         });
@@ -235,7 +235,7 @@ export default function PromptInput({
       appStoreMutate((prev) => ({
         threadImageToolModel: {
           ...prev.threadImageToolModel,
-          [threadId]: provider,
+          [threadId]: model,
         },
       }));
 
@@ -532,22 +532,43 @@ export default function PromptInput({
                       </DropdownMenuSubTrigger>
                       <DropdownMenuPortal>
                         <DropdownMenuSubContent>
-                          <DropdownMenuItem
-                            disabled={modelInfo?.isToolCallUnsupported}
-                            onClick={() => handleGenerateImage("google")}
-                            className="cursor-pointer"
-                          >
-                            <GeminiIcon className="mr-2 size-4" />
-                            Gemini (Nano Banana)
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            disabled={modelInfo?.isToolCallUnsupported}
-                            onClick={() => handleGenerateImage("openai")}
-                            className="cursor-pointer"
-                          >
-                            <OpenAIIcon className="mr-2 size-4" />
-                            OpenAI
-                          </DropdownMenuItem>
+                          {(providers ?? []).flatMap((p) =>
+                            (p.imageGenerationModels ?? []).map((m) => ({
+                              provider: p.provider,
+                              model: m.name,
+                            })),
+                          ).length === 0 ? (
+                            <DropdownMenuItem
+                              disabled
+                              className="text-xs text-muted-foreground"
+                            >
+                              No image generation models configured
+                            </DropdownMenuItem>
+                          ) : (
+                            (providers ?? [])
+                              .flatMap((p) =>
+                                (p.imageGenerationModels ?? []).map((m) => ({
+                                  provider: p.provider,
+                                  model: m.name,
+                                })),
+                              )
+                              .map((m) => (
+                                <DropdownMenuItem
+                                  key={`${m.provider}/${m.model}`}
+                                  disabled={modelInfo?.isToolCallUnsupported}
+                                  onClick={() => handleGenerateImage(m)}
+                                  className="cursor-pointer"
+                                >
+                                  <ImagesIcon className="mr-2 size-4 text-muted-foreground" />
+                                  <div className="flex flex-col">
+                                    <span>{m.model}</span>
+                                    <span className="text-xs text-muted-foreground capitalize">
+                                      {m.provider}
+                                    </span>
+                                  </div>
+                                </DropdownMenuItem>
+                              ))
+                          )}
                         </DropdownMenuSubContent>
                       </DropdownMenuPortal>
                     </DropdownMenuSub>
@@ -560,10 +581,10 @@ export default function PromptInput({
                       variant={"ghost"}
                       size={"sm"}
                       className="rounded-full hover:bg-input! p-2! group/image-generator text-primary"
-                      onClick={() => handleGenerateImage()}
+                      onClick={() => handleGenerateImage(undefined)}
                     >
                       <ImagesIcon className="size-3.5" />
-                      {t("generateImage")}
+                      {imageToolModel.model}
                       <XIcon className="size-3 group-hover/image-generator:opacity-100 opacity-0 transition-opacity duration-200" />
                     </Button>
                   ) : (

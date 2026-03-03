@@ -117,7 +117,7 @@ function PureImageGeneratorToolInvocation({
               {images.map((image, index) => (
                 <div
                   key={index}
-                  className="relative group rounded-lg overflow-hidden border border-border hover:border-primary transition-all shadow-sm hover:shadow-md"
+                  className="relative rounded-lg overflow-hidden border border-border hover:border-primary transition-all shadow-sm hover:shadow-md"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -126,17 +126,6 @@ function PureImageGeneratorToolInvocation({
                     alt={`Generated image ${index + 1}`}
                     className="w-full h-auto object-cover"
                   />
-                  {/* Hover overlay */}
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-                    <a
-                      href={image.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="bg-primary text-primary-foreground px-4 py-2 rounded-full text-sm font-medium hover:scale-105 transition-transform"
-                    >
-                      Open
-                    </a>
-                  </div>
                 </div>
               ))}
             </div>
