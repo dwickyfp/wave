@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "next dev",
     "dev:turbopack": "next dev --turbopack",
+    "dev:warmup": "tsx scripts/dev-warmup.ts",
     "dev:https": "next dev --experimental-https",
     "build": "next build",
     "start": "next start",
