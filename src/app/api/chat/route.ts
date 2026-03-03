@@ -305,6 +305,34 @@ export async function POST(request: Request) {
                   input: event.inputTokens,
                   output: event.outputTokens,
                 };
+                // Write metadata to the stream immediately so the UI tooltip
+                // shows token usage without waiting for a page refresh.
+                dataStream.write({
+                  type: "message-metadata",
+                  messageMetadata: {
+                    ...sfMetadata,
+                    usage: {
+                      inputTokens: event.inputTokens,
+                      outputTokens: event.outputTokens,
+                      totalTokens: event.inputTokens + event.outputTokens,
+                      inputTokenDetails: {
+                        noCacheTokens: undefined,
+                        cacheReadTokens: undefined,
+                        cacheWriteTokens: undefined,
+                      },
+                      outputTokenDetails: {
+                        textTokens: undefined,
+                        reasoningTokens: undefined,
+                      },
+                    },
+                    // Always show Snowflake as provider with the actual
+                    // model name returned by the Cortex API
+                    chatModel: {
+                      provider: "snowflake",
+                      model: event.model || "Snowflake Cortex",
+                    },
+                  } satisfies ChatMetadata,
+                });
                 break;
             }
           }
@@ -338,13 +366,10 @@ export async function POST(request: Request) {
                 reasoningTokens: undefined,
               },
             };
-            const currentProvider = sfMetadata.chatModel?.provider;
-            if (sfCapture.usage.model && currentProvider) {
-              sfMetadata.chatModel = {
-                provider: currentProvider,
-                model: sfCapture.usage.model,
-              };
-            }
+            sfMetadata.chatModel = {
+              provider: "snowflake",
+              model: sfCapture.usage.model || "Snowflake Cortex",
+            };
           }
 
           if (responseMessage.id === message.id) {
