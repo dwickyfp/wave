@@ -5,6 +5,7 @@ import { User } from "better-auth";
 import { createMCPToolId } from "./mcp/mcp-tool-id";
 import { format } from "date-fns";
 import { Agent } from "app-types/agent";
+import { SubAgent } from "app-types/subagent";
 
 export const CREATE_THREAD_TITLE_PROMPT = `
 You are a chat title generation expert.
@@ -379,6 +380,29 @@ The user has declined to run the tool. Please respond with the following three a
 
 export const buildToolCallUnsupportedModelSystemPrompt = `
 ### Tool Call Limitation
-- You are using a model that does not support tool calls. 
+- You are using a model that does not support tool calls.
 - When users request tool usage, simply explain that the current model cannot use tools and that they can switch to a model that supports tool calling to use tools.
 `.trim();
+
+export const buildParallelSubAgentSystemPrompt = (
+  subAgents: SubAgent[],
+): string => {
+  const enabled = subAgents.filter((sa) => sa.enabled);
+  if (enabled.length < 2) return "";
+
+  const names = enabled.map((sa) => `- ${sa.name}`).join("\n");
+  return `
+<parallel_subagent_instructions>
+You have access to multiple specialized subagents:
+${names}
+
+IMPORTANT: When the user's request can be broken into independent subtasks, call multiple subagent tools IN THE SAME RESPONSE — not one after another. The system executes them concurrently, significantly reducing total time.
+
+Example: if asked to "research and analyze topic X":
+- Call the researcher subagent with task "research X"
+- Call the analyst subagent with task "prepare an analysis framework for X"
+…in the SAME tool call response, not sequentially.
+
+After all subagents complete, synthesize their results into a final response.
+</parallel_subagent_instructions>`.trim();
+};

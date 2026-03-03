@@ -18,6 +18,7 @@ import {
 } from "app-types/chat";
 import {
   buildMcpServerCustomizationsSystemPrompt,
+  buildParallelSubAgentSystemPrompt,
   buildToolCallUnsupportedModelSystemPrompt,
   buildUserSystemPrompt,
 } from "lib/ai/prompts";
@@ -583,6 +584,9 @@ export async function POST(request: Request) {
         const systemPrompt = mergeSystemPrompt(
           buildUserSystemPrompt(session.user, userPreferences, agent),
           buildMcpServerCustomizationsSystemPrompt(mcpServerCustomizations),
+          buildParallelSubAgentSystemPrompt(
+            agentWithSubAgents?.subAgents ?? [],
+          ),
           !supportToolCall && buildToolCallUnsupportedModelSystemPrompt,
         );
 
