@@ -1,5 +1,6 @@
 "use client";
 
+import embed from "vega-embed";
 import { Loader } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useRef, useState } from "react";
@@ -23,8 +24,6 @@ export function VegaLiteChart({ spec }: VegaLiteChartProps) {
       try {
         setLoading(true);
         setError(null);
-
-        const embed = (await import("vega-embed")).default;
 
         const parsedSpec = JSON.parse(spec);
 
@@ -111,7 +110,7 @@ export function VegaLiteChart({ spec }: VegaLiteChartProps) {
   return (
     <div className="relative w-full">
       {loading && (
-        <div className="flex items-center justify-center h-40 w-full">
+        <div className="absolute inset-0 flex items-center justify-center h-40 w-full">
           <div className="text-muted-foreground flex items-center gap-2 text-sm">
             Rendering chart <Loader className="size-4 animate-spin" />
           </div>
@@ -120,7 +119,7 @@ export function VegaLiteChart({ spec }: VegaLiteChartProps) {
       <div
         ref={containerRef}
         className="w-full"
-        style={{ display: loading ? "none" : "block" }}
+        style={{ visibility: loading ? "hidden" : "visible" }}
       />
     </div>
   );
