@@ -43,6 +43,13 @@ export type ChatThread = {
   title: string;
   userId: string;
   createdAt: Date;
+  /** Snowflake Cortex thread UUID — only set for Snowflake-backed sessions */
+  snowflakeThreadId?: string | null;
+  /**
+   * Last successful Snowflake assistant message_id for this thread.
+   * 0 = start of thread; subsequent turns use the last assistant message_id.
+   */
+  snowflakeParentMessageId?: number | null;
 };
 
 export type ChatMessage = {

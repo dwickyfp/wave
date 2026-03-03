@@ -29,6 +29,14 @@ export const ChatThreadTable = pgTable("chat_thread", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
+  // Snowflake Cortex Threads — persisted per chat session so we can pass
+  // thread_id + parent_message_id to agent:run on every subsequent turn.
+  // Only populated when the thread is backed by a Snowflake Cortex agent.
+  snowflakeThreadId: text("snowflake_thread_id"),
+  // The assistant message_id returned by Snowflake for the last successful
+  // turn.  Used as parent_message_id for the next agent:run call.
+  // 0 means "start of thread" (first user turn).
+  snowflakeParentMessageId: integer("snowflake_parent_message_id"),
 });
 
 export const ChatMessageTable = pgTable("chat_message", {

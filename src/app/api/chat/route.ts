@@ -57,6 +57,7 @@ import { serverFileStorage } from "lib/file-storage";
 import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import {
   callSnowflakeCortexStream,
+  createSnowflakeThread,
   type SnowflakeCortexMessage,
 } from "lib/snowflake/client";
 
@@ -208,7 +209,36 @@ export async function POST(request: Request) {
         );
       }
 
-      // Convert Vercel AI SDK UIMessages → Snowflake Cortex message format
+      // ── Thread management ────────────────────────────────────────────────
+      // Each Wave chat session maps to exactly one Snowflake Cortex thread so
+      // Snowflake owns the conversation history.  On the first turn we create
+      // a new thread; on subsequent turns we reuse the existing thread_id and
+      // advance parent_message_id to the last successful assistant message.
+      let sfThreadId: string | undefined =
+        thread?.snowflakeThreadId ?? undefined;
+      let sfParentMessageId: number = thread?.snowflakeParentMessageId ?? 0;
+
+      if (!sfThreadId) {
+        sfThreadId = await createSnowflakeThread(sfConfig);
+        sfParentMessageId = 0;
+        // Persist immediately so the next turn can pick it up even if this
+        // one fails partway through.
+        await chatRepository.updateThread(thread!.id, {
+          snowflakeThreadId: sfThreadId,
+          snowflakeParentMessageId: 0,
+        });
+        logger.info(
+          `Created Snowflake thread ${sfThreadId} for Wave session ${thread!.id}`,
+        );
+      } else {
+        logger.info(
+          `Reusing Snowflake thread ${sfThreadId} (parent_message_id=${sfParentMessageId}) for Wave session ${thread!.id}`,
+        );
+      }
+
+      // Convert Vercel AI SDK UIMessages → Snowflake Cortex message format.
+      // When using threads only the latest user message needs to be included —
+      // Snowflake stores the full history on its side.
       const sfMessages: SnowflakeCortexMessage[] = messages
         .filter((m) => m.role === "user" || m.role === "assistant")
         .map((m) => ({
@@ -234,6 +264,10 @@ export async function POST(request: Request) {
           input: number;
           output: number;
         } | null,
+        // The new assistant message_id returned by Snowflake for this turn.
+        // Persisted after the stream ends so the next turn knows its
+        // parent_message_id.
+        newAssistantMessageId: null as number | null,
       };
 
       logger.info(`Snowflake Intelligence agent: ${agent!.name}`);
@@ -248,6 +282,8 @@ export async function POST(request: Request) {
           for await (const event of callSnowflakeCortexStream({
             config: sfConfig,
             messages: sfMessages,
+            threadId: sfThreadId,
+            parentMessageId: sfParentMessageId,
           })) {
             switch (event.type) {
               case "reasoning-delta":
@@ -334,6 +370,12 @@ export async function POST(request: Request) {
                   } satisfies ChatMetadata,
                 });
                 break;
+
+              case "thread-message-ids":
+                // Stash the new assistant message_id so we can advance
+                // parent_message_id for the next turn in onFinish.
+                sfCapture.newAssistantMessageId = event.assistantMessageId;
+                break;
             }
           }
 
@@ -370,6 +412,18 @@ export async function POST(request: Request) {
               provider: "snowflake",
               model: sfCapture.usage.model || "Snowflake Cortex",
             };
+          }
+
+          // Advance parent_message_id so the next turn continues the thread
+          // from this assistant reply.  If Snowflake didn't emit message IDs
+          // (rare failure case per the docs) we leave the existing value.
+          if (sfCapture.newAssistantMessageId !== null) {
+            await chatRepository.updateThread(thread!.id, {
+              snowflakeParentMessageId: sfCapture.newAssistantMessageId,
+            });
+            logger.info(
+              `Advanced Snowflake thread ${sfThreadId} parent_message_id → ${sfCapture.newAssistantMessageId}`,
+            );
           }
 
           if (responseMessage.id === message.id) {

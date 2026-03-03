@@ -9,6 +9,17 @@ export type SnowflakeCortexMessage = {
 export type SnowflakeCortexCallOptions = {
   config: SnowflakeAgentConfig;
   messages: SnowflakeCortexMessage[];
+  /**
+   * Snowflake Cortex thread UUID.  When provided the agent:run body will
+   * include `thread_id` + `parent_message_id` so Snowflake tracks history
+   * server-side and only the latest user message is sent in `messages`.
+   */
+  threadId?: string;
+  /**
+   * The last successful assistant message_id returned by Snowflake for this
+   * thread.  Use 0 for the very first turn.  Required when `threadId` is set.
+   */
+  parentMessageId?: number;
 };
 
 export type SnowflakeCortexResult = {
@@ -26,6 +37,58 @@ export function buildCortexApiUrl(config: SnowflakeAgentConfig): string {
   return snowflakeRole
     ? `${base}?role=${encodeURIComponent(snowflakeRole)}`
     : base;
+}
+
+/**
+ * Builds the Snowflake Cortex Threads API base URL.
+ */
+export function buildThreadsApiUrl(config: SnowflakeAgentConfig): string {
+  const { account } = config;
+  return `https://${account}.snowflakecomputing.com/api/v2/cortex/threads`;
+}
+
+/**
+ * Creates a new Snowflake Cortex thread and returns the thread_id string.
+ * The thread is scoped to the calling user's Snowflake identity.
+ *
+ * @see https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-threads-rest-api
+ */
+export async function createSnowflakeThread(
+  config: SnowflakeAgentConfig,
+  originApplication = "wave",
+): Promise<string> {
+  const token = generateSnowflakeJwt(
+    config.accountLocator,
+    config.snowflakeUser,
+    config.privateKeyPem,
+    config.privateKeyPassphrase ?? undefined,
+  );
+
+  const url = buildThreadsApiUrl(config);
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
+    },
+    body: JSON.stringify({ origin_application: originApplication }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(
+      `Snowflake Threads API error ${response.status}: ${errorBody}`,
+    );
+  }
+
+  // Snowflake returns the thread UUID as a bare JSON value — the docs show it
+  // as a string but some API versions may return a number.  Normalise to string
+  // for consistent DB storage; Number() coercion is applied when sending back.
+  const raw: unknown = await response.json();
+  const threadId = String(raw);
+  return threadId;
 }
 
 /** Maximum rows to include in a rendered markdown table. */
@@ -211,16 +274,31 @@ export type SnowflakeStreamEvent =
       model: string;
       inputTokens: number;
       outputTokens: number;
+    }
+  /**
+   * Snowflake thread message IDs — emitted once per turn when `thread_id` is
+   * used.  The route handler should store `assistantMessageId` as the new
+   * `snowflakeParentMessageId` for the next turn.
+   */
+  | {
+      type: "thread-message-ids";
+      userMessageId: number;
+      assistantMessageId: number;
     };
 
 /**
  * Calls the Snowflake Cortex Agent API with streaming support.
  * Yields typed SnowflakeStreamEvent objects as they arrive from the SSE stream.
+ *
+ * When `threadId` is provided the request body includes `thread_id` and
+ * `parent_message_id`, and only the **latest user message** is sent in
+ * `messages` (Snowflake owns the full history for that thread).
+ * Without `threadId` the full `messages` array is sent as before (stateless).
  */
 export async function* callSnowflakeCortexStream(
   options: SnowflakeCortexCallOptions,
 ): AsyncGenerator<SnowflakeStreamEvent> {
-  const { config, messages } = options;
+  const { config, messages, threadId, parentMessageId } = options;
 
   const token = generateSnowflakeJwt(
     config.accountLocator,
@@ -231,6 +309,23 @@ export async function* callSnowflakeCortexStream(
 
   const apiUrl = buildCortexApiUrl(config);
 
+  // When using threads, send only the latest user message — Snowflake stores
+  // the full history under the thread.  Otherwise send all messages.
+  const messagesPayload = threadId
+    ? messages.filter((m) => m.role === "user").slice(-1)
+    : messages;
+
+  const body: Record<string, unknown> = { messages: messagesPayload };
+  if (threadId !== undefined) {
+    // Snowflake expects thread_id as an integer, not a string.
+    // createSnowflakeThread returns the raw JSON value (may be numeric string);
+    // always coerce to number before sending.
+    body.thread_id = Number(threadId);
+    // parent_message_id: 0 = start of thread; subsequent turns use last
+    // successful assistant message_id.
+    body.parent_message_id = parentMessageId ?? 0;
+  }
+
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
@@ -239,7 +334,7 @@ export async function* callSnowflakeCortexStream(
       "X-Snowflake-Authorization-Token-Type": "KEYPAIR_JWT",
       Accept: "text/event-stream",
     },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -257,6 +352,10 @@ export async function* callSnowflakeCortexStream(
   const decoder = new TextDecoder();
   let buffer = "";
   let currentEventType = "";
+
+  // Capture thread message IDs from the SSE `metadata` events.
+  // Snowflake emits one event per role: user then assistant.
+  const threadMsgIds: { user?: number; assistant?: number } = {};
 
   while (true) {
     const { done, value } = await reader.read();
@@ -334,6 +433,18 @@ export async function* callSnowflakeCortexStream(
               break;
             }
 
+            // ── Thread metadata — captures message_id per role ────────
+            case "metadata": {
+              if (typeof data.message_id === "number") {
+                if (data.role === "user") {
+                  threadMsgIds.user = data.message_id;
+                } else if (data.role === "assistant") {
+                  threadMsgIds.assistant = data.message_id;
+                }
+              }
+              break;
+            }
+
             // ── Final assembled message — extract token metadata ──────
             case "response": {
               const consumed = data.metadata?.usage?.tokens_consumed?.[0];
@@ -359,5 +470,18 @@ export async function* callSnowflakeCortexStream(
         }
       }
     }
+  }
+
+  // Once the stream is exhausted, emit thread message IDs if we captured them.
+  if (
+    threadId !== undefined &&
+    threadMsgIds.user !== undefined &&
+    threadMsgIds.assistant !== undefined
+  ) {
+    yield {
+      type: "thread-message-ids",
+      userMessageId: threadMsgIds.user,
+      assistantMessageId: threadMsgIds.assistant,
+    };
   }
 }

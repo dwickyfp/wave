@@ -129,11 +129,16 @@ export const pgChatRepository: ChatRepository = {
     id: string,
     thread: Partial<Omit<ChatThread, "id" | "createdAt">>,
   ): Promise<ChatThread> => {
+    const set: Record<string, unknown> = {};
+    if (thread.title !== undefined) set.title = thread.title;
+    if (thread.snowflakeThreadId !== undefined)
+      set.snowflakeThreadId = thread.snowflakeThreadId;
+    if (thread.snowflakeParentMessageId !== undefined)
+      set.snowflakeParentMessageId = thread.snowflakeParentMessageId;
+
     const [result] = await db
       .update(ChatThreadTable)
-      .set({
-        title: thread.title,
-      })
+      .set(set)
       .where(eq(ChatThreadTable.id, id))
       .returning();
     return result;
