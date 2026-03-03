@@ -2,6 +2,7 @@ import {
   AdminRepository,
   AdminUsersQuery,
   AdminUsersPaginated,
+  ModelUsageStat,
   UsageMonitoringData,
   UsageMonitoringQuery,
 } from "app-types/admin";
@@ -266,6 +267,39 @@ const pgAdminRepository: AdminRepository = {
         ),
       );
 
+    // Model distribution: top models by token usage in the date range
+    const modelDistributionRaw = await db
+      .select({
+        model: sql<string>`${ChatMessageTable.metadata}->'chatModel'->>'model'`,
+        totalTokens: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        messageCount: sql<number>`COUNT(${ChatMessageTable.id})`,
+      })
+      .from(ChatMessageTable)
+      .innerJoin(
+        ChatThreadTable,
+        eq(ChatMessageTable.threadId, ChatThreadTable.id),
+      )
+      .where(
+        and(
+          sql`${ChatMessageTable.createdAt} >= ${rangeStart}`,
+          sql`${ChatMessageTable.createdAt} <= ${rangeEnd}`,
+          sql`${ChatMessageTable.metadata}->'chatModel'->>'model' IS NOT NULL`,
+        ),
+      )
+      .groupBy(sql`${ChatMessageTable.metadata}->'chatModel'->>'model'`)
+      .orderBy(
+        sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0) DESC`,
+      )
+      .limit(10);
+
+    const modelDistribution: ModelUsageStat[] = modelDistributionRaw
+      .filter((r) => r.model)
+      .map((r) => ({
+        model: r.model,
+        totalTokens: Number(r.totalTokens || 0),
+        messageCount: Number(r.messageCount || 0),
+      }));
+
     return {
       users: users.map((u) => ({
         ...u,
@@ -281,6 +315,7 @@ const pgAdminRepository: AdminRepository = {
       totalMessagesSum: Number(aggregates?.totalMessagesSum || 0),
       totalThreadsSum: Number(aggregates?.totalThreadsSum || 0),
       activeUsersCount: Number(aggregates?.activeUsersCount || 0),
+      modelDistribution,
     };
   },
 };

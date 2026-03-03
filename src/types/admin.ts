@@ -67,6 +67,12 @@ export interface UserUsageStat {
   topModel: string | null;
 }
 
+export interface ModelUsageStat {
+  model: string;
+  totalTokens: number;
+  messageCount: number;
+}
+
 export interface UsageMonitoringData {
   users: UserUsageStat[];
   total: number;
@@ -76,6 +82,7 @@ export interface UsageMonitoringData {
   totalMessagesSum: number;
   totalThreadsSum: number;
   activeUsersCount: number;
+  modelDistribution: ModelUsageStat[];
 }
 
 // Admin only repository methods

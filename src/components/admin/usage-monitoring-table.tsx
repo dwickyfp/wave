@@ -43,6 +43,11 @@ import { buildUserDetailUrl } from "@/lib/admin/navigation-utils";
 import { useTranslations } from "next-intl";
 import Form from "next/form";
 import Link from "next/link";
+import {
+  TopModelsPieChart,
+  TopUsersBarChart,
+  TopUsersByMessages,
+} from "./usage-charts";
 
 export type DatePreset = "7d" | "14d" | "30d" | "90d";
 
@@ -227,6 +232,13 @@ export function UsageMonitoringTable({
           value={data.activeUsersCount}
           colorClass="bg-emerald-500/10 text-emerald-500"
         />
+      </div>
+
+      {/* Charts Section */}
+      <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+        <TopModelsPieChart modelDistribution={data.modelDistribution} />
+        <TopUsersBarChart users={data.users} />
+        <TopUsersByMessages users={data.users} />
       </div>
 
       {/* Table Section */}
