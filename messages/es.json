@@ -513,5 +513,72 @@
         "select": "Seleccionar"
       }
     }
+  },
+  "Admin": {
+    "title": "Admin",
+    "Sidebar": {
+      "users": "Usuarios",
+      "toggleSidebar": "Alternar Barra Lateral",
+      "adminPanel": "Panel de Admin",
+      "backToApp": "Volver a la Aplicación"
+    },
+    "Users": {
+      "title": "Usuarios",
+      "allUsers": "Todos los Usuarios",
+      "viewAndManageUsers": "Ver y gestionar cuentas de usuario",
+      "searchPlaceholder": "Buscar por nombre o email...",
+      "clear": "Limpiar",
+      "noUsersFound": "No se encontraron usuarios",
+      "youBadge": "Tú",
+      "totalCount": "{count} usuario{count, plural, =1 {} other {s}} total",
+      "user": "Usuario",
+      "role": "Rol",
+      "status": "Estado",
+      "joined": "Se unió",
+      "backToUsers": "Volver a Usuarios"
+    },
+    "UserDelete": {
+      "title": "Eliminar Cuenta de Usuario",
+      "description": "Estás a punto de eliminar permanentemente la cuenta de {name}. Esta acción no se puede deshacer.",
+      "actionWillPermanently": "Esta acción eliminará permanentemente:",
+      "deleteAllUserData": "Eliminar todos los datos de usuario y conversaciones",
+      "removeAllFiles": "Eliminar todos los archivos y preferencias asociados",
+      "revokeAllAccess": "Revocar todos los permisos de acceso",
+      "cannotBeUndone": "No se puede deshacer ni recuperar",
+      "typeNameToConfirm": "Por favor escribe el nombre del usuario para confirmar: {name}",
+      "typeToConfirm": "Escribe \"{name}\" para confirmar",
+      "userDeletedSuccessfully": "Usuario eliminado exitosamente",
+      "failedToDeleteUser": "Error al eliminar el usuario"
+    },
+    "UserRoles": {
+      "changeUserRoles": "Cambiar Roles de Usuario",
+      "selectRolesFor": "Selecciona roles para {name}. Por el momento, los usuarios solo pueden tener un rol.",
+      "updateRole": "Actualizar Rol",
+      "roleUpdatedSuccessfully": "Rol actualizado exitosamente",
+      "failedToUpdateRole": "Error al actualizar el rol",
+      "cannotUpdateOwnRole": "No puedes actualizar tu propio rol",
+      "roleUpdatedSuccessfullyTo": "Rol de usuario actualizado exitosamente a {role}"
+    },
+    "UsageMonitoring": {
+      "title": "Monitoreo de Uso",
+      "description": "Monitorear estadísticas de uso de IA de todos los usuarios",
+      "allUsers": "Todos los Usuarios",
+      "searchPlaceholder": "Buscar por nombre o email...",
+      "totalTokens": "Total de Tokens",
+      "totalMessages": "Total de Mensajes",
+      "totalThreads": "Total de Hilos",
+      "activeUsers": "Usuarios Activos",
+      "user": "Usuario",
+      "tokens": "Tokens",
+      "messages": "Mensajes",
+      "threads": "Hilos",
+      "topModel": "Modelo Principal",
+      "last7Days": "Últimos 7 Días",
+      "last14Days": "Últimos 14 Días",
+      "last30Days": "Últimos 30 Días",
+      "last90Days": "Últimos 90 Días",
+      "noData": "Sin datos de uso",
+      "noDataDescription": "No se encontró actividad de IA para el período seleccionado"
+    }
   }
 }

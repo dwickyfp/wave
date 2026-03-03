@@ -512,5 +512,72 @@
         "select": "選択"
       }
     }
+  },
+  "Admin": {
+    "title": "管理",
+    "Sidebar": {
+      "users": "ユーザー",
+      "toggleSidebar": "サイドバーの切り替え",
+      "adminPanel": "管理パネル",
+      "backToApp": "アプリに戻る"
+    },
+    "Users": {
+      "title": "ユーザー",
+      "allUsers": "すべてのユーザー",
+      "viewAndManageUsers": "ユーザーアカウントを表示・管理",
+      "searchPlaceholder": "名前またはメールで検索...",
+      "clear": "クリア",
+      "noUsersFound": "ユーザーが見つかりません",
+      "youBadge": "あなた",
+      "totalCount": "合計 {count} 人のユーザー",
+      "user": "ユーザー",
+      "role": "ロール",
+      "status": "ステータス",
+      "joined": "参加日",
+      "backToUsers": "ユーザー一覧に戻る"
+    },
+    "UserDelete": {
+      "title": "ユーザーアカウントの削除",
+      "description": "{name} のアカウントを永久に削除しようとしています。この操作は元に戻せません。",
+      "actionWillPermanently": "この操作は永久に以下を行います：",
+      "deleteAllUserData": "すべてのユーザーデータと会話を削除",
+      "removeAllFiles": "関連するすべてのファイルと設定を削除",
+      "revokeAllAccess": "すべてのアクセス権限を取り消す",
+      "cannotBeUndone": "元に戻すまたは復元することはできません",
+      "typeNameToConfirm": "確認のためユーザー名を入力してください：{name}",
+      "typeToConfirm": "確認のために「{name}」と入力してください",
+      "userDeletedSuccessfully": "ユーザーが正常に削除されました",
+      "failedToDeleteUser": "ユーザーの削除に失敗しました"
+    },
+    "UserRoles": {
+      "changeUserRoles": "ユーザーロールの変更",
+      "selectRolesFor": "{name} のロールを選択してください。現在、ユーザーは1つのロールのみ持てます。",
+      "updateRole": "ロールを更新",
+      "roleUpdatedSuccessfully": "ロールが正常に更新されました",
+      "failedToUpdateRole": "ロールの更新に失敗しました",
+      "cannotUpdateOwnRole": "自分のロールを更新することはできません",
+      "roleUpdatedSuccessfullyTo": "ユーザーロールが {role} に正常に更新されました"
+    },
+    "UsageMonitoring": {
+      "title": "使用状況モニタリング",
+      "description": "全ユーザーのAI使用統計を監視",
+      "allUsers": "すべてのユーザー",
+      "searchPlaceholder": "名前またはメールで検索...",
+      "totalTokens": "合計トークン数",
+      "totalMessages": "合計メッセージ数",
+      "totalThreads": "合計スレッド数",
+      "activeUsers": "アクティブユーザー",
+      "user": "ユーザー",
+      "tokens": "トークン",
+      "messages": "メッセージ",
+      "threads": "スレッド",
+      "topModel": "最多使用モデル",
+      "last7Days": "過去 7 日間",
+      "last14Days": "過去 14 日間",
+      "last30Days": "過去 30 日間",
+      "last90Days": "過去 90 日間",
+      "noData": "使用データなし",
+      "noDataDescription": "選択した期間にAI活動が見つかりませんでした"
+    }
   }
 }

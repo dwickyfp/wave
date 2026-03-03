@@ -527,5 +527,72 @@
         "select": "선택"
       }
     }
+  },
+  "Admin": {
+    "title": "관리자",
+    "Sidebar": {
+      "users": "사용자",
+      "toggleSidebar": "사이드바 토글",
+      "adminPanel": "관리자 패널",
+      "backToApp": "앱으로 돌아가기"
+    },
+    "Users": {
+      "title": "사용자",
+      "allUsers": "모든 사용자",
+      "viewAndManageUsers": "사용자 계정 보기 및 관리",
+      "searchPlaceholder": "이름 또는 이메일로 검색...",
+      "clear": "지우기",
+      "noUsersFound": "사용자를 찾을 수 없습니다",
+      "youBadge": "나",
+      "totalCount": "총 {count}명의 사용자",
+      "user": "사용자",
+      "role": "역할",
+      "status": "상태",
+      "joined": "가입일",
+      "backToUsers": "사용자 목록으로 돌아가기"
+    },
+    "UserDelete": {
+      "title": "사용자 계정 삭제",
+      "description": "{name}의 계정을 영구적으로 삭제하려고 합니다. 이 작업은 되돌릴 수 없습니다.",
+      "actionWillPermanently": "이 작업은 영구적으로:",
+      "deleteAllUserData": "모든 사용자 데이터 및 대화 삭제",
+      "removeAllFiles": "연관된 모든 파일 및 설정 제거",
+      "revokeAllAccess": "모든 액세스 권한 취소",
+      "cannotBeUndone": "취소하거나 복구할 수 없습니다",
+      "typeNameToConfirm": "확인을 위해 사용자 이름을 입력하세요: {name}",
+      "typeToConfirm": "확인을 위해 \"{name}\"을 입력하세요",
+      "userDeletedSuccessfully": "사용자가 성공적으로 삭제되었습니다",
+      "failedToDeleteUser": "사용자 삭제 실패"
+    },
+    "UserRoles": {
+      "changeUserRoles": "사용자 역할 변경",
+      "selectRolesFor": "{name}의 역할을 선택하세요. 현재 사용자는 하나의 역할만 가질 수 있습니다.",
+      "updateRole": "역할 업데이트",
+      "roleUpdatedSuccessfully": "역할이 성공적으로 업데이트되었습니다",
+      "failedToUpdateRole": "역할 업데이트 실패",
+      "cannotUpdateOwnRole": "자신의 역할은 업데이트할 수 없습니다",
+      "roleUpdatedSuccessfullyTo": "사용자 역할이 {role}로 성공적으로 업데이트되었습니다"
+    },
+    "UsageMonitoring": {
+      "title": "사용량 모니터링",
+      "description": "모든 사용자의 AI 사용 통계 모니터링",
+      "allUsers": "모든 사용자",
+      "searchPlaceholder": "이름 또는 이메일로 검색...",
+      "totalTokens": "총 토큰",
+      "totalMessages": "총 메시지",
+      "totalThreads": "총 스레드",
+      "activeUsers": "활성 사용자",
+      "user": "사용자",
+      "tokens": "토큰",
+      "messages": "메시지",
+      "threads": "스레드",
+      "topModel": "주요 모델",
+      "last7Days": "최근 7일",
+      "last14Days": "최근 14일",
+      "last30Days": "최근 30일",
+      "last90Days": "최근 90일",
+      "noData": "사용 데이터 없음",
+      "noDataDescription": "선택한 기간에 AI 활동이 없습니다"
+    }
   }
 }

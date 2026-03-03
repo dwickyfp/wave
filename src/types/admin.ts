@@ -45,8 +45,42 @@ export interface AdminUpdateUserDetailsData {
   image?: string;
 }
 
+export interface UsageMonitoringQuery {
+  startDate?: Date;
+  endDate?: Date;
+  limit?: number;
+  offset?: number;
+  sortBy?: "totalTokens" | "messageCount" | "threadCount" | "name" | "email";
+  sortDirection?: "asc" | "desc";
+  searchValue?: string;
+}
+
+export interface UserUsageStat {
+  userId: string;
+  name: string;
+  email: string;
+  image?: string | null;
+  role?: string | null;
+  threadCount: number;
+  messageCount: number;
+  totalTokens: number;
+  topModel: string | null;
+}
+
+export interface UsageMonitoringData {
+  users: UserUsageStat[];
+  total: number;
+  limit: number;
+  offset: number;
+  totalTokensSum: number;
+  totalMessagesSum: number;
+  totalThreadsSum: number;
+  activeUsersCount: number;
+}
+
 // Admin only repository methods
 export type AdminRepository = {
   // User queries
   getUsers: (query?: AdminUsersQuery) => Promise<AdminUsersPaginated>;
+  getUsersUsage: (query?: UsageMonitoringQuery) => Promise<UsageMonitoringData>;
 };

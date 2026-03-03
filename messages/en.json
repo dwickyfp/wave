@@ -762,6 +762,27 @@
       "failedToUpdateRole": "Failed to update role",
       "cannotUpdateOwnRole": "You cannot update your own role",
       "roleUpdatedSuccessfullyTo": "User role updated successfully to {role}"
+    },
+    "UsageMonitoring": {
+      "title": "Usage Monitoring",
+      "description": "Monitor AI usage statistics across all users",
+      "allUsers": "All Users",
+      "searchPlaceholder": "Search by name or email...",
+      "totalTokens": "Total Tokens",
+      "totalMessages": "Total Messages",
+      "totalThreads": "Total Threads",
+      "activeUsers": "Active Users",
+      "user": "User",
+      "tokens": "Tokens",
+      "messages": "Messages",
+      "threads": "Threads",
+      "topModel": "Top Model",
+      "last7Days": "Last 7 Days",
+      "last14Days": "Last 14 Days",
+      "last30Days": "Last 30 Days",
+      "last90Days": "Last 90 Days",
+      "noData": "No usage data",
+      "noDataDescription": "No AI activity found for the selected period"
     }
   },
   "MCP": {

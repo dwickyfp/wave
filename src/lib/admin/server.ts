@@ -1,7 +1,12 @@
 import "server-only";
 
 import { getSession } from "lib/auth/server";
-import { AdminUsersQuery, AdminUsersPaginated } from "app-types/admin";
+import {
+  AdminUsersQuery,
+  AdminUsersPaginated,
+  UsageMonitoringData,
+  UsageMonitoringQuery,
+} from "app-types/admin";
 import {
   requireAdminPermission,
   requireUserListPermission,
@@ -58,6 +63,32 @@ export async function getAdminUsers(
     return result;
   } catch (error) {
     console.error("Error getting admin users", error);
+    throw error;
+  }
+}
+
+export const USAGE_MONITORING_LIMIT = 20;
+
+/**
+ * Get aggregated usage data for all users within a date range
+ * Only admins can access this data
+ */
+export async function getAdminUsageMonitoring(
+  query?: UsageMonitoringQuery,
+): Promise<UsageMonitoringData> {
+  await requireAdminPermission("access usage monitoring");
+  await getSession();
+
+  try {
+    return await pgAdminRepository.getUsersUsage({
+      ...query,
+      limit: query?.limit ?? USAGE_MONITORING_LIMIT,
+      offset: query?.offset ?? 0,
+      sortBy: query?.sortBy ?? "totalTokens",
+      sortDirection: query?.sortDirection ?? "desc",
+    });
+  } catch (error) {
+    console.error("Error getting admin usage monitoring", error);
     throw error;
   }
 }

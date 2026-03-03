@@ -513,5 +513,72 @@
         "select": "Sélectionner"
       }
     }
+  },
+  "Admin": {
+    "title": "Admin",
+    "Sidebar": {
+      "users": "Utilisateurs",
+      "toggleSidebar": "Basculer la Barre Latérale",
+      "adminPanel": "Panneau Admin",
+      "backToApp": "Retour à l'Application"
+    },
+    "Users": {
+      "title": "Utilisateurs",
+      "allUsers": "Tous les Utilisateurs",
+      "viewAndManageUsers": "Voir et gérer les comptes utilisateurs",
+      "searchPlaceholder": "Rechercher par nom ou email...",
+      "clear": "Effacer",
+      "noUsersFound": "Aucun utilisateur trouvé",
+      "youBadge": "Vous",
+      "totalCount": "{count} utilisateur{count, plural, =1 {} other {s}} au total",
+      "user": "Utilisateur",
+      "role": "Rôle",
+      "status": "Statut",
+      "joined": "Rejoint",
+      "backToUsers": "Retour aux Utilisateurs"
+    },
+    "UserDelete": {
+      "title": "Supprimer le Compte Utilisateur",
+      "description": "Vous êtes sur le point de supprimer définitivement le compte de {name}. Cette action ne peut pas être annulée.",
+      "actionWillPermanently": "Cette action va définitivement :",
+      "deleteAllUserData": "Supprimer toutes les données et conversations de l'utilisateur",
+      "removeAllFiles": "Supprimer tous les fichiers et préférences associés",
+      "revokeAllAccess": "Révoquer toutes les permissions d'accès",
+      "cannotBeUndone": "Ne peut être annulé ou récupéré",
+      "typeNameToConfirm": "Veuillez saisir le nom de l'utilisateur pour confirmer : {name}",
+      "typeToConfirm": "Tapez \"{name}\" pour confirmer",
+      "userDeletedSuccessfully": "Utilisateur supprimé avec succès",
+      "failedToDeleteUser": "Échec de la suppression de l'utilisateur"
+    },
+    "UserRoles": {
+      "changeUserRoles": "Changer les Rôles Utilisateur",
+      "selectRolesFor": "Sélectionnez les rôles pour {name}. Pour le moment, les utilisateurs ne peuvent avoir qu'un seul rôle.",
+      "updateRole": "Mettre à Jour le Rôle",
+      "roleUpdatedSuccessfully": "Rôle mis à jour avec succès",
+      "failedToUpdateRole": "Échec de la mise à jour du rôle",
+      "cannotUpdateOwnRole": "Vous ne pouvez pas mettre à jour votre propre rôle",
+      "roleUpdatedSuccessfullyTo": "Rôle utilisateur mis à jour avec succès en {role}"
+    },
+    "UsageMonitoring": {
+      "title": "Surveillance de l'Utilisation",
+      "description": "Surveiller les statistiques d'utilisation de l'IA pour tous les utilisateurs",
+      "allUsers": "Tous les Utilisateurs",
+      "searchPlaceholder": "Rechercher par nom ou email...",
+      "totalTokens": "Total des Tokens",
+      "totalMessages": "Total des Messages",
+      "totalThreads": "Total des Fils",
+      "activeUsers": "Utilisateurs Actifs",
+      "user": "Utilisateur",
+      "tokens": "Tokens",
+      "messages": "Messages",
+      "threads": "Fils",
+      "topModel": "Modèle Principal",
+      "last7Days": "7 Derniers Jours",
+      "last14Days": "14 Derniers Jours",
+      "last30Days": "30 Derniers Jours",
+      "last90Days": "90 Derniers Jours",
+      "noData": "Aucune donnée d'utilisation",
+      "noDataDescription": "Aucune activité IA trouvée pour la période sélectionnée"
+    }
   }
 }
