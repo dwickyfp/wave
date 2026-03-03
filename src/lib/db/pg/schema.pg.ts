@@ -59,6 +59,35 @@ export const AgentTable = pgTable("agent", {
     .notNull()
     .default("private"),
   subAgentsEnabled: boolean("sub_agents_enabled").notNull().default(false),
+  agentType: varchar("agent_type", {
+    enum: ["standard", "snowflake_cortex"],
+  })
+    .notNull()
+    .default("standard"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const SnowflakeAgentConfigTable = pgTable("snowflake_agent_config", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  agentId: uuid("agent_id")
+    .notNull()
+    .unique()
+    .references(() => AgentTable.id, { onDelete: "cascade" }),
+  // Account locator is the short format (e.g., ABC12345) used for JWT auth
+  accountLocator: text("account_locator").notNull(),
+  // Account is the full org-account format (e.g., MYORG-MYACCOUNT) used for API URL
+  account: text("account").notNull(),
+  snowflakeUser: text("snowflake_user").notNull(),
+  // RSA private key in PEM/PKCS8 format (stored as text, handle with care)
+  privateKeyPem: text("private_key_pem").notNull(),
+  database: text("database").notNull(),
+  schema: text("schema").notNull(),
+  cortexAgentName: text("cortex_agent_name").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -397,6 +426,8 @@ export type ChatMessageEntity = typeof ChatMessageTable.$inferSelect;
 
 export type AgentEntity = typeof AgentTable.$inferSelect;
 export type SubAgentEntity = typeof SubAgentTable.$inferSelect;
+export type SnowflakeAgentConfigEntity =
+  typeof SnowflakeAgentConfigTable.$inferSelect;
 export type UserEntity = typeof UserTable.$inferSelect;
 export type SessionEntity = typeof SessionTable.$inferSelect;
 

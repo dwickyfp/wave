@@ -134,6 +134,13 @@
       "when": 1772500838589,
       "tag": "0018_mighty_champions",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1772503736520,
+      "tag": "0019_overjoyed_gwen_stacy",
+      "breakpoints": true
     }
   ]
 }
