@@ -1,16 +1,5 @@
-import fs from "node:fs";
-import path from "node:path";
 import { generateSnowflakeJwt } from "./auth";
 import type { SnowflakeAgentConfig } from "app-types/snowflake-agent";
-
-const SSE_DEBUG_LOG = path.join(process.cwd(), "snowflake-sse-debug.log");
-
-function sseLog(label: string, data: unknown): void {
-  const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${label}\n${typeof data === "string" ? data : JSON.stringify(data, null, 2)}\n${"─".repeat(80)}\n`;
-  fs.appendFileSync(SSE_DEBUG_LOG, line, "utf8");
-  console.log(`[Snowflake SSE] ${label}`);
-}
 
 export type SnowflakeCortexMessage = {
   role: "user" | "assistant";
@@ -267,14 +256,7 @@ export async function* callSnowflakeCortexStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let eventIndex = 0;
   let currentEventType = "";
-
-  // Write a session header so each request is easy to find in the log
-  sseLog(
-    `═══ NEW REQUEST ═══ agent=${config.cortexAgentName} messages=${messages.length}`,
-    "",
-  );
 
   while (true) {
     const { done, value } = await reader.read();
@@ -290,16 +272,11 @@ export async function* callSnowflakeCortexStream(
       if (trimmed.startsWith("event:")) {
         // Track SSE event type — used to decide how to handle the next data: line
         currentEventType = trimmed.slice(6).trim();
-        sseLog(`meta line`, trimmed);
       } else if (trimmed.startsWith("data:")) {
         const raw = trimmed.slice(5).trim();
         if (!raw || raw === "[DONE]") continue;
         try {
           const data = JSON.parse(raw);
-          sseLog(
-            `event #${eventIndex++} (seq=${data.sequence_number ?? "?"} sseType=${currentEventType})`,
-            data,
-          );
 
           switch (currentEventType) {
             // ── Real answer text ─────────────────────────────────────

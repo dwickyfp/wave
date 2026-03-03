@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, PropsWithChildren } from "react";
+import { memo, PropsWithChildren, useState, Fragment } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -8,7 +8,12 @@ import rehypeKatex from "rehype-katex";
 import { PreBlock } from "./pre-block";
 import { isJson, isString, toAny } from "lib/utils";
 import JsonView from "ui/json-view";
-import { LinkIcon } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileSpreadsheet,
+  LinkIcon,
+} from "lucide-react";
 import {
   Table,
   TableHeader,
@@ -17,6 +22,7 @@ import {
   TableHead,
   TableCell,
 } from "ui/table";
+import { Button } from "ui/button";
 
 const FadeIn = memo(({ children }: PropsWithChildren) => {
   return <span className="fade-in animate-in duration-1000">{children} </span>;
@@ -32,36 +38,221 @@ export const WordByWordFadeIn = memo(({ children }: PropsWithChildren) => {
   );
 });
 WordByWordFadeIn.displayName = "WordByWordFadeIn";
-const components: Partial<Components> = {
-  table: ({ node, children, ...props }) => {
-    return (
-      <div className="my-4">
-        <Table {...props}>{children}</Table>
+
+const TABLE_PAGE_SIZE = 10;
+
+// Lazy load XLSX library from CDN (same pattern as interactive-table)
+const loadXLSX = async () => {
+  if (typeof window === "undefined") {
+    throw new Error("XLSX can only be loaded in browser environment");
+  }
+  if ((window as any).XLSX) return (window as any).XLSX;
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src =
+      "https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js";
+    script.onload = () => {
+      if ((window as any).XLSX) resolve((window as any).XLSX);
+      else reject(new Error("Failed to load XLSX library"));
+    };
+    script.onerror = () => reject(new Error("Failed to load XLSX script"));
+    document.head.appendChild(script);
+  });
+};
+
+// Helper: extract plain text from a HAST node
+function hastToText(node: any): string {
+  if (!node) return "";
+  if (node.type === "text") return node.value ?? "";
+  return (node.children ?? []).map(hastToText).join("");
+}
+
+// Recursively render HAST nodes to React, preserving inline formatting
+function renderHastNode(node: any): React.ReactNode {
+  if (!node) return null;
+  if (node.type === "text") return node.value;
+  if (node.type === "element") {
+    const children = node.children?.map((c: any, i: number) => (
+      <Fragment key={i}>{renderHastNode(c)}</Fragment>
+    ));
+    switch (node.tagName) {
+      case "strong":
+        return <strong className="font-semibold">{children}</strong>;
+      case "em":
+        return <em>{children}</em>;
+      case "code":
+        return (
+          <code className="text-sm rounded-md bg-accent text-primary py-0.5 px-1.5 mx-0.5">
+            {children}
+          </code>
+        );
+      case "a":
+        return (
+          <a
+            href={node.properties?.href}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline"
+          >
+            {children}
+          </a>
+        );
+      default:
+        return <>{children}</>;
+    }
+  }
+  return null;
+}
+
+const MarkdownTable = memo(({ node }: { node?: any }) => {
+  const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
+
+  const theadNode = node?.children?.find((c: any) => c.tagName === "thead");
+  const tbodyNode = node?.children?.find((c: any) => c.tagName === "tbody");
+
+  const headerRow = theadNode?.children?.find((c: any) => c.tagName === "tr");
+  const headerCells =
+    headerRow?.children?.filter((c: any) => c.tagName === "th") || [];
+
+  const allRows =
+    tbodyNode?.children?.filter((c: any) => c.tagName === "tr") || [];
+  const totalRows = allRows.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / TABLE_PAGE_SIZE));
+  const pageRows = allRows.slice(
+    (page - 1) * TABLE_PAGE_SIZE,
+    page * TABLE_PAGE_SIZE,
+  );
+
+  const exportToExcel = async () => {
+    setExporting(true);
+    try {
+      const XLSX = await loadXLSX();
+
+      const headers = headerCells.map((th: any) => hastToText(th));
+      const rows = allRows.map((tr: any) =>
+        (tr.children?.filter((c: any) => c.tagName === "td") ?? []).map(
+          (td: any) => hastToText(td),
+        ),
+      );
+
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+
+      const colWidths = headers.map((h: string, i: number) => ({
+        wch: Math.min(
+          Math.max(
+            h.length,
+            ...rows.map((r: string[]) => String(r[i] ?? "").length),
+          ) + 2,
+          50,
+        ),
+      }));
+      worksheet["!cols"] = colWidths;
+
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Data");
+      XLSX.writeFile(workbook, "table_data.xlsx");
+    } catch (err) {
+      console.error("Excel export failed:", err);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  return (
+    <div className="my-4 border rounded-xl overflow-hidden">
+      {/* Header bar */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b bg-muted/20">
+        <span className="text-sm font-medium">List Data</span>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs gap-1.5"
+          onClick={exportToExcel}
+          disabled={exporting}
+        >
+          <FileSpreadsheet className="size-3.5" />
+          {exporting ? "Exporting..." : "Export to Excel"}
+        </Button>
       </div>
-    );
-  },
-  thead: ({ node, children, ...props }) => {
-    return <TableHeader {...props}>{children}</TableHeader>;
-  },
-  tbody: ({ node, children, ...props }) => {
-    return <TableBody {...props}>{children}</TableBody>;
-  },
-  tr: ({ node, children, ...props }) => {
-    return <TableRow {...props}>{children}</TableRow>;
-  },
-  th: ({ node, children, ...props }) => {
-    return (
-      <TableHead {...props}>
-        <WordByWordFadeIn>{children}</WordByWordFadeIn>
-      </TableHead>
-    );
-  },
-  td: ({ node, children, ...props }) => {
-    return (
-      <TableCell {...props}>
-        <WordByWordFadeIn>{children}</WordByWordFadeIn>
-      </TableCell>
-    );
+
+      {/* Table */}
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              {headerCells.map((th: any, i: number) => (
+                <TableHead key={i}>
+                  <WordByWordFadeIn>
+                    {th.children?.map((c: any, j: number) => (
+                      <Fragment key={j}>{renderHastNode(c)}</Fragment>
+                    ))}
+                  </WordByWordFadeIn>
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {pageRows.map((tr: any, rowIdx: number) => {
+              const cells =
+                tr.children?.filter((c: any) => c.tagName === "td") || [];
+              return (
+                <TableRow key={rowIdx}>
+                  {cells.map((td: any, cellIdx: number) => (
+                    <TableCell key={cellIdx}>
+                      <WordByWordFadeIn>
+                        {td.children?.map((c: any, j: number) => (
+                          <Fragment key={j}>{renderHastNode(c)}</Fragment>
+                        ))}
+                      </WordByWordFadeIn>
+                    </TableCell>
+                  ))}
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between px-4 py-2 border-t bg-muted/20">
+          <span className="text-xs text-muted-foreground">
+            {totalRows} rows · Page {page} of {totalPages}
+          </span>
+          <div className="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+            >
+              <ChevronLeft className="size-3.5" />
+            </Button>
+            <span className="text-xs px-2 text-muted-foreground">
+              {page} / {totalPages}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+            >
+              <ChevronRight className="size-3.5" />
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+MarkdownTable.displayName = "MarkdownTable";
+
+const components: Partial<Components> = {
+  table: ({ node }) => {
+    return <MarkdownTable node={node} />;
   },
   code: ({ children }) => {
     return (
