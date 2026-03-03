@@ -3,8 +3,9 @@
 import { ToolUIPart } from "ai";
 import equal from "lib/equal";
 import { cn } from "lib/utils";
-import { ImagesIcon } from "lucide-react";
-import { memo, useMemo } from "react";
+import { DownloadIcon, ImagesIcon } from "lucide-react";
+import { memo, useCallback, useMemo } from "react";
+import { Button } from "ui/button";
 import { TextShimmer } from "ui/text-shimmer";
 import LetterGlitch from "ui/letter-glitch";
 
@@ -19,6 +20,7 @@ interface ImageGenerationResult {
   }[];
   mode?: "create" | "edit" | "composite";
   model: string;
+  guide?: string;
 }
 
 function PureImageGeneratorToolInvocation({
@@ -60,6 +62,16 @@ function PureImageGeneratorToolInvocation({
     }
   };
 
+  const downloadImages = useCallback(() => {
+    images.forEach((image, index) => {
+      const link = document.createElement("a");
+      link.href = image.url;
+      const ext = image.mimeType?.split("/")?.[1] ?? "png";
+      link.download = `generated-image-${index + 1}.${ext}`;
+      link.click();
+    });
+  }, [images]);
+
   const getModeHeader = (mode: string) => {
     switch (mode) {
       case "edit":
@@ -88,12 +100,24 @@ function PureImageGeneratorToolInvocation({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        {!hasError && <ImagesIcon className="size-4" />}
-        <span className="text-sm font-semibold">
-          {hasError ? "Image generation failed" : getModeHeader(mode)}
-        </span>
-        <span className="text-xs text-muted-foreground">{result?.model}</span>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {!hasError && <ImagesIcon className="size-4" />}
+          <span className="text-sm font-semibold">
+            {hasError ? "Image generation failed" : getModeHeader(mode)}
+          </span>
+          <span className="text-xs text-muted-foreground">{result?.model}</span>
+        </div>
+        {!hasError && images.length > 0 && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={downloadImages}
+            title="Download image"
+          >
+            <DownloadIcon className="size-4" />
+          </Button>
+        )}
       </div>
 
       <div className="w-full flex flex-col gap-3 pb-2">
@@ -129,6 +153,9 @@ function PureImageGeneratorToolInvocation({
                 </div>
               ))}
             </div>
+            {result?.guide && (
+              <p className="text-sm text-muted-foreground">{result.guide}</p>
+            )}
           </>
         )}
       </div>

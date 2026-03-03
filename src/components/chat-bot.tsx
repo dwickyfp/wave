@@ -28,6 +28,7 @@ import {
 } from "app-types/chat";
 import { useToRef } from "@/hooks/use-latest";
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
+import { ImageToolName } from "lib/ai/tools";
 import { Button } from "ui/button";
 import { deleteThreadAction } from "@/app/api/chat/actions";
 import { useRouter } from "next/navigation";
@@ -156,7 +157,15 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
     stop,
   } = useChat({
     id: threadId,
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    sendAutomaticallyWhen: (messages) => {
+      // Image generation runs fully server-side — never auto-send after it
+      // completes, otherwise the client would fire a second request and
+      // re-generate the image indefinitely.
+      if (appStore.getState().threadImageToolModel[threadId]) {
+        return false;
+      }
+      return lastAssistantMessageIsCompleteWithToolCalls(messages);
+    },
     transport: new DefaultChatTransport({
       prepareSendMessagesRequest: ({ messages, body, id }) => {
         if (window.location.pathname !== `/chat/${threadId}`) {
