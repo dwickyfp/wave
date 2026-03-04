@@ -395,19 +395,30 @@ export function ProviderConfigSheet({
                   No models. Click "Add" to register one.
                 </p>
               ) : (
-                <div className="space-y-2">
-                  {models.map((model) => (
-                    <ModelRow
-                      key={model.id}
-                      model={model}
-                      onToggleEnabled={() => handleToggleModel(model)}
-                      onToggleCapability={(key) =>
-                        handleToggleCapability(model, key)
-                      }
-                      onDelete={() => handleDeleteModel(model)}
-                      onUpdated={handleUpdateModel}
-                    />
-                  ))}
+                <div className="space-y-4">
+                  {MODEL_TYPE_GROUPS.map(({ type, label }) => {
+                    const group = models.filter((m) => m.modelType === type);
+                    if (group.length === 0) return null;
+                    return (
+                      <div key={type} className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          {label}
+                        </p>
+                        {group.map((model) => (
+                          <ModelRow
+                            key={model.id}
+                            model={model}
+                            onToggleEnabled={() => handleToggleModel(model)}
+                            onToggleCapability={(key) =>
+                              handleToggleCapability(model, key)
+                            }
+                            onDelete={() => handleDeleteModel(model)}
+                            onUpdated={handleUpdateModel}
+                          />
+                        ))}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -468,6 +479,15 @@ export function ProviderConfigSheet({
     </Sheet>
   );
 }
+
+// ─── Model Type Groups ────────────────────────────────────────────────────────
+
+const MODEL_TYPE_GROUPS = [
+  { type: "llm" as const, label: "LLM" },
+  { type: "image_generation" as const, label: "Image Generation" },
+  { type: "embedding" as const, label: "Embedding" },
+  { type: "reranking" as const, label: "Reranking" },
+];
 
 // ─── Model Row ────────────────────────────────────────────────────────────────
 
@@ -614,8 +634,8 @@ function ModelRow({
         </div>
       </div>
 
-      {/* Capability badges */}
-      {!editing && (
+      {/* Capability badges — only relevant for LLM models */}
+      {!editing && model.modelType === "llm" && (
         <div className="flex flex-wrap gap-1">
           {CAPS.map((cap) => (
             <button
