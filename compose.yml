@@ -1,0 +1,40 @@
+version: "3"
+
+services:
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server --console-address ":9001" /data
+    volumes:
+      - minio_data:/data
+    networks:
+      - chatbot_network
+
+  db:
+    image: pgvector/pgvector:pg17 # Use an appropriate tag, e.g., pg16, pg15, etc.
+    container_name: pgvector-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5492:5432" # Maps container port 5432 to host port 5432
+    volumes:
+      - pgdatavector:/var/lib/postgresql/data
+    networks:
+      - chatbot_network
+
+volumes:
+  minio_data:
+  pgdatavector:
+
+networks:
+  chatbot_network:
+    driver: bridge
