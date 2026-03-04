@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { mutate as swrMutate } from "swr";
 import { toast } from "sonner";
+
+const CHAT_MODELS_KEY = "/api/chat/models";
 import {
   Sheet,
   SheetContent,
@@ -217,6 +220,7 @@ export function ProviderConfigSheet({
           m.id === model.id ? { ...m, enabled: !m.enabled } : m,
         ),
       );
+      swrMutate(CHAT_MODELS_KEY);
     } catch (err: any) {
       toast.error(err.message || "Failed to update model");
     }
@@ -237,6 +241,7 @@ export function ProviderConfigSheet({
       setModels((prev) =>
         prev.map((m) => (m.id === model.id ? { ...m, [key]: newValue } : m)),
       );
+      swrMutate(CHAT_MODELS_KEY);
     } catch (err: any) {
       toast.error(err.message || "Failed to update capability");
     }
@@ -258,6 +263,7 @@ export function ProviderConfigSheet({
           if (!res.ok) throw new Error("Failed to delete model");
           setModels((prev) => prev.filter((m) => m.id !== model.id));
           toast.success("Model deleted");
+          swrMutate(CHAT_MODELS_KEY);
         } catch (err: any) {
           toast.error(err.message || "Failed to delete model");
         }
@@ -523,6 +529,7 @@ export function ProviderConfigSheet({
                 .then((r) => r.json())
                 .then((data) => setModels(data))
                 .catch(() => {});
+              swrMutate(CHAT_MODELS_KEY);
             }}
           />
         )}
@@ -611,6 +618,7 @@ function ModelRow({
       const updated = await res.json();
       onUpdated(updated);
       setEditing(false);
+      swrMutate(CHAT_MODELS_KEY);
     } catch (err: any) {
       toast.error(err.message || "Failed to update model");
     } finally {

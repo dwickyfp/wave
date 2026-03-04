@@ -16,6 +16,7 @@ import {
 } from "./provider-definitions";
 
 const PROVIDERS_KEY = "/api/settings/providers";
+const CHAT_MODELS_KEY = "/api/chat/models";
 
 export function ProviderConfigTab() {
   const { data: providers, isLoading } = useSWR<LlmProviderConfig[]>(
@@ -106,6 +107,7 @@ export function ProviderConfigTab() {
           onClose={() => {
             setSelectedProvider(null);
             swrMutate(PROVIDERS_KEY);
+            swrMutate(CHAT_MODELS_KEY);
           }}
         />
       )}
@@ -120,6 +122,7 @@ export function ProviderConfigTab() {
           onClose={() => {
             setAddingWithDef(null);
             swrMutate(PROVIDERS_KEY);
+            swrMutate(CHAT_MODELS_KEY);
           }}
         />
       )}
@@ -132,6 +135,7 @@ export function ProviderConfigTab() {
           onClose={() => {
             setAddingCustom(false);
             swrMutate(PROVIDERS_KEY);
+            swrMutate(CHAT_MODELS_KEY);
           }}
         />
       )}

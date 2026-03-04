@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { mutate as swrMutate } from "swr";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
 import {
   BrainCircuit,
@@ -57,6 +58,14 @@ export function SettingsContent() {
       if (!res.ok) throw new Error(data.error || "Import failed");
       toast.success(
         `Imported ${data.providers} provider(s), ${data.modelsAdded} new model(s)`,
+      );
+      // Revalidate all settings + chat model list caches
+      swrMutate(
+        (key) =>
+          typeof key === "string" &&
+          (key.startsWith("/api/settings/") || key === "/api/chat/models"),
+        undefined,
+        { revalidate: true },
       );
     } catch (err: any) {
       toast.error(err.message || "Failed to import settings");
