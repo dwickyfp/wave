@@ -68,6 +68,12 @@ export interface AppState {
     };
   };
   pendingThreadMention?: ChatMention;
+  citationDocumentPreview: {
+    documentId: string;
+    groupId: string;
+    documentName: string;
+    fileType?: string;
+  } | null;
 }
 
 export interface AppDispatch {
@@ -113,6 +119,7 @@ const initialState: AppState = {
     },
   },
   pendingThreadMention: undefined,
+  citationDocumentPreview: null,
 };
 
 export const appStore = create<AppState & AppDispatch>()(

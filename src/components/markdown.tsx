@@ -6,8 +6,15 @@ import {
   ChevronRight,
   FileSpreadsheet,
   LinkIcon,
+  FileTextIcon,
 } from "lucide-react";
-import { Fragment, PropsWithChildren, memo, useState } from "react";
+import {
+  Fragment,
+  PropsWithChildren,
+  memo,
+  useState,
+  useCallback,
+} from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -22,7 +29,9 @@ import {
   TableHeader,
   TableRow,
 } from "ui/table";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { PreBlock, SnowflakePreBlock } from "./pre-block";
+import { appStore } from "@/app/store";
 
 const FadeIn = memo(({ children }: PropsWithChildren) => {
   return <span className="fade-in animate-in duration-1000">{children} </span>;
@@ -250,6 +259,60 @@ const MarkdownTable = memo(({ node }: { node?: any }) => {
 });
 MarkdownTable.displayName = "MarkdownTable";
 
+// ── Citation Link ──────────────────────────────────────────────────────────────
+// Renders knowledge:// links (from retriever citations) as interactive badges
+// that open the document preview panel in chat.
+function CitationLink({
+  href,
+  children,
+}: {
+  href: string;
+  children: React.ReactNode;
+}) {
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      // href format: knowledge://groupId/docId
+      const path = href.replace("knowledge://", "");
+      const [groupId, docId] = path.split("/");
+      if (!groupId || !docId) return;
+
+      // Extract plain text name from children
+      const extractText = (node: React.ReactNode): string => {
+        if (typeof node === "string") return node;
+        if (Array.isArray(node)) return node.map(extractText).join("");
+        if (node && typeof node === "object" && "props" in (node as any)) {
+          return extractText((node as any).props?.children);
+        }
+        return "";
+      };
+      const documentName = extractText(children) || "Document";
+
+      appStore.setState({
+        citationDocumentPreview: { documentId: docId, groupId, documentName },
+      });
+    },
+    [href, children],
+  );
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          onClick={handleClick}
+          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary hover:bg-primary/20 transition-colors cursor-pointer border border-primary/20"
+        >
+          <FileTextIcon className="size-3 shrink-0" />
+          <span>{children}</span>
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="text-xs">
+        Click to preview document
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 const components: Partial<Components> = {
   table: ({ node }) => {
     return <MarkdownTable node={node} />;
@@ -313,6 +376,13 @@ const components: Partial<Components> = {
     );
   },
   a: ({ node, children, ...props }) => {
+    const href = (props as any).href as string | undefined;
+
+    // Handle knowledge:// citation links (from retriever)
+    if (href?.startsWith("knowledge://")) {
+      return <CitationLink href={href}>{children}</CitationLink>;
+    }
+
     return (
       <a
         className="text-primary hover:underline flex gap-1.5 items-center"

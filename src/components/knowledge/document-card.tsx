@@ -11,6 +11,7 @@ import {
   FileIcon,
   LinkIcon,
   Loader2Icon,
+  RefreshCwIcon,
 } from "lucide-react";
 import { format } from "date-fns";
 import { cn } from "lib/utils";
@@ -47,11 +48,36 @@ interface Props {
   doc: KnowledgeDocument;
   groupId: string;
   onDelete: (docId: string) => void;
+  onPreview?: (doc: KnowledgeDocument) => void;
+  onReEmbed?: (docId: string) => void;
 }
 
-export function DocumentCard({ doc, groupId, onDelete }: Props) {
+export function DocumentCard({
+  doc,
+  groupId,
+  onDelete,
+  onPreview,
+  onReEmbed,
+}: Props) {
   const [deleting, setDeleting] = useState(false);
+  const [reembedding, setReembedding] = useState(false);
   const FileIconComp = FILE_ICONS[doc.fileType] ?? FileIcon;
+
+  const handleReEmbed = async () => {
+    setReembedding(true);
+    try {
+      const res = await fetch(`/api/knowledge/${groupId}/documents/${doc.id}`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error();
+      onReEmbed?.(doc.id);
+      toast.success("Re-embedding started");
+    } catch {
+      toast.error("Failed to start re-embedding");
+    } finally {
+      setReembedding(false);
+    }
+  };
 
   const handleDelete = async () => {
     const ok = await notify.confirm({
@@ -75,7 +101,10 @@ export function DocumentCard({ doc, groupId, onDelete }: Props) {
   };
 
   return (
-    <Card className="p-3 flex flex-col gap-2 hover:bg-input transition-colors group">
+    <Card
+      className="p-3 flex flex-col gap-2 hover:bg-input transition-colors group cursor-pointer"
+      onClick={() => onPreview?.(doc)}
+    >
       <div className="flex items-start gap-2.5">
         <div className="shrink-0 p-1.5 rounded-md bg-primary/10">
           <FileIconComp className="size-4 text-primary" />
@@ -90,19 +119,43 @@ export function DocumentCard({ doc, groupId, onDelete }: Props) {
           </p>
         </div>
 
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
-          onClick={handleDelete}
-          disabled={deleting}
-        >
-          {deleting ? (
-            <Loader2Icon className="size-3.5 animate-spin" />
-          ) : (
-            <Trash2Icon className="size-3.5" />
-          )}
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleReEmbed();
+            }}
+            disabled={reembedding || doc.status === "processing"}
+            title="Re-embed document"
+          >
+            {reembedding ? (
+              <Loader2Icon className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCwIcon className="size-3.5" />
+            )}
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDelete();
+            }}
+            disabled={deleting}
+            title="Delete document"
+          >
+            {deleting ? (
+              <Loader2Icon className="size-3.5 animate-spin" />
+            ) : (
+              <Trash2Icon className="size-3.5" />
+            )}
+          </Button>
+        </div>
       </div>
 
       <div className="flex items-center justify-between flex-wrap gap-1">

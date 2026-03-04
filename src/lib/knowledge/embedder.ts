@@ -6,6 +6,8 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { settingsRepository } from "lib/db/repository";
 import { EmbeddingModel } from "ai";
 
+// ─── Model Creation ────────────────────────────────────────────────────────────
+
 function createEmbeddingModel(
   provider: string,
   modelApiName: string,
@@ -70,8 +72,52 @@ async function getEmbeddingModelFromDb(
   }
 }
 
+// ─── Text Preprocessing ────────────────────────────────────────────────────────
+
+/**
+ * Preprocess text before embedding to improve vector quality:
+ * - Normalize unicode (NFC)
+ * - Collapse excessive whitespace
+ * - Remove markdown formatting noise that doesn't add semantic value
+ * - Truncate to stay within typical embedding model token limits (~8K tokens)
+ */
+function preprocessForEmbedding(text: string): string {
+  const MAX_EMBEDDING_CHARS = 30_000; // ~8K tokens safety limit
+
+  let processed = text
+    // Normalize unicode
+    .normalize("NFC")
+    // Remove zero-width chars
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "")
+    // Collapse excessive whitespace
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    // Remove excessive markdown formatting (images, raw HTML tags)
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1") // ![alt](url) → alt
+    .replace(/<[^>]+>/g, " ") // strip HTML tags
+    .trim();
+
+  // Truncate if text exceeds embedding model limits
+  if (processed.length > MAX_EMBEDDING_CHARS) {
+    processed = processed.slice(0, MAX_EMBEDDING_CHARS);
+    // Try to cut at a word boundary
+    const lastSpace = processed.lastIndexOf(" ");
+    if (lastSpace > MAX_EMBEDDING_CHARS * 0.9) {
+      processed = processed.slice(0, lastSpace);
+    }
+  }
+
+  return processed;
+}
+
+// ─── Public API ────────────────────────────────────────────────────────────────
+
 const BATCH_SIZE = 100;
 
+/**
+ * Embed multiple texts with preprocessing.
+ * Texts are normalized and cleaned before being sent to the embedding model.
+ */
 export async function embedTexts(
   texts: string[],
   provider: string,
@@ -84,10 +130,13 @@ export async function embedTexts(
     );
   }
 
+  // Preprocess all texts
+  const preprocessed = texts.map(preprocessForEmbedding);
+
   const allEmbeddings: number[][] = [];
 
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < preprocessed.length; i += BATCH_SIZE) {
+    const batch = preprocessed.slice(i, i + BATCH_SIZE);
     const { embeddings } = await embedMany({ model, values: batch });
     allEmbeddings.push(...embeddings);
   }
@@ -95,6 +144,9 @@ export async function embedTexts(
   return allEmbeddings;
 }
 
+/**
+ * Embed a single text with preprocessing.
+ */
 export async function embedSingleText(
   text: string,
   provider: string,
@@ -106,6 +158,8 @@ export async function embedSingleText(
       `Embedding model not available: ${provider}/${modelName}. Check provider configuration.`,
     );
   }
-  const { embedding } = await embed({ model, value: text });
+
+  const preprocessed = preprocessForEmbedding(text);
+  const { embedding } = await embed({ model, value: preprocessed });
   return embedding;
 }

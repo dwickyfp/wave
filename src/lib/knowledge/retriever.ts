@@ -395,11 +395,12 @@ export async function queryKnowledgeAsText(
 
   const citations = results
     .map((r, i) => {
-      const docRef = r.documentName;
+      // Embed documentId as a knowledge:// link so the frontend can open a preview
+      const docLink = `[**${r.documentName}**](knowledge://${group.id}/${r.documentId})`;
       const summary = r.chunk.contextSummary
         ? `\n*Context: ${r.chunk.contextSummary}*`
         : "";
-      return `[${i + 1}] **${docRef}** (relevance: ${(r.rerankScore ?? r.score).toFixed(2)})${summary}\n\n${r.chunk.content}`;
+      return `[${i + 1}] ${docLink} (relevance: ${(r.rerankScore ?? r.score).toFixed(2)})${summary}\n\n${r.chunk.content}`;
     })
     .join("\n\n---\n\n");
 

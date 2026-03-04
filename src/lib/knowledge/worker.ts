@@ -1,12 +1,20 @@
 /**
  * ContextX Knowledge Ingestion Worker
  * Run with: pnpm worker:knowledge
+ *
+ * Pipeline:
+ * 1. Process document → markdown
+ * 2. Chunk with semantic boundary detection
+ * 3. Enrich chunks with contextual summaries (Anthropic technique)
+ * 4. Embed enriched text (context + content)
+ * 5. Store chunks with contextSummary + embeddings
  */
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import { knowledgeRepository } from "lib/db/repository";
 import { processDocument } from "./processor";
 import { chunkMarkdown } from "./chunker";
+import { enrichChunksWithContext } from "./context-enricher";
 import { embedTexts } from "./embedder";
 import { KnowledgeJob } from "./worker-client";
 import { serverFileStorage } from "lib/file-storage";
@@ -45,7 +53,7 @@ async function handleIngestDocument(
   // Delete existing chunks for this document
   await knowledgeRepository.deleteChunksByDocumentId(documentId);
 
-  // Chunk the markdown
+  // Step 1: Chunk the markdown (with text cleaning & smart splitting)
   const chunks = chunkMarkdown(
     markdown,
     group.chunkSize,
@@ -59,22 +67,31 @@ async function handleIngestDocument(
     return;
   }
 
-  // Embed all chunks
-  const texts = chunks.map((c) => c.content);
+  // Step 2: Enrich chunks with contextual summaries
+  const documentTitle = doc.name || doc.originalFilename || "Untitled";
+  const enrichedChunks = await enrichChunksWithContext(
+    chunks,
+    documentTitle,
+    markdown,
+  );
+
+  // Step 3: Embed the enriched text (contextSummary + content)
+  const embeddingTexts = enrichedChunks.map((c) => c.embeddingText);
   const embeddings = await embedTexts(
-    texts,
+    embeddingTexts,
     group.embeddingProvider,
     group.embeddingModel,
   );
 
-  const totalTokens = chunks.reduce((sum, c) => sum + c.tokenCount, 0);
+  const totalTokens = enrichedChunks.reduce((sum, c) => sum + c.tokenCount, 0);
 
-  // Store chunks with embeddings
+  // Step 4: Store chunks with contextSummary and embeddings
   await knowledgeRepository.insertChunks(
-    chunks.map((c, i) => ({
+    enrichedChunks.map((c, i) => ({
       documentId,
       groupId,
       content: c.content,
+      contextSummary: c.contextSummary || null,
       chunkIndex: c.chunkIndex,
       tokenCount: c.tokenCount,
       metadata: c.metadata,
@@ -83,12 +100,12 @@ async function handleIngestDocument(
   );
 
   await knowledgeRepository.updateDocumentStatus(documentId, "ready", {
-    chunkCount: chunks.length,
+    chunkCount: enrichedChunks.length,
     tokenCount: totalTokens,
   });
 
   console.log(
-    `[ContextX Worker] Ingested document ${documentId}: ${chunks.length} chunks, ${totalTokens} tokens`,
+    `[ContextX Worker] Ingested document ${documentId}: ${enrichedChunks.length} chunks, ${totalTokens} tokens (contextual enrichment enabled)`,
   );
 }
 

@@ -88,6 +88,8 @@ export interface KnowledgeChunk {
   metadata?: {
     section?: string;
     headings?: string[];
+    headingPath?: string;
+    hasStructuredContent?: boolean;
     pageNumber?: number;
     sheetName?: string;
   } | null;
