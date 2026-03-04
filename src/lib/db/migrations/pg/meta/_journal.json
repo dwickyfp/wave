@@ -176,6 +176,13 @@
       "when": 1772700000000,
       "tag": "0024_model_type",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1772649024265,
+      "tag": "0025_redundant_mongoose",
+      "breakpoints": true
     }
   ]
 }

@@ -17,7 +17,7 @@ services:
       - chatbot_network
 
   postgres-ai:
-    image: pg-ai-bot:17
+    image: pg-ai-bot:16
     container_name: postgres-ai
     restart: unless-stopped
 
@@ -29,7 +29,7 @@ services:
       PG_CRON_DATABASE:       postgres
 
     ports:
-      - "5433:5432"           # avoid conflict with local postgres
+      - "5453:5432"           # avoid conflict with local postgres
 
     volumes:
       - pgdatavector:/var/lib/postgresql/data
@@ -49,9 +49,21 @@ services:
     networks:
       - chatbot_network
 
+  redis:
+    image: redis:7
+    command: ["redis-server", "--port", "6379"]
+    ports:
+      - "6377:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - chatbot_network
+    restart: unless-stopped
+
 volumes:
   minio_data:
   pgdatavector:
+  redis_data:
 
 networks:
   chatbot_network:
