@@ -14,21 +14,6 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   openRouter: "OpenRouter",
 };
 
-// Capabilities per provider (defaults for seeding)
-const _PROVIDER_IMAGE_SUPPORT: Record<string, boolean> = {
-  openai: true,
-  google: true,
-  anthropic: true,
-  xai: true,
-};
-
-const _PROVIDER_FILE_SUPPORT: Record<string, boolean> = {
-  openai: true,
-  google: true,
-  anthropic: true,
-  xai: true,
-};
-
 // Static model data from models.ts structure
 const STATIC_MODELS: Array<{
   provider: string;
@@ -345,6 +330,7 @@ export async function POST() {
           supportsImageInput: model.supportsImageInput,
           supportsImageGeneration: false,
           supportsFileInput: model.supportsFileInput,
+          modelType: "llm" as const,
           sortOrder: index,
         });
         importedCount++;

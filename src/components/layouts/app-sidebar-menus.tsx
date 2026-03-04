@@ -19,6 +19,7 @@ import { useTranslations } from "next-intl";
 import { MCPIcon } from "ui/mcp-icon";
 import { WriteIcon } from "ui/write-icon";
 import {
+  BrainIcon,
   FolderOpenIcon,
   FolderSearchIcon,
   PlusIcon,
@@ -102,6 +103,18 @@ export function AppSidebarMenus({ user }: { user?: BasicUser }) {
           </Tooltip>
         </SidebarMenu>
         {getIsUserAdmin(user) && <AppSidebarAdmin />}
+        <SidebarMenu>
+          <Tooltip>
+            <SidebarMenuItem>
+              <Link href="/knowledge">
+                <SidebarMenuButton className="font-semibold">
+                  <BrainIcon className="size-4" />
+                  ContextX
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </Tooltip>
+        </SidebarMenu>
         <SidebarMenu className="group/archive">
           <Tooltip>
             <SidebarMenuItem>

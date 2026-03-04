@@ -382,45 +382,47 @@ async function seedSampleUsageData(userIds: string[]) {
       if (thread[0]) {
         // Create sample messages with token usage
         const timestamp = Date.now();
-        await db.insert(ChatMessageTable).values([
-          {
-            id: `${userId}-msg-1-${timestamp}`,
-            threadId: thread[0].id,
-            role: "user" as const,
-            parts: [{ type: "text", text: "Test user message" }],
-          },
-          {
-            id: `${userId}-msg-2-${timestamp}`,
-            threadId: thread[0].id,
-            role: "assistant" as const,
-            parts: [{ type: "text", text: "Test assistant response" }],
-            metadata: {
-              chatModel: { provider: "openai", model: "gpt-4o" },
-              usage: {
-                totalTokens: Math.floor(Math.random() * 100) + 100,
-                inputTokens: Math.floor(Math.random() * 100) + 50,
-                outputTokens: Math.floor(Math.random() * 100) + 50,
-              },
+        await db.insert(ChatMessageTable).values({
+          id: `${userId}-msg-1-${timestamp}`,
+          threadId: thread[0].id,
+          role: "user" as const,
+          parts: [{ type: "text", text: "Test user message" }],
+        } as any);
+        await db.insert(ChatMessageTable).values({
+          id: `${userId}-msg-2-${timestamp}`,
+          threadId: thread[0].id,
+          role: "assistant" as const,
+          parts: [{ type: "text", text: "Test assistant response" }],
+          metadata: {
+            chatModel: { provider: "openai", model: "gpt-4o" },
+            usage: {
+              totalTokens: Math.floor(Math.random() * 100) + 100,
+              inputTokens: Math.floor(Math.random() * 100) + 50,
+              outputTokens: Math.floor(Math.random() * 100) + 50,
+              inputTokenDetails: {},
+              outputTokenDetails: {},
             },
           },
-          {
-            id: `${userId}-msg-3-${timestamp}`,
-            threadId: thread[0].id,
-            role: "assistant" as const,
-            parts: [{ type: "text", text: "Another test response" }],
-            metadata: {
-              chatModel: {
-                provider: "anthropic",
-                model: "claude-3-5-sonnet-20241022",
-              },
-              usage: {
-                totalTokens: Math.floor(Math.random() * 100) + 100,
-                inputTokens: Math.floor(Math.random() * 100) + 50,
-                outputTokens: Math.floor(Math.random() * 100) + 50,
-              },
+        } as any);
+        await db.insert(ChatMessageTable).values({
+          id: `${userId}-msg-3-${timestamp}`,
+          threadId: thread[0].id,
+          role: "assistant" as const,
+          parts: [{ type: "text", text: "Another test response" }],
+          metadata: {
+            chatModel: {
+              provider: "anthropic",
+              model: "claude-3-5-sonnet-20241022",
+            },
+            usage: {
+              totalTokens: Math.floor(Math.random() * 100) + 100,
+              inputTokens: Math.floor(Math.random() * 100) + 50,
+              outputTokens: Math.floor(Math.random() * 100) + 50,
+              inputTokenDetails: {},
+              outputTokenDetails: {},
             },
           },
-        ]);
+        } as any);
       }
     }
 

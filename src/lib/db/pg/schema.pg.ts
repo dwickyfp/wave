@@ -14,7 +14,29 @@ import {
   index,
   integer,
   bigint,
+  customType,
 } from "drizzle-orm/pg-core";
+
+// pgvector custom type
+const vector = customType<{ data: number[]; config?: { dimensions?: number } }>(
+  {
+    dataType(config) {
+      if (config?.dimensions) return `vector(${config.dimensions})`;
+      return "vector"; // no dimension constraint — accepts any size
+    },
+    toDriver(value: number[]): string {
+      return `[${value.join(",")}]`;
+    },
+    fromDriver(value: unknown): number[] {
+      if (Array.isArray(value)) return value as number[];
+      const str = value as string;
+      return str
+        .replace(/[\[\]]/g, "")
+        .split(",")
+        .map(Number);
+    },
+  },
+);
 import { isNotNull } from "drizzle-orm";
 import { DBWorkflow, DBEdge, DBNode } from "app-types/workflow";
 import { UIMessage } from "ai";
@@ -596,3 +618,161 @@ export type LlmProviderConfigEntity =
   typeof LlmProviderConfigTable.$inferSelect;
 export type LlmModelConfigEntity = typeof LlmModelConfigTable.$inferSelect;
 export type SystemSettingsEntity = typeof SystemSettingsTable.$inferSelect;
+
+// ─── ContextX Knowledge Management ────────────────────────────────────────────
+
+export const KnowledgeGroupTable = pgTable("knowledge_group", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  name: text("name").notNull(),
+  description: text("description"),
+  icon: json("icon").$type<{
+    value?: string;
+    style?: { backgroundColor?: string };
+  }>(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => UserTable.id, { onDelete: "cascade" }),
+  visibility: varchar("visibility", {
+    enum: ["public", "private", "readonly"],
+  })
+    .notNull()
+    .default("private"),
+  embeddingModel: text("embedding_model")
+    .notNull()
+    .default("text-embedding-3-small"),
+  embeddingProvider: text("embedding_provider").notNull().default("openai"),
+  rerankingModel: text("reranking_model"),
+  rerankingProvider: text("reranking_provider"),
+  mcpEnabled: boolean("mcp_enabled").notNull().default(false),
+  mcpApiKeyHash: text("mcp_api_key_hash"),
+  mcpApiKeyPreview: text("mcp_api_key_preview"),
+  chunkSize: integer("chunk_size").notNull().default(512),
+  chunkOverlapPercent: integer("chunk_overlap_percent").notNull().default(20),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const KnowledgeDocumentTable = pgTable(
+  "knowledge_document",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    originalFilename: text("original_filename").notNull(),
+    fileType: varchar("file_type", {
+      enum: ["pdf", "docx", "xlsx", "csv", "txt", "md", "url", "html"],
+    }).notNull(),
+    fileSize: bigint("file_size", { mode: "number" }),
+    storagePath: text("storage_path"),
+    sourceUrl: text("source_url"),
+    status: varchar("status", {
+      enum: ["pending", "processing", "ready", "failed"],
+    })
+      .notNull()
+      .default("pending"),
+    errorMessage: text("error_message"),
+    chunkCount: integer("chunk_count").notNull().default(0),
+    tokenCount: integer("token_count").notNull().default(0),
+    metadata: json("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [index("knowledge_document_group_id_idx").on(t.groupId)],
+);
+
+export const KnowledgeChunkTable = pgTable(
+  "knowledge_chunk",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    content: text("content").notNull(),
+    contextSummary: text("context_summary"),
+    embedding: vector("embedding"),
+    chunkIndex: integer("chunk_index").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    metadata: json("metadata").$type<{
+      section?: string;
+      headings?: string[];
+      pageNumber?: number;
+      sheetName?: string;
+    }>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_chunk_group_id_idx").on(t.groupId),
+    index("knowledge_chunk_document_id_idx").on(t.documentId),
+  ],
+);
+
+export const KnowledgeGroupAgentTable = pgTable(
+  "knowledge_group_agent",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [unique().on(t.agentId, t.groupId)],
+);
+
+export const KnowledgeUsageLogTable = pgTable(
+  "knowledge_usage_log",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    query: text("query").notNull(),
+    source: varchar("source", { enum: ["chat", "agent", "mcp"] })
+      .notNull()
+      .default("chat"),
+    chunksRetrieved: integer("chunks_retrieved").notNull().default(0),
+    latencyMs: integer("latency_ms"),
+    metadata: json("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_usage_log_group_id_idx").on(t.groupId),
+    index("knowledge_usage_log_created_at_idx").on(t.createdAt),
+  ],
+);
+
+export type KnowledgeGroupEntity = typeof KnowledgeGroupTable.$inferSelect;
+export type KnowledgeDocumentEntity =
+  typeof KnowledgeDocumentTable.$inferSelect;
+export type KnowledgeChunkEntity = typeof KnowledgeChunkTable.$inferSelect;
+export type KnowledgeGroupAgentEntity =
+  typeof KnowledgeGroupAgentTable.$inferSelect;
+export type KnowledgeUsageLogEntity =
+  typeof KnowledgeUsageLogTable.$inferSelect;

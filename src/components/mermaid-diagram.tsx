@@ -11,7 +11,7 @@ let mermaidModule: typeof import("mermaid").default | null = null;
 // AI models sometimes generate xychart-beta with x-axis arrays spanning
 // multiple lines, which Mermaid's parser rejects.
 function normalizeMermaidChart(chart: string): string {
-  return chart.replace(/\[[^\]]*\]/gs, (match) =>
+  return chart.replace(/\[[^\]]*\]/g, (match) =>
     match.replace(/\s*\n\s*/g, " "),
   );
 }

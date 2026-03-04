@@ -25,6 +25,7 @@ import {
 import {
   agentRepository,
   chatRepository,
+  knowledgeRepository,
   settingsRepository,
   snowflakeAgentRepository,
   subAgentRepository,
@@ -39,6 +40,11 @@ import { colorize } from "consola/utils";
 import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import { ImageToolName } from "lib/ai/tools";
 import { createDbImageTool } from "lib/ai/tools/image";
+import {
+  createKnowledgeTool,
+  knowledgeToolName,
+} from "lib/ai/tools/knowledge-tool";
+import { queryKnowledgeAsText } from "lib/knowledge/retriever";
 import { serverFileStorage } from "lib/file-storage";
 import {
   type SnowflakeCortexMessage,
@@ -486,6 +492,35 @@ export async function POST(request: Request) {
       mentions.push(...agent.instructions.mentions);
     }
 
+    // ── Knowledge mention RAG context ────────────────────────────────────────
+    const knowledgeMentionIds = mentions
+      .filter((m) => m.type === "knowledge")
+      .map(
+        (m) => (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
+      );
+
+    const userQueryText = message.parts
+      .filter((p: any) => p.type === "text")
+      .map((p: any) => p.text as string)
+      .join(" ")
+      .trim();
+
+    const knowledgeContexts: string[] = [];
+    if (knowledgeMentionIds.length && userQueryText) {
+      for (const groupId of knowledgeMentionIds) {
+        const group = await knowledgeRepository
+          .selectGroupById(groupId, session.user.id)
+          .catch(() => null);
+        if (!group) continue;
+        const ctx = await queryKnowledgeAsText(group, userQueryText, {
+          userId: session.user.id,
+          source: "chat",
+        }).catch(() => null);
+        if (ctx) knowledgeContexts.push(ctx);
+      }
+    }
+    // ── end knowledge context ─────────────────────────────────────────────────
+
     const useImageTool = Boolean(imageTool?.provider && imageTool?.model);
 
     const isToolCallAllowed =
@@ -560,6 +595,26 @@ export async function POST(request: Request) {
             ),
           )
           .orElse({});
+
+        // Knowledge tools for agents with attached knowledge groups
+        const KNOWLEDGE_TOOLS: Record<string, Tool> = await safe()
+          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
+          .map(errorIf(() => !agent?.id && "No agent"))
+          .map(async () => {
+            const groups = await knowledgeRepository.getGroupsByAgentId(
+              agent!.id,
+            );
+            const tools: Record<string, Tool> = {};
+            for (const group of groups) {
+              tools[knowledgeToolName(group.id)] = createKnowledgeTool(group, {
+                userId: session.user.id,
+                source: "agent",
+              });
+            }
+            return tools;
+          })
+          .orElse({});
+
         const inProgressToolParts = extractInProgressToolPart(message);
         if (inProgressToolParts.length) {
           await Promise.all(
@@ -598,6 +653,7 @@ export async function POST(request: Request) {
             agentWithSubAgents?.subAgents ?? [],
           ),
           !supportToolCall && buildToolCallUnsupportedModelSystemPrompt,
+          ...knowledgeContexts,
         );
 
         const IMAGE_TOOL: Record<string, Tool> = await (async (): Promise<
@@ -630,6 +686,7 @@ export async function POST(request: Request) {
           ...MCP_TOOLS,
           ...WORKFLOW_TOOLS,
           ...SUBAGENT_TOOLS,
+          ...KNOWLEDGE_TOOLS,
         })
           .map((t) => {
             const bindingTools =

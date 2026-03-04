@@ -12,6 +12,7 @@ import { pgChatExportRepository } from "./pg/repositories/chat-export-repository
 import { pgSubAgentRepository } from "./pg/repositories/subagent-repository.pg";
 import { pgSnowflakeAgentRepository } from "./pg/repositories/snowflake-agent-repository.pg";
 import { pgSettingsRepository } from "./pg/repositories/settings-repository.pg";
+import { pgKnowledgeRepository } from "./pg/repositories/knowledge-repository.pg";
 
 export const chatRepository = pgChatRepository;
 export const userRepository = pgUserRepository;
@@ -30,3 +31,4 @@ export const chatExportRepository = pgChatExportRepository;
 export const subAgentRepository = pgSubAgentRepository;
 export const snowflakeAgentRepository = pgSnowflakeAgentRepository;
 export const settingsRepository = pgSettingsRepository;
+export const knowledgeRepository = pgKnowledgeRepository;

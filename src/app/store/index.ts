@@ -7,6 +7,7 @@ import { WorkflowSummary } from "app-types/workflow";
 import { AppDefaultToolkit } from "lib/ai/tools";
 import { AgentSummary } from "app-types/agent";
 import { ArchiveWithItemCount } from "app-types/archive";
+import { KnowledgeSummary } from "app-types/knowledge";
 
 export interface UploadedFile {
   id: string;
@@ -26,6 +27,7 @@ export interface AppState {
   mcpList: (MCPServerInfo & { id: string })[];
   agentList: AgentSummary[];
   workflowToolList: WorkflowSummary[];
+  knowledgeList: KnowledgeSummary[];
   currentThreadId: ChatThread["id"] | null;
   toolChoice: "auto" | "none" | "manual";
   allowedMcpServers?: Record<string, AllowedMCPServer>;
@@ -82,6 +84,7 @@ const initialState: AppState = {
   mcpList: [],
   agentList: [],
   workflowToolList: [],
+  knowledgeList: [],
   currentThreadId: null,
   toolChoice: "auto",
   allowedMcpServers: undefined,

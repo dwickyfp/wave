@@ -136,7 +136,7 @@ export async function POST(request: Request) {
     });
 
     // Create sub-agents with filtered tools
-    const createdSubAgents = [];
+    const createdSubAgents: any[] = [];
     for (const subAgent of data.subAgents) {
       const filteredTools = await filterExistingMentions(subAgent.tools ?? []);
       const created = await subAgentRepository.insertSubAgent(agent.id, {

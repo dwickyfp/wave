@@ -77,6 +77,7 @@ import { safe } from "ts-safe";
 import { mutate } from "swr";
 import { handleErrorWithToast } from "ui/shared-toast";
 import { useAgents } from "@/hooks/queries/use-agents";
+import { useKnowledge } from "@/hooks/queries/use-knowledge";
 import { redriectMcpOauth } from "lib/ai/mcp/oauth-redirect";
 import { useChatModels } from "@/hooks/queries/use-chat-models";
 import { ChatModel } from "app-types/chat";
@@ -140,6 +141,9 @@ export function ToolSelectDropdown({
   useWorkflowToolList({
     refreshInterval: 1000 * 60 * 5,
   });
+
+  // Populate knowledgeList in appStore so @mention popup can show knowledge groups
+  useKnowledge();
 
   const agentMention = useMemo(() => {
     return mentions?.find((m) => m.type === "agent");

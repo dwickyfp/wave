@@ -38,6 +38,8 @@ import { GenerateAgentDialog } from "./generate-agent-dialog";
 import { AgentIconPicker } from "./agent-icon-picker";
 import { AgentToolSelector } from "./agent-tool-selector";
 import { SubAgentSection } from "./subagent-section";
+import { KnowledgeAgentSection } from "@/components/knowledge/knowledge-agent-section";
+import type { KnowledgeSummary } from "app-types/knowledge";
 import {
   RandomDataGeneratorExample,
   WeatherExample,
@@ -96,6 +98,12 @@ export default function EditAgent({
   );
   const [subAgentsEnabled, setSubAgentsEnabled] = useState<boolean>(
     initialAgent?.subAgentsEnabled ?? false,
+  );
+  const [knowledgeGroups, setKnowledgeGroups] = useState<KnowledgeSummary[]>(
+    (initialAgent as any)?.knowledgeGroups ?? [],
+  );
+  const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean>(
+    ((initialAgent as any)?.knowledgeGroups ?? []).length > 0,
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -210,6 +218,35 @@ export default function EditAgent({
     [mcpList, workflowToolList],
   );
 
+  const syncKnowledgeGroups = useCallback(
+    async (agentId: string) => {
+      const current = (initialAgent as any)?.knowledgeGroups ?? [];
+      const currentIds = new Set(current.map((g: any) => g.id));
+      const newIds = new Set(knowledgeGroups.map((g) => g.id));
+
+      const toAdd = knowledgeGroups.filter((g) => !currentIds.has(g.id));
+      const toRemove = current.filter((g: any) => !newIds.has(g.id));
+
+      await Promise.all([
+        ...toAdd.map((g) =>
+          fetch(`/api/agent/${agentId}/knowledge`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId: g.id }),
+          }),
+        ),
+        ...toRemove.map((g: any) =>
+          fetch(`/api/agent/${agentId}/knowledge`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId: g.id }),
+          }),
+        ),
+      ]);
+    },
+    [knowledgeGroups, initialAgent],
+  );
+
   const saveAgent = useCallback(() => {
     if (initialAgent) {
       safe(() => setIsSaving(true))
@@ -228,7 +265,8 @@ export default function EditAgent({
             body,
           }),
         )
-        .ifOk((updatedAgent) => {
+        .ifOk(async (updatedAgent) => {
+          await syncKnowledgeGroups(initialAgent.id);
           mutateAgents(updatedAgent);
           toast.success(t("Agent.updated"));
           router.push(`/agents`);
@@ -254,7 +292,8 @@ export default function EditAgent({
             body,
           });
         })
-        .ifOk((updatedAgent) => {
+        .ifOk(async (updatedAgent) => {
+          if (updatedAgent?.id) await syncKnowledgeGroups(updatedAgent.id);
           mutateAgents(updatedAgent);
           toast.success(t("Agent.created"));
           router.push(`/agents`);
@@ -271,6 +310,7 @@ export default function EditAgent({
     t,
     subAgents,
     subAgentsEnabled,
+    syncKnowledgeGroups,
   ]);
 
   const updateVisibility = useCallback(
@@ -650,6 +690,19 @@ export default function EditAgent({
               onChange={(newSubAgents, newEnabled) => {
                 setSubAgents(newSubAgents);
                 setSubAgentsEnabled(newEnabled);
+              }}
+            />
+          </div>
+
+          <div className="flex gap-2 flex-col border-t pt-4 mt-2">
+            <KnowledgeAgentSection
+              agentId={initialAgent?.id}
+              knowledgeGroups={knowledgeGroups}
+              enabled={knowledgeEnabled}
+              hasEditAccess={hasEditAccess}
+              onChange={(groups, enabled) => {
+                setKnowledgeGroups(groups);
+                setKnowledgeEnabled(enabled);
               }}
             />
           </div>
