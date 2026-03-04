@@ -4,8 +4,17 @@ import { useTranslations } from "next-intl";
 import { AgentSummary, AgentUpdateSchema } from "app-types/agent";
 import { Card, CardDescription, CardHeader, CardTitle } from "ui/card";
 import { Button } from "ui/button";
-import { Plus, ArrowUpRight, Snowflake, ChevronDown } from "lucide-react";
+import {
+  Plus,
+  ArrowUpRight,
+  Snowflake,
+  ChevronDown,
+  Download,
+  Upload,
+} from "lucide-react";
+import { useRef } from "react";
 import { useRouter } from "next/navigation";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { BackgroundPaths } from "ui/background-paths";
 import { useBookmark } from "@/hooks/queries/use-bookmark";
 import { useMutateAgents } from "@/hooks/queries/use-agents";
@@ -48,6 +57,8 @@ export function AgentsList({
   const [visibilityChangeLoading, setVisibilityChangeLoading] = useState<
     string | null
   >(null);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const { data: allAgents } = useSWR(
     "/api/agent?filters=mine,shared",
@@ -117,6 +128,49 @@ export function AgentsList({
       .watch(() => setDeletingAgentLoading(null));
   };
 
+  const exportAgent = async (agentId: string, agentName: string) => {
+    try {
+      const res = await fetch(`/api/agent/${agentId}/export`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="(.+?)"/);
+      const filename = match?.[1] ?? `agent-${agentName}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Failed to export agent");
+    }
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const res = await fetch("/api/agent/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(json),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Import failed");
+      mutateAgents();
+      toast.success(`Agent "${data.name}" imported`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to import agent");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   // Determine the correct route for an agent card click based on type
   const getAgentHref = (agent: AgentSummary) => {
     if (agent.agentType === "snowflake_cortex") {
@@ -135,30 +189,50 @@ export function AgentsList({
           {t("Layout.agents")}
         </h1>
         {canCreate && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                data-testid="create-agent-button"
-                className="gap-1"
-              >
-                <Plus className="size-4" />
-                {t("Agent.newAgent")}
-                <ChevronDown className="size-3.5 opacity-60" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => router.push("/agent/new")}>
-                <Plus className="size-4 mr-2" />+ Create Agent
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => router.push("/agent/snowflake/new")}
-              >
-                <Snowflake className="size-4 mr-2 text-blue-500" />+ Snowflake
-                Intelligence
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5"
+              disabled={importing}
+              onClick={() => importInputRef.current?.click()}
+            >
+              <Upload className="size-4" />
+              {importing ? "Importing…" : "Import"}
+            </Button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  data-testid="create-agent-button"
+                  className="gap-1"
+                >
+                  <Plus className="size-4" />
+                  {t("Agent.newAgent")}
+                  <ChevronDown className="size-3.5 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => router.push("/agent/new")}>
+                  <Plus className="size-4" />
+                  Create Agent
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => router.push("/agent/snowflake/new")}
+                >
+                  <Snowflake className="size-4 text-blue-500" />
+                  Snowflake Intelligence
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         )}
       </div>
 
@@ -227,6 +301,25 @@ export function AgentsList({
                 isVisibilityChangeLoading={visibilityChangeLoading === agent.id}
                 isDeleteLoading={deletingAgentLoading === agent.id}
                 onDelete={deleteAgent}
+                renderActions={() => (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 text-muted-foreground hover:text-foreground"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          exportAgent(agent.id, agent.name);
+                        }}
+                      >
+                        <Download className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Export agent</TooltipContent>
+                  </Tooltip>
+                )}
               />
             ))}
           </div>
