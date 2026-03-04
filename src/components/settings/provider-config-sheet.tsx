@@ -29,6 +29,8 @@ import {
   X,
   Tv,
   Brain,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { LlmModelConfig, LlmProviderConfig } from "app-types/settings";
 import { cn } from "lib/utils";
@@ -91,6 +93,16 @@ export function ProviderConfigSheet({
     provider?.models ?? [],
   );
   const [addingModel, setAddingModel] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    new Set(),
+  );
+
+  const toggleGroup = (type: string) =>
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      next.has(type) ? next.delete(type) : next.add(type);
+      return next;
+    });
 
   // For new provider form — pre-filled when a known provider def is provided
   const [newProviderName, setNewProviderName] = useState(prefillName ?? "");
@@ -399,23 +411,39 @@ export function ProviderConfigSheet({
                   {MODEL_TYPE_GROUPS.map(({ type, label }) => {
                     const group = models.filter((m) => m.modelType === type);
                     if (group.length === 0) return null;
+                    const isCollapsed = collapsedGroups.has(type);
                     return (
                       <div key={type} className="space-y-2">
-                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                          {label}
-                        </p>
-                        {group.map((model) => (
-                          <ModelRow
-                            key={model.id}
-                            model={model}
-                            onToggleEnabled={() => handleToggleModel(model)}
-                            onToggleCapability={(key) =>
-                              handleToggleCapability(model, key)
-                            }
-                            onDelete={() => handleDeleteModel(model)}
-                            onUpdated={handleUpdateModel}
-                          />
-                        ))}
+                        <button
+                          type="button"
+                          onClick={() => toggleGroup(type)}
+                          className="flex items-center gap-1 w-full text-left"
+                        >
+                          {isCollapsed ? (
+                            <ChevronRight className="size-3 text-muted-foreground" />
+                          ) : (
+                            <ChevronDown className="size-3 text-muted-foreground" />
+                          )}
+                          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            {label}
+                          </span>
+                          <span className="text-xs text-muted-foreground/60 ml-1">
+                            ({group.length})
+                          </span>
+                        </button>
+                        {!isCollapsed &&
+                          group.map((model) => (
+                            <ModelRow
+                              key={model.id}
+                              model={model}
+                              onToggleEnabled={() => handleToggleModel(model)}
+                              onToggleCapability={(key) =>
+                                handleToggleCapability(model, key)
+                              }
+                              onDelete={() => handleDeleteModel(model)}
+                              onUpdated={handleUpdateModel}
+                            />
+                          ))}
                       </div>
                     );
                   })}
