@@ -24,6 +24,11 @@ import {
   FileText,
   Wrench,
   Sparkles,
+  Pencil,
+  Check,
+  X,
+  Tv,
+  Brain,
 } from "lucide-react";
 import { LlmModelConfig, LlmProviderConfig } from "app-types/settings";
 import { cn } from "lib/utils";
@@ -205,6 +210,10 @@ export function ProviderConfigSheet({
     } catch (err: any) {
       toast.error(err.message || "Failed to update capability");
     }
+  };
+
+  const handleUpdateModel = (updated: LlmModelConfig) => {
+    setModels((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
   };
 
   const handleDeleteModel = async (model: LlmModelConfig) => {
@@ -396,6 +405,7 @@ export function ProviderConfigSheet({
                         handleToggleCapability(model, key)
                       }
                       onDelete={() => handleDeleteModel(model)}
+                      onUpdated={handleUpdateModel}
                     />
                   ))}
                 </div>
@@ -466,6 +476,7 @@ interface ModelRowProps {
   onToggleEnabled: () => void;
   onToggleCapability: (key: CapabilityKey) => void;
   onDelete: () => void;
+  onUpdated: (model: LlmModelConfig) => void;
 }
 
 const CAPS: CapabilityKey[] = [
@@ -480,7 +491,41 @@ function ModelRow({
   onToggleEnabled,
   onToggleCapability,
   onDelete,
+  onUpdated,
 }: ModelRowProps) {
+  const [editing, setEditing] = useState(false);
+  const [editUiName, setEditUiName] = useState(model.uiName);
+  const [editApiName, setEditApiName] = useState(model.apiName);
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/settings/models/${model.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uiName: editUiName.trim(),
+          apiName: editApiName.trim(),
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to update model");
+      const updated = await res.json();
+      onUpdated(updated);
+      setEditing(false);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to update model");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setEditUiName(model.uiName);
+    setEditApiName(model.apiName);
+    setEditing(false);
+  };
+
   return (
     <div
       className={cn(
@@ -489,48 +534,107 @@ function ModelRow({
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-sm font-medium truncate">{model.uiName}</p>
-          <p className="text-xs text-muted-foreground truncate">
-            {model.apiName}
-          </p>
+        <div className="min-w-0 flex-1">
+          {editing ? (
+            <div className="space-y-1.5">
+              <div className="relative">
+                <Tv className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                <Input
+                  value={editUiName}
+                  onChange={(e) => setEditUiName(e.target.value)}
+                  placeholder="Display name"
+                  className="h-7 text-sm pl-7"
+                />
+              </div>
+              <div className="relative">
+                <Brain className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                <Input
+                  value={editApiName}
+                  onChange={(e) => setEditApiName(e.target.value)}
+                  placeholder="API model name"
+                  className="h-7 text-xs pl-7"
+                />
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="text-sm font-medium truncate">{model.uiName}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {model.apiName}
+              </p>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <Switch
-            checked={model.enabled}
-            onCheckedChange={onToggleEnabled}
-            className="scale-75"
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6 text-muted-foreground hover:text-destructive"
-            onClick={onDelete}
-          >
-            <Trash2 className="size-3" />
-          </Button>
+          {editing ? (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-foreground"
+                onClick={handleSave}
+                disabled={saving}
+              >
+                <Check className="size-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-foreground"
+                onClick={handleCancel}
+              >
+                <X className="size-3" />
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-foreground"
+                onClick={() => setEditing(true)}
+              >
+                <Pencil className="size-3" />
+              </Button>
+              <Switch
+                checked={model.enabled}
+                onCheckedChange={onToggleEnabled}
+                className="scale-75"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6 text-muted-foreground hover:text-destructive"
+                onClick={onDelete}
+              >
+                <Trash2 className="size-3" />
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Capability badges */}
-      <div className="flex flex-wrap gap-1">
-        {CAPS.map((cap) => (
-          <button
-            key={cap}
-            onClick={() => onToggleCapability(cap)}
-            className={cn(
-              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors",
-              model[cap]
-                ? "bg-primary/10 border-primary/30 text-primary"
-                : "bg-muted border-transparent text-muted-foreground",
-            )}
-            title={`Toggle ${CAPABILITY_LABELS[cap]}`}
-          >
-            {CAPABILITY_ICONS[cap]}
-            {CAPABILITY_LABELS[cap]}
-          </button>
-        ))}
-      </div>
+      {!editing && (
+        <div className="flex flex-wrap gap-1">
+          {CAPS.map((cap) => (
+            <button
+              key={cap}
+              onClick={() => onToggleCapability(cap)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors",
+                model[cap]
+                  ? "bg-primary/10 border-primary/30 text-primary"
+                  : "bg-muted border-transparent text-muted-foreground",
+              )}
+              title={`Toggle ${CAPABILITY_LABELS[cap]}`}
+            >
+              {CAPABILITY_ICONS[cap]}
+              {CAPABILITY_LABELS[cap]}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
