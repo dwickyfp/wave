@@ -422,11 +422,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name,
-          ts_rank(kc.search_vector, plainto_tsquery('english', ${query})) AS score
+          ts_rank(to_tsvector('english', kc.content), plainto_tsquery('english', ${query})) AS score
         FROM knowledge_chunk kc
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
-          AND kc.search_vector @@ plainto_tsquery('english', ${query})
+          AND to_tsvector('english', kc.content) @@ plainto_tsquery('english', ${query})
         ORDER BY score DESC
         LIMIT ${limit}
       `,

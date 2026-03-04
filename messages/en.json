@@ -477,6 +477,13 @@
     "readOnlyDescription": "Others can view and use as a tool, but only you can edit.",
     "publicDescription": "Anyone can view, edit, and use this agent as a tool."
   },
+  "Knowledge": {
+    "title": "Knowledge",
+    "create": "Create Knowledge Base",
+    "noKnowledgeGroupsYet": "No knowledge bases yet. Create one to attach context to your chats.",
+    "myKnowledge": "My Knowledge",
+    "sharedKnowledge": "Shared Knowledge"
+  },
   "KeyboardShortcuts": {
     "title": "Keyboard Shortcuts",
     "newChat": "New Chat",

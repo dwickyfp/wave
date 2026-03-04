@@ -5,6 +5,7 @@ import { KnowledgeGroup, KnowledgeDocument } from "app-types/knowledge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
 import { KnowledgeDocumentsTab } from "./knowledge-documents-tab";
 import { KnowledgeUsageTab } from "./knowledge-usage-tab";
+import { KnowledgePlaygroundTab } from "./knowledge-playground-tab";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
@@ -287,9 +288,10 @@ export function KnowledgeDetailPage({
 
       {/* Tabs */}
       <Tabs defaultValue="documents" className="flex-1">
-        <TabsList className="grid grid-cols-2 w-full max-w-xs">
+        <TabsList className="grid grid-cols-3 w-full max-w-sm">
           <TabsTrigger value="documents">Documents</TabsTrigger>
           <TabsTrigger value="usage">Usage</TabsTrigger>
+          <TabsTrigger value="playground">Playground</TabsTrigger>
         </TabsList>
 
         <TabsContent value="documents" className="mt-4">
@@ -301,6 +303,10 @@ export function KnowledgeDetailPage({
 
         <TabsContent value="usage" className="mt-4">
           <KnowledgeUsageTab groupId={group.id} />
+        </TabsContent>
+
+        <TabsContent value="playground" className="mt-4">
+          <KnowledgePlaygroundTab groupId={group.id} />
         </TabsContent>
       </Tabs>
     </div>

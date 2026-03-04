@@ -406,3 +406,38 @@ Example: if asked to "research and analyze topic X":
 After all subagents complete, synthesize their results into a final response.
 </parallel_subagent_instructions>`.trim();
 };
+
+/**
+ * Wraps retrieved RAG knowledge chunks with explicit LLM instructions so the
+ * model knows it MUST ground its answer in the provided context.
+ * Based on AI SDK RAG cookbook best practices:
+ * https://ai-sdk.dev/cookbook/guides/rag-chatbot
+ */
+export function buildKnowledgeContextSystemPrompt(
+  contexts: string[],
+): string | false {
+  if (!contexts.length) return false;
+
+  const joined = contexts.join("\n\n---\n\n");
+
+  return `
+<knowledge_retrieval_context>
+The following content has been retrieved from internal knowledge bases using
+hybrid search (vector + full-text) and reranking, ranked by relevance to the
+user's query. Each source carries a relevance score — higher is more relevant.
+
+${joined}
+</knowledge_retrieval_context>
+
+<rag_instructions>
+IMPORTANT — Use the retrieved context above as your primary source of truth:
+1. Base your response primarily on the content inside <knowledge_retrieval_context>.
+2. Cite the document sources (e.g. "[1]", "[2]") when referencing specific information.
+3. If the retrieved context fully answers the question, DO NOT speculate beyond it.
+4. If the context is incomplete or missing key details, you may supplement with
+   general knowledge, but clearly state which parts come from retrieved context
+   vs. your own training knowledge.
+5. If no relevant content was retrieved (score near 0 or "No relevant content found"),
+   acknowledge the limitation and answer from general knowledge if possible.
+</rag_instructions>`.trim();
+}

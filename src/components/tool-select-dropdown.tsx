@@ -6,6 +6,7 @@ import { cn, objectFlow } from "lib/utils";
 import {
   ArrowUpRightIcon,
   AtSign,
+  Brain,
   ChartColumn,
   ChevronRight,
   CodeIcon,
@@ -70,6 +71,7 @@ import { CountAnimation } from "ui/count-animation";
 import { Separator } from "ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { AgentSummary } from "app-types/agent";
+import { KnowledgeSummary } from "app-types/knowledge";
 import { authClient } from "auth/client";
 
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
@@ -89,6 +91,7 @@ interface ToolSelectDropdownProps {
   mentions?: ChatMention[];
   onSelectWorkflow?: (workflow: WorkflowSummary) => void;
   onSelectAgent?: (agent: AgentSummary) => void;
+  onSelectKnowledge?: (group: KnowledgeSummary) => void;
   onGenerateImage?: (model?: ChatModel) => void;
   className?: string;
 }
@@ -108,6 +111,7 @@ export function ToolSelectDropdown({
   side,
   onSelectWorkflow,
   onSelectAgent,
+  onSelectKnowledge,
   onGenerateImage,
   mentions,
   className,
@@ -254,6 +258,10 @@ export function ToolSelectDropdown({
           <DropdownMenuSeparator />
         </div>
         <AgentSelector onSelectAgent={onSelectAgent} />
+        <div className="py-1">
+          <DropdownMenuSeparator />
+        </div>
+        <KnowledgeGroupSelector onSelectKnowledge={onSelectKnowledge} />
         <div className="py-1">
           <DropdownMenuSeparator />
         </div>
@@ -1043,6 +1051,64 @@ function AgentSelector({
                 </div>
               </DropdownMenuItem>
             ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuPortal>
+      </DropdownMenuSub>
+    </DropdownMenuGroup>
+  );
+}
+
+function KnowledgeGroupSelector({
+  onSelectKnowledge,
+}: {
+  onSelectKnowledge?: (group: KnowledgeSummary) => void;
+}) {
+  const knowledgeList = appStore((state) => state.knowledgeList);
+  const t = useTranslations();
+
+  return (
+    <DropdownMenuGroup>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="text-xs flex items-center gap-2 font-semibold cursor-pointer">
+          <Brain className="size-3.5" />
+          {t("Knowledge.title")}
+        </DropdownMenuSubTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuSubContent className="w-80">
+            {knowledgeList.length === 0 ? (
+              <Link
+                href="/knowledge"
+                className="py-8 px-4 hover:bg-input/100 rounded-lg cursor-pointer flex justify-between items-center text-xs overflow-hidden"
+              >
+                <div className="gap-1 z-10">
+                  <div className="flex items-center mb-4 gap-1">
+                    <p className="font-semibold">{t("Knowledge.create")}</p>
+                    <ArrowUpRightIcon className="size-3" />
+                  </div>
+                  <p className="text-muted-foreground">
+                    {t("Knowledge.noKnowledgeGroupsYet")}
+                  </p>
+                </div>
+              </Link>
+            ) : (
+              knowledgeList.map((group) => (
+                <DropdownMenuItem
+                  key={group.id}
+                  className="cursor-pointer"
+                  onClick={() => onSelectKnowledge?.(group)}
+                >
+                  <Brain className="size-3.5 text-primary shrink-0" />
+                  <div className="flex flex-col min-w-0">
+                    <span className="truncate font-medium">{group.name}</span>
+                    {group.description && (
+                      <span className="text-xs text-muted-foreground truncate">
+                        {group.description}
+                      </span>
+                    )}
+                  </div>
+                </DropdownMenuItem>
+              ))
+            )}
           </DropdownMenuSubContent>
         </DropdownMenuPortal>
       </DropdownMenuSub>

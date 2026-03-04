@@ -2,6 +2,7 @@
 
 import {
   AudioWaveformIcon,
+  Brain,
   ChevronDown,
   CornerRightUp,
   FileIcon,
@@ -52,6 +53,7 @@ import { useThreadFileUploader } from "@/hooks/use-thread-file-uploader";
 
 import { EMOJI_DATA } from "lib/const";
 import { AgentSummary } from "app-types/agent";
+import { KnowledgeSummary } from "app-types/knowledge";
 import { FileUIPart, TextUIPart } from "ai";
 import { toast } from "sonner";
 import { isFilePartSupported, isIngestSupported } from "@/lib/ai/file-support";
@@ -302,6 +304,25 @@ export default function PromptInput({
     [mentions, threadId],
   );
 
+  const onSelectKnowledge = useCallback(
+    (group: KnowledgeSummary) => {
+      addMention({
+        type: "knowledge",
+        name: group.name,
+        knowledgeId: group.id,
+        description: group.description,
+        icon: group.icon?.value
+          ? {
+              type: "emoji" as const,
+              value: group.icon.value,
+              style: group.icon.style as Record<string, string> | undefined,
+            }
+          : null,
+      });
+    },
+    [addMention],
+  );
+
   const onChangeMention = useCallback(
     (mentions: ChatMention[]) => {
       let hasAgent = false;
@@ -436,6 +457,10 @@ export default function PromptInput({
                             {mention.name.slice(0, 1)}
                           </AvatarFallback>
                         </Avatar>
+                      ) : mention.type === "knowledge" ? (
+                        <Button className="size-6 flex items-center justify-center ring ring-border rounded-full flex-shrink-0 p-0.5 bg-primary/10">
+                          <Brain className="size-3.5 text-primary" />
+                        </Button>
                       ) : (
                         <Button className="size-6 flex items-center justify-center ring ring-border rounded-full flex-shrink-0 p-0.5">
                           {mention.type == "mcpServer" ? (
@@ -596,6 +621,7 @@ export default function PromptInput({
                         side="top"
                         onSelectWorkflow={onSelectWorkflow}
                         onSelectAgent={onSelectAgent}
+                        onSelectKnowledge={onSelectKnowledge}
                         onGenerateImage={handleGenerateImage}
                         mentions={mentions}
                       />

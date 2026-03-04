@@ -17,6 +17,7 @@ import {
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
 import {
+  buildKnowledgeContextSystemPrompt,
   buildMcpServerCustomizationsSystemPrompt,
   buildParallelSubAgentSystemPrompt,
   buildToolCallUnsupportedModelSystemPrompt,
@@ -515,7 +516,12 @@ export async function POST(request: Request) {
         const ctx = await queryKnowledgeAsText(group, userQueryText, {
           userId: session.user.id,
           source: "chat",
-        }).catch(() => null);
+        }).catch((err) => {
+          logger.warn(
+            `[Knowledge RAG] retrieval failed for group ${groupId}: ${err}`,
+          );
+          return null;
+        });
         if (ctx) knowledgeContexts.push(ctx);
       }
     }
@@ -653,7 +659,7 @@ export async function POST(request: Request) {
             agentWithSubAgents?.subAgents ?? [],
           ),
           !supportToolCall && buildToolCallUnsupportedModelSystemPrompt,
-          ...knowledgeContexts,
+          buildKnowledgeContextSystemPrompt(knowledgeContexts),
         );
 
         const IMAGE_TOOL: Record<string, Tool> = await (async (): Promise<
