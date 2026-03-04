@@ -422,11 +422,15 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name,
-          ts_rank(to_tsvector('english', kc.content), plainto_tsquery('english', ${query})) AS score
+          ts_rank(
+            to_tsvector('english', coalesce(kc.context_summary, '') || ' ' || kc.content),
+            plainto_tsquery('english', ${query})
+          ) AS score
         FROM knowledge_chunk kc
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
-          AND to_tsvector('english', kc.content) @@ plainto_tsquery('english', ${query})
+          AND to_tsvector('english', coalesce(kc.context_summary, '') || ' ' || kc.content)
+              @@ plainto_tsquery('english', ${query})
         ORDER BY score DESC
         LIMIT ${limit}
       `,
@@ -447,6 +451,58 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       documentName: r.document_name,
       documentId: r.document_id,
       score: Number(r.score),
+    }));
+  },
+
+  // ─── Adjacent Chunk Expansion ────────────────────────────────────────────────
+
+  async getAdjacentChunks(groupId, requests) {
+    if (requests.length === 0) return [];
+
+    // Build a VALUES-based filter for (document_id, chunk_index) pairs
+    const conditions = requests.map(
+      (r) => sql`(${r.documentId}::uuid, ${r.chunkIndex}::integer)`,
+    );
+
+    const rows = await db.execute<{
+      id: string;
+      document_id: string;
+      group_id: string;
+      content: string;
+      context_summary: string | null;
+      chunk_index: number;
+      token_count: number;
+      metadata: any;
+      created_at: Date;
+      document_name: string;
+    }>(
+      sql`
+        SELECT
+          kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
+          kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
+          kd.name AS document_name
+        FROM knowledge_chunk kc
+        JOIN knowledge_document kd ON kd.id = kc.document_id
+        WHERE kc.group_id = ${groupId}
+          AND (kc.document_id, kc.chunk_index) IN (${sql.join(conditions, sql`, `)})
+      `,
+    );
+
+    return rows.rows.map((r) => ({
+      chunk: {
+        id: r.id,
+        documentId: r.document_id,
+        groupId: r.group_id,
+        content: r.content,
+        contextSummary: r.context_summary,
+        chunkIndex: r.chunk_index,
+        tokenCount: r.token_count,
+        metadata: r.metadata,
+        createdAt: r.created_at,
+      } as KnowledgeChunk,
+      documentName: r.document_name,
+      documentId: r.document_id,
+      score: 0,
     }));
   },
 

@@ -226,6 +226,12 @@ export interface KnowledgeRepository {
     limit: number,
   ): Promise<Array<KnowledgeQueryResult>>;
 
+  // Adjacent chunks (for neighbor expansion)
+  getAdjacentChunks(
+    groupId: string,
+    requests: Array<{ documentId: string; chunkIndex: number }>,
+  ): Promise<Array<KnowledgeQueryResult>>;
+
   // Agent links
   linkAgentToGroup(agentId: string, groupId: string): Promise<void>;
   unlinkAgentFromGroup(agentId: string, groupId: string): Promise<void>;
