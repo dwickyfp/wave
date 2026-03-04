@@ -12,6 +12,8 @@ export type LlmProviderName =
   | "xai"
   | "groq"
   | "ollama"
+  | "snowflake"
+  | "cohere"
   | "openai-compatible";
 
 export type LlmModelConfig = {
@@ -82,7 +84,7 @@ export const LlmProviderUpsertZodSchema = z.object({
   name: z.string().min(1),
   displayName: z.string().min(1),
   apiKey: z.string().optional().nullable(),
-  baseUrl: z.string().url().optional().nullable(),
+  baseUrl: z.string().optional().nullable(),
   enabled: z.boolean().default(true),
 });
 

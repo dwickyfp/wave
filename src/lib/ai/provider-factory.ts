@@ -5,10 +5,11 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createXai } from "@ai-sdk/xai";
 import { createGroq } from "@ai-sdk/groq";
+import { createCohere } from "@ai-sdk/cohere";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createOllama } from "ollama-ai-provider-v2";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { LanguageModel } from "ai";
+import { LanguageModel, RerankingModel } from "ai";
 import { ChatModel } from "app-types/chat";
 import { settingsRepository } from "lib/db/repository";
 
@@ -78,6 +79,27 @@ export function createModelFromConfig(
         return provider(modelApiName);
       }
 
+      case "cohere": {
+        const key = apiKey || process.env.COHERE_API_KEY;
+        if (!key) return null;
+        const provider = createCohere({ apiKey: key });
+        return provider(modelApiName);
+      }
+
+      case "snowflake": {
+        const key = apiKey || process.env.SNOWFLAKE_API_KEY;
+        if (!key) return null;
+        const accountId = baseUrl || process.env.SNOWFLAKE_ACCOUNT_ID;
+        if (!accountId) return null;
+        const snowflakeBaseUrl = `https://${accountId}.snowflakecomputing.com/api/v2/cortex/v1`;
+        const provider = createOpenAICompatible({
+          name: "snowflake",
+          apiKey: key,
+          baseURL: snowflakeBaseUrl,
+        });
+        return provider(modelApiName);
+      }
+
       default: {
         // Generic OpenAI-compatible provider
         if (!baseUrl) return null;
@@ -90,6 +112,60 @@ export function createModelFromConfig(
         return provider(modelApiName);
       }
     }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Creates a RerankingModel instance from a provider name + model API name.
+ * Currently only Cohere is supported.
+ */
+export function createRerankingModelFromConfig(
+  providerName: string,
+  modelApiName: string,
+  apiKey?: string | null,
+): RerankingModel | null {
+  try {
+    switch (providerName) {
+      case "cohere": {
+        const key = apiKey || process.env.COHERE_API_KEY;
+        if (!key) return null;
+        const provider = createCohere({ apiKey: key });
+        return provider.reranking(modelApiName);
+      }
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Looks up the given provider + model name in the database and returns a
+ * RerankingModel instance. Returns null if not found or not configured.
+ */
+export async function getDbRerankingModel(
+  providerName: string,
+  modelName: string,
+): Promise<RerankingModel | null> {
+  try {
+    const providerConfig =
+      await settingsRepository.getProviderByName(providerName);
+    if (!providerConfig || !providerConfig.enabled) return null;
+
+    const modelConfig = await settingsRepository.getRerankingModel(
+      providerName,
+      modelName,
+    );
+    if (!modelConfig) return null;
+
+    return createRerankingModelFromConfig(
+      providerName,
+      modelConfig.apiName,
+      providerConfig.apiKey,
+    );
   } catch {
     return null;
   }

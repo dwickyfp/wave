@@ -11,6 +11,9 @@ importers:
       '@ai-sdk/anthropic':
         specifier: ^3.0.0
         version: 3.0.50(zod@4.2.1)
+      '@ai-sdk/cohere':
+        specifier: ^3.0.23
+        version: 3.0.23(zod@4.2.1)
       '@ai-sdk/google':
         specifier: ^3.0.0
         version: 3.0.34(zod@4.2.1)
@@ -339,6 +342,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/cohere@3.0.23':
+    resolution: {integrity: sha512-Xe50S7q08RX+kfjarOb1aK3P9X4ojhai0XOzA+sQ1ICkfFcmV2cutSI1RzoKc7CJGmFoyuTv06GpaVIhEfASyQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/gateway@3.0.59':
     resolution: {integrity: sha512-MbtheWHgEFV/8HL1Z6E3hOAsmP73zZlNFg0F0nJAD0Adnjp4J/plqNK00Y896d+dWTw+r0OXzyov9/2wCFjH0Q==}
     engines: {node: '>=18'}
@@ -377,6 +386,12 @@ packages:
 
   '@ai-sdk/provider-utils@4.0.16':
     resolution: {integrity: sha512-kBvDqNkt5EwlzF9FujmNhhtl8FYg3e8FO8P5uneKliqfRThWemzBj+wfYr7ZCymAQhTRnwSSz1/SOqhOAwmx9g==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider-utils@4.0.17':
+    resolution: {integrity: sha512-oyCeFINTYK0B8ZGUBiQc05G5vytPlKSmTTtm19xfJuUgoi8zkvvRcoPQci4mSnyfpPn2XSFFDfsALG8uGcapfg==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -6791,6 +6806,12 @@ snapshots:
       '@ai-sdk/provider-utils': 4.0.16(zod@4.2.1)
       zod: 4.2.1
 
+  '@ai-sdk/cohere@3.0.23(zod@4.2.1)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.17(zod@4.2.1)
+      zod: 4.2.1
+
   '@ai-sdk/gateway@3.0.59(zod@4.2.1)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
@@ -6830,6 +6851,13 @@ snapshots:
       zod: 4.2.1
 
   '@ai-sdk/provider-utils@4.0.16(zod@4.2.1)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.0.6
+      zod: 4.2.1
+
+  '@ai-sdk/provider-utils@4.0.17(zod@4.2.1)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
       '@standard-schema/spec': 1.1.0

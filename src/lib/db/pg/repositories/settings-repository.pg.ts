@@ -303,6 +303,37 @@ export const pgSettingsRepository = {
     await db.delete(LlmModelConfigTable).where(eq(LlmModelConfigTable.id, id));
   },
 
+  async getRerankingModel(
+    providerName: string,
+    uiName: string,
+  ): Promise<{ apiName: string } | null> {
+    const [providerRow] = await db
+      .select({ id: LlmProviderConfigTable.id })
+      .from(LlmProviderConfigTable)
+      .where(
+        and(
+          eq(LlmProviderConfigTable.name, providerName),
+          eq(LlmProviderConfigTable.enabled, true),
+        ),
+      );
+    if (!providerRow) return null;
+
+    const [modelRow] = await db
+      .select()
+      .from(LlmModelConfigTable)
+      .where(
+        and(
+          eq(LlmModelConfigTable.providerId, providerRow.id),
+          eq(LlmModelConfigTable.uiName, uiName),
+          eq(LlmModelConfigTable.enabled, true),
+          eq(LlmModelConfigTable.modelType, "reranking"),
+        ),
+      );
+    if (!modelRow) return null;
+
+    return { apiName: modelRow.apiName };
+  },
+
   // ─── System Settings ────────────────────────────────────────────────────────
 
   async getSetting(key: string): Promise<unknown> {

@@ -341,7 +341,7 @@ export function ProviderConfigSheet({
           {(needsBaseUrl || isNew) && (
             <div className="space-y-1.5">
               <Label>
-                Base URL{" "}
+                {def?.baseUrlLabel ?? "Base URL"}{" "}
                 {!needsBaseUrl && (
                   <span className="text-muted-foreground font-normal">
                     (optional)

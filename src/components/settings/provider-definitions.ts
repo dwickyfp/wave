@@ -7,6 +7,7 @@ export type ProviderDefinition = {
   initials: string; // Short label for icon
   needsApiKey: boolean;
   needsBaseUrl: boolean;
+  baseUrlLabel?: string;
   baseUrlPlaceholder?: string;
   apiKeyPlaceholder?: string;
   docsUrl?: string;
@@ -89,6 +90,33 @@ export const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     needsApiKey: false,
     needsBaseUrl: true,
     baseUrlPlaceholder: "http://localhost:11434/api",
+  },
+  {
+    name: "snowflake",
+    displayName: "Snowflake Cortex",
+    description: "Run LLMs via Snowflake Cortex AI (OpenAI-compatible)",
+    color: "bg-sky-500/10",
+    textColor: "text-sky-600 dark:text-sky-400",
+    initials: "SF",
+    needsApiKey: true,
+    needsBaseUrl: true,
+    baseUrlLabel: "Account Identifier",
+    baseUrlPlaceholder: "myorg-myaccount",
+    apiKeyPlaceholder: "Programmatic Access Token (PAT)",
+    docsUrl:
+      "https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-llm-rest-api",
+  },
+  {
+    name: "cohere",
+    displayName: "Cohere",
+    description: "Command R+ LLMs and reranking models",
+    color: "bg-purple-500/10",
+    textColor: "text-purple-600 dark:text-purple-400",
+    initials: "CO",
+    needsApiKey: true,
+    needsBaseUrl: false,
+    apiKeyPlaceholder: "co-...",
+    docsUrl: "https://docs.cohere.com/docs/the-cohere-platform",
   },
   {
     name: "openai-compatible",
