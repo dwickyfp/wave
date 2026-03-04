@@ -116,6 +116,22 @@ const PurePreviewMessage = ({
     [partsForDisplay],
   );
 
+  // Last index that is not a trailing reasoning part — this is where the
+  // footer actions (like/dislike/branch) should appear, even if the model
+  // appends a reasoning block after the main content.
+  const lastActionableIdx = useMemo(() => {
+    for (let i = renderGroups.length - 1; i >= 0; i--) {
+      const g = renderGroups[i];
+      if (
+        g.type === "parallel-subagents" ||
+        (g.type === "single" && g.part.type !== "reasoning")
+      ) {
+        return i;
+      }
+    }
+    return renderGroups.length - 1;
+  }, [renderGroups]);
+
   if (message.role == "system") {
     return null; // system message is not shown
   }
@@ -144,7 +160,10 @@ const PurePreviewMessage = ({
             // Single part — original logic
             const { part, index } = group;
             const key = `message-${messageIndex}-part-${part.type}-${index}`;
-            const isLastPart = groupIdx === renderGroups.length - 1;
+            // isLastPart: last non-reasoning part (controls footer/actions)
+            const isLastPart = groupIdx === lastActionableIdx;
+            // isActuallyLast: physically last in stream (controls thinking animation)
+            const isActuallyLast = groupIdx === renderGroups.length - 1;
 
             if (part.type === "reasoning") {
               return (
@@ -152,7 +171,7 @@ const PurePreviewMessage = ({
                   key={key}
                   readonly={readonly}
                   reasoningText={part.text}
-                  isThinking={isLastPart && isLastMessage && isLoading}
+                  isThinking={isActuallyLast && isLastMessage && isLoading}
                 />
               );
             }

@@ -668,16 +668,55 @@ export async function POST(request: Request) {
         }
         logger.info(`model: ${chatModel?.provider}/${chatModel?.model}`);
 
+        // Strip base64 image data from image tool results in the conversation
+        // history. The client stores the full base64 for display purposes, but
+        // sending it back to the LLM on every subsequent request would exceed
+        // the token limit (1MB image ≈ 1M tokens).
+        const modelMessages = (await convertToModelMessages(messages)).map(
+          (msg) => {
+            if (msg.role !== "tool") return msg;
+            return {
+              ...msg,
+              content: msg.content.map((part) => {
+                if (part.type !== "tool-result") return part;
+                if (part.toolName !== ImageToolName) return part;
+                const output = part.output;
+                if (output.type !== "json") return part;
+                const val = output.value as Record<string, unknown>;
+                return {
+                  ...part,
+                  output: {
+                    type: "text" as const,
+                    value: (val?.guide as string) ?? "Image generated.",
+                  },
+                };
+              }),
+            };
+          },
+        );
+
         const result = streamText({
           model,
           system: systemPrompt,
-          messages: await convertToModelMessages(messages),
+          messages: modelMessages,
           experimental_transform: smoothStream({ chunking: "word" }),
           maxRetries: 2,
           tools: vercelAITooles,
           stopWhen: stepCountIs(useImageTool ? 1 : 10),
           toolChoice: "auto",
           abortSignal: request.signal,
+          // Disable reasoning/thinking when generating images — it adds no
+          // value for a simple tool call decision and pollutes the UI.
+          ...(useImageTool && {
+            providerOptions: {
+              openrouter: {
+                reasoning: { effort: "none" as const, exclude: true },
+              },
+              google: { thinkingConfig: { thinkingBudget: 0 } },
+              openai: { reasoningEffort: "none" },
+              anthropic: { thinking: { type: "disabled" } },
+            },
+          }),
         });
         result.consumeStream();
         dataStream.merge(
