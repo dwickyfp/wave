@@ -5,9 +5,8 @@ import { fetcher } from "lib/utils";
 import { LlmProviderConfig } from "app-types/settings";
 import { ProviderCard } from "./provider-card";
 import { Button } from "ui/button";
-import { Download, Plus, RefreshCw } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
-import { toast } from "sonner";
 import { Skeleton } from "ui/skeleton";
 import { ProviderConfigSheet } from "./provider-config-sheet";
 import {
@@ -23,7 +22,6 @@ export function ProviderConfigTab() {
     PROVIDERS_KEY,
     fetcher,
   );
-  const [seeding, setSeeding] = useState(false);
   const [selectedProvider, setSelectedProvider] =
     useState<LlmProviderConfig | null>(null);
   // For predefined providers not yet in DB
@@ -32,21 +30,6 @@ export function ProviderConfigTab() {
   );
   // For fully custom providers
   const [addingCustom, setAddingCustom] = useState(false);
-
-  const handleSeed = async () => {
-    setSeeding(true);
-    try {
-      const res = await fetch("/api/settings/seed", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to seed");
-      toast.success(`Imported ${data.imported} models successfully`);
-      swrMutate(PROVIDERS_KEY);
-    } catch (err: any) {
-      toast.error(err.message || "Failed to import default models");
-    } finally {
-      setSeeding(false);
-    }
-  };
 
   // Merge all predefined providers with DB data, then append any custom ones
   const allProviderSlots = useMemo(() => {
@@ -86,20 +69,6 @@ export function ProviderConfigTab() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSeed}
-            disabled={seeding}
-            className="gap-2"
-          >
-            {seeding ? (
-              <RefreshCw className="size-3.5 animate-spin" />
-            ) : (
-              <Download className="size-3.5" />
-            )}
-            Import Defaults
-          </Button>
           <Button
             size="sm"
             variant="outline"

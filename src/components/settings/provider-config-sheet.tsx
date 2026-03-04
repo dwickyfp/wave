@@ -9,6 +9,16 @@ import {
   SheetTitle,
   SheetDescription,
 } from "ui/sheet";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "ui/alert-dialog";
 import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
@@ -96,6 +106,12 @@ export function ProviderConfigSheet({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     new Set(),
   );
+  // Confirmation dialog state
+  const [confirmAction, setConfirmAction] = useState<{
+    title: string;
+    description: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const toggleGroup = (type: string) =>
     setCollapsedGroups((prev) => {
@@ -168,22 +184,24 @@ export function ProviderConfigSheet({
     }
   };
 
-  const handleDeleteProvider = async () => {
+  const handleDeleteProvider = () => {
     if (!provider) return;
-    if (
-      !confirm(`Delete provider "${provider.displayName}" and all its models?`)
-    )
-      return;
-    try {
-      const res = await fetch(`/api/settings/providers/${provider.id}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error("Failed to delete");
-      toast.success("Provider deleted");
-      onClose();
-    } catch (err: any) {
-      toast.error(err.message || "Failed to delete provider");
-    }
+    setConfirmAction({
+      title: "Delete Provider",
+      description: `Delete "${provider.displayName}" and all its models? This cannot be undone.`,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/settings/providers/${provider.id}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) throw new Error("Failed to delete");
+          toast.success("Provider deleted");
+          onClose();
+        } catch (err: any) {
+          toast.error(err.message || "Failed to delete provider");
+        }
+      },
+    });
   };
 
   const handleToggleModel = async (model: LlmModelConfig) => {
@@ -228,18 +246,23 @@ export function ProviderConfigSheet({
     setModels((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
   };
 
-  const handleDeleteModel = async (model: LlmModelConfig) => {
-    if (!confirm(`Delete model "${model.uiName}"?`)) return;
-    try {
-      const res = await fetch(`/api/settings/models/${model.id}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error("Failed to delete model");
-      setModels((prev) => prev.filter((m) => m.id !== model.id));
-      toast.success("Model deleted");
-    } catch (err: any) {
-      toast.error(err.message || "Failed to delete model");
-    }
+  const handleDeleteModel = (model: LlmModelConfig) => {
+    setConfirmAction({
+      title: "Delete Model",
+      description: `Delete "${model.uiName}"? This cannot be undone.`,
+      onConfirm: async () => {
+        try {
+          const res = await fetch(`/api/settings/models/${model.id}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) throw new Error("Failed to delete model");
+          setModels((prev) => prev.filter((m) => m.id !== model.id));
+          toast.success("Model deleted");
+        } catch (err: any) {
+          toast.error(err.message || "Failed to delete model");
+        }
+      },
+    });
   };
 
   return (
@@ -504,6 +527,33 @@ export function ProviderConfigSheet({
           />
         )}
       </SheetContent>
+
+      {/* Confirmation dialog */}
+      <AlertDialog
+        open={!!confirmAction}
+        onOpenChange={(v) => !v && setConfirmAction(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmAction?.title}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmAction?.description}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                confirmAction?.onConfirm();
+                setConfirmAction(null);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sheet>
   );
 }
