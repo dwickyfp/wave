@@ -61,6 +61,7 @@ export function DocumentCard({
 }: Props) {
   const [deleting, setDeleting] = useState(false);
   const [reembedding, setReembedding] = useState(false);
+  const isInherited = !!doc.isInherited;
   const FileIconComp = FILE_ICONS[doc.fileType] ?? FileIcon;
 
   const handleReEmbed = async () => {
@@ -124,43 +125,45 @@ export function DocumentCard({
           )}
         </div>
 
-        <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleReEmbed();
-            }}
-            disabled={reembedding || doc.status === "processing"}
-            title="Reprocess for new structure and embeddings"
-          >
-            {reembedding ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : (
-              <RefreshCwIcon className="size-3.5" />
-            )}
-          </Button>
+        {!isInherited && (
+          <div className="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleReEmbed();
+              }}
+              disabled={reembedding || doc.status === "processing"}
+              title="Reprocess for new structure and embeddings"
+            >
+              {reembedding ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCwIcon className="size-3.5" />
+              )}
+            </Button>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleDelete();
-            }}
-            disabled={deleting}
-            title="Delete document"
-          >
-            {deleting ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : (
-              <Trash2Icon className="size-3.5" />
-            )}
-          </Button>
-        </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete();
+              }}
+              disabled={deleting}
+              title="Delete document"
+            >
+              {deleting ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2Icon className="size-3.5" />
+              )}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between flex-wrap gap-1">
@@ -177,6 +180,11 @@ export function DocumentCard({
             )}
             {doc.status}
           </Badge>
+          {isInherited && (
+            <Badge variant="secondary" className="text-xs px-1.5 py-0">
+              From {doc.sourceGroupName ?? "linked group"}
+            </Badge>
+          )}
           {doc.tokenCount > 0 && (
             <span className="text-xs text-muted-foreground">
               {doc.tokenCount.toLocaleString()} tokens

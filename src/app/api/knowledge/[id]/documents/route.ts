@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from "next/server";
+import { DocumentFileType } from "app-types/knowledge";
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { enqueueIngestDocument } from "lib/knowledge/worker-client";
-import { DocumentFileType } from "app-types/knowledge";
+import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -33,7 +33,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const group = await knowledgeRepository.selectGroupById(id, session.user.id);
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const docs = await knowledgeRepository.selectDocumentsByGroupId(id);
+  const docs = await knowledgeRepository.selectDocumentsByGroupScope(id);
   return NextResponse.json(docs);
 }
 
@@ -50,18 +50,48 @@ export async function POST(req: NextRequest, { params }: Params) {
     session.user.id,
   );
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (group.userId !== session.user.id) {
+    return NextResponse.json(
+      { error: "Only the group owner can upload documents" },
+      { status: 403 },
+    );
+  }
+
+  const contentType = req.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    const body = (await req.json()) as {
+      sourceUrl?: string;
+      name?: string;
+    };
+    const sourceUrl = body.sourceUrl?.trim();
+    if (!sourceUrl) {
+      return NextResponse.json(
+        { error: "sourceUrl is required" },
+        { status: 400 },
+      );
+    }
+    const doc = await knowledgeRepository.insertDocument({
+      groupId,
+      userId: session.user.id,
+      name: body.name?.trim() || new URL(sourceUrl).hostname,
+      originalFilename: sourceUrl,
+      fileType: "url",
+      sourceUrl,
+    });
+    await enqueueIngestDocument(doc.id, groupId);
+    return NextResponse.json(doc, { status: 201 });
+  }
 
   const formData = await req.formData();
 
   // Handle URL source
-  const sourceUrl = formData.get("sourceUrl") as string | null;
+  const sourceUrl = (formData.get("sourceUrl") as string | null)?.trim();
   if (sourceUrl) {
-    const name =
-      (formData.get("name") as string) || new URL(sourceUrl).hostname;
+    const name = ((formData.get("name") as string) || "").trim();
     const doc = await knowledgeRepository.insertDocument({
       groupId,
       userId: session.user.id,
-      name,
+      name: name || new URL(sourceUrl).hostname,
       originalFilename: sourceUrl,
       fileType: "url",
       sourceUrl,

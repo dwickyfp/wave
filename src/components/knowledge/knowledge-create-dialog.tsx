@@ -1,28 +1,31 @@
 "use client";
 
+import { mutateKnowledge } from "@/hooks/queries/use-knowledge";
+import { useKnowledge } from "@/hooks/queries/use-knowledge";
+import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
+import { BrainCircuitIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { toast } from "sonner";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Checkbox } from "ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "ui/dialog";
-import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
 import { Textarea } from "ui/textarea";
-import { BrainCircuitIcon } from "lucide-react";
-import { toast } from "sonner";
-import { mutateKnowledge } from "@/hooks/queries/use-knowledge";
-import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
-import { useRouter } from "next/navigation";
 import {
   ModelSelector,
-  parseModelValue,
-  makeModelValue,
   NONE_VALUE,
+  makeModelValue,
+  parseModelValue,
 } from "./knowledge-model-selector";
 
 interface Props {
@@ -34,6 +37,7 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const { data: modelsData } = useKnowledgeModels();
+  const { data: existingGroups } = useKnowledge("mine,shared");
 
   const [form, setForm] = useState({
     name: "",
@@ -41,6 +45,7 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
     embeddingValue: "",
     rerankingValue: NONE_VALUE,
     retrievalThreshold: 0,
+    sourceGroupIds: [] as string[],
   });
 
   // Resolve effective embedding value: prefer form state, else first available model
@@ -81,6 +86,7 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
           rerankingProvider: reranking?.provider ?? null,
           rerankingModel: reranking?.apiName ?? null,
           retrievalThreshold: form.retrievalThreshold,
+          sourceGroupIds: form.sourceGroupIds,
         }),
       });
 
@@ -95,6 +101,7 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
         embeddingValue: "",
         rerankingValue: NONE_VALUE,
         retrievalThreshold: 0,
+        sourceGroupIds: [],
       });
       toast.success(`"${group.name}" created`);
       router.push(`/knowledge/${group.id}`);
@@ -104,6 +111,13 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
       setLoading(false);
     }
   };
+
+  const availableSourceGroups = (existingGroups ?? []).map((group) => ({
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    visibility: group.visibility,
+  }));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -147,6 +161,80 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
                 setForm((f) => ({ ...f, description: e.target.value }))
               }
             />
+          </div>
+
+          {/* Source Groups */}
+          <div className="flex flex-col gap-2 rounded-lg border p-3 bg-muted/30">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs text-muted-foreground">
+                Linked Source Groups{" "}
+                <span className="font-normal">(optional)</span>
+              </Label>
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                {form.sourceGroupIds.length} linked
+              </Badge>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Create a composite group that can read docs from linked groups.
+              Linked docs are read-only.
+            </p>
+            {availableSourceGroups.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No groups available to link yet.
+              </p>
+            ) : (
+              <div className="max-h-36 overflow-y-auto rounded-md border bg-background/40">
+                <div className="divide-y">
+                  {availableSourceGroups.map((candidate) => {
+                    const checked = form.sourceGroupIds.includes(candidate.id);
+                    return (
+                      <label
+                        key={candidate.id}
+                        className="flex items-start gap-2 px-2.5 py-2 cursor-pointer hover:bg-accent/40"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              sourceGroupIds: value
+                                ? Array.from(
+                                    new Set([
+                                      ...prev.sourceGroupIds,
+                                      candidate.id,
+                                    ]),
+                                  )
+                                : prev.sourceGroupIds.filter(
+                                    (id) => id !== candidate.id,
+                                  ),
+                            }))
+                          }
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-medium truncate">
+                              {candidate.name}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {candidate.visibility}
+                            </Badge>
+                          </div>
+                          {candidate.description && (
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {candidate.description}
+                            </p>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* AI Models */}

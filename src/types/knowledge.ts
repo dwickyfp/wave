@@ -41,6 +41,17 @@ export interface KnowledgeGroup {
   updatedAt: Date;
 }
 
+export interface KnowledgeGroupSource {
+  groupId: string;
+  sourceGroupId: string;
+  sourceGroupName: string;
+  sourceGroupDescription?: string;
+  sourceGroupVisibility: KnowledgeVisibility;
+  sourceGroupUserId: string;
+  sourceGroupUserName?: string;
+  createdAt: Date;
+}
+
 export interface KnowledgeSummary {
   id: string;
   name: string;
@@ -84,6 +95,13 @@ export interface KnowledgeDocument {
   metadata?: Record<string, unknown> | null;
   /** Full markdown content of the processed document */
   markdownContent?: string | null;
+  /** True when this doc is inherited from a linked source group */
+  isInherited?: boolean;
+  /** Source group metadata (set only for inherited docs) */
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  sourceGroupVisibility?: KnowledgeVisibility | null;
+  sourceGroupUserName?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -115,6 +133,8 @@ export interface KnowledgeChunk {
     hasStructuredContent?: boolean;
     pageNumber?: number;
     sheetName?: string;
+    sourceGroupId?: string;
+    sourceGroupName?: string;
   } | null;
   createdAt: Date;
 }
@@ -168,6 +188,7 @@ export const createKnowledgeGroupSchema = z.object({
   retrievalThreshold: z.number().min(0).max(1).default(0.0),
   chunkSize: z.number().int().min(128).max(2048).default(512),
   chunkOverlapPercent: z.number().int().min(0).max(50).default(20),
+  sourceGroupIds: z.array(z.string().uuid()).max(50).optional(),
 });
 
 export const updateKnowledgeGroupSchema = createKnowledgeGroupSchema.partial();
@@ -198,6 +219,14 @@ export interface KnowledgeRepository {
     data: UpdateKnowledgeGroupInput,
   ): Promise<KnowledgeGroup>;
   deleteGroup(id: string, userId: string): Promise<void>;
+  setGroupSources(
+    groupId: string,
+    userId: string,
+    sourceGroupIds: string[],
+  ): Promise<void>;
+  selectGroupSources(groupId: string): Promise<KnowledgeGroupSource[]>;
+  selectRetrievalScopes(groupId: string): Promise<KnowledgeGroup[]>;
+  pruneInvalidGroupSources(groupId: string): Promise<void>;
   setMcpApiKey(
     id: string,
     userId: string,
@@ -226,6 +255,7 @@ export interface KnowledgeRepository {
     > & { status?: DocumentStatus },
   ): Promise<KnowledgeDocument>;
   selectDocumentsByGroupId(groupId: string): Promise<KnowledgeDocument[]>;
+  selectDocumentsByGroupScope(groupId: string): Promise<KnowledgeDocument[]>;
   selectDocumentById(id: string): Promise<KnowledgeDocument | null>;
   updateDocumentStatus(
     id: string,
@@ -272,6 +302,15 @@ export interface KnowledgeRepository {
   ): Promise<
     Array<{
       documentId: string;
+      name: string;
+      description?: string | null;
+      updatedAt: Date;
+    }>
+  >;
+  getDocumentMetadataByIdsAcrossGroups(ids: string[]): Promise<
+    Array<{
+      documentId: string;
+      groupId: string;
       name: string;
       description?: string | null;
       updatedAt: Date;

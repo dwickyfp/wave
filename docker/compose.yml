@@ -7,6 +7,7 @@ services:
       - '3000:3000'
     environment:
       - NO_HTTPS=1
+      - REDIS_URL=redis://redis:6379
     env_file:
       - .env
     dns:
@@ -16,6 +17,23 @@ services:
       - wave-chatbot-networks
     depends_on:
       - postgres
+      - redis
+    restart: unless-stopped
+
+  wave-chatbot-worker:
+    build:
+      context: ..
+      dockerfile: ./docker/Dockerfile.worker
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NODE_OPTIONS=--conditions=react-server
+    networks:
+      - wave-chatbot-networks
+    depends_on:
+      - postgres
+      - redis
     restart: unless-stopped
 
   postgres:
@@ -28,8 +46,18 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - wave-chatbot-networks
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   wave-chatbot-networks:

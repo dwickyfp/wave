@@ -1,0 +1,21 @@
+FROM node:23-alpine
+ARG DOCKER_BUILD="1"
+
+WORKDIR /app
+
+RUN corepack enable pnpm
+
+COPY . .
+
+RUN pnpm install --frozen-lockfile
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_OPTIONS="--conditions=react-server"
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+USER nextjs
+
+CMD ["pnpm", "exec", "tsx", "src/lib/knowledge/worker.ts"]

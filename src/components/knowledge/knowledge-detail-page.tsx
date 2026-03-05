@@ -1,9 +1,15 @@
 "use client";
 
-import { mutateKnowledge } from "@/hooks/queries/use-knowledge";
+import { mutateKnowledge, useKnowledge } from "@/hooks/queries/use-knowledge";
 import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
-import { KnowledgeDocument, KnowledgeGroup } from "app-types/knowledge";
+import {
+  KnowledgeDocument,
+  KnowledgeGroup,
+  KnowledgeGroupSource,
+  KnowledgeVisibility,
+} from "app-types/knowledge";
 import { format } from "date-fns";
+import { notify } from "lib/notify";
 import { cn } from "lib/utils";
 import {
   BrainIcon,
@@ -12,12 +18,17 @@ import {
   ChevronUpIcon,
   CopyIcon,
   KeyIcon,
+  Link2Icon,
+  Loader2Icon,
+  PlusIcon,
   RefreshCwIcon,
   SaveIcon,
   ServerIcon,
   SlidersHorizontalIcon,
+  Trash2Icon,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
@@ -39,6 +50,7 @@ import { KnowledgeUsageTab } from "./knowledge-usage-tab";
 interface Props {
   group: KnowledgeGroup;
   initialDocuments: KnowledgeDocument[];
+  initialSourceGroups: KnowledgeGroupSource[];
   userId: string;
   contextxModel: { provider: string; model: string } | null;
 }
@@ -61,6 +73,14 @@ type StoredMcpApiKey = {
   key: string;
   preview?: string;
   createdAt?: number;
+};
+
+type SourceGroupOption = {
+  id: string;
+  name: string;
+  description?: string;
+  ownerLabel: "Mine" | "Shared";
+  visibility: KnowledgeVisibility;
 };
 
 const MCP_TOOL_DOCS: McpToolDoc[] = [
@@ -159,11 +179,14 @@ const MCP_TOOL_DOCS: McpToolDoc[] = [
 export function KnowledgeDetailPage({
   group,
   initialDocuments,
+  initialSourceGroups,
   userId,
   contextxModel,
 }: Props) {
+  const router = useRouter();
   const isOwner = group.userId === userId;
   const { data: modelsData } = useKnowledgeModels();
+  const { data: allGroupsData } = useKnowledge("mine,shared");
 
   const initialEmbeddingValue = makeModelValue(
     group.embeddingProvider,
@@ -189,12 +212,64 @@ export function KnowledgeDetailPage({
   const [savedRerankingValue, setSavedRerankingValue] = useState(
     initialRerankingValue,
   );
+  const [sourceGroupIds, setSourceGroupIds] = useState<string[]>(
+    initialSourceGroups.map((s) => s.sourceGroupId),
+  );
+  const [sourceGroupMutation, setSourceGroupMutation] = useState<{
+    sourceGroupId: string | null;
+    action: "add" | "remove" | null;
+  }>({
+    sourceGroupId: null,
+    action: null,
+  });
+  const [deletingGroup, setDeletingGroup] = useState(false);
+
+  const sourceMutationInFlight = sourceGroupMutation.action !== null;
+
+  const initialSourceGroupOptions: SourceGroupOption[] =
+    initialSourceGroups.map((source) => ({
+      id: source.sourceGroupId,
+      name: source.sourceGroupName,
+      description: source.sourceGroupDescription,
+      ownerLabel: source.sourceGroupUserId === userId ? "Mine" : "Shared",
+      visibility: source.sourceGroupVisibility,
+    }));
 
   const savedEmbedding = parseModelValue(savedEmbeddingValue) ?? {
     provider: group.embeddingProvider,
     apiName: group.embeddingModel,
   };
   const savedReranking = parseModelValue(savedRerankingValue);
+  const availableSourceGroups: SourceGroupOption[] = (allGroupsData ?? [])
+    .filter((candidate) => candidate.id !== group.id)
+    .map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      description: candidate.description,
+      ownerLabel: candidate.userId === userId ? "Mine" : "Shared",
+      visibility: candidate.visibility,
+    }));
+  const sourceGroupById = new Map<string, SourceGroupOption>(
+    initialSourceGroupOptions.map((source) => [source.id, source]),
+  );
+  for (const source of availableSourceGroups) {
+    sourceGroupById.set(source.id, source);
+  }
+
+  const linkedSourceGroups: SourceGroupOption[] = sourceGroupIds.map(
+    (sourceGroupId) =>
+      sourceGroupById.get(sourceGroupId) ?? {
+        id: sourceGroupId,
+        name: sourceGroupId,
+        description: undefined,
+        ownerLabel: "Shared",
+        visibility: "readonly" as const,
+      },
+  );
+  const linkableSourceGroups = Array.from(sourceGroupById.values())
+    .filter((source) => !sourceGroupIds.includes(source.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   const hasSettingsChanges =
     threshold !== savedThreshold ||
     embeddingValue !== savedEmbeddingValue ||
@@ -237,6 +312,96 @@ export function KnowledgeDetailPage({
       toast.error("Failed to save settings");
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const applySourceGroups = async (
+    nextSourceGroupIds: string[],
+    sourceGroupId: string,
+    action: "add" | "remove",
+  ) => {
+    if (sourceMutationInFlight) return;
+
+    const previousSourceGroupIds = sourceGroupIds;
+    setSourceGroupIds(nextSourceGroupIds);
+    setSourceGroupMutation({ sourceGroupId, action });
+
+    try {
+      const res = await fetch(`/api/knowledge/${group.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceGroupIds: nextSourceGroupIds,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      void mutateKnowledge();
+      toast.success(
+        action === "add" ? "Source group linked" : "Source group removed",
+      );
+    } catch {
+      setSourceGroupIds(previousSourceGroupIds);
+      toast.error(
+        action === "add"
+          ? "Failed to link source group"
+          : "Failed to remove source group",
+      );
+    } finally {
+      setSourceGroupMutation({ sourceGroupId: null, action: null });
+    }
+  };
+
+  const handleAddSourceGroup = async (sourceGroupId: string) => {
+    if (sourceGroupIds.includes(sourceGroupId)) return;
+    await applySourceGroups(
+      [...sourceGroupIds, sourceGroupId],
+      sourceGroupId,
+      "add",
+    );
+  };
+
+  const handleRemoveSourceGroup = async (sourceGroupId: string) => {
+    if (!sourceGroupIds.includes(sourceGroupId)) return;
+    await applySourceGroups(
+      sourceGroupIds.filter((id) => id !== sourceGroupId),
+      sourceGroupId,
+      "remove",
+    );
+  };
+
+  const handleDeleteGroup = async () => {
+    if (deletingGroup) return;
+
+    const typedName = await notify.prompt({
+      title: "Delete Knowledge Group",
+      description: (
+        <span>
+          Type <strong>{group.name}</strong> to permanently delete this
+          knowledge group. This action cannot be undone.
+        </span>
+      ),
+    });
+    const normalizedTypedName = typedName.trim();
+
+    if (!normalizedTypedName) return;
+    if (normalizedTypedName !== group.name) {
+      toast.error("Name does not match. Group was not deleted.");
+      return;
+    }
+
+    setDeletingGroup(true);
+    try {
+      const res = await fetch(`/api/knowledge/${group.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error();
+      await mutateKnowledge();
+      toast.success("Knowledge group deleted");
+      router.push("/knowledge");
+    } catch {
+      toast.error("Failed to delete knowledge group");
+    } finally {
+      setDeletingGroup(false);
     }
   };
 
@@ -537,6 +702,158 @@ export function KnowledgeDetailPage({
               </Button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Linked Group Chain */}
+      {isOwner && (
+        <div className="border rounded-xl p-4 flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Link2Icon className="size-4 text-primary" />
+              <div>
+                <h2 className="text-sm font-medium">Linked Group Chain</h2>
+                <p className="text-xs text-muted-foreground">
+                  Linked groups are read-only in this group. Retrieval uses each
+                  source group&apos;s own embedding, reranking model, and
+                  threshold.
+                </p>
+              </div>
+            </div>
+            <Badge variant="outline" className="text-xs px-1.5 py-0">
+              {sourceGroupIds.length} linked
+            </Badge>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
+              <Label className="text-sm font-medium">Current Links</Label>
+              {linkedSourceGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No linked source groups yet.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {linkedSourceGroups.map((source) => {
+                    const removing =
+                      sourceGroupMutation.action === "remove" &&
+                      sourceGroupMutation.sourceGroupId === source.id;
+                    return (
+                      <div
+                        key={source.id}
+                        className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-sm truncate">
+                              {source.name}
+                            </span>
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.ownerLabel}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.visibility}
+                            </Badge>
+                          </div>
+                          {source.description && (
+                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                              {source.description}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          disabled={sourceMutationInFlight}
+                          onClick={() => handleRemoveSourceGroup(source.id)}
+                        >
+                          {removing ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <>
+                              <Trash2Icon className="size-3.5 mr-1" />
+                              Remove
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
+              <Label className="text-sm font-medium">Add Source Group</Label>
+              {linkableSourceGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No additional groups available to link.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {linkableSourceGroups.map((source) => {
+                    const adding =
+                      sourceGroupMutation.action === "add" &&
+                      sourceGroupMutation.sourceGroupId === source.id;
+                    return (
+                      <div
+                        key={source.id}
+                        className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-sm truncate">
+                              {source.name}
+                            </span>
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.ownerLabel}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.visibility}
+                            </Badge>
+                          </div>
+                          {source.description && (
+                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                              {source.description}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          disabled={sourceMutationInFlight}
+                          onClick={() => handleAddSourceGroup(source.id)}
+                        >
+                          {adding ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <>
+                              <PlusIcon className="size-3.5 mr-1" />
+                              Add
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -850,6 +1167,36 @@ export function KnowledgeDetailPage({
         </div>
       )}
 
+      {/* Danger Zone */}
+      {isOwner && (
+        <div className="border border-destructive/30 rounded-xl p-4 flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-medium text-destructive">
+                Danger Zone
+              </h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                Deleting this knowledge group permanently removes all local
+                documents and chunks in this group.
+              </p>
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deletingGroup}
+              onClick={handleDeleteGroup}
+            >
+              {deletingGroup ? (
+                <Loader2Icon className="size-3.5 animate-spin mr-1" />
+              ) : (
+                <Trash2Icon className="size-3.5 mr-1" />
+              )}
+              Delete Group
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       <Tabs defaultValue="documents" className="flex-1">
         <TabsList className="grid grid-cols-3 w-full max-w-sm">
@@ -863,9 +1210,11 @@ export function KnowledgeDetailPage({
             groupId={group.id}
             initialDocuments={initialDocuments}
             uploadDisabledMessage={
-              !contextxModel
-                ? "Configure a ContextX Model in Settings before uploading documents."
-                : undefined
+              !isOwner
+                ? "Only the group owner can upload documents to this group."
+                : !contextxModel
+                  ? "Configure a ContextX Model in Settings before uploading documents."
+                  : undefined
             }
           />
         </TabsContent>

@@ -54,6 +54,11 @@ interface PreviewData {
     description?: string | null;
     descriptionManual?: boolean;
     titleManual?: boolean;
+    isInherited?: boolean;
+    sourceGroupId?: string | null;
+    sourceGroupName?: string | null;
+    sourceGroupVisibility?: "public" | "private" | "readonly" | null;
+    sourceGroupUserName?: string | null;
     originalFilename: string;
     fileType: string;
     fileSize?: number | null;
@@ -120,11 +125,18 @@ export function DocumentPreviewSheet({
 
   const currentTitle = previewData?.doc?.name ?? "";
   const currentDescription = previewData?.doc?.description ?? "";
+  const isInherited = !!previewData?.doc?.isInherited;
   const hasConfigChanges =
-    title.trim() !== currentTitle || description.trim() !== currentDescription;
+    !isInherited &&
+    (title.trim() !== currentTitle ||
+      description.trim() !== currentDescription);
 
   const handleSaveConfiguration = async () => {
     if (!doc || !previewData?.doc) return;
+    if (previewData.doc.isInherited) {
+      toast.error("Inherited documents are read-only");
+      return;
+    }
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
       toast.error("Title is required");
@@ -243,6 +255,16 @@ export function DocumentPreviewSheet({
                 <TabsContent value="configuration" className="h-full mt-0">
                   <ScrollArea className="h-full">
                     <div className="p-6 flex flex-col gap-4">
+                      {isInherited && (
+                        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                          Read-only document from{" "}
+                          <span className="font-medium">
+                            {previewData.doc.sourceGroupName ??
+                              "a linked source group"}
+                          </span>
+                          .
+                        </div>
+                      )}
                       <div className="flex flex-col gap-1.5">
                         <Label className="text-xs uppercase tracking-wide text-muted-foreground">
                           Title
@@ -252,6 +274,7 @@ export function DocumentPreviewSheet({
                           onChange={(e) => setTitle(e.target.value)}
                           placeholder="Document title"
                           className="h-9 text-sm"
+                          disabled={isInherited}
                         />
                         <p className="text-xs text-muted-foreground">
                           Used for metadata retrieval and document ranking.
@@ -267,6 +290,7 @@ export function DocumentPreviewSheet({
                           onChange={(e) => setDescription(e.target.value)}
                           placeholder="Short summary of this document"
                           className="min-h-[140px] resize-y text-sm"
+                          disabled={isInherited}
                         />
                         <p className="text-xs text-muted-foreground">
                           Improves semantic and keyword retrieval from title +

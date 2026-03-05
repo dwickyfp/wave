@@ -660,6 +660,27 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
     .default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const KnowledgeGroupSourceTable = pgTable(
+  "knowledge_group_source",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    sourceGroupId: uuid("source_group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique().on(t.groupId, t.sourceGroupId),
+    index("knowledge_group_source_group_id_idx").on(t.groupId),
+    index("knowledge_group_source_source_group_id_idx").on(t.sourceGroupId),
+  ],
+);
+
 export const KnowledgeDocumentTable = pgTable(
   "knowledge_document",
   {
@@ -792,6 +813,8 @@ export const KnowledgeUsageLogTable = pgTable(
 );
 
 export type KnowledgeGroupEntity = typeof KnowledgeGroupTable.$inferSelect;
+export type KnowledgeGroupSourceEntity =
+  typeof KnowledgeGroupSourceTable.$inferSelect;
 export type KnowledgeDocumentEntity =
   typeof KnowledgeDocumentTable.$inferSelect;
 export type KnowledgeChunkEntity = typeof KnowledgeChunkTable.$inferSelect;

@@ -2,6 +2,7 @@ import {
   KnowledgeChunk,
   KnowledgeDocument,
   KnowledgeGroup,
+  KnowledgeGroupSource,
   KnowledgeRepository,
   KnowledgeSummary,
   KnowledgeUsageStats,
@@ -14,6 +15,7 @@ import {
   KnowledgeChunkTable,
   KnowledgeDocumentTable,
   KnowledgeGroupAgentTable,
+  KnowledgeGroupSourceTable,
   KnowledgeGroupTable,
   KnowledgeUsageLogTable,
   UserTable,
@@ -50,6 +52,28 @@ function mapDocument(
     errorMessage: row.errorMessage ?? null,
     metadata: (row.metadata as Record<string, unknown>) ?? null,
     markdownContent: row.markdownContent ?? null,
+  };
+}
+
+function mapGroupSource(row: {
+  groupId: string;
+  sourceGroupId: string;
+  sourceGroupName: string;
+  sourceGroupDescription: string | null;
+  sourceGroupVisibility: "public" | "private" | "readonly";
+  sourceGroupUserId: string;
+  sourceGroupUserName: string | null;
+  createdAt: Date;
+}): KnowledgeGroupSource {
+  return {
+    groupId: row.groupId,
+    sourceGroupId: row.sourceGroupId,
+    sourceGroupName: row.sourceGroupName,
+    sourceGroupDescription: row.sourceGroupDescription ?? undefined,
+    sourceGroupVisibility: row.sourceGroupVisibility,
+    sourceGroupUserId: row.sourceGroupUserId,
+    sourceGroupUserName: row.sourceGroupUserName ?? undefined,
+    createdAt: row.createdAt,
   };
 }
 
@@ -212,9 +236,10 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async updateGroup(id, userId, data) {
+    const { sourceGroupIds: _ignored, ...groupData } = data as any;
     const [row] = await db
       .update(KnowledgeGroupTable)
-      .set({ ...data, updatedAt: new Date() })
+      .set({ ...groupData, updatedAt: new Date() })
       .where(
         and(
           eq(KnowledgeGroupTable.id, id),
@@ -222,6 +247,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         ),
       )
       .returning();
+
+    if (data.visibility === "private") {
+      await db.execute(
+        sql`
+          DELETE FROM knowledge_group_source rel
+          USING knowledge_group parent
+          WHERE rel.source_group_id = ${id}
+            AND rel.group_id = parent.id
+            AND parent.user_id <> ${userId}::uuid
+        `,
+      );
+    }
+
     return mapGroup(row);
   },
 
@@ -234,6 +272,182 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           eq(KnowledgeGroupTable.userId, userId),
         ),
       );
+  },
+
+  async setGroupSources(groupId, userId, sourceGroupIds) {
+    const [parent] = await db
+      .select({ id: KnowledgeGroupTable.id })
+      .from(KnowledgeGroupTable)
+      .where(
+        and(
+          eq(KnowledgeGroupTable.id, groupId),
+          eq(KnowledgeGroupTable.userId, userId),
+        ),
+      );
+    if (!parent) {
+      throw new Error("Not found or unauthorized");
+    }
+
+    const uniqueSourceIds = Array.from(
+      new Set(
+        sourceGroupIds
+          .filter(Boolean)
+          .map((id) => id.trim())
+          .filter((id) => id.length > 0 && id !== groupId),
+      ),
+    );
+
+    const allowedSourceIds =
+      uniqueSourceIds.length > 0
+        ? (
+            await db
+              .select({ id: KnowledgeGroupTable.id })
+              .from(KnowledgeGroupTable)
+              .where(
+                and(
+                  inArray(KnowledgeGroupTable.id, uniqueSourceIds),
+                  ne(KnowledgeGroupTable.id, groupId),
+                  or(
+                    eq(KnowledgeGroupTable.userId, userId),
+                    eq(KnowledgeGroupTable.visibility, "public"),
+                    eq(KnowledgeGroupTable.visibility, "readonly"),
+                  ),
+                ),
+              )
+          ).map((r) => r.id)
+        : [];
+
+    await db.transaction(async (tx) => {
+      const existing = await tx
+        .select({
+          sourceGroupId: KnowledgeGroupSourceTable.sourceGroupId,
+        })
+        .from(KnowledgeGroupSourceTable)
+        .where(eq(KnowledgeGroupSourceTable.groupId, groupId));
+
+      const existingIds = new Set(existing.map((r) => r.sourceGroupId));
+      const allowedSet = new Set(allowedSourceIds);
+
+      const toDelete = existing
+        .map((r) => r.sourceGroupId)
+        .filter((id) => !allowedSet.has(id));
+      if (toDelete.length > 0) {
+        await tx
+          .delete(KnowledgeGroupSourceTable)
+          .where(
+            and(
+              eq(KnowledgeGroupSourceTable.groupId, groupId),
+              inArray(KnowledgeGroupSourceTable.sourceGroupId, toDelete),
+            ),
+          );
+      }
+
+      const toInsert = allowedSourceIds.filter((id) => !existingIds.has(id));
+      if (toInsert.length > 0) {
+        await tx
+          .insert(KnowledgeGroupSourceTable)
+          .values(
+            toInsert.map((sourceGroupId) => ({
+              id: generateUUID(),
+              groupId,
+              sourceGroupId,
+              createdAt: new Date(),
+            })),
+          )
+          .onConflictDoNothing();
+      }
+    });
+
+    await pgKnowledgeRepository.pruneInvalidGroupSources(groupId);
+  },
+
+  async selectGroupSources(groupId) {
+    await pgKnowledgeRepository.pruneInvalidGroupSources(groupId);
+
+    const rows = await db.execute<{
+      group_id: string;
+      source_group_id: string;
+      source_group_name: string;
+      source_group_description: string | null;
+      source_group_visibility: "public" | "private" | "readonly";
+      source_group_user_id: string;
+      source_group_user_name: string | null;
+      created_at: Date;
+    }>(
+      sql`
+        SELECT
+          rel.group_id,
+          src.id AS source_group_id,
+          src.name AS source_group_name,
+          src.description AS source_group_description,
+          src.visibility AS source_group_visibility,
+          src.user_id AS source_group_user_id,
+          u.name AS source_group_user_name,
+          rel.created_at
+        FROM knowledge_group_source rel
+        JOIN knowledge_group parent ON parent.id = rel.group_id
+        JOIN knowledge_group src ON src.id = rel.source_group_id
+        LEFT JOIN "user" u ON u.id = src.user_id
+        WHERE rel.group_id = ${groupId}
+          AND rel.group_id <> rel.source_group_id
+          AND (
+            src.user_id = parent.user_id
+            OR src.visibility IN ('public', 'readonly')
+          )
+        ORDER BY rel.created_at ASC
+      `,
+    );
+
+    return rows.rows.map((r) =>
+      mapGroupSource({
+        groupId: r.group_id,
+        sourceGroupId: r.source_group_id,
+        sourceGroupName: r.source_group_name,
+        sourceGroupDescription: r.source_group_description,
+        sourceGroupVisibility: r.source_group_visibility,
+        sourceGroupUserId: r.source_group_user_id,
+        sourceGroupUserName: r.source_group_user_name,
+        createdAt: r.created_at,
+      }),
+    );
+  },
+
+  async selectRetrievalScopes(groupId) {
+    const [groupRow] = await db
+      .select()
+      .from(KnowledgeGroupTable)
+      .where(eq(KnowledgeGroupTable.id, groupId));
+    if (!groupRow) return [];
+
+    const sources = await pgKnowledgeRepository.selectGroupSources(groupId);
+    if (sources.length === 0) return [mapGroup(groupRow)];
+
+    const sourceIds = sources.map((s) => s.sourceGroupId);
+    const sourceRows = await db
+      .select()
+      .from(KnowledgeGroupTable)
+      .where(inArray(KnowledgeGroupTable.id, sourceIds));
+
+    return [mapGroup(groupRow), ...sourceRows.map(mapGroup)];
+  },
+
+  async pruneInvalidGroupSources(groupId) {
+    await db.execute(
+      sql`
+        DELETE FROM knowledge_group_source rel
+        USING knowledge_group parent, knowledge_group src
+        WHERE rel.group_id = ${groupId}
+          AND rel.group_id = parent.id
+          AND rel.source_group_id = src.id
+          AND (
+            rel.group_id = rel.source_group_id
+            OR (
+              src.user_id <> parent.user_id
+              AND src.visibility = 'private'
+            )
+          )
+      `,
+    );
   },
 
   async setMcpApiKey(id, userId, keyHash, keyPreview) {
@@ -315,6 +529,44 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       .where(eq(KnowledgeDocumentTable.groupId, groupId))
       .orderBy(desc(KnowledgeDocumentTable.createdAt));
     return rows.map(mapDocument);
+  },
+
+  async selectDocumentsByGroupScope(groupId) {
+    const sources = await pgKnowledgeRepository.selectGroupSources(groupId);
+    const sourceByGroupId = new Map(
+      sources.map((source) => [source.sourceGroupId, source]),
+    );
+    const scopeGroupIds = [groupId, ...sourceByGroupId.keys()];
+
+    const rows = await db
+      .select()
+      .from(KnowledgeDocumentTable)
+      .where(inArray(KnowledgeDocumentTable.groupId, scopeGroupIds))
+      .orderBy(desc(KnowledgeDocumentTable.createdAt));
+
+    return rows.map((row) => {
+      const mapped = mapDocument(row);
+      if (row.groupId === groupId) {
+        return {
+          ...mapped,
+          isInherited: false,
+          sourceGroupId: null,
+          sourceGroupName: null,
+          sourceGroupVisibility: null,
+          sourceGroupUserName: null,
+        };
+      }
+
+      const source = sourceByGroupId.get(row.groupId);
+      return {
+        ...mapped,
+        isInherited: true,
+        sourceGroupId: row.groupId,
+        sourceGroupName: source?.sourceGroupName ?? "Unknown source group",
+        sourceGroupVisibility: source?.sourceGroupVisibility ?? null,
+        sourceGroupUserName: source?.sourceGroupUserName ?? null,
+      };
+    });
   },
 
   async selectDocumentById(id) {
@@ -513,6 +765,34 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
     return rows.map((r) => ({
       documentId: r.documentId,
+      name: r.name,
+      description: r.description ?? null,
+      updatedAt: r.updatedAt,
+    }));
+  },
+
+  async getDocumentMetadataByIdsAcrossGroups(ids) {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select({
+        documentId: KnowledgeDocumentTable.id,
+        groupId: KnowledgeDocumentTable.groupId,
+        name: KnowledgeDocumentTable.name,
+        description: KnowledgeDocumentTable.description,
+        updatedAt: KnowledgeDocumentTable.updatedAt,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          inArray(KnowledgeDocumentTable.id, ids),
+          eq(KnowledgeDocumentTable.status, "ready"),
+        ),
+      );
+
+    return rows.map((r) => ({
+      documentId: r.documentId,
+      groupId: r.groupId,
       name: r.name,
       description: r.description ?? null,
       updatedAt: r.updatedAt,

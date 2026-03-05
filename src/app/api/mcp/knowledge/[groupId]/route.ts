@@ -572,7 +572,7 @@ async function handleJsonRpcRequest(
       );
       if (candidates.length === 0) {
         const docs =
-          await knowledgeRepository.selectDocumentsByGroupId(groupId);
+          await knowledgeRepository.selectDocumentsByGroupScope(groupId);
         candidates = resolveCandidatesFromDocuments(
           docs,
           parsed.libraryName,
@@ -646,11 +646,12 @@ async function handleJsonRpcRequest(
     }
 
     if (name === "list_documents") {
-      const docs = await knowledgeRepository.selectDocumentsByGroupId(groupId);
+      const docs =
+        await knowledgeRepository.selectDocumentsByGroupScope(groupId);
       const list = docs
         .map(
           (d) =>
-            `- **${d.name}** (${d.fileType.toUpperCase()}, ${d.status}, ${d.chunkCount} chunks)`,
+            `- **${d.name}** (${d.fileType.toUpperCase()}, ${d.status}, ${d.tokenCount} tokens${d.isInherited ? `, source: ${d.sourceGroupName ?? "linked group"}` : ""})`,
         )
         .join("\n");
       return jsonRpcResultPayload(id, {

@@ -26,6 +26,9 @@ interface Props {
 interface DocRetrievalResult {
   documentId: string;
   documentName: string;
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  isInherited?: boolean;
   relevanceScore: number;
   chunkHits: number;
   markdown: string;
@@ -74,6 +77,14 @@ function DocumentCard({
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {doc.isInherited && doc.sourceGroupName && (
+            <Badge
+              variant="outline"
+              className="text-xs font-mono px-1.5 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+            >
+              from {doc.sourceGroupName}
+            </Badge>
+          )}
           <Badge
             variant="outline"
             className="text-xs font-mono px-1.5 py-0 bg-blue-500/10 text-blue-600 border-blue-500/30"

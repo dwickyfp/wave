@@ -2,7 +2,9 @@ import "server-only";
 
 import { rerank } from "ai";
 import { KnowledgeQueryResult } from "app-types/knowledge";
+import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { knowledgeRepository } from "lib/db/repository";
+import { settingsRepository } from "lib/db/repository";
 import { embedSingleText } from "./embedder";
 
 // Minimal group interface — satisfied by both KnowledgeGroup and KnowledgeSummary
@@ -16,8 +18,10 @@ type GroupForRetrieval = {
   /** Minimum relevance score (0–1) to include a result. 0 = no filtering. */
   retrievalThreshold?: number | null;
 };
-import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
-import { settingsRepository } from "lib/db/repository";
+
+type RetrievalScope = GroupForRetrieval & {
+  isInherited: boolean;
+};
 
 // ─── Tuning Constants ──────────────────────────────────────────────────────────
 const RRF_K = 60;
@@ -42,6 +46,25 @@ const DOC_META_RERANK_WEIGHT = Math.min(
   0.5,
   Math.max(0, Number(process.env.DOC_META_RERANK_WEIGHT ?? "0.1")),
 );
+
+async function resolveRetrievalScopes(
+  group: GroupForRetrieval,
+): Promise<RetrievalScope[]> {
+  const scopes = await knowledgeRepository
+    .selectRetrievalScopes(group.id)
+    .catch(() => []);
+  if (scopes.length === 0) {
+    return [{ ...group, isInherited: false }];
+  }
+
+  // Always trust the runtime group object for the primary scope so UI-updated
+  // settings are applied immediately for the active group.
+  const primary: RetrievalScope = { ...group, isInherited: false };
+  const inherited = scopes
+    .filter((scope) => scope.id !== group.id)
+    .map((scope) => ({ ...scope, isInherited: true }));
+  return [primary, ...inherited];
+}
 
 // ─── Shared Scoring Helpers ───────────────────────────────────────────────────
 
@@ -332,19 +355,11 @@ export interface QueryKnowledgeOptions {
   skipLogging?: boolean;
 }
 
-export async function queryKnowledge(
-  group: GroupForRetrieval,
+async function queryKnowledgeSingleScope(
+  scope: RetrievalScope,
   query: string,
-  options: QueryKnowledgeOptions = {},
+  topN: number,
 ): Promise<KnowledgeQueryResult[]> {
-  const {
-    topN = FINAL_AFTER_RERANK,
-    userId,
-    source = "chat",
-    skipLogging = false,
-  } = options;
-  const start = Date.now();
-
   // ── Step 1: Query expansion ──────────────────────────────────────────────
   const queryVariants = expandQuery(query);
   const allQueries = [query, ...queryVariants];
@@ -354,12 +369,12 @@ export async function queryKnowledge(
   try {
     embeddings = await Promise.all(
       allQueries.map((q) =>
-        embedSingleText(q, group.embeddingProvider, group.embeddingModel),
+        embedSingleText(q, scope.embeddingProvider, scope.embeddingModel),
       ),
     );
   } catch (err) {
     console.warn(
-      `[ContextX] Query embedding failed for group ${group.id}, using lexical retrieval fallback:`,
+      `[ContextX] Query embedding failed for group ${scope.id}, using lexical retrieval fallback:`,
       err,
     );
   }
@@ -367,15 +382,15 @@ export async function queryKnowledge(
   // ── Step 3: Multi-arm retrieval ──────────────────────────────────────────
   // Run vector search for each query variant + full-text search
   const vectorSearches = embeddings.map((emb) =>
-    knowledgeRepository.vectorSearch(group.id, emb, CANDIDATE_LIMIT),
+    knowledgeRepository.vectorSearch(scope.id, emb, CANDIDATE_LIMIT),
   );
   const textSearch = knowledgeRepository.fullTextSearch(
-    group.id,
+    scope.id,
     query,
     CANDIDATE_LIMIT,
   );
   const docSignalPromise = getDocumentMetadataSignals(
-    group.id,
+    scope.id,
     query,
     embeddings[0],
   );
@@ -431,15 +446,15 @@ export async function queryKnowledge(
   // ── Step 6: Rerank if configured ─────────────────────────────────────────
   let finalResults = merged;
 
-  if (group.rerankingProvider && group.rerankingModel && merged.length > topN) {
+  if (scope.rerankingProvider && scope.rerankingModel && merged.length > topN) {
     try {
       const providerConfig = await settingsRepository.getProviderByName(
-        group.rerankingProvider,
+        scope.rerankingProvider,
       );
       const rerankModel = providerConfig
         ? createRerankingModelFromConfig(
-            group.rerankingProvider,
-            group.rerankingModel,
+            scope.rerankingProvider,
+            scope.rerankingModel,
             providerConfig.apiKey,
           )
         : null;
@@ -477,7 +492,7 @@ export async function queryKnowledge(
   }
 
   // ── Step 7: Apply retrieval threshold ────────────────────────────────────
-  const threshold = group.retrievalThreshold ?? 0;
+  const threshold = scope.retrievalThreshold ?? 0;
   if (threshold > 0) {
     finalResults = finalResults.filter(
       (r) => (r.rerankScore ?? r.score) >= threshold,
@@ -486,9 +501,67 @@ export async function queryKnowledge(
 
   // ── Step 8: Neighbor chunk expansion ─────────────────────────────────────
   // After ranking, expand top results with adjacent chunks for richer context
-  finalResults = await expandWithNeighborChunks(finalResults, group.id);
+  finalResults = await expandWithNeighborChunks(finalResults, scope.id);
 
-  // ── Step 9: Log usage ────────────────────────────────────────────────────
+  return finalResults;
+}
+
+export async function queryKnowledge(
+  group: GroupForRetrieval,
+  query: string,
+  options: QueryKnowledgeOptions = {},
+): Promise<KnowledgeQueryResult[]> {
+  const {
+    topN = FINAL_AFTER_RERANK,
+    userId,
+    source = "chat",
+    skipLogging = false,
+  } = options;
+  const start = Date.now();
+
+  const scopes = await resolveRetrievalScopes(group);
+  const scopedResults = await Promise.all(
+    scopes.map((scope) =>
+      queryKnowledgeSingleScope(
+        scope,
+        query,
+        Math.max(topN * 2, FINAL_AFTER_RERANK),
+      ).catch(() => []),
+    ),
+  );
+
+  const mergedByChunk = new Map<string, KnowledgeQueryResult>();
+  for (let i = 0; i < scopes.length; i++) {
+    const scope = scopes[i];
+    const results = scopedResults[i];
+    for (const result of results) {
+      const enriched: KnowledgeQueryResult = {
+        ...result,
+        chunk: {
+          ...result.chunk,
+          metadata: {
+            ...(result.chunk.metadata ?? {}),
+            sourceGroupId: scope.id,
+            sourceGroupName: scope.name,
+          },
+        },
+      };
+
+      const existing = mergedByChunk.get(enriched.chunk.id);
+      const enrichedScore = enriched.rerankScore ?? enriched.score;
+      const existingScore = existing
+        ? (existing.rerankScore ?? existing.score)
+        : -Infinity;
+      if (!existing || enrichedScore > existingScore) {
+        mergedByChunk.set(enriched.chunk.id, enriched);
+      }
+    }
+  }
+
+  const merged = Array.from(mergedByChunk.values())
+    .sort((a, b) => (b.rerankScore ?? b.score) - (a.rerankScore ?? a.score))
+    .slice(0, topN);
+
   if (!skipLogging) {
     const latencyMs = Date.now() - start;
     knowledgeRepository
@@ -497,13 +570,13 @@ export async function queryKnowledge(
         userId: userId ?? null,
         query,
         source,
-        chunksRetrieved: finalResults.length,
+        chunksRetrieved: merged.length,
         latencyMs,
       })
       .catch(() => {});
   }
 
-  return finalResults;
+  return merged;
 }
 
 export async function queryKnowledgeAsText(
@@ -928,6 +1001,9 @@ export interface QueryKnowledgeDocsOptions {
 export interface DocRetrievalResult {
   documentId: string;
   documentName: string;
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  isInherited?: boolean;
   /** Aggregated relevance score from chunk-level search */
   relevanceScore: number;
   /** Number of chunks from this document that appeared in search results */
@@ -970,25 +1046,39 @@ export async function queryKnowledgeAsDocs(
     50,
   );
   const start = Date.now();
+  const scopes = await resolveRetrievalScopes(group);
+  const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
 
   // ── Step 1: Gather chunk-level and document-level signals ───────────────
-  const [chunkResults, queryEmbedding] = await Promise.all([
-    queryKnowledge(group, query, {
-      topN: FINAL_BEFORE_RERANK,
-      skipLogging: true,
-    }),
-    DOC_META_VECTOR_ENABLED
-      ? embedSingleText(query, group.embeddingProvider, group.embeddingModel)
-          .then((v) => v)
-          .catch(() => null)
-      : Promise.resolve(null),
-  ]);
+  const chunkResults = await queryKnowledge(group, query, {
+    topN: FINAL_BEFORE_RERANK,
+    skipLogging: true,
+  });
 
-  const docSignalMap = await getDocumentMetadataSignals(
-    group.id,
-    query,
-    queryEmbedding ?? undefined,
+  const docSignalMaps = await Promise.all(
+    scopes.map(async (scope) => {
+      let queryEmbedding: number[] | undefined;
+      if (DOC_META_VECTOR_ENABLED) {
+        queryEmbedding = await embedSingleText(
+          query,
+          scope.embeddingProvider,
+          scope.embeddingModel,
+        )
+          .then((v) => v)
+          .catch(() => undefined);
+      }
+      return getDocumentMetadataSignals(scope.id, query, queryEmbedding);
+    }),
   );
+
+  const docSignalMap = new Map<string, number>();
+  for (const signalMap of docSignalMaps) {
+    for (const [docId, score] of signalMap.entries()) {
+      const existing = docSignalMap.get(docId) ?? 0;
+      if (score > existing) docSignalMap.set(docId, score);
+    }
+  }
+
   const scopedChunkResults = chunkResults.filter((hit) =>
     chunkMatchesLibraryScope({
       hit,
@@ -1044,13 +1134,19 @@ export async function queryKnowledgeAsDocs(
   );
   if (candidateDocIds.length === 0) return [];
 
-  const candidateDocMeta = await knowledgeRepository.getDocumentMetadataByIds(
-    group.id,
-    candidateDocIds,
-  );
+  const candidateDocMeta =
+    await knowledgeRepository.getDocumentMetadataByIdsAcrossGroups(
+      candidateDocIds,
+    );
   if (candidateDocMeta.length === 0) return [];
 
-  const rawChunkScores = candidateDocMeta.map((doc) => {
+  const allowedGroupIds = new Set(scopes.map((scope) => scope.id));
+  const candidateDocMetaInScope = candidateDocMeta.filter((doc) =>
+    allowedGroupIds.has(doc.groupId),
+  );
+  if (candidateDocMetaInScope.length === 0) return [];
+
+  const rawChunkScores = candidateDocMetaInScope.map((doc) => {
     const stats = chunkStats.get(doc.documentId);
     if (!stats) return 0;
     const hitBoost = Math.min(1, stats.chunkHits / 5);
@@ -1059,7 +1155,7 @@ export async function queryKnowledgeAsDocs(
   const maxRawChunkScore = Math.max(...rawChunkScores, 0);
 
   const now = Date.now();
-  const rankedDocs = candidateDocMeta
+  const rankedDocs = candidateDocMetaInScope
     .map((doc) => {
       const stats = chunkStats.get(doc.documentId);
       const metadataSignal = docSignalMap.get(doc.documentId) ?? 0;
@@ -1083,10 +1179,14 @@ export async function queryKnowledgeAsDocs(
       const effectiveScore =
         relevanceScore * (1 - DOC_META_RERANK_WEIGHT) +
         freshnessScore * DOC_META_RERANK_WEIGHT;
+      const sourceScope = scopeById.get(doc.groupId);
 
       return {
         documentId: doc.documentId,
         documentName: stats?.name ?? doc.name,
+        sourceGroupId: doc.groupId,
+        sourceGroupName: sourceScope?.name ?? null,
+        isInherited: doc.groupId !== group.id,
         chunkHits: stats?.chunkHits ?? 0,
         relevanceScore: effectiveScore,
       };
@@ -1102,7 +1202,8 @@ export async function queryKnowledgeAsDocs(
         }))
       : rankedDocs;
 
-  const threshold = group.retrievalThreshold ?? 0;
+  // Thresholds were already enforced per scope in queryKnowledge().
+  const threshold = scopes.length > 1 ? 0 : (group.retrievalThreshold ?? 0);
   const filteredDocs =
     threshold > 0
       ? normalizedRankedDocs.filter((d) => d.relevanceScore >= threshold)
@@ -1205,6 +1306,12 @@ export function formatDocsAsText(
   if (docs.length === 0) {
     return `[Knowledge: ${groupName}]\nNo relevant content found${query ? ` for: "${query}"` : ""}.`;
   }
-  const parts = docs.map((d) => `## ${d.documentName}\n\n${d.markdown}`);
+  const parts = docs.map((d) => {
+    const title =
+      d.isInherited && d.sourceGroupName
+        ? `${d.documentName} (from ${d.sourceGroupName})`
+        : d.documentName;
+    return `## ${title}\n\n${d.markdown}`;
+  });
   return `[Knowledge: ${groupName}]\n\n${parts.join("\n\n---\n\n")}`;
 }

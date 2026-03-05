@@ -34,10 +34,32 @@ export async function GET(_req: NextRequest, { params }: Params) {
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
-  if (!doc || doc.groupId !== groupId)
+  if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  if (doc.groupId === groupId) {
+    return NextResponse.json({
+      ...doc,
+      isInherited: false,
+      sourceGroupId: null,
+      sourceGroupName: null,
+      sourceGroupVisibility: null,
+      sourceGroupUserName: null,
+    });
+  }
+
+  const sources = await knowledgeRepository.selectGroupSources(groupId);
+  const source = sources.find((s) => s.sourceGroupId === doc.groupId);
+  if (!source)
     return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  return NextResponse.json(doc);
+  return NextResponse.json({
+    ...doc,
+    isInherited: true,
+    sourceGroupId: source.sourceGroupId,
+    sourceGroupName: source.sourceGroupName,
+    sourceGroupVisibility: source.sourceGroupVisibility,
+    sourceGroupUserName: source.sourceGroupUserName ?? null,
+  });
 }
 
 export async function DELETE(_req: NextRequest, { params }: Params) {
@@ -53,9 +75,22 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
     session.user.id,
   );
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (group.userId !== session.user.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (doc.groupId !== groupId) {
+    const sources = await knowledgeRepository.selectGroupSources(groupId);
+    const isInherited = sources.some((s) => s.sourceGroupId === doc.groupId);
+    return NextResponse.json(
+      {
+        error: isInherited ? "Inherited documents are read-only" : "Not found",
+      },
+      { status: isInherited ? 403 : 404 },
+    );
+  }
 
   // Delete from storage
   if (doc.storagePath) {
@@ -80,10 +115,22 @@ export async function POST(_req: NextRequest, { params }: Params) {
     session.user.id,
   );
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (group.userId !== session.user.id) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
-  if (!doc || doc.groupId !== groupId)
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (doc.groupId !== groupId) {
+    const sources = await knowledgeRepository.selectGroupSources(groupId);
+    const isInherited = sources.some((s) => s.sourceGroupId === doc.groupId);
+    return NextResponse.json(
+      {
+        error: isInherited ? "Inherited documents are read-only" : "Not found",
+      },
+      { status: isInherited ? 403 : 404 },
+    );
+  }
 
   // Reset status to pending and re-queue
   await knowledgeRepository.updateDocumentStatus(docId, "pending");
@@ -108,8 +155,17 @@ export async function PUT(req: NextRequest, { params }: Params) {
   }
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
-  if (!doc || doc.groupId !== groupId)
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (doc.groupId !== groupId) {
+    const sources = await knowledgeRepository.selectGroupSources(groupId);
+    const isInherited = sources.some((s) => s.sourceGroupId === doc.groupId);
+    return NextResponse.json(
+      {
+        error: isInherited ? "Inherited documents are read-only" : "Not found",
+      },
+      { status: isInherited ? 403 : 404 },
+    );
+  }
 
   const parsed = updateDocumentMetadataSchema.safeParse(await req.json());
   if (!parsed.success) {

@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { createKnowledgeGroupSchema } from "app-types/knowledge";
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
-import { createKnowledgeGroupSchema } from "app-types/knowledge";
+import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
   const session = await getSession();
@@ -35,10 +35,19 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const { sourceGroupIds, ...groupData } = parsed.data;
   const group = await knowledgeRepository.insertGroup({
-    ...parsed.data,
+    ...groupData,
     userId: session.user.id,
   });
+
+  if (Array.isArray(sourceGroupIds)) {
+    await knowledgeRepository.setGroupSources(
+      group.id,
+      session.user.id,
+      sourceGroupIds,
+    );
+  }
 
   return NextResponse.json(group, { status: 201 });
 }

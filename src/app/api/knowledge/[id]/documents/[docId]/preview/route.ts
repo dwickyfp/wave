@@ -43,8 +43,27 @@ export async function GET(_req: NextRequest, { params }: Params) {
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
-  if (!doc || doc.groupId !== groupId)
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  let sourceMeta: {
+    id: string;
+    name: string;
+    visibility: "public" | "private" | "readonly";
+    userName?: string;
+  } | null = null;
+  if (doc.groupId !== groupId) {
+    const sources = await knowledgeRepository.selectGroupSources(groupId);
+    const source = sources.find((s) => s.sourceGroupId === doc.groupId);
+    if (!source) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    sourceMeta = {
+      id: source.sourceGroupId,
+      name: source.sourceGroupName,
+      visibility: source.sourceGroupVisibility,
+      userName: source.sourceGroupUserName,
+    };
+  }
 
   const mimeType = FILE_MIME_TYPES[doc.fileType] ?? "application/octet-stream";
   const isText =
@@ -63,6 +82,11 @@ export async function GET(_req: NextRequest, { params }: Params) {
         description: doc.description ?? null,
         descriptionManual: doc.descriptionManual ?? false,
         titleManual: doc.titleManual ?? false,
+        isInherited: !!sourceMeta,
+        sourceGroupId: sourceMeta?.id ?? null,
+        sourceGroupName: sourceMeta?.name ?? null,
+        sourceGroupVisibility: sourceMeta?.visibility ?? null,
+        sourceGroupUserName: sourceMeta?.userName ?? null,
         originalFilename: doc.originalFilename,
         fileType: doc.fileType,
         fileSize: doc.fileSize,
@@ -108,6 +132,11 @@ export async function GET(_req: NextRequest, { params }: Params) {
         description: doc.description ?? null,
         descriptionManual: doc.descriptionManual ?? false,
         titleManual: doc.titleManual ?? false,
+        isInherited: !!sourceMeta,
+        sourceGroupId: sourceMeta?.id ?? null,
+        sourceGroupName: sourceMeta?.name ?? null,
+        sourceGroupVisibility: sourceMeta?.visibility ?? null,
+        sourceGroupUserName: sourceMeta?.userName ?? null,
         originalFilename: doc.originalFilename,
         fileType: doc.fileType,
         fileSize: doc.fileSize,
