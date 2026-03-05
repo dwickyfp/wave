@@ -43,6 +43,7 @@ function mapDocument(
     sourceUrl: row.sourceUrl ?? null,
     errorMessage: row.errorMessage ?? null,
     metadata: (row.metadata as Record<string, unknown>) ?? null,
+    markdownContent: row.markdownContent ?? null,
   };
 }
 
@@ -306,6 +307,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         ...(extra?.tokenCount !== undefined
           ? { tokenCount: extra.tokenCount }
           : {}),
+        ...(extra?.markdownContent !== undefined
+          ? { markdownContent: extra.markdownContent }
+          : {}),
         updatedAt: new Date(),
       })
       .where(eq(KnowledgeDocumentTable.id, id));
@@ -315,6 +319,73 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     await db
       .delete(KnowledgeDocumentTable)
       .where(eq(KnowledgeDocumentTable.id, id));
+  },
+
+  // ─── Document Markdown (Context7-style) ─────────────────────────────────────
+
+  async getDocumentMarkdown(documentId) {
+    const [row] = await db
+      .select({
+        name: KnowledgeDocumentTable.name,
+        markdownContent: KnowledgeDocumentTable.markdownContent,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(eq(KnowledgeDocumentTable.id, documentId));
+    if (!row || !row.markdownContent) return null;
+    return { name: row.name, markdown: row.markdownContent };
+  },
+
+  async getGroupDocumentsMarkdown(groupId, topic) {
+    const rows = await db
+      .select({
+        documentId: KnowledgeDocumentTable.id,
+        name: KnowledgeDocumentTable.name,
+        markdownContent: KnowledgeDocumentTable.markdownContent,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.groupId, groupId),
+          eq(KnowledgeDocumentTable.status, "ready"),
+        ),
+      )
+      .orderBy(desc(KnowledgeDocumentTable.createdAt));
+
+    let results = rows
+      .filter((r) => !!r.markdownContent)
+      .map((r) => ({
+        documentId: r.documentId,
+        name: r.name,
+        markdown: r.markdownContent!,
+      }));
+
+    // Topic filtering: if a topic is provided, filter sections that match
+    if (topic && topic.trim()) {
+      const topicLower = topic.toLowerCase();
+      const topicWords = topicLower.split(/\s+/).filter(Boolean);
+
+      results = results
+        .map((doc) => {
+          // Try to extract relevant sections from the markdown
+          const sections = doc.markdown.split(/(?=^#{1,3}\s)/m);
+          const relevantSections = sections.filter((section) => {
+            const lower = section.toLowerCase();
+            return topicWords.some((w) => lower.includes(w));
+          });
+
+          if (relevantSections.length > 0) {
+            return { ...doc, markdown: relevantSections.join("\n\n") };
+          }
+          // If no section matches, check if the whole doc is relevant
+          if (topicWords.some((w) => doc.markdown.toLowerCase().includes(w))) {
+            return doc;
+          }
+          return null;
+        })
+        .filter(Boolean) as typeof results;
+    }
+
+    return results;
   },
 
   // ─── Chunks ─────────────────────────────────────────────────────────────────

@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { knowledgeRepository } from "lib/db/repository";
-import { queryKnowledgeAsText } from "lib/knowledge/retriever";
+import {
+  queryKnowledgeAsDocs,
+  formatDocsAsText,
+} from "lib/knowledge/retriever";
 import { compare } from "bcrypt-ts";
 import { z } from "zod";
 
@@ -25,17 +28,21 @@ async function authenticate(
 
 const TOOLS = (groupName: string) => [
   {
-    name: "query_knowledge",
-    description: `Search the "${groupName}" knowledge base for relevant information`,
+    name: "get_docs",
+    description: `Get documentation from the "${groupName}" knowledge base. Uses semantic search (embedding + BM25 + reranking) to identify the most relevant documents, then returns their full markdown content. Use this to find comprehensive information from the knowledge base.`,
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "The search query" },
-        topN: {
+        query: {
+          type: "string",
+          description: "The search query to find relevant documents",
+        },
+        tokens: {
           type: "number",
-          description: "Number of results (default: 10)",
-          minimum: 1,
-          maximum: 20,
+          description:
+            "Maximum token budget for the response (default: 10000). Higher values return more content.",
+          minimum: 500,
+          maximum: 50000,
         },
       },
       required: ["query"],
@@ -103,15 +110,19 @@ export async function POST(req: NextRequest, { params }: Params) {
       arguments: unknown;
     };
 
-    if (name === "query_knowledge") {
+    if (name === "get_docs") {
       const parsed = z
-        .object({ query: z.string(), topN: z.number().optional() })
+        .object({
+          query: z.string(),
+          tokens: z.number().min(500).max(50000).optional(),
+        })
         .parse(args);
-      const result = await queryKnowledgeAsText(group, parsed.query, {
-        topN: parsed.topN ?? 10,
+      const docs = await queryKnowledgeAsDocs(group, parsed.query, {
+        tokens: parsed.tokens ?? 10000,
         source: "mcp",
       });
-      return jsonRpcResult(id, { content: [{ type: "text", text: result }] });
+      const text = formatDocsAsText(group.name, docs, parsed.query);
+      return jsonRpcResult(id, { content: [{ type: "text", text }] });
     }
 
     if (name === "list_documents") {

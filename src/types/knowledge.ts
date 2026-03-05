@@ -73,6 +73,8 @@ export interface KnowledgeDocument {
   chunkCount: number;
   tokenCount: number;
   metadata?: Record<string, unknown> | null;
+  /** Full markdown content of the processed document */
+  markdownContent?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -203,9 +205,23 @@ export interface KnowledgeRepository {
   updateDocumentStatus(
     id: string,
     status: DocumentStatus,
-    extra?: { errorMessage?: string; chunkCount?: number; tokenCount?: number },
+    extra?: {
+      errorMessage?: string;
+      chunkCount?: number;
+      tokenCount?: number;
+      markdownContent?: string;
+    },
   ): Promise<void>;
   deleteDocument(id: string): Promise<void>;
+
+  // Document markdown (Context7-style full-doc retrieval)
+  getDocumentMarkdown(
+    documentId: string,
+  ): Promise<{ name: string; markdown: string } | null>;
+  getGroupDocumentsMarkdown(
+    groupId: string,
+    topic?: string,
+  ): Promise<Array<{ documentId: string; name: string; markdown: string }>>;
 
   // Chunks
   insertChunks(

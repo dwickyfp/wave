@@ -683,6 +683,8 @@ export const KnowledgeDocumentTable = pgTable(
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata"),
+    /** Full markdown content of the processed document (Context7-style retrieval) */
+    markdownContent: text("markdown_content"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),

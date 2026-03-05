@@ -15,6 +15,7 @@ import { toast } from "sonner";
 import { ProviderConfigTab } from "./provider-config-tab";
 import { MinioSettingsTab } from "./minio-settings-tab";
 import { OtherConfigsTab } from "./other-configs-tab";
+import { ContextXModelButton } from "./contextx-model-button";
 
 export function SettingsContent() {
   const [importing, setImporting] = useState(false);
@@ -93,6 +94,7 @@ export function SettingsContent() {
         </TabsList>
 
         <div className="flex items-center gap-2">
+          <ContextXModelButton />
           <Button
             variant="outline"
             size="sm"

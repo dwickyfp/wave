@@ -42,10 +42,13 @@ import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import { ImageToolName } from "lib/ai/tools";
 import { createDbImageTool } from "lib/ai/tools/image";
 import {
-  createKnowledgeTool,
-  knowledgeToolName,
+  createKnowledgeDocsTool,
+  knowledgeDocsToolName,
 } from "lib/ai/tools/knowledge-tool";
-import { queryKnowledgeAsText } from "lib/knowledge/retriever";
+import {
+  queryKnowledgeAsDocs,
+  formatDocsAsText,
+} from "lib/knowledge/retriever";
 import { serverFileStorage } from "lib/file-storage";
 import {
   type SnowflakeCortexMessage,
@@ -513,7 +516,7 @@ export async function POST(request: Request) {
           .selectGroupById(groupId, session.user.id)
           .catch(() => null);
         if (!group) continue;
-        const ctx = await queryKnowledgeAsText(group, userQueryText, {
+        const docs = await queryKnowledgeAsDocs(group, userQueryText, {
           userId: session.user.id,
           source: "chat",
         }).catch((err) => {
@@ -522,7 +525,11 @@ export async function POST(request: Request) {
           );
           return null;
         });
-        if (ctx) knowledgeContexts.push(ctx);
+        if (docs) {
+          knowledgeContexts.push(
+            formatDocsAsText(group.name, docs, userQueryText),
+          );
+        }
       }
     }
     // ── end knowledge context ─────────────────────────────────────────────────
@@ -612,10 +619,13 @@ export async function POST(request: Request) {
             );
             const tools: Record<string, Tool> = {};
             for (const group of groups) {
-              tools[knowledgeToolName(group.id)] = createKnowledgeTool(group, {
-                userId: session.user.id,
-                source: "agent",
-              });
+              tools[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(
+                group,
+                {
+                  userId: session.user.id,
+                  source: "agent",
+                },
+              );
             }
             return tools;
           })

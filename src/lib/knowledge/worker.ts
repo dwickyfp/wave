@@ -50,6 +50,13 @@ async function handleIngestDocument(
     throw new Error("Document has no storage path or source URL");
   }
 
+  // ── Store full markdown (Context7-style: keep full doc for retrieval) ──
+  // All documents are converted to well-structured markdown by processors.
+  // This enables Context7-like full-document retrieval alongside chunk-based RAG.
+  await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
+    markdownContent: markdown,
+  });
+
   // Delete existing chunks for this document
   await knowledgeRepository.deleteChunksByDocumentId(documentId);
 

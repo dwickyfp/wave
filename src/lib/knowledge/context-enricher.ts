@@ -36,11 +36,54 @@ const CONTEXT_GEN_CONCURRENCY = 5;
 
 // ─── LLM Model Resolution ─────────────────────────────────────────────────────
 
+const CONTEXTX_MODEL_KEY = "contextx-model";
+
 /**
- * Try to find a usable language model from DB-configured providers.
- * Prioritizes cheap/fast models suitable for context generation.
+ * Try to resolve the user-configured ContextX model from system settings.
+ * Falls back to the hardcoded preference list if no setting is configured.
  */
 async function getContextModel(): Promise<LanguageModel | null> {
+  // 1. Try the admin-configured ContextX model first
+  try {
+    const config = await settingsRepository.getSetting(CONTEXTX_MODEL_KEY);
+    if (
+      config &&
+      typeof config === "object" &&
+      "provider" in config &&
+      "model" in config
+    ) {
+      const { provider, model: modelName } = config as {
+        provider: string;
+        model: string;
+      };
+      const providerConfig =
+        await settingsRepository.getProviderByName(provider);
+      if (providerConfig?.enabled) {
+        const modelConfig = await settingsRepository.getModelForChat(
+          provider,
+          modelName,
+        );
+        if (modelConfig) {
+          const m = createModelFromConfig(
+            provider,
+            modelConfig.apiName,
+            providerConfig.apiKey,
+            providerConfig.baseUrl,
+          );
+          if (m) {
+            console.log(
+              `[ContextX] Using configured model: ${provider}/${modelName}`,
+            );
+            return m;
+          }
+        }
+      }
+    }
+  } catch {
+    // Setting not found or invalid — fall through to preference list
+  }
+
+  // 2. Fallback: iterate the hardcoded preference list
   for (const pref of CONTEXT_MODEL_PREFERENCES) {
     try {
       const providerConfig = await settingsRepository.getProviderByName(

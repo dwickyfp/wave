@@ -406,3 +406,165 @@ export async function queryKnowledgeAsText(
 
   return `[Knowledge: ${group.name}]\n\n${citations}`;
 }
+
+// ─── Context7-Style Full-Doc Retrieval ─────────────────────────────────────────
+
+/** Default token budget for full-doc retrieval (like Context7's default) */
+const DEFAULT_FULL_DOC_TOKENS = 10000;
+const MAX_FULL_DOC_TOKENS = 50000;
+
+/**
+ * Estimate token count for a string (~4 chars per token).
+ */
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+export interface QueryKnowledgeDocsOptions {
+  topic?: string;
+  tokens?: number;
+  userId?: string | null;
+  source?: "chat" | "agent" | "mcp";
+}
+
+/**
+ * A document-level retrieval result with relevance info.
+ */
+export interface DocRetrievalResult {
+  documentId: string;
+  documentName: string;
+  /** Aggregated relevance score from chunk-level search */
+  relevanceScore: number;
+  /** Number of chunks from this document that appeared in search results */
+  chunkHits: number;
+  /** Full markdown content of the document (may be truncated for budget) */
+  markdown: string;
+}
+
+/**
+ * Context7-style full-document retrieval with semantic ranking.
+ *
+ * Uses the full RAG pipeline (embedding + BM25 + RRF + reranking) to identify
+ * which documents are most relevant to the query, then returns the full
+ * markdown content of those ranked documents within a configurable token
+ * budget.
+ *
+ * This provides complete, uncut context to the LLM — trading higher
+ * token usage for higher accuracy and coherence.
+ */
+export async function queryKnowledgeAsDocs(
+  group: GroupForRetrieval,
+  query: string,
+  options: QueryKnowledgeDocsOptions = {},
+): Promise<DocRetrievalResult[]> {
+  const tokenBudget = Math.min(
+    Math.max(options.tokens || DEFAULT_FULL_DOC_TOKENS, 500),
+    MAX_FULL_DOC_TOKENS,
+  );
+  const start = Date.now();
+
+  // ── Step 1: Use the full RAG pipeline to find relevant chunks ─────────
+  // We fetch more chunks than usual to get better document coverage
+  const chunkResults = await queryKnowledge(group, query, {
+    topN: FINAL_BEFORE_RERANK,
+    skipLogging: true,
+  });
+
+  if (chunkResults.length === 0) return [];
+
+  // ── Step 2: Aggregate chunk scores by document ────────────────────────
+  const docScores = new Map<
+    string,
+    { score: number; count: number; name: string }
+  >();
+
+  for (const r of chunkResults) {
+    const score = r.rerankScore ?? r.score;
+    const existing = docScores.get(r.chunk.documentId);
+    if (existing) {
+      existing.score += score;
+      existing.count += 1;
+    } else {
+      docScores.set(r.chunk.documentId, {
+        score,
+        count: 1,
+        name: r.documentName,
+      });
+    }
+  }
+
+  // Rank documents by aggregated score (more chunk hits + higher scores = more relevant)
+  const rankedDocs = Array.from(docScores.entries())
+    .sort((a, b) => b[1].score - a[1].score)
+    .map(([docId, info]) => ({
+      documentId: docId,
+      documentName: info.name,
+      relevanceScore: info.score,
+      chunkHits: info.count,
+    }));
+
+  // ── Step 3: Fetch full markdown and assemble within token budget ───────
+  const results: DocRetrievalResult[] = [];
+  let tokensUsed = 0;
+
+  for (const doc of rankedDocs) {
+    const docData = await knowledgeRepository.getDocumentMarkdown(
+      doc.documentId,
+    );
+    if (!docData?.markdown) continue;
+
+    const contentTokens = estimateTokens(docData.markdown);
+
+    if (contentTokens + tokensUsed <= tokenBudget) {
+      // Entire document fits
+      results.push({ ...doc, markdown: docData.markdown });
+      tokensUsed += contentTokens;
+    } else {
+      // Truncate to fit remaining budget
+      const remaining = tokenBudget - tokensUsed;
+      if (remaining < 200) break; // Not enough room for meaningful content
+      const charLimit = remaining * 4;
+      let truncated = docData.markdown.slice(0, charLimit);
+      const lastParagraph = truncated.lastIndexOf("\n\n");
+      if (lastParagraph > charLimit * 0.5) {
+        truncated = truncated.slice(0, lastParagraph);
+      }
+      results.push({
+        ...doc,
+        markdown: truncated + "\n\n[... content truncated]",
+      });
+      tokensUsed += estimateTokens(truncated);
+      break; // Budget exhausted
+    }
+  }
+
+  // ── Step 4: Log usage ─────────────────────────────────────────────────
+  const latencyMs = Date.now() - start;
+  knowledgeRepository
+    .insertUsageLog({
+      groupId: group.id,
+      userId: options.userId ?? null,
+      query,
+      source: options.source ?? "chat",
+      chunksRetrieved: chunkResults.length,
+      latencyMs,
+    })
+    .catch(() => {});
+
+  return results;
+}
+
+/**
+ * Format doc retrieval results as a single markdown text block for LLM injection.
+ */
+export function formatDocsAsText(
+  groupName: string,
+  docs: DocRetrievalResult[],
+  query?: string,
+): string {
+  if (docs.length === 0) {
+    return `[Knowledge: ${groupName}]\nNo relevant content found${query ? ` for: "${query}"` : ""}.`;
+  }
+  const parts = docs.map((d) => `## ${d.documentName}\n\n${d.markdown}`);
+  return `[Knowledge: ${groupName}]\n\n${parts.join("\n\n---\n\n")}`;
+}
