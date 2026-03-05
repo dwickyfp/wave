@@ -26,21 +26,22 @@ async function resolveParsingModel(provider: string, modelName: string) {
     provider,
     modelName,
   );
-  if (!modelConfig) {
-    throw new Error(
-      `Parsing model "${modelName}" not found for provider "${provider}"`,
-    );
-  }
-
+  const resolvedModelName = modelConfig?.apiName ?? modelName;
   const model = createModelFromConfig(
     provider,
-    modelConfig.apiName,
+    resolvedModelName,
     providerConfig.apiKey,
     providerConfig.baseUrl,
   );
   if (!model) {
     throw new Error(
       `Failed to create model instance for ${provider}/${modelName}`,
+    );
+  }
+
+  if (!modelConfig) {
+    console.warn(
+      `[ContextX] Parsing model "${modelName}" is not registered in settings; using direct provider model fallback`,
     );
   }
 

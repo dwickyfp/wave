@@ -4,9 +4,21 @@ export interface TextChunk {
   tokenCount: number;
   metadata: {
     section?: string;
+    sectionTitle?: string;
     headings?: string[];
     /** Full heading breadcrumb path, e.g. "Guide > Installation > macOS" */
     headingPath?: string;
+    chunkType?:
+      | "code"
+      | "directive"
+      | "api"
+      | "narrative"
+      | "table"
+      | "list"
+      | "other";
+    sourcePath?: string;
+    libraryId?: string;
+    libraryVersion?: string;
     /** Whether this chunk contains a table or code block */
     hasStructuredContent?: boolean;
   };
@@ -67,6 +79,99 @@ interface ParsedSection {
   content: string;
 }
 
+function detectChunkType(
+  content: string,
+  headingPath?: string,
+): TextChunk["metadata"]["chunkType"] {
+  const text = content.trim();
+  if (!text) return "other";
+
+  if (/```[\s\S]*?```/m.test(text)) {
+    if (
+      /\b(interface|type|class|enum|function|const|let|var)\b/.test(text) ||
+      /\b(GET|POST|PUT|PATCH|DELETE)\s+\/[^\s]+/.test(text)
+    ) {
+      return "api";
+    }
+    return "code";
+  }
+
+  if (
+    /\n\|?\s*:?-{3,}:?\s*\|/.test(text) ||
+    (/\|/.test(text) &&
+      text.split("\n").some((line) => line.trim().startsWith("|")))
+  ) {
+    return "table";
+  }
+
+  const lines = text.split("\n").map((l) => l.trim());
+  const listLines = lines.filter(
+    (line) =>
+      /^[-*+]\s+/.test(line) ||
+      /^\d+[.)]\s+/.test(line) ||
+      /^\[[ xX]\]\s+/.test(line),
+  ).length;
+  if (listLines >= 2 && listLines >= Math.ceil(lines.length * 0.35)) {
+    return "list";
+  }
+
+  if (
+    /^\s*@[\w-]+/m.test(text) ||
+    /\b(IMPORTANT|WARNING|NOTE|TIP|MUST|SHOULD|DO NOT)\b[:\s]/i.test(text)
+  ) {
+    return "directive";
+  }
+
+  const apiSignal =
+    /\b(GET|POST|PUT|PATCH|DELETE)\s+\/[^\s]+/.test(text) ||
+    /\b(interface|type|class|enum|function)\s+[A-Za-z0-9_]+/.test(text) ||
+    /\b[A-Za-z0-9_]+\([^)]*\)\s*(?::\s*[A-Za-z0-9_<>{}\[\]|? ,]+)?\s*(?:=>|\{)/.test(
+      text,
+    ) ||
+    /\b(params?|returns?|response|request)\b/i.test(headingPath ?? "");
+
+  if (apiSignal) return "api";
+  return "narrative";
+}
+
+function extractSourcePath(
+  headingPath: string | undefined,
+  content: string,
+): string | undefined {
+  const headingMatch = headingPath?.match(
+    /([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,10})/,
+  );
+  if (headingMatch?.[1]) return headingMatch[1];
+
+  const contentMatch = content.match(
+    /(?:^|\s)([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9]{1,10})(?:\s|$)/m,
+  );
+  if (contentMatch?.[1]) return contentMatch[1];
+
+  return undefined;
+}
+
+function extractLibraryVersion(text: string): string | undefined {
+  const m = text.match(/\bv?\d+\.\d+(?:\.\d+)?(?:-[A-Za-z0-9.-]+)?\b/);
+  return m?.[0];
+}
+
+function extractLibraryId(headingBreadcrumb: string[]): string | undefined {
+  const root = headingBreadcrumb[0]?.trim();
+  if (!root) return undefined;
+
+  const cleaned = root
+    .replace(/\bv?\d+\.\d+(?:\.\d+)?(?:-[A-Za-z0-9.-]+)?\b/g, "")
+    .replace(/[^\w\-./ ]+/g, " ")
+    .trim();
+  if (!cleaned) return undefined;
+
+  return cleaned
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 /**
  * Parse markdown into sections while maintaining heading hierarchy.
  * Tracks heading breadcrumb (parent > child) for context.
@@ -80,6 +185,7 @@ function splitIntoSections(markdown: string): ParsedSection[] {
   let currentHeading = "";
   let currentLevel = 0;
   let currentLines: string[] = [];
+  let inCodeFence = false;
 
   const flushSection = () => {
     const content = currentLines.join("\n").trim();
@@ -95,7 +201,14 @@ function splitIntoSections(markdown: string): ParsedSection[] {
   };
 
   for (const line of lines) {
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      inCodeFence = !inCodeFence;
+      currentLines.push(line);
+      continue;
+    }
+
+    const headingMatch = !inCodeFence ? line.match(/^(#{1,6})\s+(.+)/) : null;
     if (headingMatch) {
       // Flush previous section
       flushSection();
@@ -335,6 +448,11 @@ function chunkText(
         tokenCount: estimateTokens(chunk),
         metadata: {
           ...metadata,
+          sectionTitle: metadata.sectionTitle ?? metadata.section,
+          chunkType: detectChunkType(chunk, metadata.headingPath),
+          sourcePath:
+            metadata.sourcePath ??
+            extractSourcePath(metadata.headingPath, chunk),
           hasStructuredContent: chunk.includes("```") || chunk.includes("| "),
         },
       });
@@ -530,18 +648,28 @@ export function chunkMarkdown(
       section.headingBreadcrumb.length > 0
         ? section.headingBreadcrumb.join(" > ")
         : undefined;
+    const sectionTitle = section.heading || undefined;
+    const sourcePath = extractSourcePath(headingPath, fullContent);
+    const libraryId = extractLibraryId(section.headingBreadcrumb);
+    const libraryVersion = extractLibraryVersion(
+      [section.heading, headingPath].filter(Boolean).join(" "),
+    );
 
     const sectionChunks = chunkSectionContent(
       blocks,
       chunkSize,
       overlapPercent,
       {
-        section: section.heading || undefined,
+        section: sectionTitle,
+        sectionTitle,
         headings:
           section.headingBreadcrumb.length > 0
             ? section.headingBreadcrumb
             : undefined,
         headingPath,
+        sourcePath,
+        libraryId,
+        libraryVersion,
       },
       allChunks.length,
     );

@@ -9,9 +9,14 @@ export const runMigrate = async () => {
   await migrate(pgDb, {
     migrationsFolder: join(process.cwd(), "src/lib/db/migrations/pg"),
   }).catch((err) => {
+    const message =
+      err?.cause?.message ??
+      err?.message ??
+      (typeof err?.cause === "string" ? err.cause : undefined) ??
+      "unknown migration error";
     console.error(
       `❌ PostgreSQL migrations failed. check the postgres instance is running.`,
-      err.cause,
+      message,
     );
     throw err;
   });

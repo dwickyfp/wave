@@ -10,7 +10,7 @@
  * Research shows this reduces retrieval failure rate by ~35% and by ~49%
  * when combined with hybrid search (BM25 + vector).
  */
-import { generateText, LanguageModel } from "ai";
+import { LanguageModel, generateText } from "ai";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
 import type { TextChunk } from "./chunker";
@@ -63,19 +63,24 @@ async function getContextModel(): Promise<LanguageModel | null> {
           provider,
           modelName,
         );
-        if (modelConfig) {
-          const m = createModelFromConfig(
-            provider,
-            modelConfig.apiName,
-            providerConfig.apiKey,
-            providerConfig.baseUrl,
-          );
-          if (m) {
+        const resolvedModelName = modelConfig?.apiName ?? modelName;
+        const m = createModelFromConfig(
+          provider,
+          resolvedModelName,
+          providerConfig.apiKey,
+          providerConfig.baseUrl,
+        );
+        if (m) {
+          if (!modelConfig) {
+            console.warn(
+              `[ContextX] Context model "${provider}/${modelName}" is not registered; using direct provider fallback`,
+            );
+          } else {
             console.log(
               `[ContextX] Using configured model: ${provider}/${modelName}`,
             );
-            return m;
           }
+          return m;
         }
       }
     }

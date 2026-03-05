@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { KnowledgeDocument } from "app-types/knowledge";
-import { DocumentCard } from "./document-card";
-import { DocumentUploadZone } from "./document-upload-zone";
-import { DocumentPreviewSheet } from "./document-preview-sheet";
 import { useKnowledgeDocuments } from "@/hooks/queries/use-knowledge";
+import { KnowledgeDocument } from "app-types/knowledge";
+import { useState } from "react";
+import { DocumentCard } from "./document-card";
+import { DocumentPreviewSheet } from "./document-preview-sheet";
+import { DocumentUploadZone } from "./document-upload-zone";
 
 interface Props {
   groupId: string;
@@ -35,6 +35,19 @@ export function KnowledgeDocumentsTab({
   const handleReEmbed = () => {
     // Refresh after a brief delay to show the status change
     setTimeout(() => mutate(), 400);
+  };
+
+  const handleDocumentUpdated = (updated: KnowledgeDocument) => {
+    mutate(
+      (current) =>
+        (current ?? documents).map((d) =>
+          d.id === updated.id ? { ...d, ...updated } : d,
+        ),
+      false,
+    );
+    if (previewDoc?.id === updated.id) {
+      setPreviewDoc((prev) => (prev ? { ...prev, ...updated } : prev));
+    }
   };
 
   return (
@@ -71,6 +84,7 @@ export function KnowledgeDocumentsTab({
         groupId={groupId}
         open={previewDoc !== null}
         onClose={() => setPreviewDoc(null)}
+        onDocumentUpdated={handleDocumentUpdated}
       />
     </>
   );

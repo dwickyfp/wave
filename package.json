@@ -33,7 +33,7 @@
     "db:reset": "drizzle-kit drop && drizzle-kit push",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "db:migrate": "tsx scripts/db-migrate.ts",
+    "db:migrate": "cross-env TSX_DISABLE_CACHE=1 tsx scripts/db-migrate.ts",
     "worker:knowledge": "NODE_OPTIONS='--conditions=react-server' tsx --env-file=.env src/lib/knowledge/worker.ts",
     "db:pull": "drizzle-kit pull",
     "db:check": "drizzle-kit check",

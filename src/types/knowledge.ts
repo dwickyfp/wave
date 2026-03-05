@@ -69,6 +69,9 @@ export interface KnowledgeDocument {
   groupId: string;
   userId: string;
   name: string;
+  description?: string | null;
+  descriptionManual?: boolean;
+  titleManual?: boolean;
   originalFilename: string;
   fileType: DocumentFileType;
   fileSize?: number | null;
@@ -95,8 +98,20 @@ export interface KnowledgeChunk {
   tokenCount: number;
   metadata?: {
     section?: string;
+    sectionTitle?: string;
     headings?: string[];
     headingPath?: string;
+    chunkType?:
+      | "code"
+      | "directive"
+      | "api"
+      | "narrative"
+      | "table"
+      | "list"
+      | "other";
+    sourcePath?: string;
+    libraryId?: string;
+    libraryVersion?: string;
     hasStructuredContent?: boolean;
     pageNumber?: number;
     sheetName?: string;
@@ -172,6 +187,7 @@ export interface KnowledgeRepository {
     data: CreateKnowledgeGroupInput & { userId: string },
   ): Promise<KnowledgeGroup>;
   selectGroupById(id: string, userId: string): Promise<KnowledgeGroup | null>;
+  selectGroupByIdForMcp(id: string): Promise<KnowledgeGroup | null>;
   selectGroups(
     userId: string,
     filters?: ("mine" | "shared")[],
@@ -221,16 +237,56 @@ export interface KnowledgeRepository {
       markdownContent?: string;
     },
   ): Promise<void>;
+  updateDocumentMetadata(
+    id: string,
+    userId: string,
+    data: {
+      title?: string;
+      description?: string | null;
+      metadataEmbedding?: number[] | null;
+    },
+  ): Promise<KnowledgeDocument | null>;
+  updateDocumentAutoMetadata(
+    id: string,
+    data: {
+      title?: string;
+      description?: string | null;
+      metadataEmbedding?: number[] | null;
+    },
+  ): Promise<void>;
   deleteDocument(id: string): Promise<void>;
 
   // Document markdown (Context7-style full-doc retrieval)
-  getDocumentMarkdown(
-    documentId: string,
-  ): Promise<{ name: string; markdown: string } | null>;
+  getDocumentMarkdown(documentId: string): Promise<{
+    name: string;
+    description?: string | null;
+    markdown: string;
+  } | null>;
   getGroupDocumentsMarkdown(
     groupId: string,
     topic?: string,
   ): Promise<Array<{ documentId: string; name: string; markdown: string }>>;
+  getDocumentMetadataByIds(
+    groupId: string,
+    ids: string[],
+  ): Promise<
+    Array<{
+      documentId: string;
+      name: string;
+      description?: string | null;
+      updatedAt: Date;
+    }>
+  >;
+  searchDocumentMetadata(
+    groupId: string,
+    query: string,
+    limit: number,
+  ): Promise<Array<{ documentId: string; score: number }>>;
+  vectorSearchDocumentMetadata(
+    groupId: string,
+    embedding: number[],
+    limit: number,
+  ): Promise<Array<{ documentId: string; score: number }>>;
 
   // Chunks
   insertChunks(

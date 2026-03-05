@@ -7,7 +7,7 @@ import {
   KnowledgeUsageStats,
   UsageSource,
 } from "app-types/knowledge";
-import { and, count, desc, eq, ne, or, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { generateUUID } from "lib/utils";
 import { pgDb as db } from "../db.pg";
 import {
@@ -41,6 +41,9 @@ function mapDocument(
 ): KnowledgeDocument {
   return {
     ...row,
+    description: row.description ?? null,
+    descriptionManual: row.descriptionManual ?? false,
+    titleManual: row.titleManual ?? false,
     fileSize: row.fileSize ?? null,
     storagePath: row.storagePath ?? null,
     sourceUrl: row.sourceUrl ?? null,
@@ -48,6 +51,15 @@ function mapDocument(
     metadata: (row.metadata as Record<string, unknown>) ?? null,
     markdownContent: row.markdownContent ?? null,
   };
+}
+
+function toPgVectorLiteral(embedding: number[] | null): string | null {
+  if (embedding === null) return null;
+  if (embedding.length === 0) return null;
+  // Defensive cleanup for provider anomalies (NaN/Infinity) without changing
+  // vector dimensionality.
+  const safe = embedding.map((n) => (Number.isFinite(n) ? n : 0));
+  return `[${safe.join(",")}]`;
 }
 
 export const pgKnowledgeRepository: KnowledgeRepository = {
@@ -91,6 +103,15 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           ),
         ),
       );
+    if (!row) return null;
+    return mapGroup(row);
+  },
+
+  async selectGroupByIdForMcp(id) {
+    const [row] = await db
+      .select()
+      .from(KnowledgeGroupTable)
+      .where(eq(KnowledgeGroupTable.id, id));
     if (!row) return null;
     return mapGroup(row);
   },
@@ -270,6 +291,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         groupId: data.groupId,
         userId: data.userId,
         name: data.name,
+        description: data.description ?? null,
         originalFilename: data.originalFilename,
         fileType: data.fileType,
         fileSize: data.fileSize ?? null,
@@ -324,6 +346,74 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       .where(eq(KnowledgeDocumentTable.id, id));
   },
 
+  async updateDocumentMetadata(id, userId, data) {
+    const setData: Record<string, unknown> = {
+      updatedAt: new Date(),
+    };
+
+    if (data.title !== undefined) {
+      setData.name = data.title;
+      setData.titleManual = true;
+    }
+    if (data.description !== undefined) {
+      setData.description = data.description;
+      setData.descriptionManual = true;
+    }
+    if (data.metadataEmbedding !== undefined) {
+      const embeddingLiteral = toPgVectorLiteral(data.metadataEmbedding);
+      setData.metadataEmbedding =
+        embeddingLiteral === null ? null : sql`${embeddingLiteral}::vector`;
+    }
+
+    const [row] = await db
+      .update(KnowledgeDocumentTable)
+      .set(setData as any)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.id, id),
+          sql`EXISTS (
+            SELECT 1
+            FROM knowledge_group kg
+            WHERE kg.id = ${KnowledgeDocumentTable.groupId}
+              AND kg.user_id = ${userId}::uuid
+          )`,
+        ),
+      )
+      .returning();
+
+    return row ? mapDocument(row) : null;
+  },
+
+  async updateDocumentAutoMetadata(id, data) {
+    const setData: Record<string, unknown> = {
+      updatedAt: new Date(),
+    };
+
+    if (data.title !== undefined) {
+      setData.name = sql`CASE WHEN ${KnowledgeDocumentTable.titleManual} THEN ${KnowledgeDocumentTable.name} ELSE ${data.title} END`;
+    }
+    if (data.description !== undefined) {
+      setData.description = sql`CASE WHEN ${KnowledgeDocumentTable.descriptionManual} THEN ${KnowledgeDocumentTable.description} ELSE ${data.description} END`;
+    }
+    if (data.metadataEmbedding !== undefined) {
+      const embeddingLiteral = toPgVectorLiteral(data.metadataEmbedding);
+      const embeddingExpr =
+        embeddingLiteral === null
+          ? sql`NULL::vector`
+          : sql`${embeddingLiteral}::vector`;
+      setData.metadataEmbedding = sql`CASE
+        WHEN ${KnowledgeDocumentTable.titleManual} AND ${KnowledgeDocumentTable.descriptionManual}
+        THEN ${KnowledgeDocumentTable.metadataEmbedding}
+        ELSE ${embeddingExpr}
+      END`;
+    }
+
+    await db
+      .update(KnowledgeDocumentTable)
+      .set(setData as any)
+      .where(eq(KnowledgeDocumentTable.id, id));
+  },
+
   async deleteDocument(id) {
     await db
       .delete(KnowledgeDocumentTable)
@@ -336,12 +426,17 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     const [row] = await db
       .select({
         name: KnowledgeDocumentTable.name,
+        description: KnowledgeDocumentTable.description,
         markdownContent: KnowledgeDocumentTable.markdownContent,
       })
       .from(KnowledgeDocumentTable)
       .where(eq(KnowledgeDocumentTable.id, documentId));
     if (!row || !row.markdownContent) return null;
-    return { name: row.name, markdown: row.markdownContent };
+    return {
+      name: row.name,
+      description: row.description ?? null,
+      markdown: row.markdownContent,
+    };
   },
 
   async getGroupDocumentsMarkdown(groupId, topic) {
@@ -395,6 +490,135 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }
 
     return results;
+  },
+
+  async getDocumentMetadataByIds(groupId, ids) {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select({
+        documentId: KnowledgeDocumentTable.id,
+        name: KnowledgeDocumentTable.name,
+        description: KnowledgeDocumentTable.description,
+        updatedAt: KnowledgeDocumentTable.updatedAt,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.groupId, groupId),
+          inArray(KnowledgeDocumentTable.id, ids),
+          eq(KnowledgeDocumentTable.status, "ready"),
+        ),
+      );
+
+    return rows.map((r) => ({
+      documentId: r.documentId,
+      name: r.name,
+      description: r.description ?? null,
+      updatedAt: r.updatedAt,
+    }));
+  },
+
+  async searchDocumentMetadata(groupId, query, limit) {
+    const rows = await db.execute<{ document_id: string; score: number }>(
+      sql`
+        WITH q AS (
+          SELECT
+            websearch_to_tsquery('simple', ${query}) AS simple_q,
+            websearch_to_tsquery('english', ${query}) AS english_q,
+            phraseto_tsquery('simple', ${query}) AS phrase_q,
+            '%' || ${query} || '%' AS ilike_q
+        )
+        SELECT
+          kd.id AS document_id,
+          (
+            GREATEST(
+              ts_rank_cd(
+                to_tsvector(
+                  'simple',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
+                  coalesce(kd.source_url, '')
+                ),
+                (SELECT simple_q FROM q)
+              ),
+              ts_rank_cd(
+                to_tsvector(
+                  'english',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
+                  coalesce(kd.source_url, '')
+                ),
+                (SELECT english_q FROM q)
+              )
+            )
+            + 0.25 * ts_rank_cd(
+              to_tsvector(
+                'simple',
+                coalesce(kd.name, '') || ' ' || coalesce(kd.description, '')
+              ),
+              (SELECT phrase_q FROM q)
+            )
+            + CASE
+                WHEN (coalesce(kd.name, '') || ' ' || coalesce(kd.description, ''))
+                  ILIKE (SELECT ilike_q FROM q) THEN 0.15
+                ELSE 0
+              END
+          ) AS score
+        FROM knowledge_document kd
+        WHERE kd.group_id = ${groupId}
+          AND kd.status = 'ready'
+          AND (
+            to_tsvector(
+              'simple',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
+              coalesce(kd.source_url, '')
+            ) @@ (SELECT simple_q FROM q)
+            OR to_tsvector(
+              'english',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
+              coalesce(kd.source_url, '')
+            ) @@ (SELECT english_q FROM q)
+            OR (coalesce(kd.name, '') || ' ' || coalesce(kd.description, ''))
+              ILIKE (SELECT ilike_q FROM q)
+          )
+        ORDER BY score DESC, kd.updated_at DESC
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((r) => ({
+      documentId: r.document_id,
+      score: Number(r.score),
+    }));
+  },
+
+  async vectorSearchDocumentMetadata(groupId, embedding, limit) {
+    const embeddingStr = `[${embedding.join(",")}]`;
+    const rows = await db.execute<{ document_id: string; score: number }>(
+      sql`
+        SELECT
+          kd.id AS document_id,
+          1 - (kd.metadata_embedding <=> ${embeddingStr}::vector) AS score
+        FROM knowledge_document kd
+        WHERE kd.group_id = ${groupId}
+          AND kd.status = 'ready'
+          AND kd.metadata_embedding IS NOT NULL
+        ORDER BY kd.metadata_embedding <=> ${embeddingStr}::vector
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((r) => ({
+      documentId: r.document_id,
+      score: Number(r.score),
+    }));
   },
 
   // ─── Chunks ─────────────────────────────────────────────────────────────────
@@ -460,6 +684,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
           AND kc.embedding IS NOT NULL
+          AND kd.status = 'ready'
         ORDER BY kc.embedding <=> ${embeddingStr}::vector
         LIMIT ${limit}
       `,
@@ -515,26 +740,24 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               ts_rank_cd(
                 to_tsvector(
                   'english',
-                  concat_ws(
-                    ' ',
-                    coalesce(kc.context_summary, ''),
-                    kc.content,
-                    coalesce(kc.metadata->>'headingPath', ''),
-                    coalesce(kc.metadata->>'section', '')
-                  )
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kc.context_summary, '') || ' ' ||
+                  coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                  coalesce(kc.metadata->>'section', '')
                 ),
                 (SELECT english_q FROM q)
               ),
               ts_rank_cd(
                 to_tsvector(
                   'simple',
-                  concat_ws(
-                    ' ',
-                    coalesce(kc.context_summary, ''),
-                    kc.content,
-                    coalesce(kc.metadata->>'headingPath', ''),
-                    coalesce(kc.metadata->>'section', '')
-                  )
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kc.context_summary, '') || ' ' ||
+                  coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                  coalesce(kc.metadata->>'section', '')
                 ),
                 (SELECT simple_q FROM q)
               )
@@ -543,11 +766,10 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             + 0.35 * ts_rank_cd(
               to_tsvector(
                 'simple',
-                concat_ws(
-                  ' ',
-                  coalesce(kc.metadata->>'headingPath', ''),
-                  coalesce(kc.metadata->>'section', '')
-                )
+                coalesce(kd.name, '') || ' ' ||
+                coalesce(kd.description, '') || ' ' ||
+                coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                coalesce(kc.metadata->>'section', '')
               ),
               (SELECT simple_q FROM q)
             )
@@ -555,23 +777,23 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             + 0.25 * ts_rank_cd(
               to_tsvector(
                 'simple',
-                concat_ws(
-                  ' ',
-                  coalesce(kc.context_summary, ''),
-                  kc.content,
-                  coalesce(kc.metadata->>'headingPath', ''),
-                  coalesce(kc.metadata->>'section', '')
-                )
+                coalesce(kd.name, '') || ' ' ||
+                coalesce(kd.description, '') || ' ' ||
+                coalesce(kc.context_summary, '') || ' ' ||
+                coalesce(kc.content, '') || ' ' ||
+                coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                coalesce(kc.metadata->>'section', '')
               ),
               (SELECT phrase_q FROM q)
             )
             -- Last-resort literal substring boost
             + CASE
-                WHEN concat_ws(
-                  ' ',
-                  coalesce(kc.context_summary, ''),
-                  kc.content,
-                  coalesce(kc.metadata->>'headingPath', ''),
+                WHEN (
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kc.context_summary, '') || ' ' ||
+                  coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'headingPath', '') || ' ' ||
                   coalesce(kc.metadata->>'section', '')
                 ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
@@ -580,32 +802,32 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         FROM knowledge_chunk kc
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
+          AND kd.status = 'ready'
           AND (
             to_tsvector(
               'english',
-              concat_ws(
-                ' ',
-                coalesce(kc.context_summary, ''),
-                kc.content,
-                coalesce(kc.metadata->>'headingPath', ''),
-                coalesce(kc.metadata->>'section', '')
-              )
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kc.context_summary, '') || ' ' ||
+              coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+              coalesce(kc.metadata->>'section', '')
             ) @@ (SELECT english_q FROM q)
             OR to_tsvector(
               'simple',
-              concat_ws(
-                ' ',
-                coalesce(kc.context_summary, ''),
-                kc.content,
-                coalesce(kc.metadata->>'headingPath', ''),
-                coalesce(kc.metadata->>'section', '')
-              )
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kc.context_summary, '') || ' ' ||
+              coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+              coalesce(kc.metadata->>'section', '')
             ) @@ (SELECT simple_q FROM q)
-            OR concat_ws(
-              ' ',
-              coalesce(kc.context_summary, ''),
-              kc.content,
-              coalesce(kc.metadata->>'headingPath', ''),
+            OR (
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kc.context_summary, '') || ' ' ||
+              coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'headingPath', '') || ' ' ||
               coalesce(kc.metadata->>'section', '')
             ) ILIKE (SELECT ilike_q FROM q)
           )

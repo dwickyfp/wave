@@ -1,21 +1,21 @@
 import { Agent } from "app-types/agent";
-import { UserPreferences } from "app-types/user";
 import { MCPServerConfig, MCPToolInfo } from "app-types/mcp";
+import { UserPreferences } from "app-types/user";
 import { sql } from "drizzle-orm";
 import {
-  pgTable,
-  text,
-  timestamp,
-  json,
-  uuid,
+  bigint,
   boolean,
-  unique,
-  varchar,
+  customType,
   index,
   integer,
-  bigint,
+  json,
+  pgTable,
   real,
-  customType,
+  text,
+  timestamp,
+  unique,
+  uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 
 // pgvector custom type
@@ -38,11 +38,11 @@ const vector = customType<{ data: number[]; config?: { dimensions?: number } }>(
     },
   },
 );
-import { isNotNull } from "drizzle-orm";
-import { DBWorkflow, DBEdge, DBNode } from "app-types/workflow";
-import { UIMessage } from "ai";
-import { ChatMetadata, ChatMention } from "app-types/chat";
 import { TipTapMentionJsonContent } from "@/types/util";
+import { UIMessage } from "ai";
+import { ChatMention, ChatMetadata } from "app-types/chat";
+import { DBEdge, DBNode, DBWorkflow } from "app-types/workflow";
+import { isNotNull } from "drizzle-orm";
 
 export const ChatThreadTable = pgTable("chat_thread", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -671,6 +671,9 @@ export const KnowledgeDocumentTable = pgTable(
       .notNull()
       .references(() => UserTable.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    description: text("description"),
+    descriptionManual: boolean("description_manual").notNull().default(false),
+    titleManual: boolean("title_manual").notNull().default(false),
     originalFilename: text("original_filename").notNull(),
     fileType: varchar("file_type", {
       enum: ["pdf", "docx", "xlsx", "csv", "txt", "md", "url", "html"],
@@ -687,6 +690,7 @@ export const KnowledgeDocumentTable = pgTable(
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata"),
+    metadataEmbedding: vector("metadata_embedding"),
     /** Full markdown content of the processed document (Context7-style retrieval) */
     markdownContent: text("markdown_content"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -716,7 +720,20 @@ export const KnowledgeChunkTable = pgTable(
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata").$type<{
       section?: string;
+      sectionTitle?: string;
       headings?: string[];
+      headingPath?: string;
+      chunkType?:
+        | "code"
+        | "directive"
+        | "api"
+        | "narrative"
+        | "table"
+        | "list"
+        | "other";
+      sourcePath?: string;
+      libraryId?: string;
+      libraryVersion?: string;
       pageNumber?: number;
       sheetName?: string;
     }>(),

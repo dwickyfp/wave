@@ -18,7 +18,7 @@ import {
   SlidersHorizontalIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { Badge } from "ui/badge";
@@ -42,6 +42,113 @@ interface Props {
   userId: string;
   contextxModel: { provider: string; model: string } | null;
 }
+
+type McpToolParam = {
+  name: string;
+  required?: boolean;
+  description: string;
+};
+
+type McpToolDoc = {
+  name: string;
+  label?: string;
+  description: string;
+  params: McpToolParam[];
+  kind?: "primary" | "legacy" | "utility";
+};
+
+type StoredMcpApiKey = {
+  key: string;
+  preview?: string;
+  createdAt?: number;
+};
+
+const MCP_TOOL_DOCS: McpToolDoc[] = [
+  {
+    name: "resolve-library-id",
+    kind: "primary",
+    description:
+      "Resolves a library/package name into a ContextX-compatible library ID.",
+    params: [
+      {
+        name: "query",
+        required: true,
+        description:
+          "User question/task. Used to rank the most relevant library ID.",
+      },
+      {
+        name: "libraryName",
+        required: true,
+        description:
+          'Library name to resolve (example: "next.js", "react", "mongodb").',
+      },
+      {
+        name: "topK",
+        required: false,
+        description: "How many candidate IDs to return (default: 5).",
+      },
+    ],
+  },
+  {
+    name: "query-docs",
+    kind: "primary",
+    description:
+      "Retrieves relevant documentation sections for a resolved library ID.",
+    params: [
+      {
+        name: "libraryId",
+        required: true,
+        description:
+          'Resolved library ID (example: "/vercel/next.js", "/mongodb/docs").',
+      },
+      {
+        name: "query",
+        required: true,
+        description: "Question/task to retrieve relevant documentation for.",
+      },
+      {
+        name: "version",
+        required: false,
+        description: "Optional version filter (example: 14, 5.2.1).",
+      },
+      {
+        name: "tokens",
+        required: false,
+        description: "Token budget for response (default: 10000).",
+      },
+      {
+        name: "maxDocs",
+        required: false,
+        description: "Maximum documents returned (default: 8).",
+      },
+    ],
+  },
+  {
+    name: "get_docs",
+    label: "get_docs (legacy)",
+    kind: "legacy",
+    description:
+      "Legacy full-doc retrieval tool. Kept for backward compatibility.",
+    params: [
+      {
+        name: "query",
+        required: true,
+        description: "Search query.",
+      },
+      {
+        name: "tokens",
+        required: false,
+        description: "Token budget for response (default: 10000).",
+      },
+    ],
+  },
+  {
+    name: "list_documents",
+    kind: "utility",
+    description: "Lists all documents available in this knowledge group.",
+    params: [],
+  },
+];
 
 export function KnowledgeDetailPage({
   group,
@@ -134,9 +241,48 @@ export function KnowledgeDetailPage({
   const [keyPreview, setKeyPreview] = useState(group.mcpApiKeyPreview);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [togglingMcp, setTogglingMcp] = useState(false);
+  const mcpLocalStorageKey = `contextx:mcp-api-key:${group.id}`;
 
   const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
   const mcpUrl = `${baseUrl}/api/mcp/knowledge/${group.id}`;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const removeStored = () => {
+      localStorage.removeItem(mcpLocalStorageKey);
+    };
+
+    try {
+      const raw = localStorage.getItem(mcpLocalStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as StoredMcpApiKey;
+      if (!parsed?.key) {
+        removeStored();
+        return;
+      }
+
+      const storedPreview = parsed.preview || parsed.key.slice(-4);
+      const serverPreview = group.mcpApiKeyPreview || null;
+
+      // If server no longer has key preview (e.g. revoked), drop local copy.
+      if (!serverPreview) {
+        removeStored();
+        return;
+      }
+
+      // If server preview changed (new key generated elsewhere), invalidate stale local key.
+      if (storedPreview !== serverPreview) {
+        removeStored();
+        return;
+      }
+
+      setApiKey(parsed.key);
+      setKeyPreview(serverPreview);
+    } catch {
+      removeStored();
+    }
+  }, [group.mcpApiKeyPreview, mcpLocalStorageKey]);
 
   const handleGenerateKey = async () => {
     setGeneratingKey(true);
@@ -146,10 +292,29 @@ export function KnowledgeDetailPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "generate" }),
       });
+      if (!res.ok) {
+        throw new Error("Failed to generate API key");
+      }
       const data = await res.json();
       setApiKey(data.key);
       setKeyPreview(data.preview);
-      toast.success("API key generated — copy it now, it won't be shown again");
+      if (data?.key) {
+        try {
+          localStorage.setItem(
+            mcpLocalStorageKey,
+            JSON.stringify({
+              key: data.key,
+              preview: data.preview,
+              createdAt: Date.now(),
+            } satisfies StoredMcpApiKey),
+          );
+        } catch {
+          toast.warning(
+            "API key generated, but could not persist it in this browser",
+          );
+        }
+      }
+      toast.success("API key generated and saved in this browser");
     } catch {
       toast.error("Failed to generate API key");
     } finally {
@@ -183,7 +348,7 @@ export function KnowledgeDetailPage({
     {
       type: "http",
       url: mcpUrl,
-      headers: { Authorization: `Bearer ${apiKey ?? "YOUR_API_KEY"}` },
+      headers: { CONTEXTX_API_KEY: apiKey ?? "YOUR_API_KEY" },
     },
     null,
     2,
@@ -452,8 +617,8 @@ export function KnowledgeDetailPage({
                 </div>
                 {apiKey && (
                   <p className="text-xs text-amber-600">
-                    Save this key now — it won't be shown again after you leave
-                    this page.
+                    This key is saved in this browser for this knowledge group.
+                    Clear browser/site data will remove it.
                   </p>
                 )}
               </div>
@@ -491,6 +656,187 @@ export function KnowledgeDetailPage({
                   >
                     <CopyIcon className="size-3" />
                   </Button>
+                </div>
+              </div>
+
+              {/* Available tools */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Available Tools</Label>
+                  <div className="flex items-center gap-1">
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] px-1.5 py-0 bg-blue-500/10 text-blue-600 border-blue-500/30"
+                    >
+                      Primary
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] px-1.5 py-0 bg-amber-500/10 text-amber-600 border-amber-500/30"
+                    >
+                      Legacy
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                    >
+                      Utility
+                    </Badge>
+                  </div>
+                </div>
+                <div className="rounded-lg border bg-secondary/20 p-3 space-y-3">
+                  <div className="rounded-md border bg-background/40 p-2.5">
+                    <p className="text-xs text-muted-foreground">
+                      Recommended flow:
+                      <span className="font-mono rounded bg-secondary px-1.5 py-0.5 mx-1 text-foreground">
+                        resolve-library-id
+                      </span>
+                      →
+                      <span className="font-mono rounded bg-secondary px-1.5 py-0.5 mx-1 text-foreground">
+                        query-docs
+                      </span>
+                    </p>
+                  </div>
+
+                  {MCP_TOOL_DOCS.map((tool) => {
+                    const requiredParams = tool.params.filter(
+                      (p) => p.required,
+                    );
+                    const optionalParams = tool.params.filter(
+                      (p) => !p.required,
+                    );
+                    const orderedParams = [
+                      ...requiredParams,
+                      ...optionalParams,
+                    ];
+
+                    return (
+                      <div
+                        key={tool.name}
+                        className="rounded-md border bg-background/40 p-3 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono text-xs rounded bg-secondary px-2 py-1">
+                            {tool.label ?? tool.name}
+                          </span>
+
+                          {tool.kind === "primary" && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 py-0 bg-blue-500/10 text-blue-600 border-blue-500/30"
+                            >
+                              Primary
+                            </Badge>
+                          )}
+                          {tool.kind === "legacy" && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 py-0 bg-amber-500/10 text-amber-600 border-amber-500/30"
+                            >
+                              Legacy
+                            </Badge>
+                          )}
+                          {tool.kind === "utility" && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                            >
+                              Utility
+                            </Badge>
+                          )}
+
+                          {tool.params.length > 0 && (
+                            <>
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] px-1.5 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+                              >
+                                {requiredParams.length} required
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                              >
+                                {optionalParams.length} optional
+                              </Badge>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            Function
+                          </p>
+                          <p className="text-xs text-foreground/90">
+                            {tool.description}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            Parameters
+                          </p>
+                          {orderedParams.length > 0 ? (
+                            <div className="overflow-x-auto rounded-md border bg-background/30">
+                              <table className="w-full text-xs">
+                                <thead className="bg-secondary/40 text-muted-foreground">
+                                  <tr>
+                                    <th className="text-left font-medium px-2.5 py-2 w-[160px]">
+                                      Name
+                                    </th>
+                                    <th className="text-left font-medium px-2.5 py-2 w-[90px]">
+                                      Required
+                                    </th>
+                                    <th className="text-left font-medium px-2.5 py-2">
+                                      Description
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {orderedParams.map((param) => (
+                                    <tr
+                                      key={`${tool.name}:${param.name}`}
+                                      className="border-t border-border/60 align-top"
+                                    >
+                                      <td className="px-2.5 py-2">
+                                        <span className="font-mono rounded bg-secondary px-1.5 py-0.5">
+                                          {param.name}
+                                        </span>
+                                      </td>
+                                      <td className="px-2.5 py-2">
+                                        {param.required ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] px-1.5 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+                                          >
+                                            Yes
+                                          </Badge>
+                                        ) : (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                                          >
+                                            No
+                                          </Badge>
+                                        )}
+                                      </td>
+                                      <td className="px-2.5 py-2 text-muted-foreground">
+                                        {param.description}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              No parameters.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

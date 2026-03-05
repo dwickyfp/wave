@@ -9,19 +9,25 @@
  * 4. Embed enriched text (context + content)
  * 5. Store chunks with contextSummary + embeddings
  */
-import { Worker, Job } from "bullmq";
+import { Job, Worker } from "bullmq";
 import IORedis from "ioredis";
 import { knowledgeRepository, settingsRepository } from "lib/db/repository";
-import { processDocument } from "./processor";
-import { parseDocumentToMarkdown } from "./markdown-parser";
+import { serverFileStorage } from "lib/file-storage";
 import { chunkMarkdown } from "./chunker";
 import { enrichChunksWithContext } from "./context-enricher";
-import { embedTexts } from "./embedder";
+import {
+  buildDocumentMetadataEmbeddingText,
+  extractAutoDocumentMetadata,
+} from "./document-metadata";
+import { embedSingleText, embedTexts } from "./embedder";
+import { parseDocumentToMarkdown } from "./markdown-parser";
+import { normalizeStructuredMarkdown } from "./markdown-structurer";
+import { processDocument } from "./processor";
 import { KnowledgeJob } from "./worker-client";
-import { serverFileStorage } from "lib/file-storage";
 
 const QUEUE_NAME = "contextx-ingest";
 const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
 
 const connection = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
@@ -66,10 +72,48 @@ async function handleIngestDocument(
     );
   }
 
+  // Normalize markdown into stable section-based format.
+  markdown = normalizeStructuredMarkdown(markdown);
+
+  // Auto metadata extraction (preserved when user has not manually edited).
+  const autoMeta = extractAutoDocumentMetadata(markdown, documentTitle);
+  const effectiveMetaTitle = doc.titleManual ? doc.name : autoMeta.title;
+  const effectiveMetaDescription = doc.descriptionManual
+    ? (doc.description ?? null)
+    : autoMeta.description;
+  let metadataEmbedding: number[] | undefined;
+  if (DOC_META_VECTOR_ENABLED) {
+    const metadataText = buildDocumentMetadataEmbeddingText({
+      title: effectiveMetaTitle,
+      description: effectiveMetaDescription,
+      originalFilename: doc.originalFilename,
+      sourceUrl: doc.sourceUrl,
+    });
+    if (metadataText) {
+      try {
+        metadataEmbedding = await embedSingleText(
+          metadataText,
+          group.embeddingProvider,
+          group.embeddingModel,
+        );
+      } catch (err) {
+        console.warn(
+          `[ContextX Worker] Metadata embedding failed for document ${documentId}:`,
+          err,
+        );
+      }
+    }
+  }
+
   // ── Store full markdown (Context7-style: keep full doc for retrieval) ──
   // This enables Context7-like full-document retrieval alongside chunk-based RAG.
   await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
     markdownContent: markdown,
+  });
+  await knowledgeRepository.updateDocumentAutoMetadata(documentId, {
+    title: autoMeta.title,
+    description: autoMeta.description,
+    ...(metadataEmbedding !== undefined ? { metadataEmbedding } : {}),
   });
 
   // Delete existing chunks for this document
@@ -92,7 +136,7 @@ async function handleIngestDocument(
   // Step 2: Enrich chunks with contextual summaries
   const enrichedChunks = await enrichChunksWithContext(
     chunks,
-    documentTitle,
+    autoMeta.title || documentTitle,
     markdown,
   );
 

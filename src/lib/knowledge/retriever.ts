@@ -33,6 +33,94 @@ const MIN_VECTOR_SCORE = 0.25;
 const VECTOR_RRF_WEIGHT = 1.5;
 /** How many top results to expand with neighbor chunks */
 const NEIGHBOR_EXPAND_TOP = 3;
+/** Maximum multiplicative boost from document metadata relevance. */
+const DOC_META_BOOST_MAX = 0.35;
+/** Whether doc-level metadata vector scoring is enabled. */
+const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
+/** Freshness share in final doc ranking: effective = (1-w)*relevance + w*freshness */
+const DOC_META_RERANK_WEIGHT = Math.min(
+  0.5,
+  Math.max(0, Number(process.env.DOC_META_RERANK_WEIGHT ?? "0.1")),
+);
+
+// ─── Shared Scoring Helpers ───────────────────────────────────────────────────
+
+function normalizeDocScores(
+  rows: Array<{ documentId: string; score: number }>,
+): Map<string, number> {
+  if (rows.length === 0) return new Map();
+  const maxScore = Math.max(...rows.map((r) => Number(r.score) || 0), 0);
+  if (maxScore <= 0) return new Map();
+
+  const out = new Map<string, number>();
+  for (const row of rows) {
+    out.set(row.documentId, Math.max(0, Number(row.score) / maxScore));
+  }
+  return out;
+}
+
+function buildDocumentSignalMap(
+  lexicalRows: Array<{ documentId: string; score: number }>,
+  semanticRows: Array<{ documentId: string; score: number }>,
+): Map<string, number> {
+  const lexical = normalizeDocScores(lexicalRows);
+  const semantic = normalizeDocScores(semanticRows);
+  const docIds = new Set([...lexical.keys(), ...semantic.keys()]);
+
+  const out = new Map<string, number>();
+  for (const docId of docIds) {
+    const lexicalScore = lexical.get(docId) ?? 0;
+    const semanticScore = semantic.get(docId) ?? 0;
+    // Metadata lexical matches are a stronger precision signal.
+    out.set(docId, lexicalScore * 0.65 + semanticScore * 0.35);
+  }
+  return out;
+}
+
+function applyDocumentBoost(
+  merged: KnowledgeQueryResult[],
+  docSignalMap: Map<string, number>,
+): KnowledgeQueryResult[] {
+  if (merged.length === 0 || docSignalMap.size === 0) return merged;
+
+  const boosted = merged.map((r) => {
+    const docSignal = docSignalMap.get(r.documentId) ?? 0;
+    const boostedScore = r.score * (1 + DOC_META_BOOST_MAX * docSignal);
+    return { ...r, score: boostedScore };
+  });
+
+  boosted.sort((a, b) => b.score - a.score);
+  const maxScore = boosted[0]?.score ?? 0;
+  if (maxScore <= 0) return boosted;
+  return boosted.map((r) => ({ ...r, score: r.score / maxScore }));
+}
+
+async function getDocumentMetadataSignals(
+  groupId: string,
+  query: string,
+  queryEmbedding?: number[],
+): Promise<Map<string, number>> {
+  const lexicalPromise = knowledgeRepository.searchDocumentMetadata(
+    groupId,
+    query,
+    CANDIDATE_LIMIT,
+  );
+  const semanticPromise =
+    DOC_META_VECTOR_ENABLED && queryEmbedding
+      ? knowledgeRepository.vectorSearchDocumentMetadata(
+          groupId,
+          queryEmbedding,
+          CANDIDATE_LIMIT,
+        )
+      : Promise.resolve([]);
+
+  const [lexicalRows, semanticRows] = await Promise.all([
+    lexicalPromise.catch(() => []),
+    semanticPromise.catch(() => []),
+  ]);
+
+  return buildDocumentSignalMap(lexicalRows, semanticRows);
+}
 
 // ─── Query Expansion ───────────────────────────────────────────────────────────
 
@@ -262,11 +350,19 @@ export async function queryKnowledge(
   const allQueries = [query, ...queryVariants];
 
   // ── Step 2: Embed all query variants in parallel ─────────────────────────
-  const embeddings = await Promise.all(
-    allQueries.map((q) =>
-      embedSingleText(q, group.embeddingProvider, group.embeddingModel),
-    ),
-  );
+  let embeddings: number[][] = [];
+  try {
+    embeddings = await Promise.all(
+      allQueries.map((q) =>
+        embedSingleText(q, group.embeddingProvider, group.embeddingModel),
+      ),
+    );
+  } catch (err) {
+    console.warn(
+      `[ContextX] Query embedding failed for group ${group.id}, using lexical retrieval fallback:`,
+      err,
+    );
+  }
 
   // ── Step 3: Multi-arm retrieval ──────────────────────────────────────────
   // Run vector search for each query variant + full-text search
@@ -278,8 +374,16 @@ export async function queryKnowledge(
     query,
     CANDIDATE_LIMIT,
   );
+  const docSignalPromise = getDocumentMetadataSignals(
+    group.id,
+    query,
+    embeddings[0],
+  );
 
-  const searchResults = await Promise.all([...vectorSearches, textSearch]);
+  const [searchResults, docSignalMap] = await Promise.all([
+    Promise.all([...vectorSearches, textSearch]),
+    docSignalPromise,
+  ]);
 
   // Last result is full-text, rest are vector searches
   const textResults = searchResults[searchResults.length - 1];
@@ -315,7 +419,10 @@ export async function queryKnowledge(
   // Full-text search with standard weight
   rankedLists.push({ results: textResults, weight: 1.0 });
 
-  const merged = weightedRrfMerge(rankedLists).slice(0, FINAL_BEFORE_RERANK);
+  const merged = applyDocumentBoost(
+    weightedRrfMerge(rankedLists),
+    docSignalMap,
+  ).slice(0, FINAL_BEFORE_RERANK);
 
   if (merged.length === 0) {
     return [];
@@ -437,9 +544,380 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function tokenizeQueryTerms(query: string): string[] {
+  return Array.from(
+    new Set(
+      query
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .filter((w) => w.length >= 3),
+    ),
+  );
+}
+
+type MarkdownSection = {
+  index: number;
+  heading: string;
+  headingLevel: number;
+  content: string;
+  tokenCount: number;
+};
+
+function splitMarkdownIntoSections(markdown: string): MarkdownSection[] {
+  const lines = markdown.split("\n");
+  const sections: MarkdownSection[] = [];
+  let inCodeFence = false;
+  let currentHeading = "Introduction";
+  let currentLevel = 0;
+  let currentLines: string[] = [];
+
+  const flush = () => {
+    const content = currentLines.join("\n").trim();
+    if (!content) return;
+    sections.push({
+      index: sections.length,
+      heading: currentHeading,
+      headingLevel: currentLevel,
+      content,
+      tokenCount: estimateTokens(content),
+    });
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      inCodeFence = !inCodeFence;
+    }
+
+    const headingMatch = !inCodeFence ? line.match(/^(#{1,6})\s+(.+)$/) : null;
+    if (headingMatch) {
+      flush();
+      currentLines = [line];
+      currentHeading = headingMatch[2].trim();
+      currentLevel = headingMatch[1].length;
+      continue;
+    }
+
+    currentLines.push(line);
+  }
+
+  flush();
+  return sections;
+}
+
+function trimTextToTokenBudget(text: string, budgetTokens: number): string {
+  const charLimit = Math.max(0, budgetTokens * 4);
+  if (charLimit <= 0) return "";
+  if (text.length <= charLimit) return text;
+
+  let cut = text.slice(0, charLimit);
+  const cutAtParagraph = cut.lastIndexOf("\n\n");
+  if (cutAtParagraph > charLimit * 0.5) {
+    cut = cut.slice(0, cutAtParagraph);
+  } else {
+    const cutAtLine = cut.lastIndexOf("\n");
+    if (cutAtLine > charLimit * 0.6) {
+      cut = cut.slice(0, cutAtLine);
+    } else {
+      const cutAtWord = cut.lastIndexOf(" ");
+      if (cutAtWord > charLimit * 0.6) {
+        cut = cut.slice(0, cutAtWord);
+      }
+    }
+  }
+
+  return cut.trim();
+}
+
+function trimMarkdownByMatchedSections(input: {
+  markdown: string;
+  query: string;
+  budgetTokens: number;
+  chunkMatches: KnowledgeQueryResult[];
+}): string {
+  const { markdown, query, budgetTokens, chunkMatches } = input;
+  const sections = splitMarkdownIntoSections(markdown);
+  if (sections.length === 0) {
+    const fallback = trimTextToTokenBudget(markdown, budgetTokens);
+    return fallback
+      ? `${fallback}\n\n[... content trimmed for token budget]`
+      : "";
+  }
+
+  const queryTerms = tokenizeQueryTerms(query);
+  const headingHints = chunkMatches
+    .map(
+      (r) => r.chunk.metadata?.headingPath ?? r.chunk.metadata?.section ?? "",
+    )
+    .map((s) => s.toLowerCase())
+    .filter(Boolean);
+  const textHints = chunkMatches
+    .map((r) => r.chunk.content.toLowerCase())
+    .map((s) => s.slice(0, 220));
+
+  const scored = sections.map((section) => {
+    const headingLower = section.heading.toLowerCase();
+    const contentLower = section.content.toLowerCase();
+
+    let score = 0;
+    for (const term of queryTerms) {
+      if (headingLower.includes(term)) score += 2.0;
+      if (contentLower.includes(term)) score += 0.8;
+    }
+
+    for (const hint of headingHints) {
+      if (!hint) continue;
+      if (hint.includes(headingLower) || headingLower.includes(hint)) {
+        score += 2.5;
+      } else {
+        const headingParts = hint.split(">").map((p) => p.trim());
+        if (headingParts.some((p) => p && headingLower.includes(p))) {
+          score += 1.25;
+        }
+      }
+    }
+
+    for (const hint of textHints) {
+      if (!hint) continue;
+      const snippet = hint.slice(0, 120);
+      if (snippet && contentLower.includes(snippet)) {
+        score += 1.5;
+        break;
+      }
+    }
+
+    // Prefer higher-level sections when scores tie.
+    score += section.headingLevel > 0 ? (7 - section.headingLevel) * 0.02 : 0;
+
+    return { section, score };
+  });
+
+  const ranked = [...scored].sort((a, b) => b.score - a.score);
+  let remaining = budgetTokens;
+  const selected: MarkdownSection[] = [];
+
+  for (const row of ranked) {
+    if (remaining < 80) break;
+    if (row.score <= 0 && selected.length > 0) break;
+
+    const t = row.section.tokenCount;
+    if (t <= remaining) {
+      selected.push(row.section);
+      remaining -= t;
+      continue;
+    }
+
+    // Include partial section if nothing selected yet or still enough room.
+    if (remaining >= 120) {
+      const partial = trimTextToTokenBudget(row.section.content, remaining);
+      if (partial) {
+        selected.push({
+          ...row.section,
+          content: `${partial}\n\n[... section trimmed]`,
+          tokenCount: estimateTokens(partial),
+        });
+        remaining = 0;
+      }
+    }
+    break;
+  }
+
+  if (selected.length === 0) {
+    const fallback = trimTextToTokenBudget(markdown, budgetTokens);
+    return fallback
+      ? `${fallback}\n\n[... content trimmed for token budget]`
+      : "";
+  }
+
+  // Preserve original document ordering for readability.
+  selected.sort((a, b) => a.index - b.index);
+  return `${selected.map((s) => s.content).join("\n\n---\n\n")}\n\n[... content trimmed for token budget]`;
+}
+
+function headingFromChunkMatch(match: KnowledgeQueryResult): string {
+  const raw =
+    match.chunk.metadata?.headingPath ||
+    match.chunk.metadata?.sectionTitle ||
+    match.chunk.metadata?.section ||
+    "";
+  const heading = raw.trim();
+  if (heading) return heading;
+  return `${match.documentName} > Chunk ${match.chunk.chunkIndex + 1}`;
+}
+
+function buildMatchedSectionsMarkdown(input: {
+  matches: KnowledgeQueryResult[];
+  budgetTokens: number;
+  maxSections?: number;
+}): {
+  markdown: string;
+  matchedSections: Array<{ heading: string; score: number }>;
+} {
+  const { matches, budgetTokens, maxSections = 6 } = input;
+  if (budgetTokens < 80 || matches.length === 0) {
+    return { markdown: "", matchedSections: [] };
+  }
+
+  const ranked = matches
+    .map((m) => ({
+      match: m,
+      score: Math.max(0, m.rerankScore ?? m.score),
+      heading: headingFromChunkMatch(m),
+    }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  if (ranked.length === 0) {
+    return { markdown: "", matchedSections: [] };
+  }
+
+  const seen = new Set<string>();
+  const blocks: string[] = [];
+  const matchedSections: Array<{ heading: string; score: number }> = [];
+  let remaining = budgetTokens;
+
+  for (const row of ranked) {
+    if (blocks.length >= maxSections || remaining < 80) break;
+
+    const dedupeKey = `${row.heading.toLowerCase()}::${row.match.chunk.chunkIndex}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const summaryLine = row.match.chunk.contextSummary
+      ? `_${row.match.chunk.contextSummary}_\n\n`
+      : "";
+    const content = row.match.chunk.content.trim();
+    if (!content) continue;
+
+    const baseHeading = `### ${row.heading}`;
+    const candidate = `${baseHeading}\n${summaryLine}${content}`.trim();
+    const candidateTokens = estimateTokens(candidate);
+
+    if (candidateTokens <= remaining) {
+      blocks.push(candidate);
+      matchedSections.push({ heading: row.heading, score: row.score });
+      remaining -= candidateTokens;
+      continue;
+    }
+
+    const headingCost = estimateTokens(baseHeading) + 8;
+    if (remaining <= headingCost + 20) break;
+    const trimmed = trimTextToTokenBudget(content, remaining - headingCost);
+    if (!trimmed) break;
+
+    const partial =
+      `${baseHeading}\n${summaryLine}${trimmed}\n\n[... section trimmed]`.trim();
+    blocks.push(partial);
+    matchedSections.push({ heading: row.heading, score: row.score });
+    remaining -= estimateTokens(partial);
+    break;
+  }
+
+  if (blocks.length === 0) {
+    return { markdown: "", matchedSections: [] };
+  }
+
+  return {
+    markdown: `${blocks.join("\n\n---\n\n")}\n\n[... matched sections only]`,
+    matchedSections,
+  };
+}
+
+function normalizeLibraryIdToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\\/g, "/")
+    .replace(/\s+/g, "-")
+    .replace(/\/+/g, "/")
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/-+/g, "-");
+}
+
+function toLibrarySlug(value: string): string {
+  const normalized = normalizeLibraryIdToken(value);
+  const tail = normalized.split("/").filter(Boolean).pop() ?? normalized;
+  return tail
+    .replace(/[._]/g, "-")
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function extractHeadingRoot(headingPath?: string): string | null {
+  if (!headingPath) return null;
+  const root = headingPath
+    .split(">")
+    .map((s) => s.trim())
+    .find(Boolean);
+  return root ?? null;
+}
+
+function chunkMatchesLibraryScope(input: {
+  hit: KnowledgeQueryResult;
+  libraryId?: string;
+  libraryVersion?: string;
+}): boolean {
+  const { hit, libraryId, libraryVersion } = input;
+  if (!libraryId && !libraryVersion) return true;
+
+  const metadata = hit.chunk.metadata;
+  const requestedId = libraryId ? normalizeLibraryIdToken(libraryId) : null;
+  const requestedSlug = requestedId ? toLibrarySlug(requestedId) : null;
+  const requestedVersion = libraryVersion?.trim().toLowerCase();
+
+  const candidateIds = [
+    metadata?.libraryId,
+    extractHeadingRoot(metadata?.headingPath ?? undefined),
+    metadata?.sectionTitle,
+    metadata?.section,
+  ]
+    .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+    .map(normalizeLibraryIdToken);
+
+  const candidateSlugs = candidateIds.map(toLibrarySlug);
+
+  const idMatched =
+    !requestedId ||
+    candidateIds.some(
+      (id) =>
+        id === requestedId ||
+        id.includes(requestedId) ||
+        requestedId.includes(id),
+    ) ||
+    (requestedSlug
+      ? candidateSlugs.some(
+          (slug) =>
+            slug === requestedSlug ||
+            slug.includes(requestedSlug) ||
+            requestedSlug.includes(slug),
+        )
+      : false);
+
+  if (!idMatched) return false;
+  if (!requestedVersion) return true;
+
+  const chunkVersion = metadata?.libraryVersion?.trim().toLowerCase();
+  if (!chunkVersion) return true;
+  return (
+    chunkVersion === requestedVersion ||
+    chunkVersion.includes(requestedVersion) ||
+    requestedVersion.includes(chunkVersion)
+  );
+}
+
 export interface QueryKnowledgeDocsOptions {
   topic?: string;
   tokens?: number;
+  /** full-doc = Context7-style whole-doc context, matched-sections = focused snippet cards */
+  resultMode?: "full-doc" | "matched-sections";
+  /** Hard cap of returned documents (applied after ranking/filtering). */
+  maxDocs?: number;
+  /** Optional library scope (Context7-style query-docs). */
+  libraryId?: string;
+  /** Optional library version scope. */
+  libraryVersion?: string;
   userId?: string | null;
   source?: "chat" | "agent" | "mcp";
 }
@@ -454,8 +932,13 @@ export interface DocRetrievalResult {
   relevanceScore: number;
   /** Number of chunks from this document that appeared in search results */
   chunkHits: number;
-  /** Full markdown content of the document (may be truncated for budget) */
+  /** Markdown payload (full doc or matched section snippets depending on mode) */
   markdown: string;
+  /** Optional list of top matched section headings (for UI display). */
+  matchedSections?: Array<{
+    heading: string;
+    score: number;
+  }>;
 }
 
 /**
@@ -478,53 +961,191 @@ export async function queryKnowledgeAsDocs(
     Math.max(options.tokens || DEFAULT_FULL_DOC_TOKENS, 500),
     MAX_FULL_DOC_TOKENS,
   );
+  const resultMode = options.resultMode ?? "full-doc";
+  const maxDocs = Math.min(
+    Math.max(
+      options.maxDocs ?? (resultMode === "matched-sections" ? 8 : 50),
+      1,
+    ),
+    50,
+  );
   const start = Date.now();
 
-  // ── Step 1: Use the full RAG pipeline to find relevant chunks ─────────
-  // We fetch more chunks than usual to get better document coverage
-  const chunkResults = await queryKnowledge(group, query, {
-    topN: FINAL_BEFORE_RERANK,
-    skipLogging: true,
-  });
+  // ── Step 1: Gather chunk-level and document-level signals ───────────────
+  const [chunkResults, queryEmbedding] = await Promise.all([
+    queryKnowledge(group, query, {
+      topN: FINAL_BEFORE_RERANK,
+      skipLogging: true,
+    }),
+    DOC_META_VECTOR_ENABLED
+      ? embedSingleText(query, group.embeddingProvider, group.embeddingModel)
+          .then((v) => v)
+          .catch(() => null)
+      : Promise.resolve(null),
+  ]);
 
-  if (chunkResults.length === 0) return [];
+  const docSignalMap = await getDocumentMetadataSignals(
+    group.id,
+    query,
+    queryEmbedding ?? undefined,
+  );
+  const scopedChunkResults = chunkResults.filter((hit) =>
+    chunkMatchesLibraryScope({
+      hit,
+      libraryId: options.libraryId,
+      libraryVersion: options.libraryVersion,
+    }),
+  );
+  if (options.libraryId && scopedChunkResults.length === 0) return [];
+  if (scopedChunkResults.length === 0 && docSignalMap.size === 0) return [];
 
-  // ── Step 2: Aggregate chunk scores by document ────────────────────────
-  const docScores = new Map<
+  // ── Step 2: Build candidate document set + aggregate chunk signals ──────
+  const chunkStats = new Map<
     string,
-    { score: number; count: number; name: string }
+    {
+      name: string;
+      chunkHits: number;
+      sumScore: number;
+      maxScore: number;
+      matches: KnowledgeQueryResult[];
+    }
   >();
 
-  for (const r of chunkResults) {
-    const score = r.rerankScore ?? r.score;
-    const existing = docScores.get(r.chunk.documentId);
+  for (const r of scopedChunkResults) {
+    const score = Math.max(0, r.rerankScore ?? r.score);
+    const hitIncrement = score > 0 ? 1 : 0;
+    const existing = chunkStats.get(r.documentId);
     if (existing) {
-      existing.score += score;
-      existing.count += 1;
+      existing.chunkHits += hitIncrement;
+      existing.sumScore += score;
+      existing.maxScore = Math.max(existing.maxScore, score);
+      existing.matches.push(r);
     } else {
-      docScores.set(r.chunk.documentId, {
-        score,
-        count: 1,
+      chunkStats.set(r.documentId, {
         name: r.documentName,
+        chunkHits: hitIncrement,
+        sumScore: score,
+        maxScore: score,
+        matches: [r],
       });
     }
   }
 
-  // Rank documents by aggregated score (more chunk hits + higher scores = more relevant)
-  const rankedDocs = Array.from(docScores.entries())
-    .sort((a, b) => b[1].score - a[1].score)
-    .map(([docId, info]) => ({
-      documentId: docId,
-      documentName: info.name,
-      relevanceScore: info.score,
-      chunkHits: info.count,
-    }));
+  const topDocSignalIds =
+    options.libraryId || options.libraryVersion
+      ? []
+      : Array.from(docSignalMap.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, CANDIDATE_LIMIT)
+          .map(([docId]) => docId);
 
-  // ── Step 3: Fetch full markdown and assemble within token budget ───────
+  const candidateDocIds = Array.from(
+    new Set([...chunkStats.keys(), ...topDocSignalIds]),
+  );
+  if (candidateDocIds.length === 0) return [];
+
+  const candidateDocMeta = await knowledgeRepository.getDocumentMetadataByIds(
+    group.id,
+    candidateDocIds,
+  );
+  if (candidateDocMeta.length === 0) return [];
+
+  const rawChunkScores = candidateDocMeta.map((doc) => {
+    const stats = chunkStats.get(doc.documentId);
+    if (!stats) return 0;
+    const hitBoost = Math.min(1, stats.chunkHits / 5);
+    return stats.sumScore + stats.maxScore * 0.5 + hitBoost * 0.2;
+  });
+  const maxRawChunkScore = Math.max(...rawChunkScores, 0);
+
+  const now = Date.now();
+  const rankedDocs = candidateDocMeta
+    .map((doc) => {
+      const stats = chunkStats.get(doc.documentId);
+      const metadataSignal = docSignalMap.get(doc.documentId) ?? 0;
+      const rawChunkScore = stats
+        ? stats.sumScore +
+          stats.maxScore * 0.5 +
+          Math.min(1, stats.chunkHits / 5) * 0.2
+        : 0;
+      const chunkRelevance =
+        maxRawChunkScore > 0 ? rawChunkScore / maxRawChunkScore : 0;
+      const relevanceScore =
+        maxRawChunkScore > 0
+          ? chunkRelevance * 0.8 + metadataSignal * 0.2
+          : metadataSignal;
+
+      const ageDays = Math.max(
+        0,
+        (now - new Date(doc.updatedAt).getTime()) / (1000 * 60 * 60 * 24),
+      );
+      const freshnessScore = Math.exp(-ageDays / 90);
+      const effectiveScore =
+        relevanceScore * (1 - DOC_META_RERANK_WEIGHT) +
+        freshnessScore * DOC_META_RERANK_WEIGHT;
+
+      return {
+        documentId: doc.documentId,
+        documentName: stats?.name ?? doc.name,
+        chunkHits: stats?.chunkHits ?? 0,
+        relevanceScore: effectiveScore,
+      };
+    })
+    .sort((a, b) => b.relevanceScore - a.relevanceScore);
+
+  const maxEffective = rankedDocs[0]?.relevanceScore ?? 0;
+  const normalizedRankedDocs =
+    maxEffective > 0
+      ? rankedDocs.map((d) => ({
+          ...d,
+          relevanceScore: d.relevanceScore / maxEffective,
+        }))
+      : rankedDocs;
+
+  const threshold = group.retrievalThreshold ?? 0;
+  const filteredDocs =
+    threshold > 0
+      ? normalizedRankedDocs.filter((d) => d.relevanceScore >= threshold)
+      : normalizedRankedDocs;
+  if (filteredDocs.length === 0) return [];
+  const docsToAssemble =
+    resultMode === "matched-sections"
+      ? filteredDocs
+          .filter(
+            (d) =>
+              d.chunkHits > 0 && d.relevanceScore >= Math.max(threshold, 0.2),
+          )
+          .slice(0, maxDocs)
+      : filteredDocs.slice(0, maxDocs);
+  if (docsToAssemble.length === 0) return [];
+
+  // ── Step 3: Fetch markdown and assemble with section-aware trimming ─────
   const results: DocRetrievalResult[] = [];
   let tokensUsed = 0;
+  const perDocSectionBudget =
+    resultMode === "matched-sections"
+      ? Math.max(220, Math.floor(tokenBudget / docsToAssemble.length))
+      : tokenBudget;
 
-  for (const doc of rankedDocs) {
+  for (const doc of docsToAssemble) {
+    const remaining = tokenBudget - tokensUsed;
+    if (remaining < 120) break;
+
+    if (resultMode === "matched-sections") {
+      const matchPayload = buildMatchedSectionsMarkdown({
+        matches: chunkStats.get(doc.documentId)?.matches ?? [],
+        budgetTokens: Math.min(remaining, perDocSectionBudget),
+      });
+      if (!matchPayload.markdown) continue;
+      results.push({
+        ...doc,
+        markdown: matchPayload.markdown,
+        matchedSections: matchPayload.matchedSections,
+      });
+      tokensUsed += estimateTokens(matchPayload.markdown);
+      continue;
+    }
+
     const docData = await knowledgeRepository.getDocumentMarkdown(
       doc.documentId,
     );
@@ -537,21 +1158,23 @@ export async function queryKnowledgeAsDocs(
       results.push({ ...doc, markdown: docData.markdown });
       tokensUsed += contentTokens;
     } else {
-      // Truncate to fit remaining budget
-      const remaining = tokenBudget - tokensUsed;
-      if (remaining < 200) break; // Not enough room for meaningful content
-      const charLimit = remaining * 4;
-      let truncated = docData.markdown.slice(0, charLimit);
-      const lastParagraph = truncated.lastIndexOf("\n\n");
-      if (lastParagraph > charLimit * 0.5) {
-        truncated = truncated.slice(0, lastParagraph);
-      }
+      // Section-aware trim to fit remaining budget.
+      if (remaining < 160) break;
+
+      const truncated = trimMarkdownByMatchedSections({
+        markdown: docData.markdown,
+        query,
+        budgetTokens: remaining,
+        chunkMatches: chunkStats.get(doc.documentId)?.matches ?? [],
+      });
+      if (!truncated) break;
+
       results.push({
         ...doc,
-        markdown: truncated + "\n\n[... content truncated]",
+        markdown: truncated,
       });
       tokensUsed += estimateTokens(truncated);
-      break; // Budget exhausted
+      break;
     }
   }
 
@@ -563,7 +1186,7 @@ export async function queryKnowledgeAsDocs(
       userId: options.userId ?? null,
       query,
       source: options.source ?? "chat",
-      chunksRetrieved: chunkResults.length,
+      chunksRetrieved: scopedChunkResults.length,
       latencyMs,
     })
     .catch(() => {});

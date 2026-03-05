@@ -117,6 +117,11 @@ export function DocumentCard({
           <p className="text-xs text-muted-foreground truncate">
             {doc.originalFilename}
           </p>
+          {doc.description && (
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+              {doc.description}
+            </p>
+          )}
         </div>
 
         <div className="flex items-center gap-0.5">
@@ -129,7 +134,7 @@ export function DocumentCard({
               handleReEmbed();
             }}
             disabled={reembedding || doc.status === "processing"}
-            title="Re-embed document"
+            title="Reprocess for new structure and embeddings"
           >
             {reembedding ? (
               <Loader2Icon className="size-3.5 animate-spin" />

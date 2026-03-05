@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
   params: Promise<{ id: string; docId: string }>;
@@ -60,6 +60,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
       doc: {
         id: doc.id,
         name: doc.name,
+        description: doc.description ?? null,
+        descriptionManual: doc.descriptionManual ?? false,
+        titleManual: doc.titleManual ?? false,
         originalFilename: doc.originalFilename,
         fileType: doc.fileType,
         fileSize: doc.fileSize,
@@ -102,6 +105,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
       doc: {
         id: doc.id,
         name: doc.name,
+        description: doc.description ?? null,
+        descriptionManual: doc.descriptionManual ?? false,
+        titleManual: doc.titleManual ?? false,
         originalFilename: doc.originalFilename,
         fileType: doc.fileType,
         fileSize: doc.fileSize,

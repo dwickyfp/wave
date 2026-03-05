@@ -1,21 +1,21 @@
 "use client";
 
-import { useState, useRef, useMemo } from "react";
-import { Button } from "ui/button";
-import { Textarea } from "ui/textarea";
-import { Badge } from "ui/badge";
-import { Skeleton } from "ui/skeleton";
-import { Label } from "ui/label";
-import { Input } from "ui/input";
 import {
-  SearchIcon,
-  FileTextIcon,
-  ZapIcon,
-  SlidersHorizontalIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  FileTextIcon,
+  SearchIcon,
+  SlidersHorizontalIcon,
+  ZapIcon,
 } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Input } from "ui/input";
+import { Label } from "ui/label";
+import { Skeleton } from "ui/skeleton";
+import { Textarea } from "ui/textarea";
 
 interface Props {
   groupId: string;
@@ -29,6 +29,10 @@ interface DocRetrievalResult {
   relevanceScore: number;
   chunkHits: number;
   markdown: string;
+  matchedSections?: Array<{
+    heading: string;
+    score: number;
+  }>;
 }
 
 // ─── Document Card ──────────────────────────────────────────────────────────────
@@ -41,7 +45,14 @@ function DocumentCard({
   index: number;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const previewLength = 800;
+  const uniqueMatchedSections = doc.matchedSections
+    ? Array.from(
+        new Map(
+          doc.matchedSections.map((section) => [section.heading, section]),
+        ).values(),
+      ).slice(0, 4)
+    : [];
+  const previewLength = 1200;
   const isLong = doc.markdown.length > previewLength;
   const preview =
     isLong && !expanded
@@ -67,7 +78,7 @@ function DocumentCard({
             variant="outline"
             className="text-xs font-mono px-1.5 py-0 bg-blue-500/10 text-blue-600 border-blue-500/30"
           >
-            {doc.chunkHits} chunk hits
+            {doc.chunkHits} relevant chunks
           </Badge>
           <Badge
             variant="outline"
@@ -77,6 +88,21 @@ function DocumentCard({
           </Badge>
         </div>
       </div>
+
+      {uniqueMatchedSections.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {uniqueMatchedSections.map((section, sectionIndex) => (
+            <Badge
+              key={`${doc.documentId}:${section.heading}:${sectionIndex}`}
+              variant="outline"
+              className="text-[11px] px-1.5 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30 max-w-full truncate"
+              title={section.heading}
+            >
+              {section.heading}
+            </Badge>
+          ))}
+        </div>
+      )}
 
       {/* Markdown content */}
       <div className="text-sm text-foreground leading-relaxed whitespace-pre-wrap break-words font-mono bg-secondary/30 rounded-lg p-3 max-h-[600px] overflow-y-auto">
@@ -94,7 +120,7 @@ function DocumentCard({
             </>
           ) : (
             <>
-              <ChevronDownIcon className="size-3" /> Show full document
+              <ChevronDownIcon className="size-3" /> Show more
             </>
           )}
         </button>
@@ -226,7 +252,7 @@ export function KnowledgePlaygroundTab({ groupId }: Props) {
               className="h-7 text-xs w-28"
             />
             <p className="text-xs text-muted-foreground">
-              Max tokens of full-doc content to return (500–50000)
+              Max tokens of relevant section snippets to return (500–50000)
             </p>
           </div>
         )}
@@ -271,7 +297,7 @@ export function KnowledgePlaygroundTab({ groupId }: Props) {
             <>
               <span className="text-sm font-medium">
                 {docResults!.length} document
-                {docResults!.length !== 1 ? "s" : ""} found
+                {docResults!.length !== 1 ? "s" : ""} with relevant sections
                 {totalDocTokens !== undefined && (
                   <span className="text-xs text-muted-foreground font-normal ml-2">
                     (~{totalDocTokens.toLocaleString()} tokens)
@@ -307,8 +333,8 @@ export function KnowledgePlaygroundTab({ groupId }: Props) {
               Run a query to see matching documents here
             </p>
             <p className="text-xs opacity-60">
-              Documents are ranked by semantic similarity using embedding + BM25
-              + reranking
+              Results show only relevant sections (heading + matched content)
+              using hybrid retrieval
             </p>
           </div>
         )}
@@ -317,7 +343,7 @@ export function KnowledgePlaygroundTab({ groupId }: Props) {
         {!loading && isEmpty && (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed py-16 text-center text-muted-foreground gap-2">
             <FileTextIcon className="size-8 opacity-30" />
-            <p className="text-sm">No documents matched your query</p>
+            <p className="text-sm">No relevant sections matched your query</p>
             <p className="text-xs opacity-60">
               Try rephrasing your question or uploading more documents
             </p>
