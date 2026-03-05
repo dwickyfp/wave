@@ -11,14 +11,15 @@ import {
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
 import { ScrollArea } from "ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
 import {
   FileTextIcon,
   TableIcon,
   FileIcon,
   LinkIcon,
-  DownloadIcon,
   Loader2Icon,
   ExternalLinkIcon,
+  DownloadIcon,
 } from "lucide-react";
 import { KnowledgeDocument } from "app-types/knowledge";
 import { cn } from "lib/utils";
@@ -53,6 +54,7 @@ interface PreviewData {
   previewUrl: string | null;
   sourceUrl: string | null;
   content: string | null;
+  markdownContent: string | null;
   isUrlOnly: boolean;
 }
 
@@ -89,89 +91,94 @@ export function DocumentPreviewSheet({ doc, groupId, open, onClose }: Props) {
   }, [open, doc, groupId]);
 
   const FileIconComp = FILE_ICONS[doc?.fileType ?? ""] ?? FileIcon;
-  const downloadUrl = previewData?.previewUrl ?? previewData?.sourceUrl;
-
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
       <SheetContent
         side="right"
         className="w-full sm:max-w-2xl flex flex-col p-0 gap-0"
       >
-        {/* Header */}
-        <SheetHeader className="px-6 py-4 border-b shrink-0">
-          <div className="flex items-start gap-3">
-            <div className="shrink-0 p-2 rounded-md bg-primary/10 mt-0.5">
-              <FileIconComp className="size-5 text-primary" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <SheetTitle className="text-base font-semibold leading-snug truncate">
-                {doc?.name}
-              </SheetTitle>
-              <SheetDescription className="text-xs text-muted-foreground truncate mt-0.5">
-                {doc?.originalFilename}
-              </SheetDescription>
-              <div className="flex items-center gap-2 mt-2 flex-wrap">
-                {doc?.fileType && (
-                  <Badge variant="outline" className="text-xs px-1.5 py-0">
-                    {doc.fileType.toUpperCase()}
-                  </Badge>
-                )}
-                {doc?.fileSize && (
-                  <span className="text-xs text-muted-foreground">
-                    {formatBytes(doc.fileSize)}
-                  </span>
-                )}
+        <Tabs defaultValue="original" className="flex flex-col flex-1 min-h-0">
+          {/* Header */}
+          <SheetHeader className="px-6 py-4 border-b shrink-0">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 p-2 rounded-md bg-primary/10 mt-0.5">
+                <FileIconComp className="size-5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <SheetTitle className="text-base font-semibold leading-snug truncate">
+                  {doc?.name}
+                </SheetTitle>
+                <SheetDescription className="text-xs text-muted-foreground truncate mt-0.5">
+                  {doc?.originalFilename}
+                </SheetDescription>
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  {doc?.fileType && (
+                    <Badge variant="outline" className="text-xs px-1.5 py-0">
+                      {doc.fileType.toUpperCase()}
+                    </Badge>
+                  )}
+                  {doc?.fileSize && (
+                    <span className="text-xs text-muted-foreground">
+                      {formatBytes(doc.fileSize)}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
+
+            <TabsList className="h-8 self-start mt-1">
+              <TabsTrigger value="original" className="text-xs h-7">
+                Real Docs
+              </TabsTrigger>
+              <TabsTrigger
+                value="markdown"
+                className="text-xs h-7"
+                disabled={!previewData?.markdownContent}
+              >
+                Result Markdown
+              </TabsTrigger>
+            </TabsList>
+          </SheetHeader>
+
+          {/* Content */}
+          <div className="flex-1 min-h-0 relative">
+            {loading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/60 z-10">
+                <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+              </div>
+            )}
+
+            {error && (
+              <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                <p className="text-sm text-muted-foreground">{error}</p>
+              </div>
+            )}
+
+            {!loading && !error && previewData && (
+              <>
+                <TabsContent value="original" className="h-full mt-0">
+                  <PreviewContent data={previewData} />
+                </TabsContent>
+                <TabsContent value="markdown" className="h-full mt-0">
+                  {previewData.markdownContent ? (
+                    <ScrollArea className="h-full">
+                      <pre className="p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
+                        {previewData.markdownContent}
+                      </pre>
+                    </ScrollArea>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                      <p className="text-sm text-muted-foreground">
+                        No markdown content yet. The document will be processed
+                        after ingestion.
+                      </p>
+                    </div>
+                  )}
+                </TabsContent>
+              </>
+            )}
           </div>
-
-          {/* Actions */}
-          {downloadUrl && (
-            <div className="flex items-center gap-2 pt-1">
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
-                className="h-7 text-xs gap-1.5"
-              >
-                <a href={downloadUrl} target="_blank" rel="noreferrer">
-                  <ExternalLinkIcon className="size-3.5" />
-                  Open
-                </a>
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
-                className="h-7 text-xs gap-1.5"
-              >
-                <a href={downloadUrl} download={doc?.originalFilename}>
-                  <DownloadIcon className="size-3.5" />
-                  Download
-                </a>
-              </Button>
-            </div>
-          )}
-        </SheetHeader>
-
-        {/* Content */}
-        <div className="flex-1 min-h-0 relative">
-          {loading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-              <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
-            </div>
-          )}
-
-          {error && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-              <p className="text-sm text-muted-foreground">{error}</p>
-            </div>
-          )}
-
-          {!loading && !error && previewData && (
-            <PreviewContent data={previewData} />
-          )}
-        </div>
+        </Tabs>
       </SheetContent>
     </Sheet>
   );

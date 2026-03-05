@@ -29,6 +29,9 @@ export interface KnowledgeGroup {
   embeddingProvider: string;
   rerankingModel?: string | null;
   rerankingProvider?: string | null;
+  parsingModel?: string | null;
+  parsingProvider?: string | null;
+  retrievalThreshold: number;
   mcpEnabled: boolean;
   mcpApiKeyHash?: string | null;
   mcpApiKeyPreview?: string | null;
@@ -49,6 +52,9 @@ export interface KnowledgeSummary {
   embeddingProvider: string;
   rerankingModel?: string | null;
   rerankingProvider?: string | null;
+  parsingModel?: string | null;
+  parsingProvider?: string | null;
+  retrievalThreshold: number;
   mcpEnabled: boolean;
   documentCount: number;
   chunkCount: number;
@@ -142,6 +148,9 @@ export const createKnowledgeGroupSchema = z.object({
   embeddingProvider: z.string().default("openai"),
   rerankingModel: z.string().optional().nullable(),
   rerankingProvider: z.string().optional().nullable(),
+  parsingModel: z.string().optional().nullable(),
+  parsingProvider: z.string().optional().nullable(),
+  retrievalThreshold: z.number().min(0).max(1).default(0.0),
   chunkSize: z.number().int().min(128).max(2048).default(512),
   chunkOverlapPercent: z.number().int().min(0).max(50).default(20),
 });

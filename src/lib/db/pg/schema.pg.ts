@@ -14,6 +14,7 @@ import {
   index,
   integer,
   bigint,
+  real,
   customType,
 } from "drizzle-orm/pg-core";
 
@@ -648,6 +649,9 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
   mcpApiKeyPreview: text("mcp_api_key_preview"),
   chunkSize: integer("chunk_size").notNull().default(512),
   chunkOverlapPercent: integer("chunk_overlap_percent").notNull().default(20),
+  parsingModel: text("parsing_model"),
+  parsingProvider: text("parsing_provider"),
+  retrievalThreshold: real("retrieval_threshold").notNull().default(0.0),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),

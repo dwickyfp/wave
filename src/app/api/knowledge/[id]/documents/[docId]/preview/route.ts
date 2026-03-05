@@ -68,6 +68,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
       sourceUrl: doc.sourceUrl ?? null,
       previewUrl: null,
       content: null,
+      markdownContent: doc.markdownContent ?? null,
       isUrlOnly: true,
     });
   }
@@ -108,6 +109,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
       },
       previewUrl,
       content,
+      markdownContent: doc.markdownContent ?? null,
       isUrlOnly: false,
     });
   } catch {

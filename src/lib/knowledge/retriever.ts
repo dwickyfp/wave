@@ -13,6 +13,8 @@ type GroupForRetrieval = {
   embeddingProvider: string;
   rerankingModel?: string | null;
   rerankingProvider?: string | null;
+  /** Minimum relevance score (0–1) to include a result. 0 = no filtering. */
+  retrievalThreshold?: number | null;
 };
 import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
@@ -360,11 +362,19 @@ export async function queryKnowledge(
     finalResults = merged.slice(0, topN);
   }
 
-  // ── Step 7: Neighbor chunk expansion ─────────────────────────────────────
+  // ── Step 7: Apply retrieval threshold ────────────────────────────────────
+  const threshold = group.retrievalThreshold ?? 0;
+  if (threshold > 0) {
+    finalResults = finalResults.filter(
+      (r) => (r.rerankScore ?? r.score) >= threshold,
+    );
+  }
+
+  // ── Step 8: Neighbor chunk expansion ─────────────────────────────────────
   // After ranking, expand top results with adjacent chunks for richer context
   finalResults = await expandWithNeighborChunks(finalResults, group.id);
 
-  // ── Step 8: Log usage ────────────────────────────────────────────────────
+  // ── Step 9: Log usage ────────────────────────────────────────────────────
   if (!skipLogging) {
     const latencyMs = Date.now() - start;
     knowledgeRepository

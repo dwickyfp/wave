@@ -15,12 +15,17 @@ export type KnowledgeProviderGroup = {
 export type KnowledgeModelsResponse = {
   embeddingProviders: KnowledgeProviderGroup[];
   rerankingProviders: KnowledgeProviderGroup[];
+  chatProviders: KnowledgeProviderGroup[];
 };
 
 export function useKnowledgeModels() {
   return useSWR<KnowledgeModelsResponse>("/api/knowledge/models", fetcher, {
     dedupingInterval: 60_000 * 5,
     revalidateOnFocus: false,
-    fallbackData: { embeddingProviders: [], rerankingProviders: [] },
+    fallbackData: {
+      embeddingProviders: [],
+      rerankingProviders: [],
+      chatProviders: [],
+    },
   });
 }

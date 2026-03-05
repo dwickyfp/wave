@@ -19,7 +19,9 @@ import {
   CopyIcon,
   KeyIcon,
   RefreshCwIcon,
+  SaveIcon,
   ServerIcon,
+  SlidersHorizontalIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
@@ -30,14 +32,42 @@ interface Props {
   group: KnowledgeGroup;
   initialDocuments: KnowledgeDocument[];
   userId: string;
+  contextxModel: { provider: string; model: string } | null;
 }
 
 export function KnowledgeDetailPage({
   group,
   initialDocuments,
   userId,
+  contextxModel,
 }: Props) {
   const isOwner = group.userId === userId;
+
+  // ── Settings section state ───────────────────────────────────────────────
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [threshold, setThreshold] = useState(group.retrievalThreshold ?? 0);
+
+  const handleSaveSettings = async () => {
+    setSavingSettings(true);
+    try {
+      const res = await fetch(`/api/knowledge/${group.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          retrievalThreshold: threshold,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      toast.success("Settings saved");
+    } catch {
+      toast.error("Failed to save settings");
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // ── MCP section state ────────────────────────────────────────────────────
   const [mcpOpen, setMcpOpen] = useState(false);
   const [mcpEnabled, setMcpEnabled] = useState(group.mcpEnabled);
   const [apiKey, setApiKey] = useState<string | null>(null);
@@ -156,6 +186,96 @@ export function KnowledgeDetailPage({
           </div>
         </div>
       </div>
+
+      {/* Settings Section (owner only) */}
+      {isOwner && (
+        <div className="border rounded-xl overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-accent/50 transition-colors"
+            onClick={() => setSettingsOpen((o) => !o)}
+          >
+            <div className="flex items-center gap-2">
+              <SlidersHorizontalIcon className="size-4 text-primary" />
+              <span className="text-sm font-medium">Settings</span>
+              {contextxModel && (
+                <Badge variant="secondary" className="text-xs px-1.5 py-0">
+                  LLM: {contextxModel.model}
+                </Badge>
+              )}
+              {threshold > 0 && (
+                <Badge variant="secondary" className="text-xs px-1.5 py-0">
+                  threshold: {threshold.toFixed(2)}
+                </Badge>
+              )}
+            </div>
+            {settingsOpen ? (
+              <ChevronUpIcon className="size-4" />
+            ) : (
+              <ChevronDownIcon className="size-4" />
+            )}
+          </button>
+
+          {settingsOpen && (
+            <div className="px-4 pb-4 flex flex-col gap-4 border-t">
+              {/* Parsing LLM — global setting (read-only) */}
+              <div className="flex flex-col gap-1.5 pt-3">
+                <Label className="text-sm font-medium">Parsing LLM</Label>
+                {contextxModel ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-mono bg-secondary/50 border rounded px-2 py-1">
+                      {contextxModel.provider}/{contextxModel.model}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-amber-600">
+                    No ContextX model configured. Set one in Settings → ContextX
+                    Model to enable document parsing.
+                  </p>
+                )}
+              </div>
+
+              {/* Retrieval Threshold */}
+              <div className="flex flex-col gap-2">
+                <Label className="text-sm font-medium">
+                  Retrieval Threshold
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Minimum relevance score (0–1) for a result to be returned. Set
+                  to 0 to disable filtering.
+                </p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={threshold}
+                    onChange={(e) => setThreshold(Number(e.target.value))}
+                    className="flex-1 h-1.5 accent-primary"
+                  />
+                  <span className="text-sm font-mono w-10 text-right">
+                    {threshold.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              <Button
+                size="sm"
+                className="self-end gap-1.5"
+                onClick={handleSaveSettings}
+                disabled={savingSettings}
+              >
+                {savingSettings ? (
+                  <RefreshCwIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <SaveIcon className="size-3.5" />
+                )}
+                Save Settings
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* MCP Section (owner only) */}
       {isOwner && (
@@ -298,6 +418,11 @@ export function KnowledgeDetailPage({
           <KnowledgeDocumentsTab
             groupId={group.id}
             initialDocuments={initialDocuments}
+            uploadDisabledMessage={
+              !contextxModel
+                ? "Configure a ContextX Model in Settings before uploading documents."
+                : undefined
+            }
           />
         </TabsContent>
 

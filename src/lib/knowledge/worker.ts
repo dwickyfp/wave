@@ -11,8 +11,9 @@
  */
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
-import { knowledgeRepository } from "lib/db/repository";
+import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { processDocument } from "./processor";
+import { parseDocumentToMarkdown } from "./markdown-parser";
 import { chunkMarkdown } from "./chunker";
 import { enrichChunksWithContext } from "./context-enricher";
 import { embedTexts } from "./embedder";
@@ -50,8 +51,22 @@ async function handleIngestDocument(
     throw new Error("Document has no storage path or source URL");
   }
 
+  // ── Optional: LLM-based markdown parsing ─────────────────────────────
+  // Use the globally configured ContextX model for LLM-based parsing.
+  const documentTitle = doc.name || doc.originalFilename || "Untitled";
+  const contextxConfig = (await settingsRepository.getSetting(
+    "contextx-model",
+  )) as { provider: string; model: string } | null | undefined;
+  if (contextxConfig?.provider && contextxConfig?.model) {
+    markdown = await parseDocumentToMarkdown(
+      markdown,
+      documentTitle,
+      contextxConfig.provider,
+      contextxConfig.model,
+    );
+  }
+
   // ── Store full markdown (Context7-style: keep full doc for retrieval) ──
-  // All documents are converted to well-structured markdown by processors.
   // This enables Context7-like full-document retrieval alongside chunk-based RAG.
   await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
     markdownContent: markdown,
@@ -75,7 +90,6 @@ async function handleIngestDocument(
   }
 
   // Step 2: Enrich chunks with contextual summaries
-  const documentTitle = doc.name || doc.originalFilename || "Untitled";
   const enrichedChunks = await enrichChunksWithContext(
     chunks,
     documentTitle,
