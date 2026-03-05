@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.0.0 (2026-03-05)
+
+
+### Features
+
+* add admin usage monitoring feature with internationalization support ([fe42bd3](https://github.com/dwickyfp/wave/commit/fe42bd346ab7ed4a190618a20539e47e57c89e68))
+* add comprehensive documentation for AI SDK, including common errors, dev tools, and type-safe agents ([73da6a9](https://github.com/dwickyfp/wave/commit/73da6a9d98b65a6e344f37c9a2987ea8769048a4))
+* add dev warmup script to pre-compile static routes for faster development ([2cea8b5](https://github.com/dwickyfp/wave/commit/2cea8b508840e03a6dee26b188f218c01bb440b1))
+* Add Snowflake icon component and integrate into model provider icon ([90005d5](https://github.com/dwickyfp/wave/commit/90005d523944d40295556fd59b3cb8aa3ecefdd4))
+* add support for multiple model types in image generation ([d642c8c](https://github.com/dwickyfp/wave/commit/d642c8cfe58ba1fc23cf380bd090cdd3f89ec161))
+* add thread branching functionality and improve timezone handling ([4a852cc](https://github.com/dwickyfp/wave/commit/4a852cc320ae69abc6ac339f19b9a4cc196915cb))
+* add usage charts for model distribution and top users in usage monitoring ([29b4e56](https://github.com/dwickyfp/wave/commit/29b4e5601e4487cd7089ebf1903a929f3e188569))
+* add VegaLiteChart component for rendering Vega-Lite visualizations ([b926e48](https://github.com/dwickyfp/wave/commit/b926e4860e617f2fe9ac93174390dd2f71d0fb3b))
+* **agent:** add import/export functionality for agents with JSON support ([2442c3e](https://github.com/dwickyfp/wave/commit/2442c3ee5dc9af3b709357460d3ee1150be1a4ea))
+* **chat:** optimize message handling and improve footer action visibility ([d5f299b](https://github.com/dwickyfp/wave/commit/d5f299b84a9f4600e974cb7862c5c4bdc62e91ff))
+* enhance admin sidebar functionality with toggle state and improved active link handling ([d2f222b](https://github.com/dwickyfp/wave/commit/d2f222b1b6a3bde955657709311d049804ba92e2))
+* enhance chat repository and Snowflake integration ([7d5f9ed](https://github.com/dwickyfp/wave/commit/7d5f9ede4bc01bc27f6204578a5a1a549088d358))
+* enhance feedback submission for AssistMessagePart with error handling ([8908bc1](https://github.com/dwickyfp/wave/commit/8908bc14059a3c0bebc29760d69db43f7494c617))
+* enhance knowledge processing with contextual enrichment and improved embedding ([6e450b2](https://github.com/dwickyfp/wave/commit/6e450b2f6290359313ef9d312d28dacda6a74d93))
+* Enhance MarkdownTable component with pagination and Excel export functionality ([8dc2bca](https://github.com/dwickyfp/wave/commit/8dc2bcaa95949f191d537603352a4e595489beb3))
+* Enhance Snowflake streaming with detailed event handling and logging ([5866eb2](https://github.com/dwickyfp/wave/commit/5866eb2e807a65799a79135a586e8fdb9a44d064))
+* **image:** integrate Google image generation and update related tools ([cfabcd2](https://github.com/dwickyfp/wave/commit/cfabcd284471d26e8383be62720d4bc79b0d09f7))
+* Implement Context7-style full-document retrieval and ContextX model configuration ([da0ef49](https://github.com/dwickyfp/wave/commit/da0ef49d3b4b3f5aecbd92497687c93d41122597))
+* implement knowledge processing and embedding features ([0ce7bf2](https://github.com/dwickyfp/wave/commit/0ce7bf22ba3f5c947fdae5945849602fd17ca258))
+* implement parallel subagent handling and UI components for improved agent processing ([bbe7887](https://github.com/dwickyfp/wave/commit/bbe78877146607261a8f95876f8d940518d4714c))
+* Implement Snowflake Agent Repository and Authentication ([6be9ca6](https://github.com/dwickyfp/wave/commit/6be9ca6a575c68013231a14e982af91d35db9ebd))
+* improve forkThreadAction to handle message cutoff with error handling ([08864cd](https://github.com/dwickyfp/wave/commit/08864cdcc6d0837a1e71508248dbfdafb57722bd))
+* Increase maximum rows for rendered markdown table from 50 to 1500 ([10e986f](https://github.com/dwickyfp/wave/commit/10e986f21ad687af51c961199f0d6ce143462c8f))
+* integrate vega-embed for improved chart rendering and adjust loading indicator styles ([d3bc839](https://github.com/dwickyfp/wave/commit/d3bc8396cc567222a80d1bd16ea03a1d6139f7fc))
+* **knowledge:** add knowledge management features including context retrieval and playground tab ([575bda7](https://github.com/dwickyfp/wave/commit/575bda776856850f3769216076cbcd74d3487f46))
+* **migrations:** update model_type column definition and adjust journal entry timestamp ([bc0f5f3](https://github.com/dwickyfp/wave/commit/bc0f5f303fc6edb1a5149e6aec414b852ab090f4))
+* **planning:** add comprehensive planning strategy document for ContextX engine ([4380819](https://github.com/dwickyfp/wave/commit/4380819b49bb1db0a9aa6d53e6434f26236e1da0))
+* **provider:** add confirmation dialogs for provider and model deletion ([0968365](https://github.com/dwickyfp/wave/commit/0968365c2d53ac0fc9c5787ffbf74c0a587b171b))
+* **provider:** add model editing functionality in ProviderConfigSheet ([4347afb](https://github.com/dwickyfp/wave/commit/4347afbb35ba28d79468e8a388200ef347865ee7))
+* **provider:** add support for Cohere and Snowflake providers, including reranking model functionality ([18efadd](https://github.com/dwickyfp/wave/commit/18efaddcb7ec83ef201201ff13da9d0dbc43e65e))
+* **provider:** enhance model display by grouping models by type in ProviderConfigSheet ([8239f9b](https://github.com/dwickyfp/wave/commit/8239f9b0acb7ced2a3e805d3f136550d09b9c3e7))
+* **provider:** implement collapsible model type groups in ProviderConfigSheet ([da83c9d](https://github.com/dwickyfp/wave/commit/da83c9d94f6ecbeb08c8aea01bad122b07d49496))
+* **query:** enhance knowledge retrieval with query expansion and adjacent chunk support ([c031531](https://github.com/dwickyfp/wave/commit/c031531a804f7a38ec39c1059c9efb844dd86617))
+* refactor admin sidebar to improve transition effects for submenu visibility ([fd790e7](https://github.com/dwickyfp/wave/commit/fd790e70f71e98ce06039066198267d41c71b75f))
+* remove SSE logging functionality from Snowflake client ([3a2e6db](https://github.com/dwickyfp/wave/commit/3a2e6db415867a2fe1bcf8f794f42d1178e89ee8))
+* **settings:** add cache revalidation for chat models after updates ([650df3f](https://github.com/dwickyfp/wave/commit/650df3fd9be0a95efda7350e0eada0497c2c940d))
+* **settings:** add import/export functionality for settings backup ([5fdad66](https://github.com/dwickyfp/wave/commit/5fdad66590a2937837d58222d32fe05d36f30697))
+* **settings:** add provider configuration management ([85a3b42](https://github.com/dwickyfp/wave/commit/85a3b42cdc48d90ee004400e872da63b5f24df33))
+* update agent dropdown link for snowflake_cortex agent type ([1aa62ca](https://github.com/dwickyfp/wave/commit/1aa62caf758189bd0c33dc187fc2eb03dac5b713))
+
+
+### Bug Fixes
+
+* Cast part to any in PurePreviewMessage for type compatibility ([dfbfc3b](https://github.com/dwickyfp/wave/commit/dfbfc3b111d3e71ec330ff3a52263af4dd2c834f))
+* update grok-4-1-fast model reference to correct endpoint ([f50966e](https://github.com/dwickyfp/wave/commit/f50966e0c5d5fe9639472ba0415f11d661d2ba7c))
+
 ## [1.26.0](https://github.com/cgoinglove/better-chatbot/compare/v1.25.0...v1.26.0) (2025-11-07)
 
 
