@@ -1,5 +1,21 @@
 "use client";
 
+import { KnowledgeSummary, KnowledgeVisibility } from "app-types/knowledge";
+import { format } from "date-fns";
+import { cn } from "lib/utils";
+import {
+  BrainIcon,
+  CheckIcon,
+  EyeIcon,
+  FileIcon,
+  GlobeIcon,
+  Loader2Icon,
+  LockIcon,
+} from "lucide-react";
+import Link from "next/link";
+import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
 import {
   Card,
   CardContent,
@@ -8,20 +24,13 @@ import {
   CardHeader,
   CardTitle,
 } from "ui/card";
-import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
-import { Badge } from "ui/badge";
-import { format } from "date-fns";
 import {
-  BrainIcon,
-  FileIcon,
-  LayersIcon,
-  LockIcon,
-  GlobeIcon,
-  EyeIcon,
-} from "lucide-react";
-import Link from "next/link";
-import { KnowledgeSummary } from "app-types/knowledge";
-import { cn } from "lib/utils";
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 
 const VISIBILITY_ICONS = {
   private: LockIcon,
@@ -32,9 +41,41 @@ const VISIBILITY_ICONS = {
 interface KnowledgeCardProps {
   group: KnowledgeSummary;
   isOwner: boolean;
+  onVisibilityChange?: (
+    groupId: string,
+    visibility: KnowledgeVisibility,
+  ) => void;
+  isVisibilityChangeLoading?: boolean;
 }
 
-export function KnowledgeCard({ group, isOwner }: KnowledgeCardProps) {
+const VISIBILITY_OPTIONS: Array<{
+  value: KnowledgeVisibility;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "private",
+    label: "Private",
+    description: "Only you can access this group",
+  },
+  {
+    value: "readonly",
+    label: "Read-only",
+    description: "Others can read but not modify",
+  },
+  {
+    value: "public",
+    label: "Public",
+    description: "Anyone can access this group",
+  },
+];
+
+export function KnowledgeCard({
+  group,
+  isOwner,
+  onVisibilityChange,
+  isVisibilityChangeLoading = false,
+}: KnowledgeCardProps) {
   const VisIcon = VISIBILITY_ICONS[group.visibility];
 
   return (
@@ -90,13 +131,6 @@ export function KnowledgeCard({ group, isOwner }: KnowledgeCardProps) {
                 <FileIcon className="size-3" />
                 {group.documentCount} docs
               </Badge>
-              <Badge
-                variant="secondary"
-                className="text-xs gap-1 px-1.5 py-0.5"
-              >
-                <LayersIcon className="size-3" />
-                {group.chunkCount} chunks
-              </Badge>
               {group.mcpEnabled && (
                 <Badge
                   variant="outline"
@@ -107,19 +141,85 @@ export function KnowledgeCard({ group, isOwner }: KnowledgeCardProps) {
               )}
             </div>
 
-            {!isOwner && group.userName && (
-              <div className="flex items-center gap-1 min-w-0">
-                <Avatar className="size-4 ring shrink-0 rounded-full">
-                  <AvatarImage src={group.userAvatar || undefined} />
-                  <AvatarFallback>
-                    {group.userName[0]?.toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="text-xs text-muted-foreground truncate min-w-0">
-                  {group.userName}
-                </span>
-              </div>
-            )}
+            <div className="flex items-center gap-1 min-w-0">
+              {isOwner && onVisibilityChange && (
+                <DropdownMenu>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 data-[state=open]:bg-input text-muted-foreground hover:text-foreground"
+                            data-testid="knowledge-visibility-button"
+                            disabled={isVisibilityChangeLoading}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                            }}
+                          >
+                            {isVisibilityChangeLoading ? (
+                              <Loader2Icon className="size-4 animate-spin" />
+                            ) : (
+                              <VisIcon className="size-4" />
+                            )}
+                          </Button>
+                        </DropdownMenuTrigger>
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent>Change visibility</TooltipContent>
+                  </Tooltip>
+                  <DropdownMenuContent className="max-w-sm">
+                    {VISIBILITY_OPTIONS.map((item) => {
+                      const Icon = VISIBILITY_ICONS[item.value];
+                      const isActive = group.visibility === item.value;
+
+                      return (
+                        <DropdownMenuItem
+                          key={item.value}
+                          className="cursor-pointer"
+                          disabled={isActive || isVisibilityChangeLoading}
+                          data-testid={`knowledge-visibility-${item.value}`}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onVisibilityChange(group.id, item.value);
+                          }}
+                        >
+                          <div className="flex items-center gap-2">
+                            <Icon className="size-4" />
+                            <div className="flex flex-col gap-0.5">
+                              <p className="text-sm">{item.label}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {item.description}
+                              </p>
+                            </div>
+                          </div>
+                          {isActive && (
+                            <CheckIcon className="ml-auto size-4 text-primary" />
+                          )}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+
+              {!isOwner && group.userName && (
+                <div className="flex items-center gap-1 min-w-0">
+                  <Avatar className="size-4 ring shrink-0 rounded-full">
+                    <AvatarImage src={group.userAvatar || undefined} />
+                    <AvatarFallback>
+                      {group.userName[0]?.toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-xs text-muted-foreground truncate min-w-0">
+                    {group.userName}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
         </CardFooter>
       </Card>
