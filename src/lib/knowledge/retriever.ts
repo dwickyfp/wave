@@ -1,9 +1,9 @@
 import "server-only";
 
 import { rerank } from "ai";
+import { KnowledgeQueryResult } from "app-types/knowledge";
 import { knowledgeRepository } from "lib/db/repository";
 import { embedSingleText } from "./embedder";
-import { KnowledgeQueryResult } from "app-types/knowledge";
 
 // Minimal group interface — satisfied by both KnowledgeGroup and KnowledgeSummary
 type GroupForRetrieval = {
@@ -152,9 +152,16 @@ function weightedRrfMerge(
     });
   }
 
-  return Array.from(scores.values())
+  const merged = Array.from(scores.values())
     .sort((a, b) => b.score - a.score)
     .map(({ result, score }) => ({ ...result, score }));
+
+  // Normalize to 0-1 so retrievalThreshold behaves intuitively in UI.
+  // Raw RRF scores are very small (~0.01), which makes threshold filtering
+  // overly aggressive even for strong matches.
+  const topScore = merged[0]?.score ?? 0;
+  if (topScore <= 0) return merged;
+  return merged.map((r) => ({ ...r, score: r.score / topScore }));
 }
 
 // ─── Neighbor Chunk Expansion ──────────────────────────────────────────────────

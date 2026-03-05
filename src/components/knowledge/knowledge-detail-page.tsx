@@ -1,20 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { KnowledgeGroup, KnowledgeDocument } from "app-types/knowledge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
-import { KnowledgeDocumentsTab } from "./knowledge-documents-tab";
-import { KnowledgeUsageTab } from "./knowledge-usage-tab";
-import { KnowledgePlaygroundTab } from "./knowledge-playground-tab";
-import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
-import { Badge } from "ui/badge";
-import { Button } from "ui/button";
-import { Switch } from "ui/switch";
-import { Label } from "ui/label";
+import { mutateKnowledge } from "@/hooks/queries/use-knowledge";
+import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
+import { KnowledgeDocument, KnowledgeGroup } from "app-types/knowledge";
+import { format } from "date-fns";
+import { cn } from "lib/utils";
 import {
   BrainIcon,
-  ChevronLeftIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   ChevronUpIcon,
   CopyIcon,
   KeyIcon,
@@ -24,9 +18,23 @@ import {
   SlidersHorizontalIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { format } from "date-fns";
+import { useState } from "react";
 import { toast } from "sonner";
-import { cn } from "lib/utils";
+import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Label } from "ui/label";
+import { Switch } from "ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
+import { KnowledgeDocumentsTab } from "./knowledge-documents-tab";
+import {
+  ModelSelector,
+  NONE_VALUE,
+  makeModelValue,
+  parseModelValue,
+} from "./knowledge-model-selector";
+import { KnowledgePlaygroundTab } from "./knowledge-playground-tab";
+import { KnowledgeUsageTab } from "./knowledge-usage-tab";
 
 interface Props {
   group: KnowledgeGroup;
@@ -42,13 +50,53 @@ export function KnowledgeDetailPage({
   contextxModel,
 }: Props) {
   const isOwner = group.userId === userId;
+  const { data: modelsData } = useKnowledgeModels();
+
+  const initialEmbeddingValue = makeModelValue(
+    group.embeddingProvider,
+    group.embeddingModel,
+  );
+  const initialRerankingValue =
+    group.rerankingProvider && group.rerankingModel
+      ? makeModelValue(group.rerankingProvider, group.rerankingModel)
+      : NONE_VALUE;
 
   // ── Settings section state ───────────────────────────────────────────────
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [threshold, setThreshold] = useState(group.retrievalThreshold ?? 0);
+  const [embeddingValue, setEmbeddingValue] = useState(initialEmbeddingValue);
+  const [rerankingValue, setRerankingValue] = useState(initialRerankingValue);
+  const [savedThreshold, setSavedThreshold] = useState(
+    group.retrievalThreshold ?? 0,
+  );
+  const [savedEmbeddingValue, setSavedEmbeddingValue] = useState(
+    initialEmbeddingValue,
+  );
+  const [savedRerankingValue, setSavedRerankingValue] = useState(
+    initialRerankingValue,
+  );
+
+  const savedEmbedding = parseModelValue(savedEmbeddingValue) ?? {
+    provider: group.embeddingProvider,
+    apiName: group.embeddingModel,
+  };
+  const savedReranking = parseModelValue(savedRerankingValue);
+  const hasSettingsChanges =
+    threshold !== savedThreshold ||
+    embeddingValue !== savedEmbeddingValue ||
+    rerankingValue !== savedRerankingValue;
 
   const handleSaveSettings = async () => {
+    const embedding = parseModelValue(embeddingValue);
+    if (!embedding) {
+      toast.error("Please select an embedding model");
+      return;
+    }
+
+    const reranking = parseModelValue(rerankingValue);
+    const embeddingChanged = embeddingValue !== savedEmbeddingValue;
+
     setSavingSettings(true);
     try {
       const res = await fetch(`/api/knowledge/${group.id}`, {
@@ -56,10 +104,22 @@ export function KnowledgeDetailPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           retrievalThreshold: threshold,
+          embeddingProvider: embedding.provider,
+          embeddingModel: embedding.apiName,
+          rerankingProvider: reranking?.provider ?? null,
+          rerankingModel: reranking?.apiName ?? null,
         }),
       });
       if (!res.ok) throw new Error();
-      toast.success("Settings saved");
+      setSavedThreshold(threshold);
+      setSavedEmbeddingValue(embeddingValue);
+      setSavedRerankingValue(rerankingValue);
+      void mutateKnowledge();
+      toast.success(
+        embeddingChanged
+          ? "Settings saved. Re-embed documents to apply new embeddings."
+          : "Settings saved",
+      );
     } catch {
       toast.error("Failed to save settings");
     } finally {
@@ -169,11 +229,11 @@ export function KnowledgeDetailPage({
             )}
             <div className="flex items-center gap-2 flex-wrap mt-1">
               <Badge variant="secondary" className="text-xs">
-                {group.embeddingProvider}/{group.embeddingModel}
+                {savedEmbedding.provider}/{savedEmbedding.apiName}
               </Badge>
-              {group.rerankingModel && (
+              {savedReranking && (
                 <Badge variant="secondary" className="text-xs">
-                  rerank: {group.rerankingModel}
+                  rerank: {savedReranking.provider}/{savedReranking.apiName}
                 </Badge>
               )}
               <Badge variant="outline" className="text-xs">
@@ -202,9 +262,9 @@ export function KnowledgeDetailPage({
                   LLM: {contextxModel.model}
                 </Badge>
               )}
-              {threshold > 0 && (
+              {savedThreshold > 0 && (
                 <Badge variant="secondary" className="text-xs px-1.5 py-0">
-                  threshold: {threshold.toFixed(2)}
+                  threshold: {savedThreshold.toFixed(2)}
                 </Badge>
               )}
             </div>
@@ -232,6 +292,38 @@ export function KnowledgeDetailPage({
                     Model to enable document parsing.
                   </p>
                 )}
+              </div>
+
+              {/* Retrieval Models */}
+              <div className="flex flex-col gap-3 rounded-lg border p-3 bg-muted/30">
+                <div className="flex flex-col gap-1.5">
+                  <Label className="text-sm font-medium">Embedding Model</Label>
+                  <ModelSelector
+                    value={embeddingValue}
+                    onValueChange={setEmbeddingValue}
+                    providers={modelsData?.embeddingProviders ?? []}
+                    placeholder="Select embedding model"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Used when documents are chunked and when semantic retrieval
+                    runs.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label className="text-sm font-medium">Reranking Model</Label>
+                  <ModelSelector
+                    value={rerankingValue}
+                    onValueChange={setRerankingValue}
+                    providers={modelsData?.rerankingProviders ?? []}
+                    placeholder="Select reranking model"
+                    allowNone
+                    noneLabel="No reranker"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Optional second-pass ranking after hybrid search.
+                  </p>
+                </div>
               </div>
 
               {/* Retrieval Threshold */}
@@ -263,7 +355,7 @@ export function KnowledgeDetailPage({
                 size="sm"
                 className="self-end gap-1.5"
                 onClick={handleSaveSettings}
-                disabled={savingSettings}
+                disabled={savingSettings || !hasSettingsChanges}
               >
                 {savingSettings ? (
                   <RefreshCwIcon className="size-3.5 animate-spin" />

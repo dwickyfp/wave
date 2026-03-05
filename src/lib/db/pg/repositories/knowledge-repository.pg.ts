@@ -1,23 +1,23 @@
 import {
-  KnowledgeRepository,
-  KnowledgeGroup,
-  KnowledgeSummary,
-  KnowledgeDocument,
   KnowledgeChunk,
+  KnowledgeDocument,
+  KnowledgeGroup,
+  KnowledgeRepository,
+  KnowledgeSummary,
   KnowledgeUsageStats,
   UsageSource,
 } from "app-types/knowledge";
+import { and, count, desc, eq, ne, or, sql } from "drizzle-orm";
+import { generateUUID } from "lib/utils";
 import { pgDb as db } from "../db.pg";
 import {
-  KnowledgeGroupTable,
-  KnowledgeDocumentTable,
   KnowledgeChunkTable,
+  KnowledgeDocumentTable,
   KnowledgeGroupAgentTable,
+  KnowledgeGroupTable,
   KnowledgeUsageLogTable,
   UserTable,
 } from "../schema.pg";
-import { and, desc, eq, ne, or, sql, count } from "drizzle-orm";
-import { generateUUID } from "lib/utils";
 
 function mapGroup(
   row: typeof KnowledgeGroupTable.$inferSelect,
@@ -498,20 +498,118 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       score: number;
     }>(
       sql`
+        WITH q AS (
+          SELECT
+            websearch_to_tsquery('simple', ${query}) AS simple_q,
+            websearch_to_tsquery('english', ${query}) AS english_q,
+            phraseto_tsquery('simple', ${query}) AS phrase_q,
+            '%' || ${query} || '%' AS ilike_q
+        )
         SELECT
           kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name,
-          ts_rank(
-            to_tsvector('english', coalesce(kc.context_summary, '') || ' ' || kc.content),
-            plainto_tsquery('english', ${query})
+          (
+            -- BM25-like rank with Porter stemming (english) + literal token mode (simple)
+            GREATEST(
+              ts_rank_cd(
+                to_tsvector(
+                  'english',
+                  concat_ws(
+                    ' ',
+                    coalesce(kc.context_summary, ''),
+                    kc.content,
+                    coalesce(kc.metadata->>'headingPath', ''),
+                    coalesce(kc.metadata->>'section', '')
+                  )
+                ),
+                (SELECT english_q FROM q)
+              ),
+              ts_rank_cd(
+                to_tsvector(
+                  'simple',
+                  concat_ws(
+                    ' ',
+                    coalesce(kc.context_summary, ''),
+                    kc.content,
+                    coalesce(kc.metadata->>'headingPath', ''),
+                    coalesce(kc.metadata->>'section', '')
+                  )
+                ),
+                (SELECT simple_q FROM q)
+              )
+            )
+            -- Prefer exact heading matches for entity-like queries ("PT DJARUM")
+            + 0.35 * ts_rank_cd(
+              to_tsvector(
+                'simple',
+                concat_ws(
+                  ' ',
+                  coalesce(kc.metadata->>'headingPath', ''),
+                  coalesce(kc.metadata->>'section', '')
+                )
+              ),
+              (SELECT simple_q FROM q)
+            )
+            -- Phrase bonus for exact sequence matches
+            + 0.25 * ts_rank_cd(
+              to_tsvector(
+                'simple',
+                concat_ws(
+                  ' ',
+                  coalesce(kc.context_summary, ''),
+                  kc.content,
+                  coalesce(kc.metadata->>'headingPath', ''),
+                  coalesce(kc.metadata->>'section', '')
+                )
+              ),
+              (SELECT phrase_q FROM q)
+            )
+            -- Last-resort literal substring boost
+            + CASE
+                WHEN concat_ws(
+                  ' ',
+                  coalesce(kc.context_summary, ''),
+                  kc.content,
+                  coalesce(kc.metadata->>'headingPath', ''),
+                  coalesce(kc.metadata->>'section', '')
+                ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
+                ELSE 0
+              END
           ) AS score
         FROM knowledge_chunk kc
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
-          AND to_tsvector('english', coalesce(kc.context_summary, '') || ' ' || kc.content)
-              @@ plainto_tsquery('english', ${query})
-        ORDER BY score DESC
+          AND (
+            to_tsvector(
+              'english',
+              concat_ws(
+                ' ',
+                coalesce(kc.context_summary, ''),
+                kc.content,
+                coalesce(kc.metadata->>'headingPath', ''),
+                coalesce(kc.metadata->>'section', '')
+              )
+            ) @@ (SELECT english_q FROM q)
+            OR to_tsvector(
+              'simple',
+              concat_ws(
+                ' ',
+                coalesce(kc.context_summary, ''),
+                kc.content,
+                coalesce(kc.metadata->>'headingPath', ''),
+                coalesce(kc.metadata->>'section', '')
+              )
+            ) @@ (SELECT simple_q FROM q)
+            OR concat_ws(
+              ' ',
+              coalesce(kc.context_summary, ''),
+              kc.content,
+              coalesce(kc.metadata->>'headingPath', ''),
+              coalesce(kc.metadata->>'section', '')
+            ) ILIKE (SELECT ilike_q FROM q)
+          )
+        ORDER BY score DESC, kc.created_at DESC
         LIMIT ${limit}
       `,
     );

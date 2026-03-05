@@ -1,17 +1,17 @@
+import {
+  LlmModelConfig,
+  LlmModelConfigInput,
+  LlmProviderConfig,
+  LlmProviderUpsertInput,
+  ModelType,
+} from "app-types/settings";
+import { and, eq, or } from "drizzle-orm";
 import { pgDb as db } from "../db.pg";
 import {
   LlmModelConfigTable,
   LlmProviderConfigTable,
   SystemSettingsTable,
 } from "../schema.pg";
-import { eq, and } from "drizzle-orm";
-import {
-  LlmModelConfig,
-  LlmProviderConfig,
-  LlmModelConfigInput,
-  LlmProviderUpsertInput,
-  ModelType,
-} from "app-types/settings";
 
 const MASKED_KEY = "••••••••";
 
@@ -225,7 +225,7 @@ export const pgSettingsRepository = {
 
   async getModelForChat(
     providerName: string,
-    uiName: string,
+    modelName: string,
   ): Promise<{
     apiName: string;
     supportsTools: boolean;
@@ -243,16 +243,23 @@ export const pgSettingsRepository = {
       );
     if (!providerRow) return null;
 
-    const [modelRow] = await db
+    const modelRows = await db
       .select()
       .from(LlmModelConfigTable)
       .where(
         and(
           eq(LlmModelConfigTable.providerId, providerRow.id),
-          eq(LlmModelConfigTable.uiName, uiName),
+          or(
+            eq(LlmModelConfigTable.uiName, modelName),
+            eq(LlmModelConfigTable.apiName, modelName),
+          ),
           eq(LlmModelConfigTable.enabled, true),
         ),
       );
+
+    const modelRow =
+      modelRows.find((row) => row.uiName === modelName) ??
+      modelRows.find((row) => row.apiName === modelName);
     if (!modelRow) return null;
 
     return {
@@ -305,7 +312,7 @@ export const pgSettingsRepository = {
 
   async getRerankingModel(
     providerName: string,
-    uiName: string,
+    modelName: string,
   ): Promise<{ apiName: string } | null> {
     const [providerRow] = await db
       .select({ id: LlmProviderConfigTable.id })
@@ -318,17 +325,24 @@ export const pgSettingsRepository = {
       );
     if (!providerRow) return null;
 
-    const [modelRow] = await db
+    const modelRows = await db
       .select()
       .from(LlmModelConfigTable)
       .where(
         and(
           eq(LlmModelConfigTable.providerId, providerRow.id),
-          eq(LlmModelConfigTable.uiName, uiName),
+          or(
+            eq(LlmModelConfigTable.uiName, modelName),
+            eq(LlmModelConfigTable.apiName, modelName),
+          ),
           eq(LlmModelConfigTable.enabled, true),
           eq(LlmModelConfigTable.modelType, "reranking"),
         ),
       );
+
+    const modelRow =
+      modelRows.find((row) => row.uiName === modelName) ??
+      modelRows.find((row) => row.apiName === modelName);
     if (!modelRow) return null;
 
     return { apiName: modelRow.apiName };

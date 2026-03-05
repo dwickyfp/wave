@@ -1,23 +1,23 @@
 "use client";
 
 import { KnowledgeDocument } from "app-types/knowledge";
-import { Card } from "ui/card";
-import { Badge } from "ui/badge";
-import { Button } from "ui/button";
+import { format } from "date-fns";
+import { notify } from "lib/notify";
+import { cn } from "lib/utils";
 import {
-  Trash2Icon,
-  FileTextIcon,
-  TableIcon,
   FileIcon,
+  FileTextIcon,
   LinkIcon,
   Loader2Icon,
   RefreshCwIcon,
+  TableIcon,
+  Trash2Icon,
 } from "lucide-react";
-import { format } from "date-fns";
-import { cn } from "lib/utils";
-import { toast } from "sonner";
 import { useState } from "react";
-import { notify } from "lib/notify";
+import { toast } from "sonner";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Card } from "ui/card";
 
 const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   pdf: FileTextIcon,
@@ -172,9 +172,9 @@ export function DocumentCard({
             )}
             {doc.status}
           </Badge>
-          {doc.chunkCount > 0 && (
+          {doc.tokenCount > 0 && (
             <span className="text-xs text-muted-foreground">
-              {doc.chunkCount} chunks
+              {doc.tokenCount.toLocaleString()} tokens
             </span>
           )}
         </div>
