@@ -698,7 +698,11 @@ function ModelRow({
                 variant="ghost"
                 size="icon"
                 className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={() => setEditing(true)}
+                onClick={() => {
+                  setEditUiName(model.uiName);
+                  setEditApiName(model.apiName);
+                  setEditing(true);
+                }}
               >
                 <Pencil className="size-3" />
               </Button>
