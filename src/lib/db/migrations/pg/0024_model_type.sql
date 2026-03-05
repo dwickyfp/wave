@@ -1,1 +1,1 @@
-ALTER TABLE "llm_model_config" ADD COLUMN "model_type" varchar(32) DEFAULT 'llm' NOT NULL;
+ALTER TABLE "llm_model_config" ADD COLUMN IF NOT EXISTS "model_type" varchar DEFAULT 'llm' NOT NULL;
