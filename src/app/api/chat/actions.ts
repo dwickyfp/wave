@@ -22,8 +22,8 @@ import {
   mcpMcpToolCustomizationRepository,
   mcpServerCustomizationRepository,
 } from "lib/db/repository";
-import { customModelProvider } from "lib/ai/models";
-import { toAny } from "lib/utils";
+import { getDbModel } from "lib/ai/provider-factory";
+import { generateUUID, toAny } from "lib/utils";
 import { McpServerCustomizationsPrompt, MCPToolInfo } from "app-types/mcp";
 import { serverCache } from "lib/cache";
 import { CacheKeys } from "lib/cache/cache-keys";
@@ -119,7 +119,9 @@ export async function generateExampleToolSchemaAction(options: {
   toolInfo: MCPToolInfo;
   prompt?: string;
 }) {
-  const model = customModelProvider.getModel(options.model);
+  const dbModelResult = await getDbModel(options.model);
+  if (!dbModelResult) throw new Error("Model is not configured.");
+  const model = dbModelResult.model;
 
   const schema = jsonSchema(
     toAny({
@@ -128,9 +130,9 @@ export async function generateExampleToolSchemaAction(options: {
       additionalProperties: false,
     }),
   );
-  const { output } = await generateText({
+  const { experimental_output: output } = await generateText({
     model,
-    output: Output.object({ schema }),
+    experimental_output: Output.object({ schema }),
     prompt: generateExampleToolSchemaPrompt({
       toolInfo: options.toolInfo,
       prompt: options.prompt,
@@ -203,11 +205,13 @@ export async function generateObjectAction({
   };
   schema: JSONSchema7 | ObjectJsonSchema7;
 }) {
-  const { output } = await generateText({
-    model: customModelProvider.getModel(model),
+  const dbModelResult = await getDbModel(model);
+  if (!dbModelResult) throw new Error("Model is not configured.");
+  const { experimental_output: output } = await generateText({
+    model: dbModelResult.model,
     system: prompt.system,
     prompt: prompt.user || "",
-    output: Output.object({ schema: jsonSchemaToZod(schema) }),
+    experimental_output: Output.object({ schema: jsonSchemaToZod(schema) }),
   });
   return output;
 }
@@ -224,6 +228,59 @@ export async function rememberAgentAction(
     await serverCache.set(key, cachedAgent);
   }
   return cachedAgent as Agent | undefined;
+}
+
+export async function forkThreadAction(
+  threadId: string,
+  upToMessageId?: string,
+) {
+  const userId = await getUserId();
+
+  const thread = await chatRepository.selectThread(threadId);
+  if (!thread || thread.userId !== userId) {
+    throw new Error("Unauthorized");
+  }
+
+  let messages = await chatRepository.selectMessagesByThreadId(threadId);
+
+  if (upToMessageId) {
+    const cutoffMessage = messages.find((m) => m.id === upToMessageId);
+    if (!cutoffMessage) {
+      throw new Error("Message not found");
+    }
+    messages = messages.filter((m) => m.createdAt <= cutoffMessage.createdAt);
+  }
+
+  const newThreadId = generateUUID();
+
+  const insertedThread = await chatRepository.insertThread({
+    id: newThreadId,
+    title: thread.title ? `Branch: ${thread.title}` : "Branch",
+    userId,
+  });
+
+  let lastMessageAt = insertedThread.createdAt.getTime();
+
+  if (messages.length > 0) {
+    const now = Date.now();
+    await chatRepository.insertMessages(
+      messages.map((msg, index) => ({
+        ...msg,
+        id: generateUUID(),
+        threadId: newThreadId,
+        createdAt: new Date(now + index),
+      })),
+    );
+    lastMessageAt = now + messages.length - 1;
+  }
+
+  return {
+    id: insertedThread.id,
+    title: insertedThread.title,
+    userId: insertedThread.userId,
+    createdAt: insertedThread.createdAt,
+    lastMessageAt,
+  };
 }
 
 export async function exportChatAction({
@@ -245,4 +302,23 @@ export async function exportChatAction({
     exporterId: userId,
     expiresAt: expiresAt ?? undefined,
   });
+}
+
+export async function submitMessageFeedbackAction(
+  messageId: string,
+  type: "like" | "dislike",
+  reason?: string,
+) {
+  const userId = await getUserId();
+  return chatRepository.upsertMessageFeedback(messageId, userId, type, reason);
+}
+
+export async function getMessageFeedbackAction(messageId: string) {
+  const userId = await getUserId();
+  return chatRepository.getMessageFeedback(messageId, userId);
+}
+
+export async function deleteMessageFeedbackAction(messageId: string) {
+  const userId = await getUserId();
+  return chatRepository.deleteMessageFeedback(messageId, userId);
 }

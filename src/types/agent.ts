@@ -2,6 +2,7 @@ import z from "zod";
 import { ChatMentionSchema } from "./chat";
 import { VisibilitySchema } from "./util";
 import type { SubAgent } from "./subagent";
+import type { KnowledgeSummary } from "./knowledge";
 
 export type AgentIcon = {
   type: "emoji";
@@ -30,6 +31,10 @@ export const AgentCreateSchema = z
     instructions: AgentInstructionsSchema,
     visibility: VisibilitySchema.optional().default("private"),
     subAgentsEnabled: z.boolean().optional().default(false),
+    agentType: z
+      .enum(["standard", "snowflake_cortex"])
+      .optional()
+      .default("standard"),
   })
   .strip();
 export const AgentUpdateSchema = z
@@ -70,11 +75,13 @@ export type AgentSummary = {
   userAvatar?: string;
   isBookmarked?: boolean;
   subAgentsEnabled?: boolean;
+  agentType?: "standard" | "snowflake_cortex";
 };
 
 export type Agent = AgentSummary & {
   instructions: z.infer<typeof AgentInstructionsSchema>;
   subAgents?: SubAgent[];
+  knowledgeGroups?: KnowledgeSummary[];
 };
 
 export type AgentRepository = {

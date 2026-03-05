@@ -10,6 +10,9 @@ import { pgMcpOAuthRepository } from "./pg/repositories/mcp-oauth-repository.pg"
 import { pgBookmarkRepository } from "./pg/repositories/bookmark-repository.pg";
 import { pgChatExportRepository } from "./pg/repositories/chat-export-repository.pg";
 import { pgSubAgentRepository } from "./pg/repositories/subagent-repository.pg";
+import { pgSnowflakeAgentRepository } from "./pg/repositories/snowflake-agent-repository.pg";
+import { pgSettingsRepository } from "./pg/repositories/settings-repository.pg";
+import { pgKnowledgeRepository } from "./pg/repositories/knowledge-repository.pg";
 
 export const chatRepository = pgChatRepository;
 export const userRepository = pgUserRepository;
@@ -26,3 +29,6 @@ export const archiveRepository = pgArchiveRepository;
 export const bookmarkRepository = pgBookmarkRepository;
 export const chatExportRepository = pgChatExportRepository;
 export const subAgentRepository = pgSubAgentRepository;
+export const snowflakeAgentRepository = pgSnowflakeAgentRepository;
+export const settingsRepository = pgSettingsRepository;
+export const knowledgeRepository = pgKnowledgeRepository;

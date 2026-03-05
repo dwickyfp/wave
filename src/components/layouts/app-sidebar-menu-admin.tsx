@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   SidebarMenu,
@@ -9,17 +9,23 @@ import {
 import { Tooltip } from "ui/tooltip";
 import { SidebarMenuItem } from "ui/sidebar";
 import { SidebarMenuButton } from "ui/sidebar";
-import { Shield, Users } from "lucide-react";
-import Link from "next/link";
+import { BarChart2, ChevronRight, Shield, Users } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 const AppSidebarAdmin = () => {
   const router = useRouter();
   const pathname = usePathname();
   const t = useTranslations("Admin");
-  const shouldExpandAdmin = useMemo(() => {
-    return pathname.startsWith("/admin");
-  }, [pathname]);
+  const isOnAdminPage = useMemo(
+    () => pathname.startsWith("/admin"),
+    [pathname],
+  );
+  const [isOpen, setIsOpen] = useState(isOnAdminPage);
+
+  useEffect(() => {
+    if (isOnAdminPage) setIsOpen(true);
+  }, [isOnAdminPage]);
+
   const adminNavItems = useMemo(
     () => [
       {
@@ -27,7 +33,14 @@ const AppSidebarAdmin = () => {
         title: t("Users.title"),
         url: "/admin",
         icon: Users,
-        isActive: pathname.startsWith("/admin/users"),
+        isActive: pathname === "/admin" || pathname.startsWith("/admin/users"),
+      },
+      {
+        id: "usage-monitoring",
+        title: t("UsageMonitoring.title"),
+        url: "/admin/usage-monitoring",
+        icon: BarChart2,
+        isActive: pathname.startsWith("/admin/usage-monitoring"),
       },
     ],
     [t, pathname],
@@ -37,15 +50,22 @@ const AppSidebarAdmin = () => {
     <SidebarMenu className="group/admin">
       <Tooltip>
         <SidebarMenuItem>
-          <Link href="/admin" data-testid="admin-sidebar-link">
-            <SidebarMenuButton className="font-semibold">
-              <Shield className="size-4 text-foreground" />
-              {t("title")}
-            </SidebarMenuButton>
-          </Link>
+          <SidebarMenuButton
+            className="font-semibold"
+            data-testid="admin-sidebar-link"
+            onClick={() => setIsOpen((prev) => !prev)}
+          >
+            <Shield className="size-4 text-foreground" />
+            {t("title")}
+            <ChevronRight
+              className={`ml-auto size-4 transition-transform duration-200 ${isOpen ? "rotate-90" : ""}`}
+            />
+          </SidebarMenuButton>
         </SidebarMenuItem>
       </Tooltip>
-      {shouldExpandAdmin && (
+      <div
+        className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? "max-h-40 opacity-100" : "max-h-0 opacity-0"}`}
+      >
         <SidebarMenuSub className="mb-2">
           {adminNavItems.map((item) => (
             <SidebarMenuSubItem key={item.id}>
@@ -62,7 +82,7 @@ const AppSidebarAdmin = () => {
             </SidebarMenuSubItem>
           ))}
         </SidebarMenuSub>
-      )}
+      </div>
     </SidebarMenu>
   );
 };

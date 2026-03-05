@@ -3,22 +3,9 @@
 import { BasicUserWithLastLogin, UserPreferences } from "app-types/user";
 import { auth, getSession } from "auth/server";
 import { Session } from "better-auth";
-import { userRepository } from "lib/db/repository";
+import { userRepository, settingsRepository } from "lib/db/repository";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { customModelProvider } from "@/lib/ai/models";
-
-// Helper function to get model provider from model name
-const getModelProvider = (modelName: string): string => {
-  for (const { provider, models } of customModelProvider.modelsInfo) {
-    for (const model of models) {
-      if (model.name === modelName) {
-        return provider;
-      }
-    }
-  }
-  return "unknown";
-};
 
 /**
  * Get the user by id
@@ -107,14 +94,24 @@ export async function getUserStats(userId?: string): Promise<{
   period: string;
 }> {
   const resolvedUserId = await getUserIdAndCheckAccess(userId);
-  const stats = await userRepository.getUserStats(resolvedUserId);
+  const [stats, dbProviders] = await Promise.all([
+    userRepository.getUserStats(resolvedUserId),
+    settingsRepository.getProviders({ enabledOnly: false }).catch(() => []),
+  ]);
 
-  // Add provider information to each model stat
+  // Build a quick uiName → providerName lookup from the DB
+  const modelProviderMap = new Map<string, string>();
+  for (const p of dbProviders) {
+    for (const m of p.models) {
+      modelProviderMap.set(m.uiName, p.name);
+    }
+  }
+
   return {
     ...stats,
     modelStats: stats.modelStats.map((stat) => ({
       ...stat,
-      provider: getModelProvider(stat.model),
+      provider: modelProviderMap.get(stat.model) ?? "unknown",
     })),
   };
 }

@@ -13,6 +13,10 @@ export const useChatModels = (options?: SWRConfiguration) => {
         isImageInputUnsupported: boolean;
         supportedFileMimeTypes: string[];
       }[];
+      imageGenerationModels: {
+        name: string;
+        supportsImageInput: boolean;
+      }[];
     }[]
   >("/api/chat/models", fetcher, {
     dedupingInterval: 60_000 * 5,

@@ -37,6 +37,7 @@ interface ShareableCardProps {
   isBookmarkToggleLoading?: boolean;
   isDeleteLoading?: boolean;
   actionsDisabled?: boolean;
+  renderActions?: () => React.ReactNode;
 }
 
 export function ShareableCard({
@@ -51,6 +52,7 @@ export function ShareableCard({
   isVisibilityChangeLoading,
   isDeleteLoading,
   actionsDisabled,
+  renderActions,
 }: ShareableCardProps) {
   const t = useTranslations();
   const isPublished = (item as WorkflowSummary).isPublished;
@@ -134,6 +136,7 @@ export function ShareableCard({
                 isVisibilityChangeLoading={isVisibilityChangeLoading}
                 isDeleteLoading={isDeleteLoading}
                 disabled={actionsDisabled}
+                renderActions={renderActions}
               />
             </div>
 

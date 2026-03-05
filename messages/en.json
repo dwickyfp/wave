@@ -225,6 +225,7 @@
     "placeholder": "Ask anything or @mention",
     "Tool": {
       "webSearching": "Searching the Web...",
+      "webSearchError": "Web search failed",
       "searchedTheWeb": "Searched the Web",
       "toolsSetupDescription": "Select tools that the chatbot can use.\nThe chatbot will use selected tools based on its own judgment.\n\nYou can also force the use of specific tools through @mention.",
       "selectToolMode": "Select a tool mode",
@@ -284,6 +285,9 @@
       "chat": "Chat",
       "renameChat": "Rename",
       "exportChat": "Share Link",
+      "branchChat": "Branch Chat",
+      "chatBranched": "Chat branched",
+      "failedToBranchChat": "Failed to branch chat",
       "deleteChat": "Delete Chat",
       "deleteUnarchivedChats": "Delete All Unarchived Chats",
       "confirmDeleteUnarchivedChats": "Are you sure you want to delete all unarchived chats?",
@@ -472,6 +476,13 @@
     "privateDescription": "Only you can view, edit, and use this agent.",
     "readOnlyDescription": "Others can view and use as a tool, but only you can edit.",
     "publicDescription": "Anyone can view, edit, and use this agent as a tool."
+  },
+  "Knowledge": {
+    "title": "Knowledge",
+    "create": "Create Knowledge Base",
+    "noKnowledgeGroupsYet": "No knowledge bases yet. Create one to attach context to your chats.",
+    "myKnowledge": "My Knowledge",
+    "sharedKnowledge": "Shared Knowledge"
   },
   "KeyboardShortcuts": {
     "title": "Keyboard Shortcuts",
@@ -758,6 +769,27 @@
       "failedToUpdateRole": "Failed to update role",
       "cannotUpdateOwnRole": "You cannot update your own role",
       "roleUpdatedSuccessfullyTo": "User role updated successfully to {role}"
+    },
+    "UsageMonitoring": {
+      "title": "Usage Monitoring",
+      "description": "Monitor AI usage statistics across all users",
+      "allUsers": "All Users",
+      "searchPlaceholder": "Search by name or email...",
+      "totalTokens": "Total Tokens",
+      "totalMessages": "Total Messages",
+      "totalThreads": "Total Threads",
+      "activeUsers": "Active Users",
+      "user": "User",
+      "tokens": "Tokens",
+      "messages": "Messages",
+      "threads": "Threads",
+      "topModel": "Top Model",
+      "last7Days": "Last 7 Days",
+      "last14Days": "Last 14 Days",
+      "last30Days": "Last 30 Days",
+      "last90Days": "Last 90 Days",
+      "noData": "No usage data",
+      "noDataDescription": "No AI activity found for the selected period"
     }
   },
   "MCP": {

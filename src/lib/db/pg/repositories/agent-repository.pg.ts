@@ -17,6 +17,7 @@ export const pgAgentRepository: AgentRepository = {
         instructions: agent.instructions,
         visibility: agent.visibility || "private",
         subAgentsEnabled: agent.subAgentsEnabled ?? false,
+        agentType: (agent as any).agentType ?? "standard",
         createdAt: new Date(),
         updatedAt: new Date(),
       })
@@ -41,6 +42,7 @@ export const pgAgentRepository: AgentRepository = {
         instructions: AgentTable.instructions,
         visibility: AgentTable.visibility,
         subAgentsEnabled: AgentTable.subAgentsEnabled,
+        agentType: AgentTable.agentType,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         isBookmarked: sql<boolean>`${BookmarkTable.id} IS NOT NULL`,
@@ -203,6 +205,7 @@ export const pgAgentRepository: AgentRepository = {
         userId: AgentTable.userId,
         // Exclude instructions from list queries for performance
         visibility: AgentTable.visibility,
+        agentType: AgentTable.agentType,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         userName: UserTable.name,

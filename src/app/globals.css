@@ -1502,6 +1502,31 @@
     animation: wiggle 2.5s ease-in-out infinite;
   }
 
+  @keyframes cling {
+    0% {
+      transform: scale(1) rotate(0deg);
+    }
+    20% {
+      transform: scale(1.45) rotate(-12deg);
+    }
+    40% {
+      transform: scale(1.3) rotate(10deg);
+    }
+    60% {
+      transform: scale(1.2) rotate(-6deg);
+    }
+    80% {
+      transform: scale(1.1) rotate(3deg);
+    }
+    100% {
+      transform: scale(1) rotate(0deg);
+    }
+  }
+
+  .animate-cling {
+    animation: cling 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+  }
+
   .react-flow__node-default {
     @apply bg-transparent! text-foreground! p-0! border-none! text-sm! text-left! shadow-none!;
   }

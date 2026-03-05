@@ -106,6 +106,7 @@
     "placeholder": "询问任何问题或 @mention",
     "Tool": {
       "webSearching": "正在搜索网络...",
+      "webSearchError": "网络搜索失败",
       "searchedTheWeb": "搜索网络",
       "toolModeDescription": "选择工具使用方式:\n• 自动: AI 自动决定何时使用工具\n• 手动: 使用工具前询问许可\n• 无: 禁用所有工具",
       "toolsSetupDescription": "选择聊天机器人可以使用的工具。\n聊天机器人将根据自己的判断使用选定的工具。\n\n您也可以通过 @mention 强制使用特定工具。",
@@ -163,6 +164,9 @@
     "Thread": {
       "chat": "聊天",
       "renameChat": "重命名",
+      "branchChat": "分支聊天",
+      "chatBranched": "聊天已分支",
+      "failedToBranchChat": "分支聊天失败",
       "deleteChat": "删除聊天",
       "deleteUnarchivedChats": "删除所有未归档的聊天",
       "confirmDeleteUnarchivedChats": "您确定要删除所有未归档的聊天吗？",
@@ -507,6 +511,73 @@
         "imageSizeMustBeLessThan": "图像大小必须小于5MB",
         "select": "选择"
       }
+    }
+  },
+  "Admin": {
+    "title": "管理员",
+    "Sidebar": {
+      "users": "用户",
+      "toggleSidebar": "切换侧边栏",
+      "adminPanel": "管理面板",
+      "backToApp": "返回应用"
+    },
+    "Users": {
+      "title": "用户",
+      "allUsers": "所有用户",
+      "viewAndManageUsers": "查看和管理用户账户",
+      "searchPlaceholder": "按姓名或邮箱搜索...",
+      "clear": "清除",
+      "noUsersFound": "未找到用户",
+      "youBadge": "您",
+      "totalCount": "共 {count} 个用户",
+      "user": "用户",
+      "role": "角色",
+      "status": "状态",
+      "joined": "加入时间",
+      "backToUsers": "返回用户列表"
+    },
+    "UserDelete": {
+      "title": "删除用户账户",
+      "description": "您将永久删除 {name} 的账户。此操作无法撤销。",
+      "actionWillPermanently": "此操作将永久：",
+      "deleteAllUserData": "删除所有用户数据和对话",
+      "removeAllFiles": "删除所有关联文件和偏好设置",
+      "revokeAllAccess": "撤销所有访问权限",
+      "cannotBeUndone": "无法撤销或恢复",
+      "typeNameToConfirm": "请输入用户名称以确认：{name}",
+      "typeToConfirm": "输入\"{name}\"以确认",
+      "userDeletedSuccessfully": "用户已成功删除",
+      "failedToDeleteUser": "删除用户失败"
+    },
+    "UserRoles": {
+      "changeUserRoles": "更改用户角色",
+      "selectRolesFor": "为 {name} 选择角色。目前用户只能拥有一个角色。",
+      "updateRole": "更新角色",
+      "roleUpdatedSuccessfully": "角色已成功更新",
+      "failedToUpdateRole": "更新角色失败",
+      "cannotUpdateOwnRole": "您无法更新自己的角色",
+      "roleUpdatedSuccessfullyTo": "用户角色已成功更新为 {role}"
+    },
+    "UsageMonitoring": {
+      "title": "使用监控",
+      "description": "监控所有用户的AI使用统计",
+      "allUsers": "所有用户",
+      "searchPlaceholder": "按姓名或邮箱搜索...",
+      "totalTokens": "总令牌数",
+      "totalMessages": "总消息数",
+      "totalThreads": "总线程数",
+      "activeUsers": "活跃用户",
+      "user": "用户",
+      "tokens": "令牌",
+      "messages": "消息",
+      "threads": "线程",
+      "topModel": "最常用模型",
+      "last7Days": "最近 7 天",
+      "last14Days": "最近 14 天",
+      "last30Days": "最近 30 天",
+      "last90Days": "最近 90 天",
+      "noData": "暂无使用数据",
+      "noDataDescription": "所选时间段内未找到AI活动"
     }
   }
 }

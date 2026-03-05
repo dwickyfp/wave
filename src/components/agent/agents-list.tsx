@@ -4,8 +4,17 @@ import { useTranslations } from "next-intl";
 import { AgentSummary, AgentUpdateSchema } from "app-types/agent";
 import { Card, CardDescription, CardHeader, CardTitle } from "ui/card";
 import { Button } from "ui/button";
-import { Plus, ArrowUpRight } from "lucide-react";
-import Link from "next/link";
+import {
+  Plus,
+  ArrowUpRight,
+  Snowflake,
+  ChevronDown,
+  Download,
+  Upload,
+} from "lucide-react";
+import { useRef } from "react";
+import { useRouter } from "next/navigation";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { BackgroundPaths } from "ui/background-paths";
 import { useBookmark } from "@/hooks/queries/use-bookmark";
 import { useMutateAgents } from "@/hooks/queries/use-agents";
@@ -19,6 +28,12 @@ import { useState } from "react";
 import { handleErrorWithToast } from "ui/shared-toast";
 import { safe } from "ts-safe";
 import { canCreateAgent } from "lib/auth/client-permissions";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "ui/dropdown-menu";
 
 interface AgentsListProps {
   initialMyAgents: AgentSummary[];
@@ -34,6 +49,7 @@ export function AgentsList({
   userRole,
 }: AgentsListProps) {
   const t = useTranslations();
+  const router = useRouter();
   const mutateAgents = useMutateAgents();
   const [deletingAgentLoading, setDeletingAgentLoading] = useState<
     string | null
@@ -41,6 +57,8 @@ export function AgentsList({
   const [visibilityChangeLoading, setVisibilityChangeLoading] = useState<
     string | null
   >(null);
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const { data: allAgents } = useSWR(
     "/api/agent?filters=mine,shared",
@@ -110,6 +128,57 @@ export function AgentsList({
       .watch(() => setDeletingAgentLoading(null));
   };
 
+  const exportAgent = async (agentId: string, agentName: string) => {
+    try {
+      const res = await fetch(`/api/agent/${agentId}/export`);
+      if (!res.ok) throw new Error("Export failed");
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") ?? "";
+      const match = disposition.match(/filename="(.+?)"/);
+      const filename = match?.[1] ?? `agent-${agentName}.json`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Failed to export agent");
+    }
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const res = await fetch("/api/agent/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(json),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Import failed");
+      mutateAgents();
+      toast.success(`Agent "${data.name}" imported`);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to import agent");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Determine the correct route for an agent card click based on type
+  const getAgentHref = (agent: AgentSummary) => {
+    if (agent.agentType === "snowflake_cortex") {
+      return `/agent/snowflake/${agent.id}`;
+    }
+    return `/agent/${agent.id}`;
+  };
+
   // Check if user can create agents using Better Auth permissions
   const canCreate = canCreateAgent(userRole);
 
@@ -120,12 +189,50 @@ export function AgentsList({
           {t("Layout.agents")}
         </h1>
         {canCreate && (
-          <Link href="/agent/new">
-            <Button variant="ghost" data-testid="create-agent-button">
-              <Plus />
-              {t("Agent.newAgent")}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="gap-1.5"
+              disabled={importing}
+              onClick={() => importInputRef.current?.click()}
+            >
+              <Upload className="size-4" />
+              {importing ? "Importing…" : "Import"}
             </Button>
-          </Link>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={handleImportFile}
+            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  data-testid="create-agent-button"
+                  className="gap-1"
+                >
+                  <Plus className="size-4" />
+                  {t("Agent.newAgent")}
+                  <ChevronDown className="size-3.5 opacity-60" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => router.push("/agent/new")}>
+                  <Plus className="size-4" />
+                  Create Agent
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => router.push("/agent/snowflake/new")}
+                >
+                  <Snowflake className="size-4 text-blue-500" />
+                  Snowflake Intelligence
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         )}
       </div>
 
@@ -139,32 +246,49 @@ export function AgentsList({
 
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {canCreate && (
-              <Link href="/agent/new">
-                <Card
-                  className="relative bg-secondary overflow-hidden cursor-pointer hover:bg-input transition-colors h-[196px]"
-                  data-testid="create-agent-card"
-                >
-                  <div className="absolute inset-0 w-full h-full opacity-50">
-                    <BackgroundPaths />
-                  </div>
-                  <CardHeader>
-                    <CardTitle>
-                      <h1 className="text-lg font-bold">
-                        {t("Agent.newAgent")}
-                      </h1>
-                    </CardTitle>
-                    <CardDescription className="mt-2">
-                      <p>{t("Layout.createYourOwnAgent")}</p>
-                    </CardDescription>
-                    <div className="mt-auto ml-auto flex-1">
-                      <Button variant="ghost" size="lg">
-                        {t("Common.create")}
-                        <ArrowUpRight className="size-3.5" />
-                      </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Card
+                    className="relative bg-secondary overflow-hidden cursor-pointer hover:bg-input transition-colors h-[196px]"
+                    data-testid="create-agent-card"
+                  >
+                    <div className="absolute inset-0 w-full h-full opacity-50">
+                      <BackgroundPaths />
                     </div>
-                  </CardHeader>
-                </Card>
-              </Link>
+                    <CardHeader>
+                      <CardTitle>
+                        <h1 className="text-lg font-bold">
+                          {t("Agent.newAgent")}
+                        </h1>
+                      </CardTitle>
+                      <CardDescription className="mt-2">
+                        <p>{t("Layout.createYourOwnAgent")}</p>
+                      </CardDescription>
+                      <div className="mt-auto ml-auto flex-1">
+                        <Button
+                          variant="ghost"
+                          size="lg"
+                          className="pointer-events-none"
+                        >
+                          {t("Common.create")}
+                          <ArrowUpRight className="size-3.5" />
+                        </Button>
+                      </div>
+                    </CardHeader>
+                  </Card>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuItem onClick={() => router.push("/agent/new")}>
+                    <Plus className="size-4 mr-2" />+ Create Agent
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => router.push("/agent/snowflake/new")}
+                  >
+                    <Snowflake className="size-4 mr-2 text-blue-500" />+
+                    Snowflake Intelligence
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
 
             {myAgents.map((agent) => (
@@ -172,11 +296,30 @@ export function AgentsList({
                 key={agent.id}
                 type="agent"
                 item={agent}
-                href={`/agent/${agent.id}`}
+                href={getAgentHref(agent)}
                 onVisibilityChange={updateVisibility}
                 isVisibilityChangeLoading={visibilityChangeLoading === agent.id}
                 isDeleteLoading={deletingAgentLoading === agent.id}
                 onDelete={deleteAgent}
+                renderActions={() => (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8 text-muted-foreground hover:text-foreground"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          exportAgent(agent.id, agent.name);
+                        }}
+                      >
+                        <Download className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Export agent</TooltipContent>
+                  </Tooltip>
+                )}
               />
             ))}
           </div>
@@ -199,7 +342,7 @@ export function AgentsList({
               type="agent"
               item={agent}
               isOwner={false}
-              href={`/agent/${agent.id}`}
+              href={getAgentHref(agent)}
               onBookmarkToggle={toggleBookmark}
               isBookmarkToggleLoading={isBookmarkLoading(agent.id)}
             />

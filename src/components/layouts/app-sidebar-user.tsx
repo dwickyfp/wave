@@ -26,6 +26,7 @@ import {
   MoonStar,
   ChevronRight,
   Settings,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { appStore } from "@/app/store";
@@ -145,6 +146,15 @@ export function AppSidebarUserInner(props: {
               <Settings className="size-4 text-foreground" />
               <span>{t("userSettings")}</span>
             </DropdownMenuItem>
+            {user?.role === "admin" && (
+              <DropdownMenuItem
+                onClick={() => appStoreMutate({ openSettings: true })}
+                className="cursor-pointer"
+              >
+                <SlidersHorizontal className="size-4 text-foreground" />
+                <span>Settings</span>
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={logout} className="cursor-pointer">
               <LogOutIcon className="size-4 text-foreground" />

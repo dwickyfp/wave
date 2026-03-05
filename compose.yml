@@ -1,0 +1,70 @@
+version: "3"
+
+services:
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server --console-address ":9001" /data
+    volumes:
+      - minio_data:/data
+    networks:
+      - chatbot_network
+
+  postgres-ai:
+    image: pg-ai-bot:16
+    container_name: postgres-ai
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_PASSWORD:      postgres
+      POSTGRES_USER:          postgres
+      POSTGRES_DB:            postgres
+      # Optional: tell pg_cron which database to use for its metadata
+      PG_CRON_DATABASE:       postgres
+
+    ports:
+      - "5453:5432"           # avoid conflict with local postgres
+
+    volumes:
+      - pgdatavector:/var/lib/postgresql/data
+      # Optional: auto-run init scripts on first start
+      - ./postgresql/init:/docker-entrypoint-initdb.d:ro
+
+    # Good defaults for vector workloads
+    shm_size: 1gb
+    ulimits:
+      nofile: 65536
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - chatbot_network
+
+  redis:
+    image: redis:7
+    command: ["redis-server", "--port", "6379"]
+    ports:
+      - "6377:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - chatbot_network
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+  pgdatavector:
+  redis_data:
+
+networks:
+  chatbot_network:
+    driver: bridge

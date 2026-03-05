@@ -2,9 +2,17 @@ import {
   AdminRepository,
   AdminUsersQuery,
   AdminUsersPaginated,
+  ModelUsageStat,
+  UsageMonitoringData,
+  UsageMonitoringQuery,
 } from "app-types/admin";
 import { pgDb as db } from "../db.pg";
-import { UserTable, SessionTable } from "../schema.pg";
+import {
+  UserTable,
+  SessionTable,
+  ChatThreadTable,
+  ChatMessageTable,
+} from "../schema.pg";
 import {
   and,
   asc,
@@ -108,6 +116,206 @@ const pgAdminRepository: AdminRepository = {
       total: totalResult?.count || 0,
       limit,
       offset,
+    };
+  },
+
+  getUsersUsage: async (
+    query?: UsageMonitoringQuery,
+  ): Promise<UsageMonitoringData> => {
+    const {
+      startDate,
+      endDate,
+      limit = 20,
+      offset = 0,
+      sortBy = "totalTokens",
+      sortDirection = "desc",
+      searchValue,
+    } = query || {};
+
+    const now = new Date();
+    const defaultStart = new Date(now);
+    defaultStart.setDate(defaultStart.getDate() - 7);
+    defaultStart.setHours(0, 0, 0, 0);
+
+    const rangeStart = startDate ?? defaultStart;
+    const rangeEnd = endDate ?? now;
+
+    // Build search condition
+    const searchCondition =
+      searchValue && searchValue.trim()
+        ? or(
+            ilike(UserTable.name, `%${searchValue.trim()}%`),
+            ilike(UserTable.email, `%${searchValue.trim()}%`),
+          )
+        : undefined;
+
+    // Aggregate usage per user within the date range
+    const usageQuery = db
+      .select({
+        userId: UserTable.id,
+        name: UserTable.name,
+        email: UserTable.email,
+        image: UserTable.image,
+        role: UserTable.role,
+        threadCount: sql<number>`COALESCE(COUNT(DISTINCT ${ChatThreadTable.id}), 0)`,
+        messageCount: sql<number>`COALESCE(COUNT(${ChatMessageTable.id}), 0)`,
+        totalTokens: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        topModel: sql<string | null>`(
+          SELECT ${ChatMessageTable.metadata}->'chatModel'->>'model'
+          FROM ${ChatMessageTable}
+          JOIN ${ChatThreadTable} AS ct2 ON ${ChatMessageTable.threadId} = ct2.id
+          WHERE ct2.user_id = ${UserTable.id}
+            AND ${ChatMessageTable.createdAt} >= ${rangeStart}
+            AND ${ChatMessageTable.createdAt} <= ${rangeEnd}
+            AND ${ChatMessageTable.metadata} IS NOT NULL
+            AND ${ChatMessageTable.metadata}->'chatModel'->>'model' IS NOT NULL
+          GROUP BY ${ChatMessageTable.metadata}->'chatModel'->>'model'
+          ORDER BY SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric) DESC
+          LIMIT 1
+        )`,
+      })
+      .from(UserTable)
+      .leftJoin(
+        ChatThreadTable,
+        and(
+          eq(ChatThreadTable.userId, UserTable.id),
+          sql`${ChatThreadTable.createdAt} >= ${rangeStart}`,
+          sql`${ChatThreadTable.createdAt} <= ${rangeEnd}`,
+        ),
+      )
+      .leftJoin(
+        ChatMessageTable,
+        and(
+          eq(ChatMessageTable.threadId, ChatThreadTable.id),
+          sql`${ChatMessageTable.createdAt} >= ${rangeStart}`,
+          sql`${ChatMessageTable.createdAt} <= ${rangeEnd}`,
+        ),
+      )
+      .groupBy(
+        UserTable.id,
+        UserTable.name,
+        UserTable.email,
+        UserTable.image,
+        UserTable.role,
+      );
+
+    // Build ORDER BY for usage query
+    let orderByClause;
+    switch (sortBy) {
+      case "name":
+        orderByClause =
+          sortDirection === "asc" ? asc(UserTable.name) : desc(UserTable.name);
+        break;
+      case "email":
+        orderByClause =
+          sortDirection === "asc"
+            ? asc(UserTable.email)
+            : desc(UserTable.email);
+        break;
+      case "messageCount":
+        orderByClause =
+          sortDirection === "asc"
+            ? sql`COUNT(${ChatMessageTable.id}) ASC`
+            : sql`COUNT(${ChatMessageTable.id}) DESC`;
+        break;
+      case "threadCount":
+        orderByClause =
+          sortDirection === "asc"
+            ? sql`COUNT(DISTINCT ${ChatThreadTable.id}) ASC`
+            : sql`COUNT(DISTINCT ${ChatThreadTable.id}) DESC`;
+        break;
+      case "totalTokens":
+      default:
+        orderByClause =
+          sortDirection === "asc"
+            ? sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0) ASC`
+            : sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0) DESC`;
+        break;
+    }
+
+    const users = await (searchCondition
+      ? usageQuery.where(searchCondition)
+      : usageQuery
+    )
+      .orderBy(orderByClause)
+      .limit(limit)
+      .offset(offset);
+
+    // Count total users matching search
+    const countBase = db.select({ count: count() }).from(UserTable);
+    const [totalResult] = searchCondition
+      ? await countBase.where(searchCondition)
+      : await countBase;
+
+    // Aggregated totals across all users in the date range
+    const [aggregates] = await db
+      .select({
+        totalTokensSum: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        totalMessagesSum: sql<number>`COALESCE(COUNT(${ChatMessageTable.id}), 0)`,
+        totalThreadsSum: sql<number>`COALESCE(COUNT(DISTINCT ${ChatThreadTable.id}), 0)`,
+        activeUsersCount: sql<number>`COUNT(DISTINCT ${ChatThreadTable.userId})`,
+      })
+      .from(ChatThreadTable)
+      .leftJoin(
+        ChatMessageTable,
+        eq(ChatMessageTable.threadId, ChatThreadTable.id),
+      )
+      .where(
+        and(
+          sql`${ChatThreadTable.createdAt} >= ${rangeStart}`,
+          sql`${ChatThreadTable.createdAt} <= ${rangeEnd}`,
+        ),
+      );
+
+    // Model distribution: top models by token usage in the date range
+    const modelDistributionRaw = await db
+      .select({
+        model: sql<string>`${ChatMessageTable.metadata}->'chatModel'->>'model'`,
+        totalTokens: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        messageCount: sql<number>`COUNT(${ChatMessageTable.id})`,
+      })
+      .from(ChatMessageTable)
+      .innerJoin(
+        ChatThreadTable,
+        eq(ChatMessageTable.threadId, ChatThreadTable.id),
+      )
+      .where(
+        and(
+          sql`${ChatMessageTable.createdAt} >= ${rangeStart}`,
+          sql`${ChatMessageTable.createdAt} <= ${rangeEnd}`,
+          sql`${ChatMessageTable.metadata}->'chatModel'->>'model' IS NOT NULL`,
+        ),
+      )
+      .groupBy(sql`${ChatMessageTable.metadata}->'chatModel'->>'model'`)
+      .orderBy(
+        sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0) DESC`,
+      )
+      .limit(10);
+
+    const modelDistribution: ModelUsageStat[] = modelDistributionRaw
+      .filter((r) => r.model)
+      .map((r) => ({
+        model: r.model,
+        totalTokens: Number(r.totalTokens || 0),
+        messageCount: Number(r.messageCount || 0),
+      }));
+
+    return {
+      users: users.map((u) => ({
+        ...u,
+        threadCount: Number(u.threadCount || 0),
+        messageCount: Number(u.messageCount || 0),
+        totalTokens: Number(u.totalTokens || 0),
+        topModel: u.topModel ?? null,
+      })),
+      total: totalResult?.count || 0,
+      limit,
+      offset,
+      totalTokensSum: Number(aggregates?.totalTokensSum || 0),
+      totalMessagesSum: Number(aggregates?.totalMessagesSum || 0),
+      totalThreadsSum: Number(aggregates?.totalThreadsSum || 0),
+      activeUsersCount: Number(aggregates?.activeUsersCount || 0),
+      modelDistribution,
     };
   },
 };

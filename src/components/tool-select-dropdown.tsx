@@ -6,6 +6,7 @@ import { cn, objectFlow } from "lib/utils";
 import {
   ArrowUpRightIcon,
   AtSign,
+  Brain,
   ChartColumn,
   ChevronRight,
   CodeIcon,
@@ -70,6 +71,7 @@ import { CountAnimation } from "ui/count-animation";
 import { Separator } from "ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { AgentSummary } from "app-types/agent";
+import { KnowledgeSummary } from "app-types/knowledge";
 import { authClient } from "auth/client";
 
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
@@ -77,10 +79,10 @@ import { safe } from "ts-safe";
 import { mutate } from "swr";
 import { handleErrorWithToast } from "ui/shared-toast";
 import { useAgents } from "@/hooks/queries/use-agents";
+import { useKnowledge } from "@/hooks/queries/use-knowledge";
 import { redriectMcpOauth } from "lib/ai/mcp/oauth-redirect";
-import { GeminiIcon } from "ui/gemini-icon";
 import { useChatModels } from "@/hooks/queries/use-chat-models";
-import { OpenAIIcon } from "ui/openai-icon";
+import { ChatModel } from "app-types/chat";
 
 interface ToolSelectDropdownProps {
   align?: "start" | "end" | "center";
@@ -89,7 +91,8 @@ interface ToolSelectDropdownProps {
   mentions?: ChatMention[];
   onSelectWorkflow?: (workflow: WorkflowSummary) => void;
   onSelectAgent?: (agent: AgentSummary) => void;
-  onGenerateImage?: (provider?: "google" | "openai") => void;
+  onSelectKnowledge?: (group: KnowledgeSummary) => void;
+  onGenerateImage?: (model?: ChatModel) => void;
   className?: string;
 }
 
@@ -108,6 +111,7 @@ export function ToolSelectDropdown({
   side,
   onSelectWorkflow,
   onSelectAgent,
+  onSelectKnowledge,
   onGenerateImage,
   mentions,
   className,
@@ -141,6 +145,9 @@ export function ToolSelectDropdown({
   useWorkflowToolList({
     refreshInterval: 1000 * 60 * 5,
   });
+
+  // Populate knowledgeList in appStore so @mention popup can show knowledge groups
+  useKnowledge();
 
   const agentMention = useMemo(() => {
     return mentions?.find((m) => m.type === "agent");
@@ -251,6 +258,10 @@ export function ToolSelectDropdown({
           <DropdownMenuSeparator />
         </div>
         <AgentSelector onSelectAgent={onSelectAgent} />
+        <div className="py-1">
+          <DropdownMenuSeparator />
+        </div>
+        <KnowledgeGroupSelector onSelectKnowledge={onSelectKnowledge} />
         <div className="py-1">
           <DropdownMenuSeparator />
         </div>
@@ -1047,14 +1058,84 @@ function AgentSelector({
   );
 }
 
+function KnowledgeGroupSelector({
+  onSelectKnowledge,
+}: {
+  onSelectKnowledge?: (group: KnowledgeSummary) => void;
+}) {
+  const knowledgeList = appStore((state) => state.knowledgeList);
+  const t = useTranslations();
+
+  return (
+    <DropdownMenuGroup>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="text-xs flex items-center gap-2 font-semibold cursor-pointer">
+          <Brain className="size-3.5" />
+          {t("Knowledge.title")}
+        </DropdownMenuSubTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuSubContent className="w-80">
+            {knowledgeList.length === 0 ? (
+              <Link
+                href="/knowledge"
+                className="py-8 px-4 hover:bg-input/100 rounded-lg cursor-pointer flex justify-between items-center text-xs overflow-hidden"
+              >
+                <div className="gap-1 z-10">
+                  <div className="flex items-center mb-4 gap-1">
+                    <p className="font-semibold">{t("Knowledge.create")}</p>
+                    <ArrowUpRightIcon className="size-3" />
+                  </div>
+                  <p className="text-muted-foreground">
+                    {t("Knowledge.noKnowledgeGroupsYet")}
+                  </p>
+                </div>
+              </Link>
+            ) : (
+              knowledgeList.map((group) => (
+                <DropdownMenuItem
+                  key={group.id}
+                  className="cursor-pointer"
+                  onClick={() => onSelectKnowledge?.(group)}
+                >
+                  <Brain className="size-3.5 text-primary shrink-0" />
+                  <div className="flex flex-col min-w-0">
+                    <span className="truncate font-medium">{group.name}</span>
+                    {group.description && (
+                      <span className="text-xs text-muted-foreground truncate">
+                        {group.description}
+                      </span>
+                    )}
+                  </div>
+                </DropdownMenuItem>
+              ))
+            )}
+          </DropdownMenuSubContent>
+        </DropdownMenuPortal>
+      </DropdownMenuSub>
+    </DropdownMenuGroup>
+  );
+}
+
 function ImageGeneratorSelector({
   onGenerateImage,
   modelInfo,
 }: {
-  onGenerateImage?: (provider?: "google" | "openai") => void;
+  onGenerateImage?: (model?: ChatModel) => void;
   modelInfo?: { isToolCallUnsupported?: boolean };
 }) {
   const t = useTranslations("Chat");
+  const { data: providers } = useChatModels();
+
+  const imageModels = useMemo(
+    () =>
+      (providers ?? []).flatMap((p) =>
+        (p.imageGenerationModels ?? []).map((m) => ({
+          provider: p.provider,
+          model: m.name,
+        })),
+      ),
+    [providers],
+  );
 
   return (
     <DropdownMenuGroup>
@@ -1065,22 +1146,28 @@ function ImageGeneratorSelector({
         </DropdownMenuSubTrigger>
         <DropdownMenuPortal>
           <DropdownMenuSubContent>
-            <DropdownMenuItem
-              disabled={modelInfo?.isToolCallUnsupported}
-              onClick={() => onGenerateImage?.("google")}
-              className="cursor-pointer"
-            >
-              <GeminiIcon className="mr-2 size-4" />
-              Gemini (Nano Banana)
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              disabled={modelInfo?.isToolCallUnsupported}
-              onClick={() => onGenerateImage?.("openai")}
-              className="cursor-pointer"
-            >
-              <OpenAIIcon className="mr-2 size-4" />
-              OpenAI
-            </DropdownMenuItem>
+            {imageModels.length === 0 ? (
+              <div className="text-sm text-muted-foreground px-4 py-6 text-center">
+                No image generation models configured.
+              </div>
+            ) : (
+              imageModels.map((m) => (
+                <DropdownMenuItem
+                  key={`${m.provider}/${m.model}`}
+                  disabled={modelInfo?.isToolCallUnsupported}
+                  onClick={() => onGenerateImage?.(m)}
+                  className="cursor-pointer"
+                >
+                  <ImagesIcon className="mr-2 size-4 text-muted-foreground" />
+                  <div className="flex flex-col">
+                    <span>{m.model}</span>
+                    <span className="text-xs text-muted-foreground capitalize">
+                      {m.provider}
+                    </span>
+                  </div>
+                </DropdownMenuItem>
+              ))
+            )}
           </DropdownMenuSubContent>
         </DropdownMenuPortal>
       </DropdownMenuSub>

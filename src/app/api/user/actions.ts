@@ -20,8 +20,8 @@ import { logger } from "better-auth";
 import {
   generateImageWithOpenAI,
   generateImageWithXAI,
+  generateImageWithGoogle,
   GeneratedImageResult,
-  generateImageWithNanoBanana,
 } from "lib/ai/image/generate-image";
 
 export const updateUserImageAction = validatedActionWithUserManagePermission(
@@ -283,7 +283,7 @@ Generate a profile picture that fulfills the user's request while maintaining th
         });
         break;
       case "google":
-        response = await generateImageWithNanoBanana({
+        response = await generateImageWithGoogle({
           prompt: enhancedPrompt,
         });
         break;

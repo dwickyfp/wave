@@ -225,6 +225,7 @@
     "placeholder": "Spør om hva som helst eller @nevn",
     "Tool": {
       "webSearching": "Søker på nettet...",
+      "webSearchError": "Nettsøk mislyktes",
       "searchedTheWeb": "Søkte på nettet",
       "toolsSetupDescription": "Velg verktøy som chatboten kan bruke.\nChatboten vil bruke valgte verktøy basert på egen vurdering.\n\nDu kan også tvinge bruk av spesifikke verktøy gjennom @nevning.",
       "selectToolMode": "Velg en verktøymodus",
@@ -284,6 +285,9 @@
       "chat": "Chat",
       "renameChat": "Gi nytt navn",
       "exportChat": "Del lenke",
+      "branchChat": "Forgren chat",
+      "chatBranched": "Chat forgrenet",
+      "failedToBranchChat": "Kunne ikke forgrene chatten",
       "deleteChat": "Slett chat",
       "deleteUnarchivedChats": "Slett alle uarkiverte chatter",
       "confirmDeleteUnarchivedChats": "Er du sikker på at du vil slette alle uarkiverte chatter?",
@@ -758,6 +762,27 @@
       "failedToUpdateRole": "Kunne ikke oppdatere rolle",
       "cannotUpdateOwnRole": "Du kan ikke oppdatere din egen rolle",
       "roleUpdatedSuccessfullyTo": "Brukerrolle oppdatert til {role}"
+    },
+    "UsageMonitoring": {
+      "title": "Bruksovervåking",
+      "description": "Overvåk AI-bruksstatistikk for alle brukere",
+      "allUsers": "Alle brukere",
+      "searchPlaceholder": "Søk etter navn eller e-post...",
+      "totalTokens": "Totalt antall tokens",
+      "totalMessages": "Totalt antall meldinger",
+      "totalThreads": "Totalt antall tråder",
+      "activeUsers": "Aktive brukere",
+      "user": "Bruker",
+      "tokens": "Tokens",
+      "messages": "Meldinger",
+      "threads": "Tråder",
+      "topModel": "Mest brukt modell",
+      "last7Days": "Siste 7 dager",
+      "last14Days": "Siste 14 dager",
+      "last30Days": "Siste 30 dager",
+      "last90Days": "Siste 90 dager",
+      "noData": "Ingen bruksdata",
+      "noDataDescription": "Ingen AI-aktivitet funnet for den valgte perioden"
     }
   },
   "MCP": {

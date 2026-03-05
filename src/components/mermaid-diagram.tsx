@@ -7,6 +7,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 let mermaidModule: typeof import("mermaid").default | null = null;
 
+// Normalize multi-line array definitions inside [...] to a single line.
+// AI models sometimes generate xychart-beta with x-axis arrays spanning
+// multiple lines, which Mermaid's parser rejects.
+function normalizeMermaidChart(chart: string): string {
+  return chart.replace(/\[[^\]]*\]/g, (match) =>
+    match.replace(/\s*\n\s*/g, " "),
+  );
+}
+
 const loadMermaid = async () => {
   if (!mermaidModule) {
     mermaidModule = (await import("mermaid")).default;
@@ -57,12 +66,14 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
           securityLevel: "loose",
         });
 
+        const normalizedChart = normalizeMermaidChart(chart);
+
         // // First try to parse to catch syntax errors early
-        await mermaid.parse(chart);
+        await mermaid.parse(normalizedChart);
 
         // Render the diagram
         const id = `mermaid-${Date.now()}`;
-        const { svg } = await mermaid.render(id, chart);
+        const { svg } = await mermaid.render(id, normalizedChart);
 
         setState({ svg, error: null, loading: false });
       } catch (err) {

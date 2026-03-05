@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useMemo, useState, useEffect } from "react";
-import { ToolUIPart, UIMessage } from "ai";
+import { getToolName, ToolUIPart, UIMessage } from "ai";
 import {
   BotIcon,
   ChevronDownIcon,
@@ -17,9 +17,10 @@ import { extractSubAgentNameFromToolName } from "lib/ai/agent/subagent-utils";
 
 interface SubAgentProgressProps {
   part: ToolUIPart;
+  compact?: boolean;
 }
 
-function SubAgentProgressInner({ part }: SubAgentProgressProps) {
+function SubAgentProgressInner({ part, compact }: SubAgentProgressProps) {
   const { state, input, output } = part;
   const preliminary = (part as any).preliminary as boolean | undefined;
 
@@ -38,8 +39,8 @@ function SubAgentProgressInner({ part }: SubAgentProgressProps) {
   }, [isComplete]);
 
   const subagentName = useMemo(
-    () => extractSubAgentNameFromToolName((part as any).toolName) ?? "Subagent",
-    [(part as any).toolName],
+    () => extractSubAgentNameFromToolName(getToolName(part)) ?? "Subagent",
+    [part],
   );
 
   const task = useMemo(() => (input as any)?.task ?? "", [input]);
@@ -74,7 +75,12 @@ function SubAgentProgressInner({ part }: SubAgentProgressProps) {
   const stepCount = useMemo(() => nestedToolParts.length, [nestedToolParts]);
 
   return (
-    <div className="group w-full flex flex-col fade-in duration-300 animate-in">
+    <div
+      className={cn(
+        "w-full flex flex-col",
+        !compact && "group fade-in duration-300 animate-in",
+      )}
+    >
       {/* Header row */}
       <div
         className="flex gap-2 items-center cursor-pointer group/title select-none"
@@ -102,7 +108,9 @@ function SubAgentProgressInner({ part }: SubAgentProgressProps) {
 
         {/* Name + status */}
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <span className="font-semibold text-sm truncate">{subagentName}</span>
+          <span className="font-semibold text-sm truncate">
+            Agent {subagentName}
+          </span>
           <span className="text-xs text-muted-foreground shrink-0">
             {isPending || isRunning ? (
               <TextShimmer>Starting...</TextShimmer>
@@ -220,6 +228,7 @@ export const SubAgentProgress = memo(SubAgentProgressInner, (prev, next) => {
   const pp = prev.part as any;
   const np = next.part as any;
   return (
+    prev.compact === next.compact &&
     pp.state === np.state &&
     pp.output === np.output &&
     pp.preliminary === np.preliminary

@@ -1,8 +1,9 @@
 "use client";
 
-import { isStaticToolUIPart, type UIMessage } from "ai";
+import { isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
 import { memo, useMemo, useState } from "react";
 import equal from "lib/equal";
+import dynamic from "next/dynamic";
 
 import { cn, truncateString } from "lib/utils";
 import type { UseChatHelpers } from "@ai-sdk/react";
@@ -18,6 +19,59 @@ import { ChevronDown, ChevronUp, TriangleAlertIcon } from "lucide-react";
 import { Button } from "ui/button";
 import { useTranslations } from "next-intl";
 import { ChatMetadata } from "app-types/chat";
+
+const ParallelSubAgentsGroup = dynamic(
+  () =>
+    import("./tool-invocation/parallel-subagents-group").then(
+      (m) => m.ParallelSubAgentsGroup,
+    ),
+  { ssr: false },
+);
+
+type RenderGroup =
+  | { type: "single"; part: UIMessage["parts"][number]; index: number }
+  | { type: "parallel-subagents"; parts: ToolUIPart[]; startIndex: number };
+
+function buildRenderGroups(partsForDisplay: UIMessage["parts"]): RenderGroup[] {
+  const groups: RenderGroup[] = [];
+  let stepSubagents: { part: ToolUIPart; index: number }[] = [];
+
+  const flush = () => {
+    if (stepSubagents.length >= 2) {
+      groups.push({
+        type: "parallel-subagents",
+        parts: stepSubagents.map((s) => s.part),
+        startIndex: stepSubagents[0].index,
+      });
+    } else if (stepSubagents.length === 1) {
+      groups.push({
+        type: "single",
+        part: stepSubagents[0].part,
+        index: stepSubagents[0].index,
+      });
+    }
+    stepSubagents = [];
+  };
+
+  partsForDisplay.forEach((part, index) => {
+    if (part.type === "step-start") {
+      flush();
+      return;
+    }
+    if (
+      isToolUIPart(part) &&
+      ((part as any).toolName as string | undefined)?.startsWith("subagent_")
+    ) {
+      stepSubagents.push({ part: part as ToolUIPart, index });
+    } else {
+      flush();
+      groups.push({ type: "single", part, index });
+    }
+  });
+  flush();
+
+  return groups;
+}
 
 interface Props {
   message: UIMessage;
@@ -57,6 +111,27 @@ const PurePreviewMessage = ({
     [message.parts],
   );
 
+  const renderGroups = useMemo(
+    () => buildRenderGroups(partsForDisplay),
+    [partsForDisplay],
+  );
+
+  // Last index that is not a trailing reasoning part — this is where the
+  // footer actions (like/dislike/branch) should appear, even if the model
+  // appends a reasoning block after the main content.
+  const lastActionableIdx = useMemo(() => {
+    for (let i = renderGroups.length - 1; i >= 0; i--) {
+      const g = renderGroups[i];
+      if (
+        g.type === "parallel-subagents" ||
+        (g.type === "single" && g.part.type !== "reasoning")
+      ) {
+        return i;
+      }
+    }
+    return renderGroups.length - 1;
+  }, [renderGroups]);
+
   if (message.role == "system") {
     return null; // system message is not shown
   }
@@ -71,9 +146,24 @@ const PurePreviewMessage = ({
         )}
       >
         <div className="flex flex-col gap-4 w-full">
-          {partsForDisplay.map((part, index) => {
+          {renderGroups.map((group, groupIdx) => {
+            // Parallel subagent group
+            if (group.type === "parallel-subagents") {
+              return (
+                <ParallelSubAgentsGroup
+                  key={`message-${messageIndex}-parallel-${group.startIndex}`}
+                  parts={group.parts}
+                />
+              );
+            }
+
+            // Single part — original logic
+            const { part, index } = group;
             const key = `message-${messageIndex}-part-${part.type}-${index}`;
-            const isLastPart = index === partsForDisplay.length - 1;
+            // isLastPart: last non-reasoning part (controls footer/actions)
+            const isLastPart = groupIdx === lastActionableIdx;
+            // isActuallyLast: physically last in stream (controls thinking animation)
+            const isActuallyLast = groupIdx === renderGroups.length - 1;
 
             if (part.type === "reasoning") {
               return (
@@ -81,7 +171,7 @@ const PurePreviewMessage = ({
                   key={key}
                   readonly={readonly}
                   reasoningText={part.text}
-                  isThinking={isLastPart && isLastMessage && isLoading}
+                  isThinking={isActuallyLast && isLastMessage && isLoading}
                 />
               );
             }
@@ -95,6 +185,7 @@ const PurePreviewMessage = ({
                   readonly={readonly}
                   isLast={isLastPart}
                   message={message}
+                  threadId={threadId}
                   setMessages={setMessages}
                   sendMessage={sendMessage}
                 />
@@ -121,7 +212,7 @@ const PurePreviewMessage = ({
               );
             }
 
-            if (isStaticToolUIPart(part)) {
+            if (isToolUIPart(part)) {
               const isLast = isLastMessage && isLastPart;
               const isManualToolInvocation =
                 (message.metadata as ChatMetadata)?.toolChoice == "manual" &&
@@ -142,7 +233,7 @@ const PurePreviewMessage = ({
                   }
                   addToolResult={addToolResult}
                   key={key}
-                  part={part}
+                  part={part as any}
                   setMessages={setMessages}
                 />
               );

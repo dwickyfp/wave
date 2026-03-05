@@ -10,7 +10,7 @@ import { z } from "zod";
 import { Agent } from "app-types/agent";
 import { SubAgent } from "app-types/subagent";
 import { ChatModel } from "app-types/chat";
-import { customModelProvider } from "lib/ai/models";
+import { getDbModel } from "lib/ai/provider-factory";
 import {
   loadMcpTools,
   loadWorkFlowTools,
@@ -69,7 +69,13 @@ export async function loadSubAgentTools(
           ...appDefaultTools,
         };
 
-        const model = customModelProvider.getModel(chatModel);
+        const dbModelResult = await getDbModel(chatModel);
+        if (!dbModelResult) {
+          logger.error(
+            `Model "${chatModel?.model}" not configured, skipping subagent "${subagent.name}"`,
+          );
+          return;
+        }
 
         const instructions =
           subagent.instructions ||
@@ -78,7 +84,7 @@ export async function loadSubAgentTools(
 When you have finished, write a clear summary of your findings as your final response. This summary will be returned to the parent agent, so include all relevant information.`;
 
         const subAgentLoopAgent = new ToolLoopAgent({
-          model,
+          model: dbModelResult.model,
           instructions,
           tools: subAgentTools,
           stopWhen: stepCountIs(10),

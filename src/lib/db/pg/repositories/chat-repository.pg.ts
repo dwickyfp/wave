@@ -1,4 +1,10 @@
-import { ChatMessage, ChatRepository, ChatThread } from "app-types/chat";
+import {
+  ChatMessage,
+  ChatMessageFeedback,
+  ChatFeedbackType,
+  ChatRepository,
+  ChatThread,
+} from "app-types/chat";
 
 import { pgDb as db } from "../db.pg";
 import {
@@ -6,6 +12,7 @@ import {
   ChatThreadTable,
   UserTable,
   ArchiveItemTable,
+  ChatMessageFeedbackTable,
 } from "../schema.pg";
 
 import { and, desc, eq, gte, sql } from "drizzle-orm";
@@ -20,6 +27,7 @@ export const pgChatRepository: ChatRepository = {
         title: thread.title,
         userId: thread.userId,
         id: thread.id,
+        createdAt: new Date(),
       })
       .returning();
     return result;
@@ -57,6 +65,8 @@ export const pgChatRepository: ChatRepository = {
       title: thread.chat_thread.title,
       userId: thread.chat_thread.userId,
       createdAt: thread.chat_thread.createdAt,
+      snowflakeThreadId: thread.chat_thread.snowflakeThreadId,
+      snowflakeParentMessageId: thread.chat_thread.snowflakeParentMessageId,
       userPreferences: thread.user?.preferences ?? undefined,
       messages,
     };
@@ -86,9 +96,10 @@ export const pgChatRepository: ChatRepository = {
         title: ChatThreadTable.title,
         createdAt: ChatThreadTable.createdAt,
         userId: ChatThreadTable.userId,
-        lastMessageAt: sql<string>`MAX(${ChatMessageTable.createdAt})`.as(
-          "last_message_at",
-        ),
+        lastMessageAt:
+          sql<string>`COALESCE(MAX(${ChatMessageTable.createdAt}), ${ChatThreadTable.createdAt})`.as(
+            "last_message_at",
+          ),
       })
       .from(ChatThreadTable)
       .leftJoin(
@@ -97,7 +108,11 @@ export const pgChatRepository: ChatRepository = {
       )
       .where(eq(ChatThreadTable.userId, userId))
       .groupBy(ChatThreadTable.id)
-      .orderBy(desc(sql`last_message_at`));
+      .orderBy(
+        desc(
+          sql`COALESCE(MAX(${ChatMessageTable.createdAt}), ${ChatThreadTable.createdAt})`,
+        ),
+      );
 
     return threadWithLatestMessage.map((row) => {
       return {
@@ -107,7 +122,7 @@ export const pgChatRepository: ChatRepository = {
         createdAt: row.createdAt,
         lastMessageAt: row.lastMessageAt
           ? new Date(row.lastMessageAt).getTime()
-          : 0,
+          : new Date(row.createdAt).getTime(),
       };
     });
   },
@@ -116,11 +131,20 @@ export const pgChatRepository: ChatRepository = {
     id: string,
     thread: Partial<Omit<ChatThread, "id" | "createdAt">>,
   ): Promise<ChatThread> => {
+    // Build the set object using explicit Drizzle column references so the ORM
+    // correctly maps each field to its SQL column name.  A plain
+    // Record<string,unknown> is NOT processed by Drizzle — it silently ignores
+    // keys it cannot type-check against the table schema.
+    const set: Partial<typeof ChatThreadTable.$inferInsert> = {};
+    if (thread.title !== undefined) set.title = thread.title;
+    if (thread.snowflakeThreadId !== undefined)
+      set.snowflakeThreadId = thread.snowflakeThreadId;
+    if (thread.snowflakeParentMessageId !== undefined)
+      set.snowflakeParentMessageId = thread.snowflakeParentMessageId;
+
     const [result] = await db
       .update(ChatThreadTable)
-      .set({
-        title: thread.title,
-      })
+      .set(set)
       .where(eq(ChatThreadTable.id, id))
       .returning();
     return result;
@@ -256,5 +280,65 @@ export const pgChatRepository: ChatRepository = {
         and(eq(ChatThreadTable.id, id), eq(ChatThreadTable.userId, userId)),
       );
     return Boolean(result);
+  },
+
+  upsertMessageFeedback: async (
+    messageId: string,
+    userId: string,
+    type: ChatFeedbackType,
+    reason?: string,
+  ): Promise<ChatMessageFeedback> => {
+    const [result] = await db
+      .insert(ChatMessageFeedbackTable)
+      .values({
+        messageId,
+        userId,
+        type,
+        reason: reason ?? null,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [
+          ChatMessageFeedbackTable.messageId,
+          ChatMessageFeedbackTable.userId,
+        ],
+        set: {
+          type,
+          reason: reason ?? null,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return result as ChatMessageFeedback;
+  },
+
+  getMessageFeedback: async (
+    messageId: string,
+    userId: string,
+  ): Promise<ChatMessageFeedback | null> => {
+    const [result] = await db
+      .select()
+      .from(ChatMessageFeedbackTable)
+      .where(
+        and(
+          eq(ChatMessageFeedbackTable.messageId, messageId),
+          eq(ChatMessageFeedbackTable.userId, userId),
+        ),
+      );
+    return (result as ChatMessageFeedback) ?? null;
+  },
+
+  deleteMessageFeedback: async (
+    messageId: string,
+    userId: string,
+  ): Promise<void> => {
+    await db
+      .delete(ChatMessageFeedbackTable)
+      .where(
+        and(
+          eq(ChatMessageFeedbackTable.messageId, messageId),
+          eq(ChatMessageFeedbackTable.userId, userId),
+        ),
+      );
   },
 };

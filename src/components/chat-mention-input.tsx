@@ -8,7 +8,7 @@ import React, {
   useEffect,
 } from "react";
 
-import { CheckIcon, HammerIcon, SearchIcon } from "lucide-react";
+import { BrainIcon, CheckIcon, HammerIcon, SearchIcon } from "lucide-react";
 import { MCPIcon } from "ui/mcp-icon";
 
 import { ChatMention } from "app-types/chat";
@@ -153,14 +153,15 @@ export function ChatMentionInputSuggestion({
   onOpenChange?: (open: boolean) => void;
   children?: React.ReactNode;
   style?: React.CSSProperties;
-  disabledType?: ("mcp" | "workflow" | "defaultTool" | "agent")[];
+  disabledType?: ("mcp" | "workflow" | "defaultTool" | "agent" | "knowledge")[];
 }) {
   const t = useTranslations("Common");
-  const [mcpList, workflowList, agentList] = appStore(
+  const [mcpList, workflowList, agentList, knowledgeList] = appStore(
     useShallow((state) => [
       state.mcpList,
       state.workflowToolList,
       state.agentList,
+      state.knowledgeList,
     ]),
   );
   const [searchValue, setSearchValue] = useState("");
@@ -299,6 +300,41 @@ export function ChatMentionInputSuggestion({
         };
       });
   }, [agentList, selectedIds, disabledType, searchValue]);
+
+  const knowledgeMentions = useMemo(() => {
+    if (disabledType?.includes("knowledge")) return [];
+    if (!knowledgeList.length) return [];
+
+    return knowledgeList
+      .filter(
+        (group) =>
+          !searchValue ||
+          group.name.toLowerCase().includes(searchValue.toLowerCase()),
+      )
+      .map((group) => {
+        const id = JSON.stringify({
+          type: "knowledge",
+          name: group.name,
+          knowledgeId: group.id,
+          description: group.description,
+          icon: group.icon,
+        });
+        return {
+          id: group.id,
+          type: "knowledge",
+          label: group.name,
+          onSelect: () =>
+            onSelectMention({
+              label: `knowledge("${group.name}")`,
+              id,
+            }),
+          icon: <BrainIcon className="size-3.5 text-primary" />,
+          suffix: selectedIds?.includes(id) && (
+            <CheckIcon className="size-3 ml-auto" />
+          ),
+        };
+      });
+  }, [knowledgeList, selectedIds, disabledType, searchValue]);
 
   const workflowMentions = useMemo(() => {
     if (disabledType?.includes("workflow")) return [];
@@ -441,12 +477,19 @@ export function ChatMentionInputSuggestion({
   // Combine all mentions
   const allMentions = useMemo(() => {
     return [
+      ...knowledgeMentions,
       ...agentMentions,
       ...workflowMentions,
       ...defaultToolMentions,
       ...mcpMentions,
     ];
-  }, [agentMentions, workflowMentions, defaultToolMentions, mcpMentions]);
+  }, [
+    knowledgeMentions,
+    agentMentions,
+    workflowMentions,
+    defaultToolMentions,
+    mcpMentions,
+  ]);
 
   // Reset selected index when mentions change
   useEffect(() => {
@@ -467,6 +510,7 @@ export function ChatMentionInputSuggestion({
   // Group mentions by type
   const groupedMentions = useMemo(() => {
     const groups = {
+      knowledge: { title: "Knowledge", items: [] as MentionItemType[] },
       agent: { title: "Agents", items: [] as MentionItemType[] },
       workflow: { title: "Workflows", items: [] as MentionItemType[] },
       defaultTool: { title: "App Tools", items: [] as MentionItemType[] },
@@ -542,7 +586,13 @@ export function ChatMentionInputSuggestion({
                   const currentItem = allMentions[selectedIndex];
                   const currentType =
                     currentItem.type === "mcpTool" ? "mcp" : currentItem.type;
-                  const typeOrder = ["agent", "workflow", "mcp", "defaultTool"];
+                  const typeOrder = [
+                    "knowledge",
+                    "agent",
+                    "workflow",
+                    "mcp",
+                    "defaultTool",
+                  ];
                   const currentTypeIndex = typeOrder.indexOf(currentType);
 
                   if (e.key === "ArrowLeft" && currentTypeIndex > 0) {
@@ -599,6 +649,27 @@ export function ChatMentionInputSuggestion({
             ) : isMobile ? (
               // Mobile vertical layout
               <div className="overflow-y-auto max-h-[50vh]">
+                {groupedMentions.knowledge.items.length > 0 && (
+                  <div className="p-2">
+                    <div className="text-xs font-medium text-muted-foreground px-2 py-1.5">
+                      {groupedMentions.knowledge.title}
+                    </div>
+                    <div className="space-y-1">
+                      {groupedMentions.knowledge.items.map((item) => (
+                        <MentionItem
+                          key={item.id}
+                          item={item}
+                          isSelected={
+                            allMentions[selectedIndex]?.id === item.id
+                          }
+                          ref={(el) => {
+                            itemRefs.current[item.id] = el;
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {groupedMentions.agent.items.length > 0 && (
                   <div className="p-2">
                     <div className="text-xs font-medium text-muted-foreground px-2 py-1.5">
@@ -687,6 +758,31 @@ export function ChatMentionInputSuggestion({
             ) : (
               // Desktop horizontal layout
               <div className="flex flex-1 h-[300px]">
+                {/* Knowledge Column */}
+                {groupedMentions.knowledge.items.length > 0 && (
+                  <div className="flex-1 border-r overflow-y-auto">
+                    <div className="p-2">
+                      <div className="text-xs font-medium text-muted-foreground px-2 py-1.5">
+                        {groupedMentions.knowledge.title}
+                      </div>
+                      <div className="space-y-1">
+                        {groupedMentions.knowledge.items.map((item) => (
+                          <MentionItem
+                            key={item.id}
+                            item={item}
+                            isSelected={
+                              allMentions[selectedIndex]?.id === item.id
+                            }
+                            ref={(el) => {
+                              itemRefs.current[item.id] = el;
+                            }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Agents & Workflows Column */}
                 <div className="flex-1 border-r overflow-y-auto">
                   <div className="p-2">

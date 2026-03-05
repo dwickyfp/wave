@@ -12,6 +12,18 @@ export type ChatMetadata = {
   agentId?: string;
 };
 
+export type ChatFeedbackType = "like" | "dislike";
+
+export type ChatMessageFeedback = {
+  id: string;
+  messageId: string;
+  userId: string;
+  type: ChatFeedbackType;
+  reason?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 export type ChatModel = {
   provider: string;
   model: string;
@@ -31,6 +43,13 @@ export type ChatThread = {
   title: string;
   userId: string;
   createdAt: Date;
+  /** Snowflake Cortex thread UUID — only set for Snowflake-backed sessions */
+  snowflakeThreadId?: string | null;
+  /**
+   * Last successful Snowflake assistant message_id for this thread.
+   * 0 = start of thread; subsequent turns use the last assistant message_id.
+   */
+  snowflakeParentMessageId?: number | null;
 };
 
 export type ChatMessage = {
@@ -89,6 +108,19 @@ export const ChatMentionSchema = z.discriminatedUnion("type", [
       })
       .nullish(),
   }),
+  z.object({
+    type: z.literal("knowledge"),
+    name: z.string(),
+    description: z.string().nullish(),
+    knowledgeId: z.string(),
+    icon: z
+      .object({
+        type: z.literal("emoji"),
+        value: z.string(),
+        style: z.record(z.string(), z.string()).optional(),
+      })
+      .nullish(),
+  }),
 ]);
 
 export type ChatMention = z.infer<typeof ChatMentionSchema>;
@@ -104,7 +136,9 @@ export const chatApiSchemaRequestBodySchema = z.object({
     .optional(),
   toolChoice: z.enum(["auto", "none", "manual"]),
   mentions: z.array(ChatMentionSchema).optional(),
-  imageTool: z.object({ model: z.string().optional() }).optional(),
+  imageTool: z
+    .object({ provider: z.string().optional(), model: z.string().optional() })
+    .optional(),
   allowedMcpServers: z.record(z.string(), AllowedMCPServerZodSchema).optional(),
   allowedAppDefaultToolkit: z.array(z.string()).optional(),
   attachments: z.array(ChatAttachmentSchema).optional(),
@@ -162,6 +196,20 @@ export type ChatRepository = {
   insertMessages(
     messages: PartialBy<ChatMessage, "createdAt">[],
   ): Promise<ChatMessage[]>;
+
+  upsertMessageFeedback(
+    messageId: string,
+    userId: string,
+    type: ChatFeedbackType,
+    reason?: string,
+  ): Promise<ChatMessageFeedback>;
+
+  getMessageFeedback(
+    messageId: string,
+    userId: string,
+  ): Promise<ChatMessageFeedback | null>;
+
+  deleteMessageFeedback(messageId: string, userId: string): Promise<void>;
 };
 
 export const ManualToolConfirmTag = tag<{

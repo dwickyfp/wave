@@ -1,9 +1,10 @@
-import { agentRepository } from "lib/db/repository";
+import { agentRepository, subAgentRepository } from "lib/db/repository";
 import { getSession } from "auth/server";
 import { z } from "zod";
 import { serverCache } from "lib/cache";
 import { CacheKeys } from "lib/cache/cache-keys";
 import { AgentCreateSchema, AgentQuerySchema } from "app-types/agent";
+import { SubAgentCreateSchema } from "app-types/subagent";
 import { canCreateAgent } from "lib/auth/permissions";
 
 export async function GET(request: Request) {
@@ -69,7 +70,11 @@ export async function POST(request: Request): Promise<Response> {
 
   try {
     const body = await request.json();
-    const data = AgentCreateSchema.parse(body);
+
+    // Extract subAgents before parsing (AgentCreateSchema strips unknown fields)
+    const { subAgents: subAgentsRaw, ...agentBody } = body;
+
+    const data = AgentCreateSchema.parse(agentBody);
 
     const agent = await agentRepository.insertAgent({
       ...data,
@@ -77,7 +82,19 @@ export async function POST(request: Request): Promise<Response> {
     });
     serverCache.delete(CacheKeys.agentInstructions(agent.id));
 
-    return Response.json(agent);
+    // Persist subagents if provided alongside the new agent
+    let subAgents: unknown[] = [];
+    if (Array.isArray(subAgentsRaw) && subAgentsRaw.length > 0) {
+      const parsedSubAgents = subAgentsRaw.map((sa: unknown) =>
+        SubAgentCreateSchema.parse(sa),
+      );
+      subAgents = await subAgentRepository.syncSubAgents(
+        agent.id,
+        parsedSubAgents,
+      );
+    }
+
+    return Response.json({ ...agent, subAgents });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return Response.json(

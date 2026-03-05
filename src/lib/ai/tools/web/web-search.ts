@@ -2,6 +2,7 @@ import { tool as createTool } from "ai";
 import { JSONSchema7 } from "json-schema";
 import { jsonSchemaToZod } from "lib/json-schema-to-zod";
 import { safe } from "ts-safe";
+import { settingsRepository } from "lib/db/repository";
 
 // Exa API Types
 export interface ExaSearchRequest {
@@ -151,11 +152,20 @@ export const exaContentsSchema: JSONSchema7 = {
   required: ["urls"],
 };
 
-const API_KEY = process.env.EXA_API_KEY;
 const BASE_URL = "https://api.exa.ai";
 
+async function getExaApiKey(): Promise<string | undefined> {
+  const dbConfig = (await settingsRepository
+    .getSetting("other-configs")
+    .catch(() => null)) as any;
+  const dbKey = dbConfig?.exaApiKey;
+  if (dbKey && dbKey !== "••••••••") return dbKey;
+  return process.env.EXA_API_KEY;
+}
+
 const fetchExa = async (endpoint: string, body: any): Promise<any> => {
-  if (!API_KEY) {
+  const apiKey = await getExaApiKey();
+  if (!apiKey) {
     throw new Error("EXA_API_KEY is not configured");
   }
 
@@ -163,7 +173,7 @@ const fetchExa = async (endpoint: string, body: any): Promise<any> => {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": API_KEY,
+      "x-api-key": apiKey,
     },
     body: JSON.stringify(body),
   });
