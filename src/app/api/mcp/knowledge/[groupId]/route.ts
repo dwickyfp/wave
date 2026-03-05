@@ -232,11 +232,11 @@ function formatResolvedLibrariesText(input: {
   const { groupName, libraryName, query, candidates } = input;
   if (candidates.length === 0) {
     return [
-      `[ContextX Library Resolver: ${groupName}]`,
-      `No library ID candidates found for "${libraryName}".`,
+      `[ContextX Source Resolver: ${groupName}]`,
+      `No source ID candidates found for "${libraryName}".`,
       `Query: ${query}`,
       "",
-      `Try a broader libraryName (for example: "next", "react", "mongodb").`,
+      `Try a broader libraryName/topic (for example: "employee handbook", "sales playbook", "product docs").`,
     ].join("\n");
   }
 
@@ -249,37 +249,57 @@ function formatResolvedLibrariesText(input: {
   });
 
   return [
-    `[ContextX Library Resolver: ${groupName}]`,
-    `Resolved "${libraryName}" for task: ${query}`,
+    `[ContextX Source Resolver: ${groupName}]`,
+    `Resolved source IDs for "${libraryName}" and task: ${query}`,
     "",
     ...rows,
     "",
-    `Use "${TOOL_QUERY_DOCS}" with one of these libraryId values.`,
+    `Use "${TOOL_QUERY_DOCS}" with one of these source IDs (libraryId parameter).`,
   ].join("\n");
 }
 
 const TOOLS = (groupName: string) => [
   {
     name: TOOL_RESOLVE_LIBRARY_ID,
-    description: `Resolve a library/package name into ContextX-compatible library IDs for "${groupName}". Call this before query-docs.`,
+    description: `Resolves a user-provided source/topic name into ContextX-compatible source IDs for "${groupName}" and returns ranked candidates.
+
+You MUST call this tool before "${TOOL_QUERY_DOCS}" unless the user already provides a valid source ID in the format "/org/project" or "/org/project/version".
+
+Returned candidate fields:
+- libraryId: canonical ContextX source ID
+- score: relevance score used for ranking
+- hits: number of matched chunks
+- versions: discovered source variants/versions
+- examples: example document titles matched in this group
+
+Selection process:
+1. Read both "query" and "libraryName" to infer user intent.
+2. Prioritize exact/near-exact name matches.
+3. Break ties using relevance score, hit count, and coverage.
+4. If multiple close candidates exist, pick the best and mention alternatives.
+
+IMPORTANT:
+- Do not call this tool more than 3 times for one user question unless the user explicitly requests exhaustive exploration.
+- If no good matches are found, ask for a clearer source/topic name and retry once.`,
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
           description:
-            "User task/question. Used to rank which library ID is most relevant.",
+            "The user question/task this retrieval should support. Be specific and include intent, scope, and any domain context. Used to rank source ID relevance.",
         },
         libraryName: {
           type: "string",
           description:
-            'Library/package name to resolve (e.g. "next.js", "react", "mongodb").',
+            'Human-friendly source/topic name to resolve. Accepts product names, policy sets, handbook names, playbooks, library/package names, and aliases (example: "employee handbook", "incident runbook", "next.js").',
         },
         topK: {
           type: "number",
           minimum: 1,
           maximum: 10,
-          description: "How many candidate library IDs to return (default: 5).",
+          description:
+            "How many candidate source IDs to return (default: 5). Increase when ambiguity is high; keep low for faster deterministic selection.",
         },
       },
       required: ["query", "libraryName"],
@@ -287,33 +307,52 @@ const TOOLS = (groupName: string) => [
   },
   {
     name: TOOL_QUERY_DOCS,
-    description: `Query relevant documentation sections for a specific library ID in "${groupName}".`,
+    description: `Retrieves high-signal sections for one resolved source ID in "${groupName}" using hybrid retrieval (semantic + keyword + reranking).
+
+Use this after "${TOOL_RESOLVE_LIBRARY_ID}" unless the user already provides a valid source ID.
+
+Behavior:
+- Searches structured chunks and section metadata.
+- Applies optional version constraints when provided.
+- Returns focused sections optimized for answer generation instead of full raw dumps.
+
+Best-practice usage:
+1. Keep "query" task-specific and explicit about what evidence is needed.
+2. Set "tokens" to fit expected answer depth.
+3. Increase "maxDocs" when coverage is insufficient.
+
+IMPORTANT:
+- Do not call more than 3 times for one user question unless explicitly requested.
+- If results are weak, retry with a refined query or alternate source ID from resolver output.`,
     inputSchema: {
       type: "object",
       properties: {
         libraryId: {
           type: "string",
           description:
-            'Resolved library ID from resolve-library-id (e.g. "/vercel/next.js").',
+            'Exact resolved source ID from "resolve-library-id" (parameter name kept for backward compatibility). Format: "/org/project" or "/org/project/version".',
         },
         query: {
           type: "string",
-          description: "Question/topic to retrieve relevant documentation.",
+          description:
+            'Question/task to retrieve relevant evidence for. Include objective, constraints, entities, and desired output. Good: "Summarize refund policy exceptions for enterprise plans with citation-ready excerpts."',
         },
         version: {
           type: "string",
-          description: "Optional library version constraint (e.g. 14, 5.2.1).",
+          description:
+            "Optional source version/variant filter (for example: docs v14, policy-2026-02, product release tag).",
         },
         tokens: {
           type: "number",
           description:
-            "Maximum token budget for the response (default: 10000).",
+            "Maximum token budget for returned context (default: 10000). Lower values favor concise excerpts; higher values increase coverage.",
           minimum: 500,
           maximum: 50000,
         },
         maxDocs: {
           type: "number",
-          description: "Maximum number of documents to return (default: 8).",
+          description:
+            "Maximum number of result documents/sections (default: 8). Raise for broad exploratory tasks, lower for precision tasks.",
           minimum: 1,
           maximum: 12,
         },
@@ -323,18 +362,21 @@ const TOOLS = (groupName: string) => [
   },
   {
     name: TOOL_GET_DOCS,
-    description: `Get documentation from the "${groupName}" knowledge base (legacy tool). Uses semantic search (embedding + BM25 + reranking) to identify relevant documents.`,
+    description: `Legacy broad retrieval across all sources in "${groupName}".
+
+Use this when source ID is unknown or for quick discovery passes. Precision is usually lower than "${TOOL_RESOLVE_LIBRARY_ID}" + "${TOOL_QUERY_DOCS}" because retrieval is not source-scoped.`,
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "The search query to find relevant documents",
+          description:
+            "Broad search question/task when source is not pre-resolved.",
         },
         tokens: {
           type: "number",
           description:
-            "Maximum token budget for the response (default: 10000). Higher values return more content.",
+            "Maximum token budget for response context (default: 10000).",
           minimum: 500,
           maximum: 50000,
         },
@@ -344,7 +386,9 @@ const TOOLS = (groupName: string) => [
   },
   {
     name: "list_documents",
-    description: `List all documents in the "${groupName}" knowledge base`,
+    description: `Lists all documents available in "${groupName}" for inventory/discovery.
+
+Use this to inspect source coverage before retrieval, validate naming conventions, or debug missing results.`,
     inputSchema: { type: "object", properties: {} },
   },
 ];
@@ -567,18 +611,18 @@ async function handleJsonRpcRequest(
 
       if (docs.length === 0) {
         const text = [
-          `[ContextX Docs: ${group.name}]`,
-          `No relevant docs found for libraryId "${parsed.libraryId}"${parsed.version ? ` @ ${parsed.version}` : ""}.`,
+          `[ContextX Knowledge: ${group.name}]`,
+          `No relevant sections found for source ID "${parsed.libraryId}"${parsed.version ? ` @ ${parsed.version}` : ""}.`,
           `Query: ${parsed.query}`,
           "",
-          `Tip: call "${TOOL_RESOLVE_LIBRARY_ID}" first, then retry with the returned libraryId.`,
+          `Tip: call "${TOOL_RESOLVE_LIBRARY_ID}" first, then retry with one of the returned source IDs (libraryId parameter).`,
         ].join("\n");
         return jsonRpcResultPayload(id, { content: [{ type: "text", text }] });
       }
 
       const text = [
-        `[ContextX Docs: ${group.name}]`,
-        `Library: ${parsed.libraryId}${parsed.version ? ` @ ${parsed.version}` : ""}`,
+        `[ContextX Knowledge: ${group.name}]`,
+        `Source: ${parsed.libraryId}${parsed.version ? ` @ ${parsed.version}` : ""}`,
         `Query: ${parsed.query}`,
         "",
         formatDocsAsText(group.name, docs, parsed.query),

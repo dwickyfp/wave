@@ -68,24 +68,25 @@ const MCP_TOOL_DOCS: McpToolDoc[] = [
     name: "resolve-library-id",
     kind: "primary",
     description:
-      "Resolves a library/package name into a ContextX-compatible library ID.",
+      "Resolves a human-friendly source/topic name into a ContextX source ID (parameter name kept as libraryName for compatibility).",
     params: [
       {
         name: "query",
         required: true,
         description:
-          "User question/task. Used to rank the most relevant library ID.",
+          "User question/task. Used to rank the most relevant source ID for intent.",
       },
       {
         name: "libraryName",
         required: true,
         description:
-          'Library name to resolve (example: "next.js", "react", "mongodb").',
+          'Source/topic name to resolve (example: "employee handbook", "sales playbook", "next.js", "mongodb").',
       },
       {
         name: "topK",
         required: false,
-        description: "How many candidate IDs to return (default: 5).",
+        description:
+          "How many candidate source IDs to return before selection (default: 5).",
       },
     ],
   },
@@ -93,33 +94,37 @@ const MCP_TOOL_DOCS: McpToolDoc[] = [
     name: "query-docs",
     kind: "primary",
     description:
-      "Retrieves relevant documentation sections for a resolved library ID.",
+      "Retrieves the most relevant sections for one resolved source ID (works for technical and non-technical knowledge).",
     params: [
       {
         name: "libraryId",
         required: true,
         description:
-          'Resolved library ID (example: "/vercel/next.js", "/mongodb/docs").',
+          'Resolved source ID from resolve-library-id (example: "/company/employee-handbook", "/vercel/next.js").',
       },
       {
         name: "query",
         required: true,
-        description: "Question/task to retrieve relevant documentation for.",
+        description:
+          "Question/task to retrieve relevant sections for (policy, SOP, guide, API, FAQ, etc.).",
       },
       {
         name: "version",
         required: false,
-        description: "Optional version filter (example: 14, 5.2.1).",
+        description:
+          "Optional variant/version filter (example: policy revision, product release, 14, 5.2.1).",
       },
       {
         name: "tokens",
         required: false,
-        description: "Token budget for response (default: 10000).",
+        description:
+          "Token budget for returned content (default: 10000). Lower values force tighter excerpts.",
       },
       {
         name: "maxDocs",
         required: false,
-        description: "Maximum documents returned (default: 8).",
+        description:
+          "Maximum documents/sections returned for this query (default: 8).",
       },
     ],
   },
@@ -128,7 +133,7 @@ const MCP_TOOL_DOCS: McpToolDoc[] = [
     label: "get_docs (legacy)",
     kind: "legacy",
     description:
-      "Legacy full-doc retrieval tool. Kept for backward compatibility.",
+      "Legacy broad retrieval across the whole knowledge base. Useful when source ID is unknown.",
     params: [
       {
         name: "query",
@@ -145,7 +150,8 @@ const MCP_TOOL_DOCS: McpToolDoc[] = [
   {
     name: "list_documents",
     kind: "utility",
-    description: "Lists all documents available in this knowledge group.",
+    description:
+      "Lists all documents available in this knowledge group (inventory view).",
     params: [],
   },
 ];
@@ -687,7 +693,7 @@ export function KnowledgeDetailPage({
                 <div className="rounded-lg border bg-secondary/20 p-3 space-y-3">
                   <div className="rounded-md border bg-background/40 p-2.5">
                     <p className="text-xs text-muted-foreground">
-                      Recommended flow:
+                      Recommended flow (source-first retrieval):
                       <span className="font-mono rounded bg-secondary px-1.5 py-0.5 mx-1 text-foreground">
                         resolve-library-id
                       </span>
