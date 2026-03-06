@@ -123,6 +123,41 @@ interface ToolMessagePartProps {
 }
 
 const MAX_TEXT_LENGTH = 600;
+
+function renderUserTextWithToolMentions(text: string) {
+  const regex = /@tool\(\s*['"]([^'"]+)['"]\s*\)/g;
+  const nodes: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = regex.exec(text)) !== null) {
+    const start = match.index;
+    const end = regex.lastIndex;
+    const toolName = match[1];
+
+    if (start > lastIndex) {
+      nodes.push(text.slice(lastIndex, start));
+    }
+
+    nodes.push(
+      <span
+        key={`tool-mention-${start}-${end}`}
+        className="inline-flex items-center rounded-xl bg-orange-500/10 px-2.5 py-0.5 font-semibold text-orange-500"
+      >
+        {toolName}
+      </span>,
+    );
+
+    lastIndex = end;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes.length > 0 ? nodes : text;
+}
+
 export const UserMessagePart = memo(
   function UserMessagePart({
     part,
@@ -238,7 +273,7 @@ export const UserMessagePart = memo(
             <div className="absolute pointer-events-none bg-gradient-to-t from-accent to-transparent w-full h-40 bottom-0 left-0" />
           )}
           <p className={cn("whitespace-pre-wrap text-sm break-words")}>
-            {displayText}
+            {renderUserTextWithToolMentions(displayText)}
           </p>
           {isLongText && (
             <Button
