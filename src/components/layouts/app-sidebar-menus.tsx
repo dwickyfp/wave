@@ -23,6 +23,7 @@ import {
   FolderOpenIcon,
   FolderSearchIcon,
   PlusIcon,
+  SparklesIcon,
   Waypoints,
 } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -110,6 +111,18 @@ export function AppSidebarMenus({ user }: { user?: BasicUser }) {
                 <SidebarMenuButton className="font-semibold">
                   <BrainIcon className="size-4" />
                   ContextX
+                </SidebarMenuButton>
+              </Link>
+            </SidebarMenuItem>
+          </Tooltip>
+        </SidebarMenu>
+        <SidebarMenu>
+          <Tooltip>
+            <SidebarMenuItem>
+              <Link href="/skills">
+                <SidebarMenuButton className="font-semibold">
+                  <SparklesIcon className="size-4" />
+                  {t("Layout.skills")}
                 </SidebarMenuButton>
               </Link>
             </SidebarMenuItem>

@@ -40,6 +40,8 @@ import { AgentToolSelector } from "./agent-tool-selector";
 import { SubAgentSection } from "./subagent-section";
 import { KnowledgeAgentSection } from "@/components/knowledge/knowledge-agent-section";
 import type { KnowledgeSummary } from "app-types/knowledge";
+import { SkillAgentSection } from "@/components/skill/skill-agent-section";
+import type { SkillSummary } from "app-types/skill";
 import {
   RandomDataGeneratorExample,
   WeatherExample,
@@ -104,6 +106,12 @@ export default function EditAgent({
   );
   const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean>(
     ((initialAgent as any)?.knowledgeGroups ?? []).length > 0,
+  );
+  const [skills, setSkills] = useState<SkillSummary[]>(
+    (initialAgent as any)?.skills ?? [],
+  );
+  const [skillsEnabled, setSkillsEnabled] = useState<boolean>(
+    ((initialAgent as any)?.skills ?? []).length > 0,
   );
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -247,6 +255,36 @@ export default function EditAgent({
     [knowledgeGroups, initialAgent],
   );
 
+  const syncSkills = useCallback(
+    async (agentId: string) => {
+      const current = (initialAgent as any)?.skills ?? [];
+      const targetSkills = skillsEnabled ? skills : [];
+      const currentIds = new Set(current.map((skill: any) => skill.id));
+      const newIds = new Set(targetSkills.map((skill) => skill.id));
+
+      const toAdd = targetSkills.filter((skill) => !currentIds.has(skill.id));
+      const toRemove = current.filter((skill: any) => !newIds.has(skill.id));
+
+      await Promise.all([
+        ...toAdd.map((skill) =>
+          fetch(`/api/agent/${agentId}/skill`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ skillId: skill.id }),
+          }),
+        ),
+        ...toRemove.map((skill: any) =>
+          fetch(`/api/agent/${agentId}/skill`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ skillId: skill.id }),
+          }),
+        ),
+      ]);
+    },
+    [skills, skillsEnabled, initialAgent],
+  );
+
   const saveAgent = useCallback(() => {
     if (initialAgent) {
       safe(() => setIsSaving(true))
@@ -266,7 +304,10 @@ export default function EditAgent({
           }),
         )
         .ifOk(async (updatedAgent) => {
-          await syncKnowledgeGroups(initialAgent.id);
+          await Promise.all([
+            syncKnowledgeGroups(initialAgent.id),
+            syncSkills(initialAgent.id),
+          ]);
           mutateAgents(updatedAgent);
           toast.success(t("Agent.updated"));
           router.push(`/agents`);
@@ -293,7 +334,12 @@ export default function EditAgent({
           });
         })
         .ifOk(async (updatedAgent) => {
-          if (updatedAgent?.id) await syncKnowledgeGroups(updatedAgent.id);
+          if (updatedAgent?.id) {
+            await Promise.all([
+              syncKnowledgeGroups(updatedAgent.id),
+              syncSkills(updatedAgent.id),
+            ]);
+          }
           mutateAgents(updatedAgent);
           toast.success(t("Agent.created"));
           router.push(`/agents`);
@@ -311,6 +357,7 @@ export default function EditAgent({
     subAgents,
     subAgentsEnabled,
     syncKnowledgeGroups,
+    syncSkills,
   ]);
 
   const updateVisibility = useCallback(
@@ -703,6 +750,18 @@ export default function EditAgent({
               onChange={(groups, enabled) => {
                 setKnowledgeGroups(groups);
                 setKnowledgeEnabled(enabled);
+              }}
+            />
+          </div>
+
+          <div className="flex gap-2 flex-col border-t pt-4 mt-2">
+            <SkillAgentSection
+              skills={skills}
+              enabled={skillsEnabled}
+              hasEditAccess={hasEditAccess}
+              onChange={(updatedSkills, enabled) => {
+                setSkills(updatedSkills);
+                setSkillsEnabled(enabled);
               }}
             />
           </div>

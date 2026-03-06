@@ -787,6 +787,48 @@ export const KnowledgeGroupAgentTable = pgTable(
   (t) => [unique().on(t.agentId, t.groupId)],
 );
 
+export const SkillTable = pgTable("skill", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  title: text("title").notNull(),
+  description: text("description"),
+  instructions: text("instructions").notNull(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => UserTable.id, { onDelete: "cascade" }),
+  visibility: varchar("visibility", {
+    enum: ["public", "private", "readonly"],
+  })
+    .notNull()
+    .default("private"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const SkillAgentTable = pgTable(
+  "skill_agent",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    skillId: uuid("skill_id")
+      .notNull()
+      .references(() => SkillTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique().on(t.agentId, t.skillId),
+    index("skill_agent_agent_id_idx").on(t.agentId),
+    index("skill_agent_skill_id_idx").on(t.skillId),
+  ],
+);
+
 export const KnowledgeUsageLogTable = pgTable(
   "knowledge_usage_log",
   {
@@ -822,5 +864,7 @@ export type KnowledgeDocumentEntity =
 export type KnowledgeChunkEntity = typeof KnowledgeChunkTable.$inferSelect;
 export type KnowledgeGroupAgentEntity =
   typeof KnowledgeGroupAgentTable.$inferSelect;
+export type SkillEntity = typeof SkillTable.$inferSelect;
+export type SkillAgentEntity = typeof SkillAgentTable.$inferSelect;
 export type KnowledgeUsageLogEntity =
   typeof KnowledgeUsageLogTable.$inferSelect;

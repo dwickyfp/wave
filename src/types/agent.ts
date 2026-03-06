@@ -3,6 +3,7 @@ import { ChatMentionSchema } from "./chat";
 import { VisibilitySchema } from "./util";
 import type { SubAgent } from "./subagent";
 import type { KnowledgeSummary } from "./knowledge";
+import type { SkillSummary } from "./skill";
 
 export type AgentIcon = {
   type: "emoji";
@@ -82,6 +83,7 @@ export type Agent = AgentSummary & {
   instructions: z.infer<typeof AgentInstructionsSchema>;
   subAgents?: SubAgent[];
   knowledgeGroups?: KnowledgeSummary[];
+  skills?: SkillSummary[];
 };
 
 export type AgentRepository = {

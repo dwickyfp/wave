@@ -8,7 +8,7 @@ import { getStorageInfoAction } from "@/app/api/storage/actions";
 
 // Types
 interface StorageInfo {
-  type: "local" | "vercel-blob" | "s3";
+  type: "local" | "vercel-blob" | "s3" | "none";
   supportsDirectUpload: boolean;
 }
 
@@ -28,7 +28,7 @@ interface UploadResult {
 function useStorageInfo() {
   const { data, isLoading } = useSWR<StorageInfo>(
     "storage-info",
-    getStorageInfoAction,
+    () => getStorageInfoAction(),
     {
       revalidateOnFocus: false,
       revalidateOnReconnect: false,

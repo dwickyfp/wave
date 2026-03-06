@@ -346,6 +346,7 @@
   },
   "Layout": {
     "workflow": "Workflow",
+    "skills": "Skills",
     "admin": "Admin",
     "users": "Users",
     "toggleSidebar": "Toggle Sidebar",

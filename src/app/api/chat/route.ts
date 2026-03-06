@@ -17,6 +17,7 @@ import {
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
 import {
+  buildAgentSkillsSystemPrompt,
   buildKnowledgeContextSystemPrompt,
   buildMcpServerCustomizationsSystemPrompt,
   buildParallelSubAgentSystemPrompt,
@@ -28,6 +29,7 @@ import {
   chatRepository,
   knowledgeRepository,
   settingsRepository,
+  skillRepository,
   snowflakeAgentRepository,
   subAgentRepository,
 } from "lib/db/repository";
@@ -45,6 +47,10 @@ import {
   createKnowledgeDocsTool,
   knowledgeDocsToolName,
 } from "lib/ai/tools/knowledge-tool";
+import {
+  createLoadSkillTool,
+  LOAD_SKILL_TOOL_NAME,
+} from "lib/ai/tools/skill-tool";
 import {
   queryKnowledgeAsDocs,
   formatDocsAsText,
@@ -550,6 +556,10 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
+        let attachedSkills: Awaited<
+          ReturnType<typeof skillRepository.getSkillsByAgentId>
+        > = [];
+
         const MCP_TOOLS = await safe()
           .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
           .map(() =>
@@ -631,6 +641,21 @@ export async function POST(request: Request) {
           })
           .orElse({});
 
+        // On-demand skill loading for agents with attached skills
+        const SKILL_TOOLS: Record<string, Tool> = await safe()
+          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
+          .map(errorIf(() => !agent?.id && "No agent"))
+          .map(async () => {
+            attachedSkills = await skillRepository.getSkillsByAgentId(
+              agent!.id,
+            );
+            if (!attachedSkills.length) return {} as Record<string, Tool>;
+            return {
+              [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
+            } as Record<string, Tool>;
+          })
+          .orElse({} as Record<string, Tool>);
+
         const inProgressToolParts = extractInProgressToolPart(message);
         if (inProgressToolParts.length) {
           await Promise.all(
@@ -668,6 +693,7 @@ export async function POST(request: Request) {
           buildParallelSubAgentSystemPrompt(
             agentWithSubAgents?.subAgents ?? [],
           ),
+          buildAgentSkillsSystemPrompt(attachedSkills),
           !supportToolCall && buildToolCallUnsupportedModelSystemPrompt,
           buildKnowledgeContextSystemPrompt(knowledgeContexts),
         );
@@ -703,6 +729,7 @@ export async function POST(request: Request) {
           ...WORKFLOW_TOOLS,
           ...SUBAGENT_TOOLS,
           ...KNOWLEDGE_TOOLS,
+          ...SKILL_TOOLS,
         })
           .map((t) => {
             const bindingTools =
