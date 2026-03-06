@@ -212,6 +212,38 @@ describe("agent mcp route", () => {
     expect(json.result.tools[0].name).toBe("wave_run_agent");
   });
 
+  it("accepts x-emma-agent-key header alias", async () => {
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: {
+          "x-emma-agent-key": "my-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ method: "tools/list", id: 1, jsonrpc: "2.0" }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+  });
+
+  it("accepts authorization bearer token", async () => {
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer my-key",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ method: "tools/list", id: 1, jsonrpc: "2.0" }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+  });
+
   it("returns initialize payload", async () => {
     const res = await POST(
       makeNextRequest("http://localhost/api/mcp/agent/agent-1", {

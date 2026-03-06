@@ -206,19 +206,31 @@ async function authenticate(
   req: NextRequest,
   agentId: string,
 ): Promise<boolean> {
-  const rawWaveAgentKey =
-    req.headers.get("emma_agent_key") ||
-    req.headers.get("EMMA_AGENT_KEY") ||
-    req.headers.get("wave_agent_api_key") ||
-    req.headers.get("x-wave-agent-api-key");
-  const waveAgentKey = rawWaveAgentKey?.trim();
+  const headerCandidates = [
+    req.headers.get("emma_agent_key"),
+    req.headers.get("emma-agent-key"),
+    req.headers.get("x_emma_agent_key"),
+    req.headers.get("x-emma-agent-key"),
+    req.headers.get("wave_agent_api_key"),
+    req.headers.get("wave-agent-api-key"),
+    req.headers.get("x-wave-agent-api-key"),
+  ];
+  const headerKey = headerCandidates
+    .find((candidate) => !!candidate?.trim())
+    ?.trim();
 
   const authHeader = req.headers.get("authorization");
-  const bearerKey = authHeader?.startsWith("Bearer ")
-    ? authHeader.slice(7).trim()
-    : null;
+  let authKey: string | null = null;
+  if (authHeader?.trim()) {
+    const normalized = authHeader.trim();
+    if (/^Bearer\s+/i.test(normalized)) {
+      authKey = normalized.replace(/^Bearer\s+/i, "").trim();
+    } else if (!normalized.includes(" ")) {
+      authKey = normalized;
+    }
+  }
 
-  const rawKey = waveAgentKey || bearerKey;
+  const rawKey = headerKey || authKey;
   if (!rawKey) return false;
 
   const agentInfo = await agentRepository.getAgentByMcpKey(agentId);
