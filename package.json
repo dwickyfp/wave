@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/azure": "^3.0.0",
     "@ai-sdk/cohere": "^3.0.23",
     "@ai-sdk/google": "^3.0.0",
     "@ai-sdk/groq": "^3.0.0",

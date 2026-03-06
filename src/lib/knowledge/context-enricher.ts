@@ -69,6 +69,7 @@ async function getContextModel(): Promise<LanguageModel | null> {
           resolvedModelName,
           providerConfig.apiKey,
           providerConfig.baseUrl,
+          providerConfig.settings,
         );
         if (m) {
           if (!modelConfig) {
@@ -107,6 +108,7 @@ async function getContextModel(): Promise<LanguageModel | null> {
         modelConfig.apiName,
         providerConfig.apiKey,
         providerConfig.baseUrl,
+        providerConfig.settings,
       );
       if (model) return model;
     } catch {

@@ -2,6 +2,7 @@ import {
   LlmModelConfig,
   LlmModelConfigInput,
   LlmProviderConfig,
+  ProviderSettings,
   LlmProviderUpsertInput,
   ModelType,
 } from "app-types/settings";
@@ -18,6 +19,25 @@ const MASKED_KEY = "••••••••";
 function maskApiKey(key: string | null | undefined): string | null {
   if (!key) return null;
   return MASKED_KEY;
+}
+
+function normalizeProviderSettings(value: unknown): ProviderSettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  const normalized: ProviderSettings = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (
+      typeof raw === "string" ||
+      typeof raw === "number" ||
+      typeof raw === "boolean" ||
+      raw === null
+    ) {
+      normalized[key] = raw;
+    }
+  }
+  return normalized;
 }
 
 function mapModelRow(
@@ -67,6 +87,7 @@ export const pgSettingsRepository = {
         displayName: row.displayName,
         apiKeyMasked: maskApiKey(row.apiKey),
         baseUrl: row.baseUrl,
+        settings: normalizeProviderSettings(row.settings),
         enabled: row.enabled,
         models: models.map(mapModelRow),
         createdAt: row.createdAt,
@@ -80,6 +101,7 @@ export const pgSettingsRepository = {
     id: string;
     apiKey: string | null;
     baseUrl: string | null;
+    settings: ProviderSettings;
     enabled: boolean;
   } | null> {
     const [row] = await db
@@ -91,6 +113,7 @@ export const pgSettingsRepository = {
       id: row.id,
       apiKey: row.apiKey,
       baseUrl: row.baseUrl,
+      settings: normalizeProviderSettings(row.settings),
       enabled: row.enabled,
     };
   },
@@ -114,6 +137,7 @@ export const pgSettingsRepository = {
       displayName: row.displayName,
       apiKeyMasked: maskApiKey(row.apiKey),
       baseUrl: row.baseUrl,
+      settings: normalizeProviderSettings(row.settings),
       enabled: row.enabled,
       models: models.map(mapModelRow),
       createdAt: row.createdAt,
@@ -132,6 +156,7 @@ export const pgSettingsRepository = {
         displayName: data.displayName,
         apiKey: data.apiKey ?? null,
         baseUrl: data.baseUrl ?? null,
+        settings: normalizeProviderSettings(data.settings),
         enabled: data.enabled ?? true,
         updatedAt: now,
       })
@@ -142,6 +167,9 @@ export const pgSettingsRepository = {
           // Only update apiKey if a new value is explicitly provided
           ...(data.apiKey !== undefined ? { apiKey: data.apiKey } : {}),
           baseUrl: data.baseUrl ?? null,
+          ...(data.settings !== undefined
+            ? { settings: normalizeProviderSettings(data.settings) }
+            : {}),
           enabled: data.enabled ?? true,
           updatedAt: now,
         },
@@ -160,6 +188,7 @@ export const pgSettingsRepository = {
       displayName: row.displayName,
       apiKeyMasked: maskApiKey(row.apiKey),
       baseUrl: row.baseUrl,
+      settings: normalizeProviderSettings(row.settings),
       enabled: row.enabled,
       models: models.map(mapModelRow),
       createdAt: row.createdAt,
@@ -180,6 +209,9 @@ export const pgSettingsRepository = {
           : {}),
         ...(data.apiKey !== undefined ? { apiKey: data.apiKey } : {}),
         ...(data.baseUrl !== undefined ? { baseUrl: data.baseUrl } : {}),
+        ...(data.settings !== undefined
+          ? { settings: normalizeProviderSettings(data.settings) }
+          : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
         updatedAt: now,
       })
@@ -199,6 +231,7 @@ export const pgSettingsRepository = {
       displayName: row.displayName,
       apiKeyMasked: maskApiKey(row.apiKey),
       baseUrl: row.baseUrl,
+      settings: normalizeProviderSettings(row.settings),
       enabled: row.enabled,
       models: models.map(mapModelRow),
       createdAt: row.createdAt,

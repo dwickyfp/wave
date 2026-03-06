@@ -1,5 +1,6 @@
 import { Agent } from "app-types/agent";
 import { MCPServerConfig, MCPToolInfo } from "app-types/mcp";
+import type { ProviderSettings } from "app-types/settings";
 import { UserPreferences } from "app-types/user";
 import { sql } from "drizzle-orm";
 import {
@@ -557,6 +558,7 @@ export const LlmProviderConfigTable = pgTable("llm_provider_config", {
   displayName: text("display_name").notNull(),
   apiKey: text("api_key"),
   baseUrl: text("base_url"),
+  settings: json("settings").$type<ProviderSettings>().notNull().default({}),
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()

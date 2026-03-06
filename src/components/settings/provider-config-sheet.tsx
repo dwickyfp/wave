@@ -48,7 +48,7 @@ import {
 import { LlmModelConfig, LlmProviderConfig } from "app-types/settings";
 import { cn } from "lib/utils";
 import { ModelRegisterDialog } from "./model-register-dialog";
-import { getProviderDef } from "./provider-definitions";
+import { getProviderDef, ProviderCustomField } from "./provider-definitions";
 
 interface ProviderConfigSheetProps {
   provider: LlmProviderConfig | null;
@@ -80,6 +80,8 @@ const CAPABILITY_LABELS: Record<CapabilityKey, string> = {
   supportsFileInput: "Files",
 };
 
+type ProviderSettingValue = string | number | boolean | null;
+
 export function ProviderConfigSheet({
   provider,
   prefillName,
@@ -101,6 +103,9 @@ export function ProviderConfigSheet({
   const [showKey, setShowKey] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
+  const [providerSettings, setProviderSettings] = useState<
+    Record<string, ProviderSettingValue>
+  >(provider?.settings ?? {});
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [models, setModels] = useState<LlmModelConfig[]>(
     provider?.models ?? [],
@@ -133,6 +138,7 @@ export function ProviderConfigSheet({
   useEffect(() => {
     setModels(provider?.models ?? []);
     setBaseUrl(provider?.baseUrl ?? "");
+    setProviderSettings(provider?.settings ?? {});
     setEnabled(provider?.enabled ?? true);
     setApiKey("");
     setShowKey(false);
@@ -140,10 +146,70 @@ export function ProviderConfigSheet({
 
   const needsApiKey = def ? def.needsApiKey : true;
   const needsBaseUrl = def ? def.needsBaseUrl : false;
+  const customFields = def?.customFields ?? [];
+
+  const updateCustomSetting = (key: string, value: ProviderSettingValue) => {
+    setProviderSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const getCustomFieldTextValue = (field: ProviderCustomField): string => {
+    const value = providerSettings[field.key];
+    if (value === null || value === undefined) return "";
+    return String(value);
+  };
+
+  const getCustomFieldBooleanValue = (field: ProviderCustomField): boolean => {
+    const value = providerSettings[field.key];
+    return typeof value === "boolean" ? value : false;
+  };
+
+  const buildSettingsPayload = (): Record<string, ProviderSettingValue> => {
+    const payload: Record<string, ProviderSettingValue> = {};
+    for (const [key, value] of Object.entries(providerSettings)) {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.length > 0) payload[key] = trimmed;
+        continue;
+      }
+      if (
+        typeof value === "number" ||
+        typeof value === "boolean" ||
+        value === null
+      ) {
+        payload[key] = value;
+      }
+    }
+    return payload;
+  };
 
   const handleSaveProvider = async () => {
     setSaving(true);
     try {
+      for (const field of customFields) {
+        if (!field.required) continue;
+        const value = providerSettings[field.key];
+        if (field.type === "boolean") {
+          if (typeof value !== "boolean") {
+            toast.error(`${field.label} is required`);
+            return;
+          }
+          continue;
+        }
+        if (field.type === "number") {
+          if (typeof value !== "number" || Number.isNaN(value)) {
+            toast.error(`${field.label} is required`);
+            return;
+          }
+          continue;
+        }
+        if (typeof value !== "string" || value.trim().length === 0) {
+          toast.error(`${field.label} is required`);
+          return;
+        }
+      }
+
+      const settingsPayload = buildSettingsPayload();
+
       if (isNew) {
         if (!newProviderName.trim()) {
           toast.error("Provider name is required");
@@ -157,6 +223,7 @@ export function ProviderConfigSheet({
             displayName: newDisplayName.trim() || newProviderName.trim(),
             apiKey: apiKey || null,
             baseUrl: baseUrl || null,
+            settings: settingsPayload,
             enabled,
           }),
         });
@@ -172,6 +239,7 @@ export function ProviderConfigSheet({
             displayName: provider!.displayName,
             ...(apiKey ? { apiKey } : {}),
             baseUrl: baseUrl || null,
+            settings: settingsPayload,
             enabled,
           }),
         });
@@ -388,7 +456,7 @@ export function ProviderConfigSheet({
           )}
 
           {/* Base URL */}
-          {(needsBaseUrl || isNew) && (
+          {(needsBaseUrl || (isNew && !isPredefined)) && (
             <div className="space-y-1.5">
               <Label>
                 {def?.baseUrlLabel ?? "Base URL"}{" "}
@@ -405,6 +473,66 @@ export function ProviderConfigSheet({
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
               />
+            </div>
+          )}
+
+          {customFields.length > 0 && (
+            <div className="space-y-3">
+              {customFields.map((field) => (
+                <div key={field.key} className="space-y-1.5">
+                  {field.type === "boolean" ? (
+                    <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                      <div>
+                        <Label className="text-sm">{field.label}</Label>
+                        {field.description && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {field.description}
+                          </p>
+                        )}
+                      </div>
+                      <Switch
+                        checked={getCustomFieldBooleanValue(field)}
+                        onCheckedChange={(checked) =>
+                          updateCustomSetting(field.key, checked)
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <Label>
+                        {field.label}
+                        {field.required && (
+                          <span className="text-destructive ml-1">*</span>
+                        )}
+                      </Label>
+                      <Input
+                        type={field.type === "number" ? "number" : "text"}
+                        placeholder={field.placeholder}
+                        value={getCustomFieldTextValue(field)}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (field.type === "number") {
+                            if (raw.trim().length === 0) {
+                              updateCustomSetting(field.key, null);
+                              return;
+                            }
+                            const numeric = Number(raw);
+                            if (Number.isNaN(numeric)) return;
+                            updateCustomSetting(field.key, numeric);
+                            return;
+                          }
+                          updateCustomSetting(field.key, raw);
+                        }}
+                      />
+                      {field.description && (
+                        <p className="text-xs text-muted-foreground">
+                          {field.description}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 

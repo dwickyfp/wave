@@ -32,6 +32,7 @@ async function resolveParsingModel(provider: string, modelName: string) {
     resolvedModelName,
     providerConfig.apiKey,
     providerConfig.baseUrl,
+    providerConfig.settings,
   );
   if (!model) {
     throw new Error(

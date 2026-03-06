@@ -4,9 +4,13 @@ import { z } from "zod";
 
 export type ModelType = "llm" | "image_generation" | "embedding" | "reranking";
 
+export type ProviderSettingValue = string | number | boolean | null;
+export type ProviderSettings = Record<string, ProviderSettingValue>;
+
 export type LlmProviderName =
   | "openrouter"
   | "openai"
+  | "azure"
   | "anthropic"
   | "google"
   | "xai"
@@ -39,6 +43,7 @@ export type LlmProviderConfig = {
   /** Masked API key — never returns the raw key to the client */
   apiKeyMasked: string | null;
   baseUrl: string | null;
+  settings: ProviderSettings;
   enabled: boolean;
   models: LlmModelConfig[];
   createdAt: Date;
@@ -105,6 +110,12 @@ export const LlmProviderUpsertZodSchema = z.object({
   displayName: z.string().min(1),
   apiKey: z.string().optional().nullable(),
   baseUrl: z.string().optional().nullable(),
+  settings: z
+    .record(
+      z.string(),
+      z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    )
+    .optional(),
   enabled: z.boolean().default(true),
 });
 

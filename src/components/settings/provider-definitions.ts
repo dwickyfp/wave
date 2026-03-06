@@ -1,3 +1,10 @@
+import {
+  getProviderCustomFields,
+  type ProviderCustomFieldDefinition,
+} from "lib/settings/provider-custom-fields";
+
+export type ProviderCustomField = ProviderCustomFieldDefinition;
+
 export type ProviderDefinition = {
   name: string;
   displayName: string;
@@ -11,6 +18,7 @@ export type ProviderDefinition = {
   baseUrlPlaceholder?: string;
   apiKeyPlaceholder?: string;
   docsUrl?: string;
+  customFields?: ProviderCustomFieldDefinition[];
 };
 
 export const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
@@ -35,6 +43,19 @@ export const PROVIDER_DEFINITIONS: ProviderDefinition[] = [
     needsApiKey: true,
     needsBaseUrl: false,
     apiKeyPlaceholder: "sk-...",
+  },
+  {
+    name: "azure",
+    displayName: "Azure OpenAI",
+    description: "Azure-hosted OpenAI deployments",
+    color: "bg-cyan-500/10",
+    textColor: "text-cyan-600 dark:text-cyan-400",
+    initials: "AZ",
+    needsApiKey: true,
+    needsBaseUrl: false,
+    apiKeyPlaceholder: "Azure OpenAI API key",
+    docsUrl: "https://ai-sdk.dev/providers/ai-sdk-providers/azure",
+    customFields: getProviderCustomFields("azure"),
   },
   {
     name: "anthropic",

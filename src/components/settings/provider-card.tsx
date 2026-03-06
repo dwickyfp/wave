@@ -18,10 +18,18 @@ export function ProviderCard({
   provider,
   onConfigure,
 }: ProviderCardProps) {
+  const hasApiKey = !def.needsApiKey || !!provider?.apiKeyMasked;
+  const hasBaseUrl = !def.needsBaseUrl || !!provider?.baseUrl?.trim();
+  const hasRequiredCustomSettings = (def.customFields ?? [])
+    .filter((field) => field.required)
+    .every((field) => {
+      const value = provider?.settings?.[field.key];
+      if (field.type === "boolean") return typeof value === "boolean";
+      if (field.type === "number") return typeof value === "number";
+      return typeof value === "string" && value.trim().length > 0;
+    });
   const isConfigured =
-    !!provider?.apiKeyMasked ||
-    provider?.name === "ollama" ||
-    provider?.name === "openai-compatible";
+    !!provider && hasApiKey && hasBaseUrl && hasRequiredCustomSettings;
   const isInDb = !!provider;
   const enabledModelCount =
     provider?.models.filter((m) => m.enabled).length ?? 0;
