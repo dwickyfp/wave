@@ -1,11 +1,11 @@
 /**
- * Normalize markdown into a stable, section-oriented structure.
+ * Normalize markdown into a stable, clean structure.
  *
  * Goals:
  * - Preserve heading hierarchy and content fidelity
- * - Insert `---` separators between major sections
  * - Keep code fences and tables intact
  * - Reduce noisy spacing/artifacts
+ * - Remove stray horizontal rules that fragment content and waste tokens
  */
 export function normalizeStructuredMarkdown(markdown: string): string {
   if (!markdown.trim()) return "";
@@ -16,13 +16,11 @@ export function normalizeStructuredMarkdown(markdown: string): string {
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/[^\S\n]+$/gm, "")
-    .replace(/\n{4,}/g, "\n\n\n")
     .trim();
 
   const lines = cleaned.split("\n");
   const out: string[] = [];
   let inCodeFence = false;
-  let seenBodyContent = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -31,30 +29,26 @@ export function normalizeStructuredMarkdown(markdown: string): string {
     if (trimmed.startsWith("```")) {
       inCodeFence = !inCodeFence;
       out.push(line);
-      if (trimmed) seenBodyContent = true;
       continue;
     }
 
-    if (!inCodeFence) {
-      const headingMatch = trimmed.match(/^(#{1,6})\s+.+$/);
-      const isMajorHeading =
-        !!headingMatch && headingMatch[1].length <= 3 && seenBodyContent;
+    // Inside code fences: pass through unchanged
+    if (inCodeFence) {
+      out.push(line);
+      continue;
+    }
 
-      if (isMajorHeading) {
-        const prev = out[out.length - 1]?.trim();
-        if (prev && prev !== "---") {
-          out.push("", "---", "");
-        }
-      }
+    // Remove standalone horizontal rules (---, ***, ___) outside code fences
+    // These fragment the content and waste tokens during embedding/retrieval
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      continue;
     }
 
     out.push(line);
-    if (trimmed && trimmed !== "---") seenBodyContent = true;
   }
 
   return out
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/\n*---\n*/g, "\n\n---\n\n")
     .trim();
 }

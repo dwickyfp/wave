@@ -1,13 +1,13 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 import { getSession } from "auth/server";
-import { serverFileStorage, storageDriver } from "lib/file-storage";
+import { getFileStorage, getStorageDriver } from "lib/file-storage";
 import globalLogger from "lib/logger";
 import { colorize } from "consola/utils";
 import { checkStorageAction } from "../actions";
 
 const logger = globalLogger.withDefaults({
-  message: colorize("blackBright", `[${storageDriver} Upload URL API]`),
+  message: colorize("blackBright", "[Storage Upload URL API]"),
 });
 
 // Constants
@@ -90,13 +90,15 @@ async function handleVercelBlobUpload(
  * Returns presigned URL if supported, otherwise returns fallback response.
  */
 async function handleGenericUpload(request: GenericUploadRequest) {
+  const storage = await getFileStorage();
+
   // Check if storage backend supports direct upload
-  if (typeof serverFileStorage.createUploadUrl !== "function") {
+  if (typeof storage.createUploadUrl !== "function") {
     logger.info("Storage doesn't support createUploadUrl, using fallback");
     return NextResponse.json(createFallbackResponse());
   }
 
-  const uploadUrl = await serverFileStorage.createUploadUrl({
+  const uploadUrl = await storage.createUploadUrl({
     filename: request.filename || "file",
     contentType: request.contentType || "application/octet-stream",
     expiresInSeconds: DEFAULT_UPLOAD_EXPIRES_SECONDS,
@@ -108,7 +110,7 @@ async function handleGenericUpload(request: GenericUploadRequest) {
   }
 
   // Provide a public source URL for clients to reference after successful PUT
-  const sourceUrl = await serverFileStorage.getSourceUrl(uploadUrl.key);
+  const sourceUrl = await storage.getSourceUrl(uploadUrl.key);
 
   return NextResponse.json({
     directUploadSupported: true,
@@ -140,6 +142,7 @@ export async function POST(request: Request) {
       solution: storageCheck.solution,
     });
 
+    const storageDriver = await getStorageDriver();
     return NextResponse.json(
       {
         error: storageCheck.error,

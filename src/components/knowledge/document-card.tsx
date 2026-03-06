@@ -118,11 +118,6 @@ export function DocumentCard({
           <p className="text-xs text-muted-foreground truncate">
             {doc.originalFilename}
           </p>
-          {doc.description && (
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-              {doc.description}
-            </p>
-          )}
         </div>
 
         {!isInherited && (
@@ -197,6 +192,15 @@ export function DocumentCard({
           <time>{format(new Date(doc.createdAt), "MMM d")}</time>
         </div>
       </div>
+
+      {doc.status === "processing" && (
+        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+          <div
+            className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
+            style={{ width: `${doc.processingProgress ?? 0}%` }}
+          />
+        </div>
+      )}
     </Card>
   );
 }

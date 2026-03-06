@@ -29,6 +29,16 @@ const required = (name: string, value: string | undefined) => {
   return value;
 };
 
+export interface S3StorageConfig {
+  bucket: string;
+  region: string;
+  endpoint?: string;
+  forcePathStyle?: boolean;
+  publicBaseUrl?: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+}
+
 const buildKey = (filename: string) => {
   const safeName = sanitizeFilename(filename || "file");
   const id = generateUUID();
@@ -64,26 +74,40 @@ const buildPublicUrl = (
   return `https://${bucket}.s3.${region}.amazonaws.com/${encodeURI(key)}`;
 };
 
-export const createS3FileStorage = (): FileStorage => {
-  const bucket = required(
-    "FILE_STORAGE_S3_BUCKET",
-    process.env.FILE_STORAGE_S3_BUCKET,
-  );
-  const region = process.env.FILE_STORAGE_S3_REGION || process.env.AWS_REGION;
+export const createS3FileStorage = (
+  cfg?: Partial<S3StorageConfig>,
+): FileStorage => {
+  const bucket =
+    cfg?.bucket ??
+    required("FILE_STORAGE_S3_BUCKET", process.env.FILE_STORAGE_S3_BUCKET);
+  const region =
+    cfg?.region ?? process.env.FILE_STORAGE_S3_REGION ?? process.env.AWS_REGION;
   if (!region)
     throw new Error(
-      "Missing required env: FILE_STORAGE_S3_REGION or AWS_REGION",
+      "Missing required S3 region: set FILE_STORAGE_S3_REGION, AWS_REGION, or configure it in Settings → Storage",
     );
-  const endpoint = process.env.FILE_STORAGE_S3_ENDPOINT;
-  const forcePathStyle = /^1|true$/i.test(
-    process.env.FILE_STORAGE_S3_FORCE_PATH_STYLE || "",
-  );
-  const publicBaseUrl = process.env.FILE_STORAGE_S3_PUBLIC_BASE_URL;
+  const endpoint =
+    cfg?.endpoint !== undefined
+      ? cfg.endpoint
+      : process.env.FILE_STORAGE_S3_ENDPOINT;
+  const forcePathStyle =
+    cfg?.forcePathStyle !== undefined
+      ? cfg.forcePathStyle
+      : /^1|true$/i.test(process.env.FILE_STORAGE_S3_FORCE_PATH_STYLE || "");
+  const publicBaseUrl =
+    cfg?.publicBaseUrl !== undefined
+      ? cfg.publicBaseUrl
+      : process.env.FILE_STORAGE_S3_PUBLIC_BASE_URL;
+  const credentials =
+    cfg?.accessKeyId && cfg?.secretAccessKey
+      ? { accessKeyId: cfg.accessKeyId, secretAccessKey: cfg.secretAccessKey }
+      : undefined;
 
   const s3 = new S3Client({
     region,
     endpoint,
     forcePathStyle,
+    ...(credentials ? { credentials } : {}),
   });
 
   return {

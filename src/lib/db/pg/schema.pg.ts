@@ -708,6 +708,8 @@ export const KnowledgeDocumentTable = pgTable(
       .notNull()
       .default("pending"),
     errorMessage: text("error_message"),
+    /** Ingestion progress percentage (0–100). Null when not processing. */
+    processingProgress: integer("processing_progress"),
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata"),

@@ -50,6 +50,7 @@ function mapDocument(
     storagePath: row.storagePath ?? null,
     sourceUrl: row.sourceUrl ?? null,
     errorMessage: row.errorMessage ?? null,
+    processingProgress: row.processingProgress ?? null,
     metadata: (row.metadata as Record<string, unknown>) ?? null,
     markdownContent: row.markdownContent ?? null,
   };
@@ -584,6 +585,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       .set({
         status,
         errorMessage: extra?.errorMessage ?? null,
+        // Reset progress when not processing; update it when provided
+        processingProgress:
+          status === "processing" ? (extra?.processingProgress ?? 0) : null,
         ...(extra?.chunkCount !== undefined
           ? { chunkCount: extra.chunkCount }
           : {}),

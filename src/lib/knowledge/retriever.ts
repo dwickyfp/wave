@@ -1313,5 +1313,5 @@ export function formatDocsAsText(
         : d.documentName;
     return `## ${title}\n\n${d.markdown}`;
   });
-  return `[Knowledge: ${groupName}]\n\n${parts.join("\n\n---\n\n")}`;
+  return `[Knowledge: ${groupName}]\n\n${parts.join("\n\n")}`;
 }

@@ -15,6 +15,10 @@ import { generateUUID } from "lib/utils";
 
 const STORAGE_PREFIX = resolveStoragePrefix();
 
+export interface VercelBlobStorageConfig {
+  token?: string;
+}
+
 const buildPathname = (filename: string) => {
   const safeName = sanitizeFilename(filename);
   const id = generateUUID();
@@ -34,17 +38,6 @@ const mapMetadata = (
     uploadedAt: info.uploadedAt,
   }) satisfies FileMetadata;
 
-const getHeadForKey = async (key: string) => {
-  try {
-    return await head(key);
-  } catch (error: unknown) {
-    if (error instanceof Error && error.name === "BlobNotFoundError") {
-      throw new FileNotFoundError(key, error);
-    }
-    throw error;
-  }
-};
-
 const fetchSourceBuffer = async (url: string) => {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -57,7 +50,23 @@ const fetchSourceBuffer = async (url: string) => {
   return Buffer.from(arrayBuffer);
 };
 
-export const createVercelBlobStorage = (): FileStorage => {
+export const createVercelBlobStorage = (
+  cfg?: VercelBlobStorageConfig,
+): FileStorage => {
+  const token = cfg?.token || process.env.BLOB_READ_WRITE_TOKEN;
+  const tokenOpt = token ? { token } : {};
+
+  const getHead = async (key: string) => {
+    try {
+      return await head(key, tokenOpt);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === "BlobNotFoundError") {
+        throw new FileNotFoundError(key, error);
+      }
+      throw error;
+    }
+  };
+
   return {
     async upload(content, options: UploadOptions = {}) {
       const buffer = await toBuffer(content);
@@ -67,6 +76,7 @@ export const createVercelBlobStorage = (): FileStorage => {
       const result = await put(pathname, buffer, {
         access: "public",
         contentType: options.contentType,
+        ...tokenOpt,
       });
 
       const metadata: FileMetadata = {
@@ -85,23 +95,22 @@ export const createVercelBlobStorage = (): FileStorage => {
     },
 
     // Vercel Blob uses handleUpload flow instead of createUploadUrl
-    // Client should use @vercel/blob/client with handleUploadUrl: "/api/storage/upload-url"
     async createUploadUrl() {
       return null;
     },
 
     async download(key) {
-      const info = await getHeadForKey(key);
+      const info = await getHead(key);
       return fetchSourceBuffer(info.url);
     },
 
     async delete(key) {
-      await del(key);
+      await del(key, tokenOpt);
     },
 
     async exists(key) {
       try {
-        await getHeadForKey(key);
+        await getHead(key);
         return true;
       } catch (error: unknown) {
         if (error instanceof FileNotFoundError) {
@@ -113,7 +122,7 @@ export const createVercelBlobStorage = (): FileStorage => {
 
     async getMetadata(key) {
       try {
-        const info = await getHeadForKey(key);
+        const info = await getHead(key);
         return mapMetadata(key, {
           contentType: info.contentType,
           size: info.size,
@@ -129,7 +138,7 @@ export const createVercelBlobStorage = (): FileStorage => {
 
     async getSourceUrl(key) {
       try {
-        const info = await getHeadForKey(key);
+        const info = await getHead(key);
         return info.url;
       } catch (error: unknown) {
         if (error instanceof FileNotFoundError) {
@@ -141,7 +150,7 @@ export const createVercelBlobStorage = (): FileStorage => {
 
     async getDownloadUrl(key) {
       try {
-        const info = await getHeadForKey(key);
+        const info = await getHead(key);
         return info.downloadUrl ?? info.url;
       } catch (error: unknown) {
         if (error instanceof FileNotFoundError) {

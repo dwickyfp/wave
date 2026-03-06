@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "auth/server";
-import { serverFileStorage, storageDriver } from "lib/file-storage";
+import { serverFileStorage, getStorageDriver } from "lib/file-storage";
 import { checkStorageAction } from "../actions";
 
 export async function POST(request: Request) {
@@ -13,6 +13,7 @@ export async function POST(request: Request) {
   // Check storage configuration first
   const storageCheck = await checkStorageAction();
   if (!storageCheck.isValid) {
+    const storageDriver = await getStorageDriver();
     return NextResponse.json(
       {
         error: storageCheck.error,

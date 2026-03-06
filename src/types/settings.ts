@@ -51,7 +51,7 @@ export type OtherConfig = {
   exaApiKey?: string;
 };
 
-// ─── Minio ────────────────────────────────────────────────────────────────────
+// ─── Minio (legacy – kept for backward compatibility) ─────────────────────────
 
 export type MinioConfig = {
   endpoint: string;
@@ -60,6 +60,26 @@ export type MinioConfig = {
   secretKey: string;
   region?: string;
   useSSL: boolean;
+};
+
+// ─── Unified File Storage ─────────────────────────────────────────────────────
+
+export type FileStorageType = "s3" | "vercel-blob" | "none";
+
+export type FileStorageConfig = {
+  type: FileStorageType;
+  s3?: {
+    bucket?: string;
+    region?: string;
+    endpoint?: string;
+    accessKey?: string;
+    secretKey?: string;
+    publicBaseUrl?: string;
+    forcePathStyle?: boolean;
+  };
+  vercelBlob?: {
+    token?: string;
+  };
 };
 
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
@@ -92,6 +112,10 @@ export const OtherConfigZodSchema = z.object({
   exaApiKey: z.string().optional(),
 });
 
+export const RedisConfigZodSchema = z.object({
+  url: z.string().min(1, "Redis URL is required"),
+});
+
 export const MinioConfigZodSchema = z.object({
   endpoint: z.string().min(1, "Endpoint is required"),
   bucket: z.string().min(1, "Bucket name is required"),
@@ -101,7 +125,33 @@ export const MinioConfigZodSchema = z.object({
   useSSL: z.boolean().default(true),
 });
 
+const s3SubSchema = z.object({
+  bucket: z.string().optional(),
+  region: z.string().optional(),
+  endpoint: z.string().optional(),
+  accessKey: z.string().optional(),
+  secretKey: z.string().optional(),
+  publicBaseUrl: z.string().optional(),
+  forcePathStyle: z.boolean().optional(),
+});
+
+const vercelBlobSubSchema = z.object({
+  token: z.string().optional(),
+});
+
+export const FileStorageConfigZodSchema = z.object({
+  type: z.enum(["s3", "vercel-blob", "none"]).default("none"),
+  s3: s3SubSchema.optional(),
+  vercelBlob: vercelBlobSubSchema.optional(),
+});
+
 export type LlmModelConfigInput = z.infer<typeof LlmModelConfigZodSchema>;
 export type LlmProviderUpsertInput = z.infer<typeof LlmProviderUpsertZodSchema>;
 export type MinioConfigInput = z.infer<typeof MinioConfigZodSchema>;
 export type OtherConfigInput = z.infer<typeof OtherConfigZodSchema>;
+export type RedisConfigInput = z.infer<typeof RedisConfigZodSchema>;
+export type FileStorageConfigInput = z.infer<typeof FileStorageConfigZodSchema>;
+
+export type RedisConfig = {
+  url: string;
+};

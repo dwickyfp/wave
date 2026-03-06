@@ -57,6 +57,15 @@ Rules:
 - Use proper markdown headings (# ## ###) ONLY for genuine section titles and major document divisions — do NOT turn every line or list item into a heading
 - Items that belong together (e.g. a skill and its qualifier, a name and its description) must stay on the same line or in the same list item, not split into separate headings
 - Format lists as compact markdown lists (- or 1.) with NO blank lines between list items — consecutive related items should be grouped into a single list
+- NEVER output horizontal rules (--- or ***) — use headings for section breaks instead
+- Use a SINGLE blank line between sections; NEVER use multiple consecutive blank lines
+- Do NOT add a blank line between items in the same list or section
+
+Code:
+- Wrap code samples in fenced code blocks (\`\`\`) with the language identifier
+- Keep related code together in one code block — do NOT split a single function, config object, or logical code unit across multiple blocks
+- Preserve comments within code blocks exactly as they appear
+- If the entire document is source code, wrap it in a single fenced code block
 
 Tables:
 - Detect ANY tabular data in the raw text (columns separated by spaces/tabs, aligned rows, or data presented in a grid-like format) and convert it into a proper markdown table with | column | headers | and separator rows
@@ -73,10 +82,7 @@ Images and Visual Elements:
 - Never skip or silently drop image references
 
 Other:
-- Wrap code samples in fenced code blocks (\`\`\`)
 - Remove artifacts like page numbers, repeated headers/footers, watermarks
-- Use a SINGLE blank line between sections; NEVER use multiple consecutive blank lines
-- Do NOT add a blank line between every item — only between distinct sections or logical groups
 - Preserve technical terms, names, numbers, and dates exactly as they appear
 - Output ONLY the markdown content, no preamble or explanation`;
 

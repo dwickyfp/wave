@@ -89,6 +89,8 @@ export interface KnowledgeDocument {
   storagePath?: string | null;
   sourceUrl?: string | null;
   status: DocumentStatus;
+  /** Ingestion progress percentage 0–100. Null when not processing. */
+  processingProgress?: number | null;
   errorMessage?: string | null;
   chunkCount: number;
   tokenCount: number;
@@ -265,6 +267,7 @@ export interface KnowledgeRepository {
       chunkCount?: number;
       tokenCount?: number;
       markdownContent?: string;
+      processingProgress?: number | null;
     },
   ): Promise<void>;
   updateDocumentMetadata(

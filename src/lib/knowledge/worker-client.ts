@@ -1,5 +1,6 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import { getRedisUrl } from "./redis-url";
 
 export type IngestDocumentJob = {
   type: "ingest-document";
@@ -16,49 +17,48 @@ export type KnowledgeJob = IngestDocumentJob | ReembedGroupJob;
 
 const QUEUE_NAME = "contextx-ingest";
 
-let _queue: Queue | null = null;
-let _connection: IORedis | null = null;
+// Singleton promise – ensures only one Queue is created per process
+// even if enqueue functions are called concurrently before init completes.
+let _queuePromise: Promise<Queue> | null = null;
 
-function getConnection(): IORedis {
-  if (!_connection) {
-    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
-    _connection = new IORedis(redisUrl, {
-      maxRetriesPerRequest: null,
-      lazyConnect: true,
-    });
-  }
-  return _connection;
+async function createQueue(): Promise<Queue> {
+  const redisUrl = await getRedisUrl();
+  const connection = new IORedis(redisUrl, {
+    maxRetriesPerRequest: null,
+    lazyConnect: true,
+  });
+  return new Queue(QUEUE_NAME, {
+    connection: connection as any,
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: 100,
+      removeOnFail: 200,
+    },
+  });
 }
 
-export function getKnowledgeQueue(): Queue {
-  if (!_queue) {
-    _queue = new Queue(QUEUE_NAME, {
-      connection: getConnection() as any,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: "exponential", delay: 5000 },
-        removeOnComplete: 100,
-        removeOnFail: 200,
-      },
-    });
+function getKnowledgeQueue(): Promise<Queue> {
+  if (!_queuePromise) {
+    _queuePromise = createQueue();
   }
-  return _queue;
+  return _queuePromise;
 }
 
 export async function enqueueIngestDocument(
   documentId: string,
   groupId: string,
 ): Promise<void> {
-  const queue = getKnowledgeQueue();
+  const queue = await getKnowledgeQueue();
   await queue.add(
     "ingest-document",
     { type: "ingest-document", documentId, groupId } satisfies KnowledgeJob,
-    { jobId: `ingest-${documentId}` },
+    { jobId: `ingest-${documentId}-${Date.now()}` },
   );
 }
 
 export async function enqueueReembedGroup(groupId: string): Promise<void> {
-  const queue = getKnowledgeQueue();
+  const queue = await getKnowledgeQueue();
   await queue.add(
     "reembed-group",
     { type: "reembed-group", groupId } satisfies KnowledgeJob,
