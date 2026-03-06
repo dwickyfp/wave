@@ -56,7 +56,7 @@ async function main() {
     },
     {
       connection: connection as any,
-      concurrency: 2,
+      concurrency: 5,
     },
   );
 
