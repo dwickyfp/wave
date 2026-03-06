@@ -1,17 +1,18 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { useMutateAgents } from "@/hooks/queries/use-agents";
 import { useMcpList } from "@/hooks/queries/use-mcp-list";
 import { useWorkflowToolList } from "@/hooks/queries/use-workflow-tool-list";
+import { useChatModels } from "@/hooks/queries/use-chat-models";
 import { useObjectState } from "@/hooks/use-object-state";
 import { useBookmark } from "@/hooks/queries/use-bookmark";
 import { Agent, AgentCreateSchema, AgentUpdateSchema } from "app-types/agent";
 import { SubAgent } from "app-types/subagent";
-import { ChatMention } from "app-types/chat";
+import { ChatMention, ChatModel } from "app-types/chat";
 import { MCPServerInfo } from "app-types/mcp";
 import { WorkflowSummary } from "app-types/workflow";
 import { DefaultToolName } from "lib/ai/tools";
@@ -19,8 +20,18 @@ import { BACKGROUND_COLORS } from "lib/const";
 import { cn, fetcher, objectFlow } from "lib/utils";
 import { safe } from "ts-safe";
 import { handleErrorWithToast } from "ui/shared-toast";
-import { ChevronDownIcon, Loader, WandSparklesIcon } from "lucide-react";
+import {
+  CopyIcon,
+  KeyIcon,
+  ChevronDownIcon,
+  Loader,
+  RefreshCwIcon,
+  ServerIcon,
+  ShieldAlertIcon,
+  WandSparklesIcon,
+} from "lucide-react";
 import { Button } from "ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -29,9 +40,19 @@ import {
 } from "ui/dropdown-menu";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "ui/select";
 import { Textarea } from "ui/textarea";
 import { ScrollArea } from "ui/scroll-area";
 import { Skeleton } from "ui/skeleton";
+import { Switch } from "ui/switch";
 import { TextShimmer } from "ui/text-shimmer";
 import { ShareableActions, Visibility } from "@/components/shareable-actions";
 import { GenerateAgentDialog } from "./generate-agent-dialog";
@@ -71,6 +92,24 @@ const defaultConfig = (): PartialBy<
     visibility: "private",
   };
 };
+
+const MCP_MODEL_AUTO_VALUE = "__mcp_model_auto__";
+
+function makeMcpModelValue(model: ChatModel) {
+  return `${model.provider}::${model.model}`;
+}
+
+function parseMcpModelValue(value: string): ChatModel | null {
+  if (!value || value === MCP_MODEL_AUTO_VALUE) return null;
+  const separatorIndex = value.indexOf("::");
+  if (separatorIndex < 0) return null;
+
+  const provider = value.slice(0, separatorIndex);
+  const model = value.slice(separatorIndex + 2);
+
+  if (!provider || !model) return null;
+  return { provider, model };
+}
 
 interface EditAgentProps {
   initialAgent?: Agent;
@@ -113,6 +152,27 @@ export default function EditAgent({
   const [skillsEnabled, setSkillsEnabled] = useState<boolean>(
     ((initialAgent as any)?.skills ?? []).length > 0,
   );
+  const [agentMcpEnabled, setAgentMcpEnabled] = useState(
+    initialAgent?.mcpEnabled ?? false,
+  );
+  const [agentMcpApiKey, setAgentMcpApiKey] = useState<string | null>(null);
+  const [agentMcpKeyPreview, setAgentMcpKeyPreview] = useState(
+    initialAgent?.mcpApiKeyPreview ?? null,
+  );
+  const [isAgentMcpGeneratingKey, setIsAgentMcpGeneratingKey] = useState(false);
+  const [isAgentMcpRevokingKey, setIsAgentMcpRevokingKey] = useState(false);
+  const [isAgentMcpToggling, setIsAgentMcpToggling] = useState(false);
+  const [isAgentMcpUpdatingModel, setIsAgentMcpUpdatingModel] = useState(false);
+  const [agentMcpModel, setAgentMcpModel] = useState<ChatModel | null>(
+    initialAgent?.mcpModelProvider && initialAgent?.mcpModelName
+      ? {
+          provider: initialAgent.mcpModelProvider,
+          model: initialAgent.mcpModelName,
+        }
+      : null,
+  );
+  const [activeTab, setActiveTab] = useState("details");
+  const [browserOrigin, setBrowserOrigin] = useState("");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -128,10 +188,51 @@ export default function EditAgent({
       false,
     [initialAgent?.id, isBookmarkToggleLoadingFn],
   );
+  const agentMcpLocalStorageKey = useMemo(
+    () =>
+      initialAgent?.id ? `wave:agent-mcp-api-key:${initialAgent.id}` : null,
+    [initialAgent?.id],
+  );
+  const agentMcpPath = initialAgent?.id
+    ? `/api/mcp/agent/${initialAgent.id}`
+    : "";
+  const agentMcpUrl = browserOrigin
+    ? `${browserOrigin}${agentMcpPath}`
+    : agentMcpPath;
 
   const { data: mcpList, isLoading: isMcpLoading } = useMcpList();
   const { data: workflowToolList, isLoading: isWorkflowLoading } =
     useWorkflowToolList();
+  const { data: chatModelProviders, isLoading: isChatModelsLoading } =
+    useChatModels();
+
+  const mcpModelProviders = useMemo(
+    () =>
+      (chatModelProviders ?? [])
+        .map((provider) => ({
+          provider: provider.provider,
+          models: provider.models.filter((item) => !item.isToolCallUnsupported),
+        }))
+        .filter((provider) => provider.models.length > 0),
+    [chatModelProviders],
+  );
+  const isAgentMcpModelAvailable = useMemo(() => {
+    if (!agentMcpModel) return true;
+
+    return mcpModelProviders.some((provider) => {
+      if (provider.provider !== agentMcpModel.provider) return false;
+      return provider.models.some(
+        (model) => model.name === agentMcpModel.model,
+      );
+    });
+  }, [agentMcpModel, mcpModelProviders]);
+  const agentMcpModelValue = useMemo(() => {
+    if (!agentMcpModel || !isAgentMcpModelAvailable) {
+      return MCP_MODEL_AUTO_VALUE;
+    }
+
+    return makeMcpModelValue(agentMcpModel);
+  }, [agentMcpModel, isAgentMcpModelAvailable]);
 
   const assignToolsByNames = useCallback(
     (toolNames: string[]) => {
@@ -426,6 +527,165 @@ export default function EditAgent({
     isBookmarkToggleLoading,
   ]);
 
+  useEffect(() => {
+    setBrowserOrigin(window.location.origin);
+  }, []);
+
+  useEffect(() => {
+    if (!agentMcpLocalStorageKey || typeof window === "undefined") return;
+
+    const removeStored = () => {
+      localStorage.removeItem(agentMcpLocalStorageKey);
+    };
+
+    try {
+      const raw = localStorage.getItem(agentMcpLocalStorageKey);
+      if (!raw) return;
+
+      const parsed = JSON.parse(raw) as { key?: string; preview?: string };
+      if (!parsed?.key) {
+        removeStored();
+        return;
+      }
+
+      const storedPreview = parsed.preview || parsed.key.slice(-4);
+      const serverPreview = initialAgent?.mcpApiKeyPreview || null;
+
+      if (!serverPreview || storedPreview !== serverPreview) {
+        removeStored();
+        return;
+      }
+
+      setAgentMcpApiKey(parsed.key);
+      setAgentMcpKeyPreview(serverPreview);
+    } catch {
+      removeStored();
+    }
+  }, [agentMcpLocalStorageKey, initialAgent?.mcpApiKeyPreview]);
+
+  const copyToClipboard = useCallback(
+    (text: string) => {
+      navigator.clipboard.writeText(text);
+      toast.success(t("Agent.agentMcpCopied"));
+    },
+    [t],
+  );
+
+  const handleGenerateAgentMcpKey = useCallback(async () => {
+    if (!initialAgent?.id || !agentMcpLocalStorageKey) return;
+    setIsAgentMcpGeneratingKey(true);
+    try {
+      const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "generate" }),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to generate key");
+      }
+      const data = await res.json();
+      setAgentMcpApiKey(data.key);
+      setAgentMcpKeyPreview(data.preview);
+      localStorage.setItem(
+        agentMcpLocalStorageKey,
+        JSON.stringify({
+          key: data.key,
+          preview: data.preview,
+          createdAt: Date.now(),
+        }),
+      );
+      toast.success(t("Agent.agentMcpKeyGenerated"));
+    } catch {
+      toast.error(t("Agent.agentMcpKeyGenerateFailed"));
+    } finally {
+      setIsAgentMcpGeneratingKey(false);
+    }
+  }, [agentMcpLocalStorageKey, initialAgent?.id, t]);
+
+  const handleRevokeAgentMcpKey = useCallback(async () => {
+    if (!initialAgent?.id || !agentMcpLocalStorageKey) return;
+    setIsAgentMcpRevokingKey(true);
+    try {
+      const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "revoke" }),
+      });
+      if (!res.ok) {
+        throw new Error("Failed to revoke key");
+      }
+      localStorage.removeItem(agentMcpLocalStorageKey);
+      setAgentMcpApiKey(null);
+      setAgentMcpKeyPreview(null);
+      toast.success(t("Agent.agentMcpKeyRevoked"));
+    } catch {
+      toast.error(t("Agent.agentMcpKeyRevokeFailed"));
+    } finally {
+      setIsAgentMcpRevokingKey(false);
+    }
+  }, [agentMcpLocalStorageKey, initialAgent?.id, t]);
+
+  const handleToggleAgentMcp = useCallback(
+    async (enabled: boolean) => {
+      if (!initialAgent?.id) return;
+      setIsAgentMcpToggling(true);
+      try {
+        const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        });
+        if (!res.ok) {
+          throw new Error("Failed to toggle MCP");
+        }
+        setAgentMcpEnabled(enabled);
+        toast.success(
+          enabled ? t("Agent.agentMcpEnabled") : t("Agent.agentMcpDisabled"),
+        );
+      } catch {
+        toast.error(t("Agent.agentMcpToggleFailed"));
+      } finally {
+        setIsAgentMcpToggling(false);
+      }
+    },
+    [initialAgent?.id, t],
+  );
+
+  const handleChangeAgentMcpModel = useCallback(
+    async (value: string) => {
+      if (!initialAgent?.id) return;
+
+      const parsedModel = parseMcpModelValue(value);
+
+      setIsAgentMcpUpdatingModel(true);
+      try {
+        const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: parsedModel,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to update MCP model");
+        }
+
+        setAgentMcpModel(parsedModel);
+        toast.success(
+          parsedModel
+            ? t("Agent.agentMcpModelUpdated")
+            : t("Agent.agentMcpModelAutoSelected"),
+        );
+      } catch {
+        toast.error(t("Agent.agentMcpModelUpdateFailed"));
+      } finally {
+        setIsAgentMcpUpdatingModel(false);
+      }
+    },
+    [initialAgent?.id, t],
+  );
+
   const handleAgentChange = useCallback(
     (generatedData: any) => {
       if (textareaRef.current) {
@@ -494,6 +754,34 @@ export default function EditAgent({
   const isLoadingTool = useMemo(() => {
     return isMcpLoading || isWorkflowLoading;
   }, [isMcpLoading, isWorkflowLoading]);
+  const agentMcpConfig = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          type: "http",
+          url: agentMcpUrl || "https://your-domain/api/mcp/agent/{agentId}",
+          headers: {
+            EMMA_AGENT_KEY: agentMcpApiKey ?? "YOUR_AGENT_API_KEY",
+          },
+        },
+        null,
+        2,
+      ),
+    [agentMcpApiKey, agentMcpUrl],
+  );
+  const isAgentMcpBusy = useMemo(
+    () =>
+      isAgentMcpGeneratingKey ||
+      isAgentMcpRevokingKey ||
+      isAgentMcpToggling ||
+      isAgentMcpUpdatingModel,
+    [
+      isAgentMcpGeneratingKey,
+      isAgentMcpRevokingKey,
+      isAgentMcpToggling,
+      isAgentMcpUpdatingModel,
+    ],
+  );
 
   const isLoading = useMemo(() => {
     return (
@@ -642,156 +930,371 @@ export default function EditAgent({
           )}
         </div>
 
-        <div className="mt-10 flex items-center gap-2">
-          <p className="text-sm text-muted-foreground">
-            {t("Agent.agentSettingsDescription")}
-          </p>
-        </div>
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          className="w-full mt-2 gap-4"
+        >
+          <TabsList className="grid w-full grid-cols-2 max-w-xs">
+            <TabsTrigger value="details">
+              {t("Agent.agentMcpTabDetails")}
+            </TabsTrigger>
+            <TabsTrigger value="agent-mcp">
+              {t("Agent.agentMcpTabAgentMcp")}
+            </TabsTrigger>
+          </TabsList>
 
-        <div className="flex flex-col gap-6">
-          <div className="flex gap-2 items-center">
-            <span>{t("Agent.thisAgentIs")}</span>
-            {false ? (
-              <Skeleton className="w-44 h-10" />
-            ) : (
-              <Input
-                id="agent-role"
-                data-testid="agent-role-input"
-                disabled={isLoading || !hasEditAccess}
-                placeholder={t("Agent.agentRolePlaceholder")}
-                className="hover:bg-input placeholder:text-xs bg-secondary/40 w-44 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
-                value={agent.instructions?.role || ""}
-                onChange={(e) =>
-                  setAgent({
-                    instructions: {
-                      ...agent.instructions,
-                      role: e.target.value || "",
-                    },
-                  })
-                }
-                readOnly={!hasEditAccess}
-              />
-            )}
-            <span>{t("Agent.expertIn")}</span>
-          </div>
+          <TabsContent value="details" className="flex flex-col gap-6 mt-2">
+            <div className="mt-4 flex items-center gap-2">
+              <p className="text-sm text-muted-foreground">
+                {t("Agent.agentSettingsDescription")}
+              </p>
+            </div>
 
-          <div className="flex gap-2 flex-col">
-            <Label htmlFor="agent-prompt" className="text-base">
-              {t("Agent.agentInstructionsLabel")}
-            </Label>
-            {false ? (
-              <Skeleton className="w-full h-48" />
-            ) : (
-              <Textarea
-                id="agent-prompt"
-                data-testid="agent-prompt-textarea"
-                ref={textareaRef}
-                disabled={isLoading || !hasEditAccess}
-                placeholder={t("Agent.agentInstructionsPlaceholder")}
-                className="p-6 hover:bg-input min-h-48 max-h-96 overflow-y-auto resize-none placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
-                value={agent.instructions?.systemPrompt || ""}
-                onChange={(e) =>
-                  setAgent({
-                    instructions: {
-                      ...agent.instructions,
-                      systemPrompt: e.target.value || "",
-                    },
-                  })
-                }
-                readOnly={!hasEditAccess}
-              />
-            )}
-          </div>
+            <div className="flex gap-2 items-center">
+              <span>{t("Agent.thisAgentIs")}</span>
+              {false ? (
+                <Skeleton className="w-44 h-10" />
+              ) : (
+                <Input
+                  id="agent-role"
+                  data-testid="agent-role-input"
+                  disabled={isLoading || !hasEditAccess}
+                  placeholder={t("Agent.agentRolePlaceholder")}
+                  className="hover:bg-input placeholder:text-xs bg-secondary/40 w-44 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
+                  value={agent.instructions?.role || ""}
+                  onChange={(e) =>
+                    setAgent({
+                      instructions: {
+                        ...agent.instructions,
+                        role: e.target.value || "",
+                      },
+                    })
+                  }
+                  readOnly={!hasEditAccess}
+                />
+              )}
+              <span>{t("Agent.expertIn")}</span>
+            </div>
 
-          <div className="flex gap-2 flex-col">
-            <Label htmlFor="agent-tool-bindings" className="text-base">
-              {t("Agent.agentToolsLabel")}
-            </Label>
-            {false ? (
-              <Skeleton className="w-full h-12" />
-            ) : (
-              <AgentToolSelector
-                mentions={agent.instructions?.mentions || []}
-                isLoading={isLoadingTool}
-                disabled={isLoading}
+            <div className="flex gap-2 flex-col">
+              <Label htmlFor="agent-prompt" className="text-base">
+                {t("Agent.agentInstructionsLabel")}
+              </Label>
+              {false ? (
+                <Skeleton className="w-full h-48" />
+              ) : (
+                <Textarea
+                  id="agent-prompt"
+                  data-testid="agent-prompt-textarea"
+                  ref={textareaRef}
+                  disabled={isLoading || !hasEditAccess}
+                  placeholder={t("Agent.agentInstructionsPlaceholder")}
+                  className="p-6 hover:bg-input min-h-48 max-h-96 overflow-y-auto resize-none placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
+                  value={agent.instructions?.systemPrompt || ""}
+                  onChange={(e) =>
+                    setAgent({
+                      instructions: {
+                        ...agent.instructions,
+                        systemPrompt: e.target.value || "",
+                      },
+                    })
+                  }
+                  readOnly={!hasEditAccess}
+                />
+              )}
+            </div>
+
+            <div className="flex gap-2 flex-col">
+              <Label htmlFor="agent-tool-bindings" className="text-base">
+                {t("Agent.agentToolsLabel")}
+              </Label>
+              {false ? (
+                <Skeleton className="w-full h-12" />
+              ) : (
+                <AgentToolSelector
+                  mentions={agent.instructions?.mentions || []}
+                  isLoading={isLoadingTool}
+                  disabled={isLoading}
+                  hasEditAccess={hasEditAccess}
+                  onChange={(mentions) =>
+                    setAgent({
+                      instructions: {
+                        ...agent.instructions,
+                        mentions,
+                      },
+                    })
+                  }
+                />
+              )}
+            </div>
+
+            <div className="flex gap-2 flex-col border-t pt-4 mt-2">
+              <SubAgentSection
+                agentId={initialAgent?.id}
+                subAgents={subAgents}
+                subAgentsEnabled={subAgentsEnabled}
+                isLoadingTools={isLoadingTool}
                 hasEditAccess={hasEditAccess}
-                onChange={(mentions) =>
-                  setAgent({
-                    instructions: {
-                      ...agent.instructions,
-                      mentions,
-                    },
-                  })
-                }
+                onChange={(newSubAgents, newEnabled) => {
+                  setSubAgents(newSubAgents);
+                  setSubAgentsEnabled(newEnabled);
+                }}
               />
+            </div>
+
+            <div className="flex gap-2 flex-col border-t pt-4 mt-2">
+              <KnowledgeAgentSection
+                agentId={initialAgent?.id}
+                knowledgeGroups={knowledgeGroups}
+                enabled={knowledgeEnabled}
+                hasEditAccess={hasEditAccess}
+                onChange={(groups, enabled) => {
+                  setKnowledgeGroups(groups);
+                  setKnowledgeEnabled(enabled);
+                }}
+              />
+            </div>
+
+            <div className="flex gap-2 flex-col border-t pt-4 mt-2">
+              <SkillAgentSection
+                skills={skills}
+                enabled={skillsEnabled}
+                hasEditAccess={hasEditAccess}
+                onChange={(updatedSkills, enabled) => {
+                  setSkills(updatedSkills);
+                  setSkillsEnabled(enabled);
+                }}
+              />
+            </div>
+
+            {hasEditAccess && (
+              <div className={cn("flex justify-end gap-2")}>
+                {initialAgent && isOwner && (
+                  <Button
+                    className="mt-2 hover:text-destructive"
+                    variant="ghost"
+                    onClick={deleteAgent}
+                    disabled={isLoading}
+                  >
+                    {t("Common.delete")}
+                  </Button>
+                )}
+
+                <Button
+                  className={cn(
+                    "mt-2",
+                    !initialAgent || !isOwner ? "ml-auto" : "",
+                  )}
+                  onClick={saveAgent}
+                  disabled={isLoading || !hasEditAccess}
+                  data-testid="agent-save-button"
+                >
+                  {isSaving ? t("Common.saving") : t("Common.save")}
+                  {isSaving && <Loader className="size-4 animate-spin" />}
+                </Button>
+              </div>
             )}
-          </div>
+          </TabsContent>
 
-          <div className="flex gap-2 flex-col border-t pt-4 mt-2">
-            <SubAgentSection
-              agentId={initialAgent?.id}
-              subAgents={subAgents}
-              subAgentsEnabled={subAgentsEnabled}
-              isLoadingTools={isLoadingTool}
-              hasEditAccess={hasEditAccess}
-              onChange={(newSubAgents, newEnabled) => {
-                setSubAgents(newSubAgents);
-                setSubAgentsEnabled(newEnabled);
-              }}
-            />
-          </div>
+          <TabsContent value="agent-mcp" className="mt-2">
+            {!initialAgent && (
+              <div className="border rounded-xl p-4 flex items-start gap-3">
+                <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">
+                    {t("Agent.agentMcpSaveFirstTitle")}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {t("Agent.agentMcpSaveFirstDescription")}
+                  </p>
+                </div>
+              </div>
+            )}
 
-          <div className="flex gap-2 flex-col border-t pt-4 mt-2">
-            <KnowledgeAgentSection
-              agentId={initialAgent?.id}
-              knowledgeGroups={knowledgeGroups}
-              enabled={knowledgeEnabled}
-              hasEditAccess={hasEditAccess}
-              onChange={(groups, enabled) => {
-                setKnowledgeGroups(groups);
-                setKnowledgeEnabled(enabled);
-              }}
-            />
-          </div>
+            {initialAgent && !isOwner && (
+              <div className="border rounded-xl p-4 flex items-start gap-3">
+                <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
+                <div>
+                  <p className="text-sm font-medium">
+                    {t("Agent.agentMcpOwnerOnlyTitle")}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {t("Agent.agentMcpOwnerOnlyDescription")}
+                  </p>
+                </div>
+              </div>
+            )}
 
-          <div className="flex gap-2 flex-col border-t pt-4 mt-2">
-            <SkillAgentSection
-              skills={skills}
-              enabled={skillsEnabled}
-              hasEditAccess={hasEditAccess}
-              onChange={(updatedSkills, enabled) => {
-                setSkills(updatedSkills);
-                setSkillsEnabled(enabled);
-              }}
-            />
-          </div>
-        </div>
-
-        {hasEditAccess && (
-          <div className={cn("flex justify-end gap-2")}>
-            {/* Delete button - only for owners */}
             {initialAgent && isOwner && (
-              <Button
-                className="mt-2 hover:text-destructive"
-                variant="ghost"
-                onClick={deleteAgent}
-                disabled={isLoading}
-              >
-                {t("Common.delete")}
-              </Button>
-            )}
+              <div className="border rounded-xl p-4 flex flex-col gap-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <ServerIcon className="size-4 text-primary" />
+                      <p className="text-sm font-medium">
+                        {t("Agent.agentMcpTitle")}
+                      </p>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {t("Agent.agentMcpDescription")}
+                    </p>
+                    <div className="space-y-2 pt-1">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentMcpModelLabel")}
+                      </p>
+                      <Select
+                        value={agentMcpModelValue}
+                        onValueChange={handleChangeAgentMcpModel}
+                        disabled={isAgentMcpBusy || isChatModelsLoading}
+                      >
+                        <SelectTrigger className="w-full h-8 text-xs">
+                          <SelectValue
+                            placeholder={t("Agent.agentMcpModelPlaceholder")}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={MCP_MODEL_AUTO_VALUE}>
+                            {t("Agent.agentMcpModelAuto")}
+                          </SelectItem>
+                          {mcpModelProviders.map((provider) => (
+                            <SelectGroup key={provider.provider}>
+                              <SelectLabel>{provider.provider}</SelectLabel>
+                              {provider.models.map((model) => (
+                                <SelectItem
+                                  key={`${provider.provider}:${model.name}`}
+                                  value={makeMcpModelValue({
+                                    provider: provider.provider,
+                                    model: model.name,
+                                  })}
+                                >
+                                  {model.name}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {isChatModelsLoading
+                          ? t("Agent.agentMcpModelLoading")
+                          : !isAgentMcpModelAvailable
+                            ? t("Agent.agentMcpModelUnavailable")
+                            : mcpModelProviders.length > 0
+                              ? t("Agent.agentMcpModelDescription")
+                              : t("Agent.agentMcpModelNotFound")}
+                      </p>
+                    </div>
+                  </div>
+                  <Switch
+                    checked={agentMcpEnabled}
+                    onCheckedChange={handleToggleAgentMcp}
+                    disabled={isAgentMcpBusy}
+                  />
+                </div>
 
-            <Button
-              className={cn("mt-2", !initialAgent || !isOwner ? "ml-auto" : "")}
-              onClick={saveAgent}
-              disabled={isLoading || !hasEditAccess}
-              data-testid="agent-save-button"
-            >
-              {isSaving ? t("Common.saving") : t("Common.save")}
-              {isSaving && <Loader className="size-4 animate-spin" />}
-            </Button>
-          </div>
-        )}
+                <div className="space-y-2">
+                  <Label className="text-sm">
+                    {t("Agent.agentMcpApiKeyLabel")}
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono break-all">
+                      {agentMcpApiKey ? (
+                        <span>{agentMcpApiKey}</span>
+                      ) : agentMcpKeyPreview ? (
+                        <span className="text-muted-foreground">
+                          ••••••••••••{agentMcpKeyPreview}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground italic">
+                          {t("Agent.agentMcpNoKey")}
+                        </span>
+                      )}
+                    </div>
+                    {agentMcpApiKey && (
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        className="size-9 shrink-0"
+                        onClick={() => copyToClipboard(agentMcpApiKey)}
+                      >
+                        <CopyIcon className="size-3.5" />
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 shrink-0"
+                      onClick={handleGenerateAgentMcpKey}
+                      disabled={isAgentMcpBusy}
+                    >
+                      {isAgentMcpGeneratingKey ? (
+                        <RefreshCwIcon className="size-3.5 animate-spin" />
+                      ) : (
+                        <KeyIcon className="size-3.5" />
+                      )}
+                      {agentMcpKeyPreview
+                        ? t("Agent.agentMcpRegenerate")
+                        : t("Agent.agentMcpGenerate")}
+                    </Button>
+                  </div>
+                  {agentMcpKeyPreview && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="px-0 text-xs text-muted-foreground hover:text-destructive w-fit"
+                      onClick={handleRevokeAgentMcpKey}
+                      disabled={isAgentMcpBusy}
+                    >
+                      {isAgentMcpRevokingKey && (
+                        <RefreshCwIcon className="size-3.5 animate-spin mr-1" />
+                      )}
+                      {t("Agent.agentMcpRevoke")}
+                    </Button>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm">
+                    {t("Agent.agentMcpEndpointLabel")}
+                  </Label>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                      {agentMcpUrl}
+                    </div>
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      className="size-9 shrink-0"
+                      onClick={() => copyToClipboard(agentMcpUrl)}
+                    >
+                      <CopyIcon className="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label className="text-sm">
+                    {t("Agent.agentMcpConfigLabel")}
+                  </Label>
+                  <div className="relative">
+                    <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
+                      {agentMcpConfig}
+                    </pre>
+                    <Button
+                      size="icon"
+                      variant="outline"
+                      className="size-7 absolute top-2 right-2"
+                      onClick={() => copyToClipboard(agentMcpConfig)}
+                    >
+                      <CopyIcon className="size-3" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
 
       <GenerateAgentDialog

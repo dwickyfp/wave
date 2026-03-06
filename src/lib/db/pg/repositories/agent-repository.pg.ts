@@ -28,6 +28,10 @@ export const pgAgentRepository: AgentRepository = {
       description: result.description ?? undefined,
       icon: result.icon ?? undefined,
       instructions: result.instructions ?? {},
+      mcpApiKeyHash: result.mcpApiKeyHash ?? null,
+      mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
+      mcpModelProvider: result.mcpModelProvider ?? null,
+      mcpModelName: result.mcpModelName ?? null,
     };
   },
 
@@ -43,6 +47,11 @@ export const pgAgentRepository: AgentRepository = {
         visibility: AgentTable.visibility,
         subAgentsEnabled: AgentTable.subAgentsEnabled,
         agentType: AgentTable.agentType,
+        mcpEnabled: AgentTable.mcpEnabled,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
+        mcpModelProvider: AgentTable.mcpModelProvider,
+        mcpModelName: AgentTable.mcpModelName,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         isBookmarked: sql<boolean>`${BookmarkTable.id} IS NOT NULL`,
@@ -74,7 +83,48 @@ export const pgAgentRepository: AgentRepository = {
       description: result.description ?? undefined,
       icon: result.icon ?? undefined,
       instructions: result.instructions ?? {},
+      mcpApiKeyHash: result.mcpApiKeyHash ?? null,
+      mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
+      mcpModelProvider: result.mcpModelProvider ?? null,
+      mcpModelName: result.mcpModelName ?? null,
       isBookmarked: result.isBookmarked ?? false,
+    };
+  },
+
+  async selectAgentByIdForMcp(id): Promise<Agent | null> {
+    const [result] = await db
+      .select({
+        id: AgentTable.id,
+        name: AgentTable.name,
+        description: AgentTable.description,
+        icon: AgentTable.icon,
+        userId: AgentTable.userId,
+        instructions: AgentTable.instructions,
+        visibility: AgentTable.visibility,
+        subAgentsEnabled: AgentTable.subAgentsEnabled,
+        agentType: AgentTable.agentType,
+        mcpEnabled: AgentTable.mcpEnabled,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
+        mcpModelProvider: AgentTable.mcpModelProvider,
+        mcpModelName: AgentTable.mcpModelName,
+        createdAt: AgentTable.createdAt,
+        updatedAt: AgentTable.updatedAt,
+      })
+      .from(AgentTable)
+      .where(eq(AgentTable.id, id));
+
+    if (!result) return null;
+
+    return {
+      ...result,
+      description: result.description ?? undefined,
+      icon: result.icon ?? undefined,
+      instructions: result.instructions ?? {},
+      mcpApiKeyHash: result.mcpApiKeyHash ?? null,
+      mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
+      mcpModelProvider: result.mcpModelProvider ?? null,
+      mcpModelName: result.mcpModelName ?? null,
     };
   },
 
@@ -88,6 +138,11 @@ export const pgAgentRepository: AgentRepository = {
         userId: AgentTable.userId,
         instructions: AgentTable.instructions,
         visibility: AgentTable.visibility,
+        mcpEnabled: AgentTable.mcpEnabled,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
+        mcpModelProvider: AgentTable.mcpModelProvider,
+        mcpModelName: AgentTable.mcpModelName,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         userName: UserTable.name,
@@ -105,6 +160,10 @@ export const pgAgentRepository: AgentRepository = {
       description: result.description ?? undefined,
       icon: result.icon ?? undefined,
       instructions: result.instructions ?? {},
+      mcpApiKeyHash: result.mcpApiKeyHash ?? null,
+      mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
+      mcpModelProvider: result.mcpModelProvider ?? null,
+      mcpModelName: result.mcpModelName ?? null,
       userName: result.userName ?? undefined,
       userAvatar: result.userAvatar ?? undefined,
       isBookmarked: false, // Always false for owned agents
@@ -135,6 +194,10 @@ export const pgAgentRepository: AgentRepository = {
       description: result.description ?? undefined,
       icon: result.icon ?? undefined,
       instructions: result.instructions ?? {},
+      mcpApiKeyHash: result.mcpApiKeyHash ?? null,
+      mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
+      mcpModelProvider: result.mcpModelProvider ?? null,
+      mcpModelName: result.mcpModelName ?? null,
     };
   },
 
@@ -254,5 +317,60 @@ export const pgAgentRepository: AgentRepository = {
     if (userId == agent.userId) return true;
     if (agent.visibility === "public" && !destructive) return true;
     return false;
+  },
+
+  async setMcpApiKey(id, userId, keyHash, keyPreview) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpApiKeyHash: keyHash,
+        mcpApiKeyPreview: keyPreview,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpEnabled(id, userId, enabled) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpEnabled: enabled,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpModel(id, userId, modelProvider, modelName) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpModelProvider: modelProvider,
+        mcpModelName: modelName,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async getAgentByMcpKey(agentId) {
+    const [row] = await db
+      .select({
+        id: AgentTable.id,
+        userId: AgentTable.userId,
+        agentType: AgentTable.agentType,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpEnabled: AgentTable.mcpEnabled,
+      })
+      .from(AgentTable)
+      .where(eq(AgentTable.id, agentId));
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      userId: row.userId,
+      agentType: row.agentType,
+      mcpApiKeyHash: row.mcpApiKeyHash ?? null,
+      mcpEnabled: row.mcpEnabled,
+    };
   },
 };

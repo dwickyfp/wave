@@ -100,6 +100,11 @@ export const AgentTable = pgTable("agent", {
   })
     .notNull()
     .default("standard"),
+  mcpEnabled: boolean("mcp_enabled").notNull().default(false),
+  mcpApiKeyHash: text("mcp_api_key_hash"),
+  mcpApiKeyPreview: text("mcp_api_key_preview"),
+  mcpModelProvider: text("mcp_model_provider"),
+  mcpModelName: text("mcp_model_name"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),

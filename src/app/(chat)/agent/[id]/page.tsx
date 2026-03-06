@@ -37,6 +37,10 @@ export default async function AgentPage({
     notFound();
   }
 
+  if (agent.agentType === "snowflake_cortex") {
+    redirect(`/agent/snowflake/${id}`);
+  }
+
   const isOwner = agent.userId === session.user.id;
   const hasEditAccess = isOwner || agent.visibility === "public";
 

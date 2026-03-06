@@ -72,6 +72,11 @@ export type AgentSummary = {
   visibility: AgentVisibility;
   createdAt: Date;
   updatedAt: Date;
+  mcpEnabled?: boolean;
+  mcpApiKeyHash?: string | null;
+  mcpApiKeyPreview?: string | null;
+  mcpModelProvider?: string | null;
+  mcpModelName?: string | null;
   userName?: string;
   userAvatar?: string;
   isBookmarked?: boolean;
@@ -90,6 +95,7 @@ export type AgentRepository = {
   insertAgent(agent: z.infer<typeof AgentCreateSchema>): Promise<Agent>;
 
   selectAgentById(id: string, userId: string): Promise<Agent | null>;
+  selectAgentByIdForMcp(id: string): Promise<Agent | null>;
 
   selectAgentsByUserId(userId: string): Promise<Agent[]>;
 
@@ -112,6 +118,29 @@ export type AgentRepository = {
     userId: string,
     destructive?: boolean,
   ): Promise<boolean>;
+
+  setMcpApiKey(
+    id: string,
+    userId: string,
+    keyHash: string | null,
+    keyPreview: string | null,
+  ): Promise<void>;
+
+  setMcpEnabled(id: string, userId: string, enabled: boolean): Promise<void>;
+
+  setMcpModel(
+    id: string,
+    userId: string,
+    modelProvider: string | null,
+    modelName: string | null,
+  ): Promise<void>;
+
+  getAgentByMcpKey(
+    agentId: string,
+  ): Promise<Pick<
+    Agent,
+    "id" | "userId" | "agentType" | "mcpApiKeyHash" | "mcpEnabled"
+  > | null>;
 };
 
 export const AgentGenerateSubAgentSchema = z.object({
