@@ -53,6 +53,7 @@
     "check": "pnpm lint:fix && pnpm check-types && pnpm test"
   },
   "dependencies": {
+    "@a2a-js/sdk": "^0.3.4",
     "@ai-sdk/anthropic": "^3.0.0",
     "@ai-sdk/azure": "^3.0.0",
     "@ai-sdk/cohere": "^3.0.23",

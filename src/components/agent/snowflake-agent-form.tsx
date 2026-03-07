@@ -19,6 +19,7 @@ import { SnowflakeAgentCreateSchema } from "app-types/snowflake-agent";
 import type { SnowflakeAgentConfig } from "app-types/snowflake-agent";
 import type { Agent, AgentIcon } from "app-types/agent";
 import { AgentIconPicker } from "./agent-icon-picker";
+import { A2APublishPanel } from "./a2a-publish-panel";
 import {
   ShareableActions,
   type Visibility,
@@ -614,6 +615,13 @@ export default function SnowflakeAgentForm({
               </div>
             )}
         </div>
+
+        <A2APublishPanel
+          agentId={initialAgent?.id}
+          initialEnabled={initialAgent?.a2aEnabled ?? false}
+          initialPreview={initialAgent?.a2aApiKeyPreview ?? null}
+          isOwner={isOwner}
+        />
 
         {hasEditAccess && (
           <div className="flex justify-end gap-2 mt-2">

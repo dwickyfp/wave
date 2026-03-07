@@ -41,6 +41,10 @@ export default async function AgentPage({
     redirect(`/agent/snowflake/${id}`);
   }
 
+  if (agent.agentType === "a2a_remote") {
+    redirect(`/agent/a2a/${id}`);
+  }
+
   const isOwner = agent.userId === session.user.id;
   const hasEditAccess = isOwner || agent.visibility === "public";
 

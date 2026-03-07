@@ -65,6 +65,7 @@ import { GenerateAgentDialog } from "./generate-agent-dialog";
 import { AgentIconPicker } from "./agent-icon-picker";
 import { AgentToolSelector } from "./agent-tool-selector";
 import { SubAgentSection } from "./subagent-section";
+import { A2APublishPanel } from "./a2a-publish-panel";
 import { KnowledgeAgentSection } from "@/components/knowledge/knowledge-agent-section";
 import type { KnowledgeSummary } from "app-types/knowledge";
 import { SkillAgentSection } from "@/components/skill/skill-agent-section";
@@ -1575,6 +1576,13 @@ export default function EditAgent({
                       )}
                     </div>
                   </div>
+
+                  <A2APublishPanel
+                    agentId={initialAgent.id}
+                    initialEnabled={initialAgent.a2aEnabled ?? false}
+                    initialPreview={initialAgent.a2aApiKeyPreview ?? null}
+                    isOwner={isOwner}
+                  />
 
                   <Accordion
                     type="multiple"

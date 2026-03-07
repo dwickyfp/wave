@@ -288,6 +288,13 @@
       "when": 1774300000000,
       "tag": "0040_usage_monitoring_realtime_cost_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1772912279497,
+      "tag": "0041_simple_darkhawk",
+      "breakpoints": true
     }
   ]
 }

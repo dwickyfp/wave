@@ -1,17 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { mutate as swrMutate } from "swr";
 import { toast } from "sonner";
+import { mutate as swrMutate } from "swr";
 
 const CHAT_MODELS_KEY = "/api/chat/models";
+import { LlmModelConfig, LlmProviderConfig } from "app-types/settings";
+import { cn } from "lib/utils";
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "ui/sheet";
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  FileText,
+  Image,
+  Pencil,
+  Plus,
+  Save,
+  Sparkles,
+  Trash2,
+  Tv,
+  Wrench,
+  X,
+} from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,30 +38,18 @@ import {
 import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
-import { Switch } from "ui/switch";
 import { Separator } from "ui/separator";
 import {
-  Eye,
-  EyeOff,
-  Plus,
-  Trash2,
-  Save,
-  Image,
-  FileText,
-  Wrench,
-  Sparkles,
-  Pencil,
-  Check,
-  X,
-  Tv,
-  Brain,
-  ChevronDown,
-  ChevronRight,
-} from "lucide-react";
-import { LlmModelConfig, LlmProviderConfig } from "app-types/settings";
-import { cn } from "lib/utils";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "ui/sheet";
+import { Switch } from "ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { ModelRegisterDialog } from "./model-register-dialog";
-import { getProviderDef, ProviderCustomField } from "./provider-definitions";
+import { ProviderCustomField, getProviderDef } from "./provider-definitions";
 
 interface ProviderConfigSheetProps {
   provider: LlmProviderConfig | null;
@@ -81,6 +82,32 @@ const CAPABILITY_LABELS: Record<CapabilityKey, string> = {
   supportsImageInput: "Image In",
   supportsImageGeneration: "Img Gen",
   supportsFileInput: "Files",
+};
+
+const CAPABILITY_DESCRIPTIONS: Record<
+  CapabilityKey,
+  { enabled: string; disabled: string }
+> = {
+  supportsTools: {
+    enabled: "Disable tool and MCP calls for this model.",
+    disabled: "Enable tool and MCP calls for this model.",
+  },
+  supportsGeneration: {
+    enabled: "Remove this model from skill and agent generation workflows.",
+    disabled: "Allow this model to be used for skill and agent generation.",
+  },
+  supportsImageInput: {
+    enabled: "Stop this model from accepting image inputs.",
+    disabled: "Allow this model to accept image inputs.",
+  },
+  supportsImageGeneration: {
+    enabled: "Stop this model from generating images.",
+    disabled: "Allow this model to generate images.",
+  },
+  supportsFileInput: {
+    enabled: "Stop this model from accepting uploaded files.",
+    disabled: "Allow this model to accept uploaded files.",
+  },
 };
 
 type ProviderSettingValue = string | number | boolean | null;
@@ -801,6 +828,10 @@ function ModelRow({
     setEditing(false);
   };
 
+  const modelEnabledTooltip = model.enabled
+    ? "Disable this model without deleting its configuration."
+    : "Enable this model so users can select it again.";
+
   return (
     <div
       className={cn(
@@ -910,58 +941,93 @@ function ModelRow({
         <div className="flex items-center gap-1 shrink-0">
           {editing ? (
             <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={handleSave}
-                disabled={saving}
-              >
-                <Check className="size-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={handleCancel}
-              >
-                <X className="size-3" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-foreground"
+                    onClick={handleSave}
+                    disabled={saving}
+                  >
+                    <Check className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Save model changes</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-foreground"
+                    onClick={handleCancel}
+                  >
+                    <X className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Discard unsaved changes
+                </TooltipContent>
+              </Tooltip>
             </>
           ) : (
             <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={() => {
-                  setEditUiName(model.uiName);
-                  setEditApiName(model.apiName);
-                  setEditContextLength(String(model.contextLength ?? 0));
-                  setEditInputTokenPricePer1MUsd(
-                    String(model.inputTokenPricePer1MUsd ?? 0),
-                  );
-                  setEditOutputTokenPricePer1MUsd(
-                    String(model.outputTokenPricePer1MUsd ?? 0),
-                  );
-                  setEditing(true);
-                }}
-              >
-                <Pencil className="size-3" />
-              </Button>
-              <Switch
-                checked={model.enabled}
-                onCheckedChange={onToggleEnabled}
-                className="scale-75"
-              />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-destructive"
-                onClick={onDelete}
-              >
-                <Trash2 className="size-3" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      setEditUiName(model.uiName);
+                      setEditApiName(model.apiName);
+                      setEditContextLength(String(model.contextLength ?? 0));
+                      setEditInputTokenPricePer1MUsd(
+                        String(model.inputTokenPricePer1MUsd ?? 0),
+                      );
+                      setEditOutputTokenPricePer1MUsd(
+                        String(model.outputTokenPricePer1MUsd ?? 0),
+                      );
+                      setEditing(true);
+                    }}
+                  >
+                    <Pencil className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Edit model names, limits, and pricing
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center">
+                    <Switch
+                      checked={model.enabled}
+                      onCheckedChange={onToggleEnabled}
+                      className="scale-75"
+                    />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {modelEnabledTooltip}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-destructive"
+                    onClick={onDelete}
+                  >
+                    <Trash2 className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Delete this model configuration
+                </TooltipContent>
+              </Tooltip>
             </>
           )}
         </div>
@@ -971,20 +1037,30 @@ function ModelRow({
       {!editing && model.modelType === "llm" && (
         <div className="flex flex-wrap gap-1">
           {CAPS.map((cap) => (
-            <button
-              key={cap}
-              onClick={() => onToggleCapability(cap)}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors",
-                model[cap]
-                  ? "bg-primary/10 border-primary/30 text-primary"
-                  : "bg-muted border-transparent text-muted-foreground",
-              )}
-              title={`Toggle ${CAPABILITY_LABELS[cap]}`}
-            >
-              {CAPABILITY_ICONS[cap]}
-              {CAPABILITY_LABELS[cap]}
-            </button>
+            <Tooltip key={cap}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onToggleCapability(cap)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors",
+                    model[cap]
+                      ? "bg-primary/10 border-primary/30 text-primary"
+                      : "bg-muted border-transparent text-muted-foreground",
+                  )}
+                >
+                  {CAPABILITY_ICONS[cap]}
+                  {CAPABILITY_LABELS[cap]}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-56 text-xs">
+                {
+                  CAPABILITY_DESCRIPTIONS[cap][
+                    model[cap] ? "enabled" : "disabled"
+                  ]
+                }
+              </TooltipContent>
+            </Tooltip>
           ))}
         </div>
       )}

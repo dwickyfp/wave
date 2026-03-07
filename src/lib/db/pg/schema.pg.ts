@@ -1,4 +1,5 @@
 import { Agent } from "app-types/agent";
+import type { A2AAgentCard, A2AAgentConfig } from "app-types/a2a-agent";
 import { MCPServerConfig, MCPToolInfo } from "app-types/mcp";
 import type { ProviderSettings } from "app-types/settings";
 import { UserPreferences } from "app-types/user";
@@ -74,6 +75,11 @@ export const ChatThreadTable = pgTable(
     snowflakeParentMessageId: bigint("snowflake_parent_message_id", {
       mode: "number",
     }),
+    a2aAgentId: uuid("a2a_agent_id").references(() => AgentTable.id, {
+      onDelete: "set null",
+    }),
+    a2aContextId: text("a2a_context_id"),
+    a2aTaskId: text("a2a_task_id"),
   },
   (t) => [
     index("chat_thread_user_id_created_at_idx").on(t.userId, t.createdAt),
@@ -174,13 +180,16 @@ export const AgentTable = pgTable("agent", {
     .default("private"),
   subAgentsEnabled: boolean("sub_agents_enabled").notNull().default(false),
   agentType: varchar("agent_type", {
-    enum: ["standard", "snowflake_cortex"],
+    enum: ["standard", "snowflake_cortex", "a2a_remote"],
   })
     .notNull()
     .default("standard"),
   mcpEnabled: boolean("mcp_enabled").notNull().default(false),
   mcpApiKeyHash: text("mcp_api_key_hash"),
   mcpApiKeyPreview: text("mcp_api_key_preview"),
+  a2aEnabled: boolean("a2a_enabled").notNull().default(false),
+  a2aApiKeyHash: text("a2a_api_key_hash"),
+  a2aApiKeyPreview: text("a2a_api_key_preview"),
   mcpModelProvider: text("mcp_model_provider"),
   mcpModelName: text("mcp_model_name"),
   mcpCodingMode: boolean("mcp_coding_mode").notNull().default(false),
@@ -190,6 +199,35 @@ export const AgentTable = pgTable("agent", {
     .$type<"compatibility" | "copilot_native">()
     .notNull()
     .default("compatibility"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const A2AAgentConfigTable = pgTable("a2a_agent_config", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  agentId: uuid("agent_id")
+    .notNull()
+    .unique()
+    .references(() => AgentTable.id, { onDelete: "cascade" }),
+  inputUrl: text("input_url").notNull(),
+  agentCardUrl: text("agent_card_url").notNull(),
+  rpcUrl: text("rpc_url").notNull(),
+  authMode: varchar("auth_mode", {
+    enum: ["none", "bearer", "header"],
+  })
+    .$type<A2AAgentConfig["authMode"]>()
+    .notNull()
+    .default("none"),
+  authHeaderName: text("auth_header_name"),
+  authSecret: text("auth_secret"),
+  agentCard: json("agent_card").$type<A2AAgentCard>().notNull(),
+  lastDiscoveredAt: timestamp("last_discovered_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -556,6 +594,7 @@ export type ChatMessageEntity = typeof ChatMessageTable.$inferSelect;
 
 export type AgentEntity = typeof AgentTable.$inferSelect;
 export type SubAgentEntity = typeof SubAgentTable.$inferSelect;
+export type A2AAgentConfigEntity = typeof A2AAgentConfigTable.$inferSelect;
 export type SnowflakeAgentConfigEntity =
   typeof SnowflakeAgentConfigTable.$inferSelect;
 export type UserEntity = typeof UserTable.$inferSelect;

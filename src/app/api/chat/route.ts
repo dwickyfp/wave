@@ -22,6 +22,7 @@ import {
 } from "app-types/chat";
 import {
   agentRepository,
+  a2aAgentRepository,
   chatRepository,
   knowledgeRepository,
   settingsRepository,
@@ -56,6 +57,7 @@ import {
   callSnowflakeCortexStream,
   createSnowflakeThread,
 } from "lib/snowflake/client";
+import { streamA2AAgentResponse } from "lib/a2a/client";
 import { generateUUID } from "lib/utils";
 import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
 import { shouldSendToolDefinitionsToProvider } from "lib/ai/provider-compatibility";
@@ -561,6 +563,151 @@ export async function POST(request: Request) {
       });
     }
     // ── end Snowflake intercept ────────────────────────────────────────────
+
+    if ((agent as any)?.agentType === "a2a_remote") {
+      const a2aConfig = await a2aAgentRepository.selectA2AConfigByAgentId(
+        agent!.id,
+      );
+
+      if (!a2aConfig) {
+        return Response.json(
+          { message: "A2A configuration not found for this agent" },
+          { status: 404 },
+        );
+      }
+
+      const userText = message.parts
+        .filter((part: any) => part.type === "text")
+        .map((part: any) => part.text as string)
+        .join(" ")
+        .trim();
+
+      if (!userText) {
+        return Response.json(
+          {
+            message:
+              "A2A remote agents currently support text-only messages in this UI.",
+          },
+          { status: 400 },
+        );
+      }
+
+      const currentA2AState =
+        thread?.a2aAgentId === agent!.id
+          ? {
+              contextId: thread?.a2aContextId ?? undefined,
+              taskId: thread?.a2aTaskId ?? undefined,
+            }
+          : {
+              contextId: undefined,
+              taskId: undefined,
+            };
+
+      const a2aMetadata: ChatMetadata = {
+        agentId: agent!.id,
+        toolChoice: "none",
+        toolCount: 0,
+        chatModel: {
+          provider: "a2a",
+          model: a2aConfig.agentCard.name || agent!.name,
+        },
+      };
+
+      const a2aCapture = {
+        contextId: currentA2AState.contextId ?? null,
+        taskId: currentA2AState.taskId ?? null,
+      };
+
+      const a2aStream = createUIMessageStream({
+        execute: async ({ writer: dataStream }) => {
+          const textId = generateUUID();
+          let textOpen = false;
+
+          for await (const event of streamA2AAgentResponse({
+            config: a2aConfig,
+            text: userText,
+            contextId: currentA2AState.contextId,
+            taskId: currentA2AState.taskId,
+          })) {
+            if (event.contextId) {
+              a2aCapture.contextId = event.contextId;
+            }
+            if (event.taskId) {
+              a2aCapture.taskId = event.taskId;
+            }
+
+            if (!event.text) continue;
+
+            if (!textOpen) {
+              dataStream.write({ type: "text-start", id: textId });
+              textOpen = true;
+            }
+
+            dataStream.write({
+              type: "text-delta",
+              delta: event.text,
+              id: textId,
+            });
+          }
+
+          if (textOpen) {
+            dataStream.write({ type: "text-end", id: textId });
+          } else {
+            dataStream.write({ type: "text-start", id: textId });
+            dataStream.write({ type: "text-end", id: textId });
+          }
+
+          dataStream.write({
+            type: "message-metadata",
+            messageMetadata: a2aMetadata,
+          });
+        },
+        generateId: generateUUID,
+        onFinish: async ({ responseMessage, isAborted }) => {
+          const finalResponseMessage = isAborted
+            ? appendAbortedResponseNotice(responseMessage)
+            : responseMessage;
+
+          if (!isAborted) {
+            await chatRepository.updateThread(thread!.id, {
+              a2aAgentId: agent!.id,
+              a2aContextId: a2aCapture.contextId ?? null,
+              a2aTaskId: a2aCapture.taskId ?? null,
+            });
+          }
+
+          if (finalResponseMessage.id === message.id) {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              ...finalResponseMessage,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
+              metadata: a2aMetadata,
+            });
+          } else {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: message.role,
+              parts: message.parts.map(convertToSavePart),
+              id: message.id,
+            });
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: finalResponseMessage.role,
+              id: finalResponseMessage.id,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
+              metadata: a2aMetadata,
+            });
+          }
+        },
+        onError: handleError,
+        originalMessages: messages,
+      });
+
+      return createUIMessageStreamResponse({
+        stream: a2aStream,
+        consumeSseStream: consumeStream,
+      });
+    }
 
     if (agent?.instructions?.mentions) {
       mentions.push(...agent.instructions.mentions);

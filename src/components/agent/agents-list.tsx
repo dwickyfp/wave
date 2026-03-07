@@ -8,6 +8,7 @@ import {
   Plus,
   ArrowUpRight,
   Snowflake,
+  Waypoints,
   ChevronDown,
   Download,
   Upload,
@@ -176,6 +177,9 @@ export function AgentsList({
     if (agent.agentType === "snowflake_cortex") {
       return `/agent/snowflake/${agent.id}`;
     }
+    if (agent.agentType === "a2a_remote") {
+      return `/agent/a2a/${agent.id}`;
+    }
     return `/agent/${agent.id}`;
   };
 
@@ -229,6 +233,10 @@ export function AgentsList({
                 >
                   <Snowflake className="size-4 text-blue-500" />
                   Snowflake Intelligence
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => router.push("/agent/a2a/new")}>
+                  <Waypoints className="size-4 text-emerald-600" />
+                  A2A Agent
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

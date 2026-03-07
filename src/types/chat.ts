@@ -140,6 +140,12 @@ export type ChatThread = {
    * 0 = start of thread; subsequent turns use the last assistant message_id.
    */
   snowflakeParentMessageId?: number | null;
+  /** Last A2A agent used for the thread, so continuity resets on agent switch. */
+  a2aAgentId?: string | null;
+  /** A2A context ID used to continue the same remote conversation. */
+  a2aContextId?: string | null;
+  /** Optional A2A task ID returned by the remote agent. */
+  a2aTaskId?: string | null;
 };
 
 export type ChatThreadDetails = ChatThread & {

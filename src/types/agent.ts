@@ -17,6 +17,12 @@ export const AgentInstructionsSchema = z.object({
   mentions: z.array(ChatMentionSchema).optional(),
 });
 
+export const AgentTypeSchema = z.enum([
+  "standard",
+  "snowflake_cortex",
+  "a2a_remote",
+]);
+
 export const AgentCreateSchema = z
   .object({
     name: z.string().min(1).max(100),
@@ -32,10 +38,7 @@ export const AgentCreateSchema = z
     instructions: AgentInstructionsSchema,
     visibility: VisibilitySchema.optional().default("private"),
     subAgentsEnabled: z.boolean().optional().default(false),
-    agentType: z
-      .enum(["standard", "snowflake_cortex"])
-      .optional()
-      .default("standard"),
+    agentType: AgentTypeSchema.optional().default("standard"),
   })
   .strip();
 export const AgentUpdateSchema = z
@@ -81,11 +84,14 @@ export type AgentSummary = {
   mcpAutocompleteModelProvider?: string | null;
   mcpAutocompleteModelName?: string | null;
   mcpPresentationMode?: "compatibility" | "copilot_native";
+  a2aEnabled?: boolean;
+  a2aApiKeyHash?: string | null;
+  a2aApiKeyPreview?: string | null;
   userName?: string;
   userAvatar?: string;
   isBookmarked?: boolean;
   subAgentsEnabled?: boolean;
-  agentType?: "standard" | "snowflake_cortex";
+  agentType?: z.infer<typeof AgentTypeSchema>;
 };
 
 export type Agent = AgentSummary & {
@@ -154,11 +160,27 @@ export type AgentRepository = {
     presentationMode: "compatibility" | "copilot_native",
   ): Promise<void>;
 
+  setA2aApiKey(
+    id: string,
+    userId: string,
+    keyHash: string | null,
+    keyPreview: string | null,
+  ): Promise<void>;
+
+  setA2aEnabled(id: string, userId: string, enabled: boolean): Promise<void>;
+
   getAgentByMcpKey(
     agentId: string,
   ): Promise<Pick<
     Agent,
     "id" | "userId" | "agentType" | "mcpApiKeyHash" | "mcpEnabled"
+  > | null>;
+
+  getAgentByA2aKey(
+    agentId: string,
+  ): Promise<Pick<
+    Agent,
+    "id" | "userId" | "agentType" | "a2aApiKeyHash" | "a2aEnabled"
   > | null>;
 };
 

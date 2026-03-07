@@ -63,6 +63,11 @@ export const pgChatRepository: ChatRepository = {
         title: thread.title,
         userId: thread.userId,
         id: thread.id,
+        snowflakeThreadId: thread.snowflakeThreadId ?? null,
+        snowflakeParentMessageId: thread.snowflakeParentMessageId ?? null,
+        a2aAgentId: thread.a2aAgentId ?? null,
+        a2aContextId: thread.a2aContextId ?? null,
+        a2aTaskId: thread.a2aTaskId ?? null,
         createdAt: new Date(),
       })
       .returning();
@@ -109,6 +114,9 @@ export const pgChatRepository: ChatRepository = {
       createdAt: thread.chat_thread.createdAt,
       snowflakeThreadId: thread.chat_thread.snowflakeThreadId,
       snowflakeParentMessageId: thread.chat_thread.snowflakeParentMessageId,
+      a2aAgentId: thread.chat_thread.a2aAgentId,
+      a2aContextId: thread.chat_thread.a2aContextId,
+      a2aTaskId: thread.chat_thread.a2aTaskId,
       userPreferences: thread.user?.preferences ?? undefined,
       messages,
       compactionCheckpoint,
@@ -229,6 +237,10 @@ export const pgChatRepository: ChatRepository = {
       set.snowflakeThreadId = thread.snowflakeThreadId;
     if (thread.snowflakeParentMessageId !== undefined)
       set.snowflakeParentMessageId = thread.snowflakeParentMessageId;
+    if (thread.a2aAgentId !== undefined) set.a2aAgentId = thread.a2aAgentId;
+    if (thread.a2aContextId !== undefined)
+      set.a2aContextId = thread.a2aContextId;
+    if (thread.a2aTaskId !== undefined) set.a2aTaskId = thread.a2aTaskId;
 
     const [result] = await db
       .update(ChatThreadTable)
@@ -247,6 +259,11 @@ export const pgChatRepository: ChatRepository = {
         target: [ChatThreadTable.id],
         set: {
           title: thread.title,
+          snowflakeThreadId: thread.snowflakeThreadId ?? null,
+          snowflakeParentMessageId: thread.snowflakeParentMessageId ?? null,
+          a2aAgentId: thread.a2aAgentId ?? null,
+          a2aContextId: thread.a2aContextId ?? null,
+          a2aTaskId: thread.a2aTaskId ?? null,
         },
       })
       .returning();
