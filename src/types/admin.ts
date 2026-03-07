@@ -50,7 +50,13 @@ export interface UsageMonitoringQuery {
   endDate?: Date;
   limit?: number;
   offset?: number;
-  sortBy?: "totalTokens" | "messageCount" | "threadCount" | "name" | "email";
+  sortBy?:
+    | "totalTokens"
+    | "totalCostUsd"
+    | "messageCount"
+    | "threadCount"
+    | "name"
+    | "email";
   sortDirection?: "asc" | "desc";
   searchValue?: string;
 }
@@ -64,6 +70,7 @@ export interface UserUsageStat {
   threadCount: number;
   messageCount: number;
   totalTokens: number;
+  totalCostUsd: number;
   topModel: string | null;
 }
 
@@ -79,6 +86,7 @@ export interface UsageMonitoringData {
   limit: number;
   offset: number;
   totalTokensSum: number;
+  totalCostUsd: number;
   totalMessagesSum: number;
   totalThreadsSum: number;
   activeUsersCount: number;

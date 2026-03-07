@@ -22,6 +22,7 @@ import {
 } from "ui/select";
 import {
   BarChart2,
+  DollarSign,
   MessageCircle,
   Search,
   Users,
@@ -101,6 +102,13 @@ function StatCard({
       </CardContent>
     </Card>
   );
+}
+
+function formatUsd(value: number) {
+  if (value === 0) return "$0.00";
+  if (value < 0.01) return `$${value.toFixed(6)}`;
+  if (value < 1) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
 }
 
 export function UsageMonitoringTable({
@@ -207,12 +215,18 @@ export function UsageMonitoringTable({
       </div>
 
       {/* Summary Cards */}
-      <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-5">
         <StatCard
           icon={Zap}
           label={t("totalTokens")}
           value={data.totalTokensSum}
           colorClass="bg-primary/10 text-primary"
+        />
+        <StatCard
+          icon={DollarSign}
+          label={t("totalPrice")}
+          value={formatUsd(data.totalCostUsd)}
+          colorClass="bg-emerald-500/10 text-emerald-500"
         />
         <StatCard
           icon={MessageCircle}
@@ -309,6 +323,15 @@ export function UsageMonitoringTable({
                 {t("tokens")}
               </SortableHeader>
               <SortableHeader
+                field="totalCostUsd"
+                currentSortBy={sortBy}
+                currentSortDirection={sortDirection}
+                onSort={handleSort}
+                data-testid="sort-totalCostUsd"
+              >
+                {t("price")}
+              </SortableHeader>
+              <SortableHeader
                 field="messageCount"
                 currentSortBy={sortBy}
                 currentSortDirection={sortDirection}
@@ -334,7 +357,7 @@ export function UsageMonitoringTable({
             {data.users.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={7}
                   className="text-center py-16 text-muted-foreground"
                 >
                   <div className="flex flex-col items-center gap-3">
@@ -431,6 +454,13 @@ function UsageMonitoringRow({
         </div>
       </TableCell>
 
+      {/* Price */}
+      <TableCell>
+        <span className="text-sm tabular-nums">
+          {formatUsd(user.totalCostUsd)}
+        </span>
+      </TableCell>
+
       {/* Messages */}
       <TableCell>
         <span className="text-sm tabular-nums">{user.messageCount}</span>
@@ -507,6 +537,7 @@ export function UsageMonitoringTableSkeleton() {
                 <Skeleton className="h-4 w-40" />
                 <Skeleton className="h-3 w-28" />
               </div>
+              <Skeleton className="h-4 w-16" />
               <Skeleton className="h-4 w-16" />
               <Skeleton className="h-4 w-12" />
               <Skeleton className="h-4 w-12" />

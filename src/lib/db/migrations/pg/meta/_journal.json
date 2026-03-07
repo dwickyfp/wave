@@ -253,6 +253,13 @@
       "when": 1773800000000,
       "tag": "0035_agent_dashboard_session_transcript",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1773900000000,
+      "tag": "0036_model_pricing_generation",
+      "breakpoints": true
     }
   ]
 }

@@ -62,12 +62,14 @@ interface ProviderConfigSheetProps {
 
 type CapabilityKey =
   | "supportsTools"
+  | "supportsGeneration"
   | "supportsImageInput"
   | "supportsImageGeneration"
   | "supportsFileInput";
 
 const CAPABILITY_ICONS: Record<CapabilityKey, React.ReactNode> = {
   supportsTools: <Wrench className="size-3" />,
+  supportsGeneration: <Brain className="size-3" />,
   supportsImageInput: <Image className="size-3" />,
   supportsImageGeneration: <Sparkles className="size-3" />,
   supportsFileInput: <FileText className="size-3" />,
@@ -75,6 +77,7 @@ const CAPABILITY_ICONS: Record<CapabilityKey, React.ReactNode> = {
 
 const CAPABILITY_LABELS: Record<CapabilityKey, string> = {
   supportsTools: "Tools",
+  supportsGeneration: "Generate",
   supportsImageInput: "Image In",
   supportsImageGeneration: "Img Gen",
   supportsFileInput: "Files",
@@ -714,6 +717,7 @@ interface ModelRowProps {
 
 const CAPS: CapabilityKey[] = [
   "supportsTools",
+  "supportsGeneration",
   "supportsImageInput",
   "supportsImageGeneration",
   "supportsFileInput",
@@ -729,17 +733,49 @@ function ModelRow({
   const [editing, setEditing] = useState(false);
   const [editUiName, setEditUiName] = useState(model.uiName);
   const [editApiName, setEditApiName] = useState(model.apiName);
+  const [editContextLength, setEditContextLength] = useState(
+    String(model.contextLength ?? 0),
+  );
+  const [editInputTokenPricePer1MUsd, setEditInputTokenPricePer1MUsd] =
+    useState(String(model.inputTokenPricePer1MUsd ?? 0));
+  const [editOutputTokenPricePer1MUsd, setEditOutputTokenPricePer1MUsd] =
+    useState(String(model.outputTokenPricePer1MUsd ?? 0));
   const [saving, setSaving] = useState(false);
+
+  const parseNonNegativeNumber = (
+    raw: string,
+    { integer = false }: { integer?: boolean } = {},
+  ) => {
+    const trimmed = raw.trim();
+    const parsed = integer ? parseInt(trimmed, 10) : Number(trimmed);
+    if (!trimmed.length || Number.isNaN(parsed) || parsed < 0) {
+      throw new Error("Numeric model settings must be zero or greater");
+    }
+    return parsed;
+  };
 
   const handleSave = async () => {
     setSaving(true);
     try {
+      const contextLength = parseNonNegativeNumber(editContextLength, {
+        integer: true,
+      });
+      const inputTokenPricePer1MUsd = parseNonNegativeNumber(
+        editInputTokenPricePer1MUsd,
+      );
+      const outputTokenPricePer1MUsd = parseNonNegativeNumber(
+        editOutputTokenPricePer1MUsd,
+      );
+
       const res = await fetch(`/api/settings/models/${model.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           uiName: editUiName.trim(),
           apiName: editApiName.trim(),
+          contextLength,
+          inputTokenPricePer1MUsd,
+          outputTokenPricePer1MUsd,
         }),
       });
       if (!res.ok) throw new Error("Failed to update model");
@@ -757,6 +793,11 @@ function ModelRow({
   const handleCancel = () => {
     setEditUiName(model.uiName);
     setEditApiName(model.apiName);
+    setEditContextLength(String(model.contextLength ?? 0));
+    setEditInputTokenPricePer1MUsd(String(model.inputTokenPricePer1MUsd ?? 0));
+    setEditOutputTokenPricePer1MUsd(
+      String(model.outputTokenPricePer1MUsd ?? 0),
+    );
     setEditing(false);
   };
 
@@ -770,25 +811,85 @@ function ModelRow({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           {editing ? (
-            <div className="space-y-1.5">
-              <div className="relative">
-                <Tv className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                <Input
-                  value={editUiName}
-                  onChange={(e) => setEditUiName(e.target.value)}
-                  placeholder="Display name"
-                  className="h-7 text-sm pl-7"
-                />
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label className="text-[11px] font-medium text-muted-foreground">
+                  Display Name
+                </Label>
+                <div className="relative">
+                  <Tv className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                  <Input
+                    value={editUiName}
+                    onChange={(e) => setEditUiName(e.target.value)}
+                    placeholder="Display name"
+                    className="h-8 text-sm pl-7"
+                  />
+                </div>
               </div>
-              <div className="relative">
-                <Brain className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                <Input
-                  value={editApiName}
-                  onChange={(e) => setEditApiName(e.target.value)}
-                  placeholder="API model name"
-                  className="h-7 text-xs pl-7"
-                />
+              <div className="space-y-1">
+                <Label className="text-[11px] font-medium text-muted-foreground">
+                  API Model Name
+                </Label>
+                <div className="relative">
+                  <Brain className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                  <Input
+                    value={editApiName}
+                    onChange={(e) => setEditApiName(e.target.value)}
+                    placeholder="API model name"
+                    className="h-8 text-xs pl-7"
+                  />
+                </div>
               </div>
+              {model.modelType === "llm" && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+                      Context Length
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={editContextLength}
+                      onChange={(e) => setEditContextLength(e.target.value)}
+                      placeholder="0"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+                      Input USD / 1M
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={editInputTokenPricePer1MUsd}
+                      onChange={(e) =>
+                        setEditInputTokenPricePer1MUsd(e.target.value)
+                      }
+                      placeholder="0"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+                      Output USD / 1M
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={editOutputTokenPricePer1MUsd}
+                      onChange={(e) =>
+                        setEditOutputTokenPricePer1MUsd(e.target.value)
+                      }
+                      placeholder="0"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -796,6 +897,13 @@ function ModelRow({
               <p className="text-xs text-muted-foreground truncate">
                 {model.apiName}
               </p>
+              {model.modelType === "llm" && (
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                  <span>Ctx {model.contextLength.toLocaleString()}</span>
+                  <span>In ${model.inputTokenPricePer1MUsd}/1M</span>
+                  <span>Out ${model.outputTokenPricePer1MUsd}/1M</span>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -829,6 +937,13 @@ function ModelRow({
                 onClick={() => {
                   setEditUiName(model.uiName);
                   setEditApiName(model.apiName);
+                  setEditContextLength(String(model.contextLength ?? 0));
+                  setEditInputTokenPricePer1MUsd(
+                    String(model.inputTokenPricePer1MUsd ?? 0),
+                  );
+                  setEditOutputTokenPricePer1MUsd(
+                    String(model.outputTokenPricePer1MUsd ?? 0),
+                  );
                   setEditing(true);
                 }}
               >

@@ -25,12 +25,26 @@ interface SelectModelProps {
   align?: "start" | "end";
   currentModel?: ChatModel;
   showProvider?: boolean;
+  requiredCapability?: "supportsGeneration";
+  emptyMessage?: string;
 }
 
 export const SelectModel = (props: PropsWithChildren<SelectModelProps>) => {
   const [open, setOpen] = useState(false);
   const { data: providers } = useChatModels();
   const [model, setModel] = useState(props.currentModel);
+
+  const filteredProviders = providers
+    ?.map((provider) => ({
+      ...provider,
+      models: provider.models.filter((item) => {
+        if (props.requiredCapability === "supportsGeneration") {
+          return item.supportsGeneration;
+        }
+        return true;
+      }),
+    }))
+    .filter((provider) => provider.models.length > 0);
 
   useEffect(() => {
     const modelToUse = props.currentModel ?? appStore.getState().chatModel;
@@ -39,6 +53,29 @@ export const SelectModel = (props: PropsWithChildren<SelectModelProps>) => {
       setModel(modelToUse);
     }
   }, [props.currentModel]);
+
+  useEffect(() => {
+    if (!props.requiredCapability || !filteredProviders?.length) return;
+
+    const currentSupported = filteredProviders.some((provider) =>
+      provider.models.some(
+        (item) =>
+          provider.provider === model?.provider && item.name === model?.model,
+      ),
+    );
+    if (currentSupported) return;
+
+    const firstProvider = filteredProviders[0];
+    const firstModel = firstProvider?.models[0];
+    if (!firstProvider || !firstModel) return;
+
+    const nextModel = {
+      provider: firstProvider.provider,
+      model: firstModel.name,
+    };
+    setModel(nextModel);
+    props.onSelect(nextModel);
+  }, [filteredProviders, model, props]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -78,8 +115,10 @@ export const SelectModel = (props: PropsWithChildren<SelectModelProps>) => {
             data-testid="model-search-input"
           />
           <CommandList className="p-2">
-            <CommandEmpty>No results found.</CommandEmpty>
-            {providers?.map((provider, i) => (
+            <CommandEmpty>
+              {props.emptyMessage ?? "No results found."}
+            </CommandEmpty>
+            {filteredProviders?.map((provider, i) => (
               <Fragment key={provider.provider}>
                 <CommandGroup
                   heading={
@@ -134,7 +173,7 @@ export const SelectModel = (props: PropsWithChildren<SelectModelProps>) => {
                     </CommandItem>
                   ))}
                 </CommandGroup>
-                {i < providers?.length - 1 && <CommandSeparator />}
+                {i < filteredProviders.length - 1 && <CommandSeparator />}
               </Fragment>
             ))}
           </CommandList>

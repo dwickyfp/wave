@@ -15,7 +15,6 @@ import { toast } from "sonner";
 import { ProviderConfigTab } from "./provider-config-tab";
 import { StorageSettingsTab } from "./storage-settings-tab";
 import { OtherConfigsTab } from "./other-configs-tab";
-import { RedisSettingsTab } from "./redis-settings-tab";
 import { ContextXModelButton } from "./contextx-model-button";
 
 export function SettingsContent() {
@@ -135,7 +134,6 @@ export function SettingsContent() {
 
       <TabsContent value="other">
         <OtherConfigsTab />
-        <RedisSettingsTab />
       </TabsContent>
     </Tabs>
   );

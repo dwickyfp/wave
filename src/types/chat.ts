@@ -4,8 +4,16 @@ import { AllowedMCPServerZodSchema } from "./mcp";
 import { UserPreferences } from "./user";
 import { tag } from "lib/tag";
 
+export type ChatUsage = LanguageModelUsage & {
+  inputCostUsd?: number;
+  outputCostUsd?: number;
+  totalCostUsd?: number;
+  inputTokenPricePer1MUsd?: number;
+  outputTokenPricePer1MUsd?: number;
+};
+
 export type ChatMetadata = {
-  usage?: LanguageModelUsage;
+  usage?: ChatUsage;
   chatModel?: ChatModel;
   toolChoice?: "auto" | "none" | "manual";
   toolCount?: number;

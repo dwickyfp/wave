@@ -189,7 +189,11 @@ describe("agent continue/openai route", () => {
     ] as any);
     vi.mocked(getDbModel).mockResolvedValue({
       model: {} as any,
+      contextLength: 0,
+      inputTokenPricePer1MUsd: 0,
+      outputTokenPricePer1MUsd: 0,
       supportsTools: true,
+      supportsGeneration: true,
       supportsImageInput: false,
       supportsFileInput: false,
     });

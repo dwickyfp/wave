@@ -233,7 +233,11 @@ export async function getDbRerankingModel(
 
 export type DbModelResult = {
   model: LanguageModel;
+  contextLength: number;
+  inputTokenPricePer1MUsd: number;
+  outputTokenPricePer1MUsd: number;
   supportsTools: boolean;
+  supportsGeneration: boolean;
   supportsImageInput: boolean;
   supportsFileInput: boolean;
 };
@@ -270,7 +274,11 @@ export async function getDbModel(
 
     return {
       model,
+      contextLength: modelConfig.contextLength,
+      inputTokenPricePer1MUsd: modelConfig.inputTokenPricePer1MUsd,
+      outputTokenPricePer1MUsd: modelConfig.outputTokenPricePer1MUsd,
       supportsTools: modelConfig.supportsTools,
+      supportsGeneration: modelConfig.supportsGeneration,
       supportsImageInput: modelConfig.supportsImageInput,
       supportsFileInput: modelConfig.supportsFileInput,
     };

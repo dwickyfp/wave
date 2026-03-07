@@ -90,6 +90,8 @@ export function SkillGenerateDialog({
           <div className="flex items-center justify-between">
             <SelectModel
               showProvider
+              requiredCapability="supportsGeneration"
+              emptyMessage="No generate-capable models configured in Settings → AI Providers."
               onSelect={(model) => setGenerateModel(model)}
             />
             <Button

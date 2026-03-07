@@ -26,7 +26,11 @@ export type LlmModelConfig = {
   apiName: string;
   uiName: string;
   enabled: boolean;
+  contextLength: number;
+  inputTokenPricePer1MUsd: number;
+  outputTokenPricePer1MUsd: number;
   supportsTools: boolean;
+  supportsGeneration: boolean;
   supportsImageInput: boolean;
   supportsImageGeneration: boolean;
   supportsFileInput: boolean;
@@ -93,7 +97,11 @@ export const LlmModelConfigZodSchema = z.object({
   apiName: z.string().min(1, "API name is required"),
   uiName: z.string().min(1, "Display name is required"),
   enabled: z.boolean().default(true),
+  contextLength: z.number().int().min(0).default(0),
+  inputTokenPricePer1MUsd: z.number().min(0).default(0),
+  outputTokenPricePer1MUsd: z.number().min(0).default(0),
   supportsTools: z.boolean().default(true),
+  supportsGeneration: z.boolean().default(false),
   supportsImageInput: z.boolean().default(false),
   supportsImageGeneration: z.boolean().default(false),
   supportsFileInput: z.boolean().default(false),
@@ -121,10 +129,6 @@ export const LlmProviderUpsertZodSchema = z.object({
 
 export const OtherConfigZodSchema = z.object({
   exaApiKey: z.string().optional(),
-});
-
-export const RedisConfigZodSchema = z.object({
-  url: z.string().min(1, "Redis URL is required"),
 });
 
 export const MinioConfigZodSchema = z.object({
@@ -160,9 +164,4 @@ export type LlmModelConfigInput = z.infer<typeof LlmModelConfigZodSchema>;
 export type LlmProviderUpsertInput = z.infer<typeof LlmProviderUpsertZodSchema>;
 export type MinioConfigInput = z.infer<typeof MinioConfigZodSchema>;
 export type OtherConfigInput = z.infer<typeof OtherConfigZodSchema>;
-export type RedisConfigInput = z.infer<typeof RedisConfigZodSchema>;
 export type FileStorageConfigInput = z.infer<typeof FileStorageConfigZodSchema>;
-
-export type RedisConfig = {
-  url: string;
-};

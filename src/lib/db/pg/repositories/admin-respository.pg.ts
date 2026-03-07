@@ -160,6 +160,7 @@ const pgAdminRepository: AdminRepository = {
         threadCount: sql<number>`COALESCE(COUNT(DISTINCT ${ChatThreadTable.id}), 0)`,
         messageCount: sql<number>`COALESCE(COUNT(${ChatMessageTable.id}), 0)`,
         totalTokens: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        totalCostUsd: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalCostUsd')::numeric), 0)`,
         topModel: sql<string | null>`(
           SELECT ${ChatMessageTable.metadata}->'chatModel'->>'model'
           FROM ${ChatMessageTable}
@@ -218,6 +219,12 @@ const pgAdminRepository: AdminRepository = {
             ? sql`COUNT(${ChatMessageTable.id}) ASC`
             : sql`COUNT(${ChatMessageTable.id}) DESC`;
         break;
+      case "totalCostUsd":
+        orderByClause =
+          sortDirection === "asc"
+            ? sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalCostUsd')::numeric), 0) ASC`
+            : sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalCostUsd')::numeric), 0) DESC`;
+        break;
       case "threadCount":
         orderByClause =
           sortDirection === "asc"
@@ -251,6 +258,7 @@ const pgAdminRepository: AdminRepository = {
     const [aggregates] = await db
       .select({
         totalTokensSum: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        totalCostSum: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalCostUsd')::numeric), 0)`,
         totalMessagesSum: sql<number>`COALESCE(COUNT(${ChatMessageTable.id}), 0)`,
         totalThreadsSum: sql<number>`COALESCE(COUNT(DISTINCT ${ChatThreadTable.id}), 0)`,
         activeUsersCount: sql<number>`COUNT(DISTINCT ${ChatThreadTable.userId})`,
@@ -306,12 +314,14 @@ const pgAdminRepository: AdminRepository = {
         threadCount: Number(u.threadCount || 0),
         messageCount: Number(u.messageCount || 0),
         totalTokens: Number(u.totalTokens || 0),
+        totalCostUsd: Number(u.totalCostUsd || 0),
         topModel: u.topModel ?? null,
       })),
       total: totalResult?.count || 0,
       limit,
       offset,
       totalTokensSum: Number(aggregates?.totalTokensSum || 0),
+      totalCostUsd: Number(aggregates?.totalCostSum || 0),
       totalMessagesSum: Number(aggregates?.totalMessagesSum || 0),
       totalThreadsSum: Number(aggregates?.totalThreadsSum || 0),
       activeUsersCount: Number(aggregates?.activeUsersCount || 0),

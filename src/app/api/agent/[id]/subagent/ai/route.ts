@@ -107,6 +107,15 @@ export async function POST(
         { status: 503 },
       );
     }
+    if (!dbModelResult.supportsGeneration) {
+      return Response.json(
+        {
+          message:
+            "Selected model cannot generate subagents. Enable Generate Capabilities in Settings → AI Providers.",
+        },
+        { status: 400 },
+      );
+    }
 
     const result = streamText({
       model: dbModelResult.model,

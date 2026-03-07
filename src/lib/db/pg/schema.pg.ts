@@ -10,6 +10,7 @@ import {
   index,
   integer,
   json,
+  numeric,
   pgTable,
   real,
   text,
@@ -590,7 +591,23 @@ export const LlmModelConfigTable = pgTable(
     apiName: text("api_name").notNull(),
     uiName: text("ui_name").notNull(),
     enabled: boolean("enabled").notNull().default(true),
+    contextLength: integer("context_length").notNull().default(0),
+    inputTokenPricePer1MUsd: numeric("input_token_price_per_1m_usd", {
+      precision: 12,
+      scale: 6,
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    outputTokenPricePer1MUsd: numeric("output_token_price_per_1m_usd", {
+      precision: 12,
+      scale: 6,
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
     supportsTools: boolean("supports_tools").notNull().default(true),
+    supportsGeneration: boolean("supports_generation").notNull().default(false),
     supportsImageInput: boolean("supports_image_input")
       .notNull()
       .default(false),

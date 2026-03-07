@@ -126,6 +126,15 @@ export async function POST(request: Request) {
         { status: 503 },
       );
     }
+    if (!dbModelResult.supportsGeneration) {
+      return Response.json(
+        {
+          message:
+            "Selected model cannot generate agents. Enable Generate Capabilities in Settings → AI Providers.",
+        },
+        { status: 400 },
+      );
+    }
 
     const result = streamObject({
       model: dbModelResult.model,

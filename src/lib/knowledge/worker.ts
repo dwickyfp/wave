@@ -2,10 +2,7 @@
  * ContextX Knowledge Ingestion Worker
  * Run with: pnpm worker:knowledge-win / worker:knowledge-mac
  *
- * Redis URL resolution priority:
- * 1. `redis-config` key in system_settings DB (Settings → Other Configurations)
- * 2. REDIS_URL environment variable
- * 3. redis://localhost:6379
+ * Redis connection is configured through the REDIS_URL environment variable.
  */
 import { Job, Worker } from "bullmq";
 import IORedis from "ioredis";

@@ -14,6 +14,7 @@ import { getDbModel } from "lib/ai/provider-factory";
 import {
   ChatMention,
   ChatMetadata,
+  ChatUsage,
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
 import {
@@ -47,6 +48,7 @@ import {
   createSnowflakeThread,
 } from "lib/snowflake/client";
 import { generateUUID } from "lib/utils";
+import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
 import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
@@ -95,6 +97,13 @@ export async function POST(request: Request) {
       );
     }
     const model = dbModelResult.model;
+    const attachUsageCost = (usage: ChatUsage): ChatUsage => ({
+      ...usage,
+      ...buildUsageCostSnapshot(usage, {
+        inputTokenPricePer1MUsd: dbModelResult.inputTokenPricePer1MUsd,
+        outputTokenPricePer1MUsd: dbModelResult.outputTokenPricePer1MUsd,
+      }),
+    });
 
     let thread = await chatRepository.selectThreadDetails(id);
 
@@ -370,18 +379,20 @@ export async function POST(request: Request) {
                   messageMetadata: {
                     ...sfMetadata,
                     usage: {
-                      inputTokens: event.inputTokens,
-                      outputTokens: event.outputTokens,
-                      totalTokens: event.inputTokens + event.outputTokens,
-                      inputTokenDetails: {
-                        noCacheTokens: undefined,
-                        cacheReadTokens: undefined,
-                        cacheWriteTokens: undefined,
-                      },
-                      outputTokenDetails: {
-                        textTokens: undefined,
-                        reasoningTokens: undefined,
-                      },
+                      ...attachUsageCost({
+                        inputTokens: event.inputTokens,
+                        outputTokens: event.outputTokens,
+                        totalTokens: event.inputTokens + event.outputTokens,
+                        inputTokenDetails: {
+                          noCacheTokens: undefined,
+                          cacheReadTokens: undefined,
+                          cacheWriteTokens: undefined,
+                        },
+                        outputTokenDetails: {
+                          textTokens: undefined,
+                          reasoningTokens: undefined,
+                        },
+                      }),
                     },
                     // Always show Snowflake as provider with the actual
                     // model name returned by the Cortex API
@@ -416,7 +427,7 @@ export async function POST(request: Request) {
         onFinish: async ({ responseMessage }) => {
           // Populate metadata from the captured Snowflake usage/model info
           if (sfCapture.usage) {
-            sfMetadata.usage = {
+            sfMetadata.usage = attachUsageCost({
               inputTokens: sfCapture.usage.input,
               outputTokens: sfCapture.usage.output,
               totalTokens: sfCapture.usage.input + sfCapture.usage.output,
@@ -429,7 +440,7 @@ export async function POST(request: Request) {
                 textTokens: undefined,
                 reasoningTokens: undefined,
               },
-            };
+            });
             sfMetadata.chatModel = {
               provider: "snowflake",
               model: sfCapture.usage.model || "Snowflake Cortex",
@@ -721,7 +732,7 @@ export async function POST(request: Request) {
           result.toUIMessageStream({
             messageMetadata: ({ part }) => {
               if (part.type == "finish") {
-                metadata.usage = part.totalUsage;
+                metadata.usage = attachUsageCost(part.totalUsage as ChatUsage);
                 return metadata;
               }
             },

@@ -19,7 +19,11 @@ const STATIC_MODELS: Array<{
   provider: string;
   uiName: string;
   apiName: string;
+  contextLength?: number;
+  inputTokenPricePer1MUsd?: number;
+  outputTokenPricePer1MUsd?: number;
   supportsTools: boolean;
+  supportsGeneration?: boolean;
   supportsImageInput: boolean;
   supportsFileInput: boolean;
 }> = [
@@ -326,7 +330,11 @@ export async function POST() {
           apiName: model.apiName,
           uiName: model.uiName,
           enabled: true,
+          contextLength: model.contextLength ?? 0,
+          inputTokenPricePer1MUsd: model.inputTokenPricePer1MUsd ?? 0,
+          outputTokenPricePer1MUsd: model.outputTokenPricePer1MUsd ?? 0,
           supportsTools: model.supportsTools,
+          supportsGeneration: model.supportsGeneration ?? false,
           supportsImageInput: model.supportsImageInput,
           supportsImageGeneration: false,
           supportsFileInput: model.supportsFileInput,
