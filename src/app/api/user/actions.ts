@@ -29,7 +29,7 @@ export const updateUserImageAction = validatedActionWithUserManagePermission(
   async (
     data,
     userId,
-    userSession,
+    _userSession,
     isOwnResource,
   ): Promise<UpdateUserActionState> => {
     const t = await getTranslations("User.Profile.common");
@@ -44,12 +44,7 @@ export const updateUserImageAction = validatedActionWithUserManagePermission(
           headers: await headers(),
         });
       } else {
-        await updateUserDetails(
-          userId,
-          userSession.user.name,
-          userSession.user.email || "",
-          image,
-        );
+        await updateUserDetails(userId, undefined, undefined, image);
       }
 
       const user = await getUser(userId);

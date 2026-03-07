@@ -2,6 +2,14 @@ import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 import { getSession } from "auth/server";
 import { getFileStorage, getStorageDriver } from "lib/file-storage";
+import {
+  assertAllowedUserUpload,
+  assertUserScopedUploadPath,
+  MAX_USER_UPLOAD_BYTES,
+  resolveUserScopedUploadPath,
+  StorageUploadPolicyError,
+  USER_UPLOAD_ALLOWED_CONTENT_TYPES,
+} from "lib/file-storage/upload-policy";
 import globalLogger from "lib/logger";
 import { colorize } from "consola/utils";
 import { checkStorageAction } from "../actions";
@@ -55,9 +63,11 @@ async function handleVercelBlobUpload(
   const jsonResponse = await handleUpload({
     body,
     request,
-    onBeforeGenerateToken: async () => {
+    onBeforeGenerateToken: async (pathname) => {
+      assertUserScopedUploadPath(userId, pathname);
       return {
-        allowedContentTypes: undefined, // Allow all file types
+        allowedContentTypes: [...USER_UPLOAD_ALLOWED_CONTENT_TYPES],
+        maximumSizeInBytes: MAX_USER_UPLOAD_BYTES,
         addRandomSuffix: true, // Prevent filename collisions
         tokenPayload: JSON.stringify({
           userId,
@@ -167,8 +177,30 @@ export async function POST(request: Request) {
       return await handleVercelBlobUpload(body, request, session.user.id);
     }
 
-    return await handleGenericUpload(body as GenericUploadRequest);
+    const genericRequest = body as GenericUploadRequest;
+    const contentType =
+      genericRequest.contentType || "application/octet-stream";
+
+    assertAllowedUserUpload({
+      contentType,
+      size: 0,
+    });
+
+    return await handleGenericUpload({
+      ...genericRequest,
+      filename: resolveUserScopedUploadPath(
+        session.user.id,
+        genericRequest.filename || "file",
+      ),
+      contentType,
+    });
   } catch (error) {
+    if (error instanceof StorageUploadPolicyError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    }
     logger.error("Upload URL generation failed", error);
     return NextResponse.json(
       { error: "Failed to create upload URL" },

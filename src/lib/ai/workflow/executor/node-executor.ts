@@ -21,6 +21,7 @@ import { jsonSchemaToZod } from "lib/json-schema-to-zod";
 import { toAny } from "lib/utils";
 import { AppError } from "lib/errors";
 import { DefaultToolName } from "lib/ai/tools";
+import { safeOutboundFetch } from "lib/network/safe-outbound-fetch";
 import {
   exaSearchToolForWorkflow,
   exaContentsToolForWorkflow,
@@ -380,7 +381,7 @@ export const httpNodeExecutor: NodeExecutor<HttpNodeData> = async ({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-    const response = await fetch(finalUrl, {
+    const response = await safeOutboundFetch(finalUrl, {
       method: node.method,
       headers,
       body,

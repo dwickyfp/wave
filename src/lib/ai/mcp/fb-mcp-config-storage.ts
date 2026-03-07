@@ -80,7 +80,7 @@ export function createFileBasedMCPConfigsStorage(
           clients.map(({ client, id }) => ({
             id,
             name: client.getInfo().name,
-            config: client.getInfo().config,
+            config: client.getInfo({ includeConfig: true }).config,
           })),
         )
         .then((configs) =>
@@ -102,7 +102,12 @@ export function createFileBasedMCPConfigsStorage(
               logger.debug(`Adding MCP client ${id}`);
               return manager.addClient(id, name, config);
             }
-            if (!equal(managerConfig.client.getInfo().config, config)) {
+            if (
+              !equal(
+                managerConfig.client.getInfo({ includeConfig: true }).config,
+                config,
+              )
+            ) {
               logger.debug(`Refreshing MCP client ${id}`);
               return manager.refreshClient(id);
             }

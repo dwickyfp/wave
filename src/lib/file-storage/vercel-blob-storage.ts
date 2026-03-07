@@ -8,7 +8,7 @@ import type {
 } from "./file-storage.interface";
 import {
   resolveStoragePrefix,
-  sanitizeFilename,
+  sanitizeStoragePath,
   toBuffer,
 } from "./storage-utils";
 import { generateUUID } from "lib/utils";
@@ -20,10 +20,16 @@ export interface VercelBlobStorageConfig {
 }
 
 const buildPathname = (filename: string) => {
-  const safeName = sanitizeFilename(filename);
+  const safePath = sanitizeStoragePath(filename || "file");
+  const pathSegments = safePath.split("/");
+  const safeName = pathSegments.pop() ?? "file";
   const id = generateUUID();
-  const prefix = STORAGE_PREFIX ? `${STORAGE_PREFIX}/` : "";
-  return path.posix.join(prefix, `${id}-${safeName}`);
+  const prefixSegments = STORAGE_PREFIX ? [STORAGE_PREFIX] : [];
+  return path.posix.join(
+    ...prefixSegments,
+    ...pathSegments,
+    `${id}-${safeName}`,
+  );
 };
 
 const mapMetadata = (

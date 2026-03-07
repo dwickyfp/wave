@@ -50,6 +50,7 @@ import {
   estimateKnowledgePromptTokens,
 } from "lib/knowledge/token-budget";
 import { serverFileStorage } from "lib/file-storage";
+import { isUserOwnedStorageKey } from "lib/file-storage/upload-policy";
 import {
   type SnowflakeCortexMessage,
   callSnowflakeCortexStream,
@@ -193,7 +194,12 @@ export async function POST(request: Request) {
     }
     const ingestionPreviewParts = await buildCsvIngestionPreviewParts(
       attachments,
-      (key) => serverFileStorage.download(key),
+      (key) => {
+        if (!isUserOwnedStorageKey(key, session.user.id)) {
+          throw new Error("Unauthorized attachment");
+        }
+        return serverFileStorage.download(key);
+      },
     );
     if (ingestionPreviewParts.length) {
       const baseParts = [...message.parts];

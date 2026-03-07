@@ -362,17 +362,17 @@ export async function requireEditorPermission(
  */
 export async function canManageMCPServer(
   mcpOwnerId: string,
-  visibility: string = "private",
+  _visibility: string = "private",
 ): Promise<boolean> {
   try {
     const session = await getSession();
     if (!session?.user) return false;
 
     // Admins can manage all MCP servers
-    if (session.user.role === "admin") return true;
+    if (getIsUserAdmin(session.user)) return true;
 
-    // Users can only manage their own private MCP servers
-    if (session.user.id === mcpOwnerId && visibility === "private") return true;
+    // Owners can manage their own MCP servers regardless of visibility
+    if (session.user.id === mcpOwnerId) return true;
 
     return false;
   } catch (error) {

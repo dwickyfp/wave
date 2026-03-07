@@ -86,6 +86,7 @@ export async function loadWaveAgentContinueCapabilities(options: {
             ...agent,
             subAgents,
           },
+          options.userId,
           options.dataStream,
           options.abortSignal,
           options.chatModel,
@@ -157,6 +158,7 @@ export async function loadWaveAgentBoundTools(options: {
       loadMcpTools({
         mentions: options.mentions,
         allowedMcpServers: options.allowedMcpServers,
+        userId: options.userId,
       }),
       loadWorkFlowTools({
         mentions: options.mentions,

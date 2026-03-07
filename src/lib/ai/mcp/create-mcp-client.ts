@@ -118,11 +118,11 @@ export class MCPClient {
     this.logger.info("OAuth authorization: token exchange completed");
   }
 
-  getInfo(): MCPServerInfo {
+  getInfo(options: { includeConfig?: boolean } = {}): MCPServerInfo {
     return {
       id: this.id,
       name: this.name,
-      config: this.serverConfig,
+      config: options.includeConfig ? this.serverConfig : undefined,
       status: this.status,
       error: this.error,
       toolInfo: this.toolInfo,

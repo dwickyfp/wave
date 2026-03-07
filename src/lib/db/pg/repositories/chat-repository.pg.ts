@@ -420,6 +420,17 @@ export const pgChatRepository: ChatRepository = {
       );
   },
 
+  selectThreadIdByMessageId: async (
+    messageId: string,
+  ): Promise<string | null> => {
+    const [result] = await db
+      .select({ threadId: ChatMessageTable.threadId })
+      .from(ChatMessageTable)
+      .where(eq(ChatMessageTable.id, messageId));
+
+    return result?.threadId ?? null;
+  },
+
   deleteAllThreads: async (userId: string): Promise<void> => {
     const threadIds = await db
       .select({ id: ChatThreadTable.id })

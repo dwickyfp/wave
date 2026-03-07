@@ -34,14 +34,14 @@ import { JSONSchema7 } from "json-schema";
 import { ObjectJsonSchema7 } from "app-types/util";
 import { jsonSchemaToZod } from "lib/json-schema-to-zod";
 import { Agent } from "app-types/agent";
+import {
+  requireAuthenticatedChatUserId,
+  requireMessageAccess,
+  requireThreadAccess,
+} from "lib/chat/access";
 
 export async function getUserId() {
-  const session = await getSession();
-  const userId = session?.user?.id;
-  if (!userId) {
-    throw new Error("User not found");
-  }
-  return userId;
+  return requireAuthenticatedChatUserId();
 }
 
 export async function generateTitleFromUserMessageAction({
@@ -86,10 +86,12 @@ export async function selectThreadWithMessagesAction(threadId: string) {
 }
 
 export async function deleteMessageAction(messageId: string) {
+  await requireMessageAccess(messageId);
   await chatRepository.deleteChatMessage(messageId);
 }
 
 export async function deleteThreadAction(threadId: string) {
+  await requireThreadAccess(threadId);
   await chatRepository.deleteThread(threadId);
 }
 
@@ -97,6 +99,7 @@ export async function deleteMessagesByChatIdAfterTimestampAction(
   messageId: string,
 ) {
   "use server";
+  await requireMessageAccess(messageId);
   await chatRepository.deleteMessagesByChatIdAfterTimestamp(messageId);
 }
 
@@ -104,8 +107,8 @@ export async function updateThreadAction(
   id: string,
   thread: Partial<Omit<ChatThread, "createdAt" | "updatedAt" | "userId">>,
 ) {
-  const userId = await getUserId();
-  await chatRepository.updateThread(id, { ...thread, userId });
+  await requireThreadAccess(id);
+  await chatRepository.updateThread(id, thread);
 }
 
 export async function deleteThreadsAction() {

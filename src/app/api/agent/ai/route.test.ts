@@ -16,12 +16,7 @@ vi.mock("lib/db/repository", () => ({
 
 vi.mock("../../chat/shared.chat", () => ({
   loadAppDefaultTools: vi.fn(async () => ({})),
-}));
-
-vi.mock("lib/ai/mcp/mcp-manager", () => ({
-  mcpClientsManager: {
-    tools: vi.fn(async () => ({})),
-  },
+  loadMcpTools: vi.fn(async () => ({})),
 }));
 
 const { POST } = await import("./route");

@@ -3,7 +3,7 @@ import { Alert } from "ui/alert";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getTranslations } from "next-intl/server";
-import { mcpRepository } from "lib/db/repository";
+import { getAccessibleMcpServerOrThrow } from "lib/mcp/access";
 import { redirect } from "next/navigation";
 
 export default async function Page({
@@ -11,7 +11,9 @@ export default async function Page({
 }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const t = await getTranslations();
-  const mcpClient = await mcpRepository.selectById(id);
+  const mcpClient = await getAccessibleMcpServerOrThrow(id, "manage")
+    .then((result) => result.server)
+    .catch(() => null);
 
   if (!mcpClient) {
     return redirect("/mcp");

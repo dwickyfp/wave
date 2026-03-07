@@ -6,10 +6,14 @@ import { McpServerTable } from "lib/db/pg/schema.pg";
 import { mcpOAuthRepository, mcpRepository } from "lib/db/repository";
 import {
   canCreateMCP,
-  canManageMCPServer,
   canShareMCPServer,
   getCurrentUser,
 } from "lib/auth/permissions";
+import {
+  getAccessibleMcpServerByNameOrThrow,
+  getAccessibleMcpServerOrThrow,
+} from "lib/mcp/access";
+import { getIsUserAdmin } from "lib/user/utils";
 
 export async function selectMcpClientsAction() {
   // Get current user to filter MCP servers
@@ -37,13 +41,14 @@ export async function selectMcpClientsAction() {
         visibility: server?.visibility,
         isOwner: server?.userId === currentUser.id,
         canManage: server
-          ? server.userId === currentUser.id || currentUser.role === "admin"
+          ? server.userId === currentUser.id || getIsUserAdmin(currentUser)
           : false,
       };
     });
 }
 
 export async function selectMcpClientAction(id: string) {
+  await getAccessibleMcpServerOrThrow(id, "manage");
   const client = await mcpClientsManager.getClient(id);
   if (!client) {
     throw new Error("Client not found");
@@ -60,6 +65,10 @@ export async function saveMcpClientAction(
   if (process.env.NOT_ALLOW_ADD_MCP_SERVERS) {
     throw new Error("Not allowed to add MCP servers");
   }
+
+  const existingServer = server.id
+    ? (await getAccessibleMcpServerOrThrow(server.id, "manage")).server
+    : null;
 
   // Get current user
   const currentUser = await getCurrentUser();
@@ -94,8 +103,8 @@ export async function saveMcpClientAction(
     }
 
     // Check if a featured server with this name already exists
-    const existing = await mcpRepository.existsByServerName(server.name);
-    if (existing && !server.id) {
+    const existing = await mcpRepository.selectByServerName(server.name);
+    if (existing && existing.id !== existingServer?.id) {
       throw new Error("A featured MCP server with this name already exists");
     }
   }
@@ -103,8 +112,8 @@ export async function saveMcpClientAction(
   // Add userId to the server object
   const serverWithUser = {
     ...server,
-    userId: currentUser.id,
-    visibility: server.visibility || "private",
+    userId: existingServer?.userId ?? currentUser.id,
+    visibility: server.visibility || existingServer?.visibility || "private",
   };
 
   return mcpClientsManager.persistClient(serverWithUser);
@@ -115,25 +124,12 @@ export async function existMcpClientByServerNameAction(serverName: string) {
 }
 
 export async function removeMcpClientAction(id: string) {
-  // Get the MCP server to check ownership
-  const mcpServer = await mcpRepository.selectById(id);
-  if (!mcpServer) {
-    throw new Error("MCP server not found");
-  }
-
-  // Check if user has permission to delete this specific MCP server
-  const canManage = await canManageMCPServer(
-    mcpServer.userId,
-    mcpServer.visibility,
-  );
-  if (!canManage) {
-    throw new Error("You don't have permission to delete this MCP connection");
-  }
-
+  await getAccessibleMcpServerOrThrow(id, "manage");
   await mcpClientsManager.removeClient(id);
 }
 
 export async function refreshMcpClientAction(id: string) {
+  await getAccessibleMcpServerOrThrow(id, "manage");
   await mcpClientsManager.refreshClient(id);
 }
 
@@ -147,6 +143,7 @@ export async function authorizeMcpClientAction(id: string) {
 }
 
 export async function checkTokenMcpClientAction(id: string) {
+  await getAccessibleMcpServerOrThrow(id, "manage");
   const session = await mcpOAuthRepository.getAuthenticatedSession(id);
 
   // for wait connect to mcp server
@@ -160,6 +157,7 @@ export async function callMcpToolAction(
   toolName: string,
   input: unknown,
 ) {
+  await getAccessibleMcpServerOrThrow(id, "manage");
   return mcpClientsManager.toolCall(id, toolName, input);
 }
 
@@ -168,7 +166,11 @@ export async function callMcpToolByServerNameAction(
   toolName: string,
   input: unknown,
 ) {
-  return mcpClientsManager.toolCallByServerName(serverName, toolName, input);
+  const { server } = await getAccessibleMcpServerByNameOrThrow(
+    serverName,
+    "read",
+  );
+  return mcpClientsManager.toolCall(server.id, toolName, input);
 }
 
 export async function shareMcpServerAction(
@@ -180,6 +182,8 @@ export async function shareMcpServerAction(
   if (!canShare) {
     throw new Error("Only administrators can feature MCP servers");
   }
+
+  await getAccessibleMcpServerOrThrow(id, "manage");
 
   // Update the visibility of the MCP server
   await mcpRepository.updateVisibility(id, visibility);

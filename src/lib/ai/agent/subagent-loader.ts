@@ -133,6 +133,7 @@ async function waitForRetryDelay(delayMs: number, signal?: AbortSignal) {
  */
 export async function loadSubAgentTools(
   agent: Agent & { subAgents?: SubAgent[] },
+  userId: string,
   dataStream: UIMessageStreamWriter,
   abortSignal: AbortSignal,
   chatModel: ChatModel,
@@ -151,7 +152,7 @@ export async function loadSubAgentTools(
 
         // Load subagent's tools using its configured mentions
         const [mcpTools, workflowTools, appDefaultTools] = await Promise.all([
-          loadMcpTools({ mentions: subagent.tools }),
+          loadMcpTools({ mentions: subagent.tools, userId }),
           loadWorkFlowTools({
             mentions: subagent.tools,
             dataStream,

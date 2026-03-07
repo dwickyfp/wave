@@ -93,4 +93,16 @@ describe("auth/permissions", () => {
       permissions.requireUserManagePermissionFor("u2", "manage this user"),
     ).rejects.toThrow(/Permission required/);
   });
+
+  it("canManageMCPServer allows owners to manage public servers", async () => {
+    const permissions = await import("./permissions");
+    vi.mocked(getSession).mockResolvedValue({
+      user: { id: "owner-1", role: "user" },
+    } as any);
+    vi.mocked(getIsUserAdmin).mockReturnValue(false);
+
+    await expect(
+      permissions.canManageMCPServer("owner-1", "public"),
+    ).resolves.toBe(true);
+  });
 });

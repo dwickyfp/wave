@@ -309,6 +309,8 @@ export type ChatRepository = {
 
   deleteMessagesByChatIdAfterTimestamp(messageId: string): Promise<void>;
 
+  selectThreadIdByMessageId(messageId: string): Promise<string | null>;
+
   deleteAllThreads(userId: string): Promise<void>;
 
   deleteUnarchivedThreads(userId: string): Promise<void>;

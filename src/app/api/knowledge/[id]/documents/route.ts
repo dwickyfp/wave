@@ -2,6 +2,10 @@ import { DocumentFileType } from "app-types/knowledge";
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import {
+  assertKnowledgeDocumentSize,
+  StorageUploadPolicyError,
+} from "lib/file-storage/upload-policy";
 import { runIngestPipeline } from "lib/knowledge/ingest-pipeline";
 import { enqueueIngestDocument } from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
@@ -136,15 +140,26 @@ export async function POST(req: NextRequest, { params }: Params) {
     );
   }
 
+  try {
+    assertKnowledgeDocumentSize(file.size);
+  } catch (error) {
+    if (error instanceof StorageUploadPolicyError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    }
+    throw error;
+  }
+
   const fileType = MIME_TO_TYPE[file.type] ?? "txt";
-  const buffer = Buffer.from(await file.arrayBuffer());
 
   // Try to persist the file to object storage.
   // If storage is not configured or not reachable, fall back to inline
   // processing (the file is kept in memory for the pipeline).
   let storagePath: string | undefined;
   try {
-    const uploadResult = await serverFileStorage.upload(buffer, {
+    const uploadResult = await serverFileStorage.upload(file.stream(), {
       filename: `knowledge/${groupId}/${Date.now()}-${file.name}`,
       contentType: file.type || "application/octet-stream",
     });
@@ -167,6 +182,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   });
 
   if (!storagePath) {
+    const buffer = Buffer.from(await file.arrayBuffer());
     // Storage upload failed — buffer is the only source. Never enqueue because
     // the worker process has no access to this in-memory buffer; always process inline.
     runIngestPipeline(doc.id, groupId, buffer).catch(async (err) => {

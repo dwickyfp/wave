@@ -862,7 +862,10 @@ export default function PromptInput({
                                               "Content-Type":
                                                 "application/json",
                                             },
-                                            body: JSON.stringify({ url }),
+                                            body: JSON.stringify({
+                                              key: file.storageKey,
+                                              url,
+                                            }),
                                           },
                                         );
                                         if (!res.ok) {

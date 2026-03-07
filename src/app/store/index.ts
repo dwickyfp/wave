@@ -12,6 +12,7 @@ import { KnowledgeSummary } from "app-types/knowledge";
 export interface UploadedFile {
   id: string;
   url: string;
+  storageKey?: string;
   name: string;
   mimeType: string;
   size: number;
