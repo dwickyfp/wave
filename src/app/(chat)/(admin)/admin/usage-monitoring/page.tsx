@@ -1,35 +1,14 @@
-import {
-  getAdminUsageMonitoring,
-  USAGE_MONITORING_LIMIT,
-} from "lib/admin/server";
+import { UsageMonitoringTable } from "@/components/admin/usage-monitoring-table";
 import { requireAdminPermission } from "auth/permissions";
+import {
+  USAGE_MONITORING_LIMIT,
+  getAdminUsageMonitoring,
+} from "lib/admin/server";
+import { parseUsageMonitoringSearchParams } from "lib/admin/usage-monitoring";
 import { getSession } from "lib/auth/server";
 import { redirect, unauthorized } from "next/navigation";
-import {
-  DatePreset,
-  UsageMonitoringTable,
-} from "@/components/admin/usage-monitoring-table";
-import type { UsageMonitoringQuery } from "app-types/admin";
 
 export const dynamic = "force-dynamic";
-
-const PRESET_DAYS: Record<DatePreset, number> = {
-  "7d": 7,
-  "14d": 14,
-  "30d": 30,
-  "90d": 90,
-};
-
-function getDateRange(preset: DatePreset): { startDate: Date; endDate: Date } {
-  const endDate = new Date();
-  endDate.setHours(23, 59, 59, 999);
-
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - PRESET_DAYS[preset]);
-  startDate.setHours(0, 0, 0, 0);
-
-  return { startDate, endDate };
-}
 
 interface PageProps {
   searchParams: Promise<{
@@ -54,44 +33,30 @@ export default async function UsageMonitoringPage({ searchParams }: PageProps) {
   }
 
   const params = await searchParams;
-
-  const rawPreset = params.preset ?? "7d";
-  const preset: DatePreset =
-    rawPreset === "7d" ||
-    rawPreset === "14d" ||
-    rawPreset === "30d" ||
-    rawPreset === "90d"
-      ? rawPreset
-      : "7d";
-
-  const page = parseInt(params.page ?? "1", 10);
-  const limit = USAGE_MONITORING_LIMIT;
-  const offset = (page - 1) * limit;
-  const sortBy = (params.sortBy ??
-    "totalTokens") as UsageMonitoringQuery["sortBy"];
-  const sortDirection = (params.sortDirection ?? "desc") as "asc" | "desc";
-
-  const { startDate, endDate } = getDateRange(preset);
+  const searchState = parseUsageMonitoringSearchParams(
+    params,
+    USAGE_MONITORING_LIMIT,
+  );
 
   const data = await getAdminUsageMonitoring({
-    startDate,
-    endDate,
-    limit,
-    offset,
-    sortBy,
-    sortDirection,
-    searchValue: params.query,
+    startDate: searchState.startDate,
+    endDate: searchState.endDate,
+    limit: searchState.limit,
+    offset: searchState.offset,
+    sortBy: searchState.sortBy,
+    sortDirection: searchState.sortDirection,
+    searchValue: searchState.query,
   });
 
   return (
     <UsageMonitoringTable
       data={data}
-      page={page}
-      limit={limit}
-      query={params.query}
-      sortBy={sortBy ?? "totalTokens"}
-      sortDirection={sortDirection}
-      preset={preset}
+      page={searchState.page}
+      limit={searchState.limit}
+      query={searchState.query}
+      sortBy={searchState.sortBy}
+      sortDirection={searchState.sortDirection}
+      preset={searchState.preset}
     />
   );
 }

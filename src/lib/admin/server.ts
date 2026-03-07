@@ -1,9 +1,8 @@
 import "server-only";
 
-import { getSession } from "lib/auth/server";
 import {
-  AdminUsersQuery,
   AdminUsersPaginated,
+  AdminUsersQuery,
   UsageMonitoringData,
   UsageMonitoringQuery,
 } from "app-types/admin";
@@ -11,6 +10,7 @@ import {
   requireAdminPermission,
   requireUserListPermission,
 } from "lib/auth/permissions";
+import { getSession } from "lib/auth/server";
 import pgAdminRepository from "lib/db/pg/repositories/admin-respository.pg";
 
 export const ADMIN_USER_LIST_LIMIT = 10;
@@ -67,7 +67,7 @@ export async function getAdminUsers(
   }
 }
 
-export const USAGE_MONITORING_LIMIT = 20;
+export const USAGE_MONITORING_LIMIT = 10;
 
 /**
  * Get aggregated usage data for all users within a date range

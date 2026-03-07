@@ -2,11 +2,12 @@ import {
   LlmModelConfig,
   LlmModelConfigInput,
   LlmProviderConfig,
-  ProviderSettings,
   LlmProviderUpsertInput,
   ModelType,
+  ProviderSettings,
 } from "app-types/settings";
 import { and, eq, or } from "drizzle-orm";
+import { pickPreferredModelConfig } from "lib/settings/model-config-match";
 import { pgDb as db } from "../db.pg";
 import {
   LlmModelConfigTable,
@@ -314,9 +315,7 @@ export const pgSettingsRepository = {
         ),
       );
 
-    const modelRow =
-      modelRows.find((row) => row.uiName === modelName) ??
-      modelRows.find((row) => row.apiName === modelName);
+    const modelRow = pickPreferredModelConfig(modelName, modelRows);
     if (!modelRow) return null;
 
     return {

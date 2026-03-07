@@ -43,49 +43,63 @@ const vector = customType<{ data: number[]; config?: { dimensions?: number } }>(
 import { TipTapMentionJsonContent } from "@/types/util";
 import { UIMessage } from "ai";
 import {
-  ChatMention,
   ChatCompactionSource,
   ChatCompactionStatus,
   ChatCompactionSummary,
+  ChatMention,
   ChatMetadata,
 } from "app-types/chat";
 import { DBEdge, DBNode, DBWorkflow } from "app-types/workflow";
 import { isNotNull } from "drizzle-orm";
 
-export const ChatThreadTable = pgTable("chat_thread", {
-  id: uuid("id").primaryKey().notNull().defaultRandom(),
-  title: text("title").notNull(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => UserTable.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .default(sql`CURRENT_TIMESTAMP`),
-  // Snowflake Cortex Threads — persisted per chat session so we can pass
-  // thread_id + parent_message_id to agent:run on every subsequent turn.
-  // Only populated when the thread is backed by a Snowflake Cortex agent.
-  snowflakeThreadId: text("snowflake_thread_id"),
-  // The assistant message_id returned by Snowflake for the last successful
-  // turn.  Used as parent_message_id for the next agent:run call.
-  // 0 means "start of thread" (first user turn).
-  // Must be bigint because Snowflake message IDs exceed 32-bit int range.
-  snowflakeParentMessageId: bigint("snowflake_parent_message_id", {
-    mode: "number",
-  }),
-});
+export const ChatThreadTable = pgTable(
+  "chat_thread",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    title: text("title").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    // Snowflake Cortex Threads — persisted per chat session so we can pass
+    // thread_id + parent_message_id to agent:run on every subsequent turn.
+    // Only populated when the thread is backed by a Snowflake Cortex agent.
+    snowflakeThreadId: text("snowflake_thread_id"),
+    // The assistant message_id returned by Snowflake for the last successful
+    // turn.  Used as parent_message_id for the next agent:run call.
+    // 0 means "start of thread" (first user turn).
+    // Must be bigint because Snowflake message IDs exceed 32-bit int range.
+    snowflakeParentMessageId: bigint("snowflake_parent_message_id", {
+      mode: "number",
+    }),
+  },
+  (t) => [
+    index("chat_thread_user_id_created_at_idx").on(t.userId, t.createdAt),
+    index("chat_thread_created_at_idx").on(t.createdAt),
+  ],
+);
 
-export const ChatMessageTable = pgTable("chat_message", {
-  id: text("id").primaryKey().notNull(),
-  threadId: uuid("thread_id")
-    .notNull()
-    .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
-  role: text("role").notNull().$type<UIMessage["role"]>(),
-  parts: json("parts").notNull().array().$type<UIMessage["parts"]>(),
-  metadata: json("metadata").$type<ChatMetadata>(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .default(sql`CURRENT_TIMESTAMP`),
-});
+export const ChatMessageTable = pgTable(
+  "chat_message",
+  {
+    id: text("id").primaryKey().notNull(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
+    role: text("role").notNull().$type<UIMessage["role"]>(),
+    parts: json("parts").notNull().array().$type<UIMessage["parts"]>(),
+    metadata: json("metadata").$type<ChatMetadata>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("chat_message_thread_id_created_at_idx").on(t.threadId, t.createdAt),
+    index("chat_message_created_at_idx").on(t.createdAt),
+  ],
+);
 
 export const ChatThreadCompactionCheckpointTable = pgTable(
   "chat_thread_compaction_checkpoint",
@@ -694,6 +708,10 @@ export const LlmModelConfigTable = pgTable(
   (t) => [
     unique().on(t.providerId, t.uiName),
     index("llm_model_config_provider_id_idx").on(t.providerId),
+    index("llm_model_config_provider_id_api_name_idx").on(
+      t.providerId,
+      t.apiName,
+    ),
   ],
 );
 

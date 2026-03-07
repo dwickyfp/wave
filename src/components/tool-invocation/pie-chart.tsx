@@ -35,6 +35,7 @@ export interface PieChartProps {
   description?: string;
   prefix?: string;
   jsonView?: boolean;
+  colors?: string[];
 }
 
 // Color variable names (chart-1 ~ chart-5)
@@ -93,11 +94,20 @@ function formatLargeNumber(num: number | null | undefined): string {
 }
 
 export function PieChart(props: PieChartProps) {
-  const { title, data, unit, description, prefix, jsonView = true } = props;
+  const {
+    title,
+    data,
+    unit,
+    description,
+    prefix,
+    jsonView = true,
+    colors,
+  } = props;
   // Calculate total value
   const total = React.useMemo(() => {
     return data.reduce((acc, curr) => acc + curr.value, 0);
   }, [data]);
+  const palette = colors?.length ? colors : chartColors;
 
   // Generate chart configuration dynamically
   const chartConfig = React.useMemo(() => {
@@ -113,15 +123,15 @@ export function PieChart(props: PieChartProps) {
     // Configure each data item
     data.forEach((item, index) => {
       // Colors cycle through chart-1 ~ chart-5
-      const colorIndex = index % chartColors.length;
+      const colorIndex = index % palette.length;
       config[sanitizeCssVariableName(item.label)] = {
         label: item.label,
-        color: chartColors[colorIndex],
+        color: palette[colorIndex],
       };
     });
 
     return config;
-  }, [data, unit]);
+  }, [data, palette, unit]);
 
   // Generate actual chart data
   const chartData = React.useMemo(() => {
@@ -163,6 +173,7 @@ export function PieChart(props: PieChartProps) {
               dataKey="value"
               nameKey="name"
               innerRadius={60}
+              paddingAngle={2}
               strokeWidth={5}
             >
               <Label

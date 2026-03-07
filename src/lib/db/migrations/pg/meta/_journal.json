@@ -267,6 +267,27 @@
       "when": 1774000000000,
       "tag": "0037_section_first_knowledge",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1774100000000,
+      "tag": "0038_chat_thread_compaction_checkpoint",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1774200000000,
+      "tag": "0039_chat_thread_compaction_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1774300000000,
+      "tag": "0040_usage_monitoring_realtime_cost_indexes",
+      "breakpoints": true
     }
   ]
 }

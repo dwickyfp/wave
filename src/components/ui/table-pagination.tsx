@@ -14,6 +14,7 @@ interface TablePaginationProps {
   totalPages: number;
   buildUrl: (params: { page: number }) => string;
   className?: string;
+  onPageChange?: (page: number) => void;
 }
 
 export function TablePagination({
@@ -21,8 +22,21 @@ export function TablePagination({
   totalPages,
   buildUrl,
   className,
+  onPageChange,
 }: TablePaginationProps) {
   if (totalPages <= 1) return null;
+
+  const handlePageChange = (
+    event: React.MouseEvent<HTMLAnchorElement>,
+    page: number,
+  ) => {
+    if (!onPageChange || page === currentPage) {
+      return;
+    }
+
+    event.preventDefault();
+    onPageChange(page);
+  };
 
   return (
     <Pagination className={className} data-testid="table-pagination">
@@ -31,6 +45,7 @@ export function TablePagination({
           <PaginationPrevious
             href={currentPage > 1 ? buildUrl({ page: currentPage - 1 }) : "#"}
             className={cn(currentPage <= 1 && "pointer-events-none opacity-50")}
+            onClick={(event) => handlePageChange(event, currentPage - 1)}
           />
         </PaginationItem>
 
@@ -51,6 +66,7 @@ export function TablePagination({
               <PaginationLink
                 href={buildUrl({ page: pageNum })}
                 isActive={pageNum === currentPage}
+                onClick={(event) => handlePageChange(event, pageNum)}
               >
                 {pageNum}
               </PaginationLink>
@@ -74,6 +90,7 @@ export function TablePagination({
             className={cn(
               currentPage >= totalPages && "pointer-events-none opacity-50",
             )}
+            onClick={(event) => handlePageChange(event, currentPage + 1)}
           />
         </PaginationItem>
       </PaginationContent>
