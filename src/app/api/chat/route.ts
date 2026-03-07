@@ -55,6 +55,10 @@ import {
 import { generateUUID } from "lib/utils";
 import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
 import {
+  sanitizeModelMessagesForProvider,
+  shouldSendToolDefinitionsToProvider,
+} from "lib/ai/provider-compatibility";
+import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
 } from "./actions";
@@ -728,17 +732,35 @@ export async function POST(request: Request) {
             };
           },
         );
+        const compatibleMessages = sanitizeModelMessagesForProvider({
+          provider: chatModel?.provider,
+          messages: modelMessages,
+          tools: vercelAITooles,
+        });
+        if (compatibleMessages.removedToolParts > 0) {
+          logger.info(
+            `provider compatibility pruned ${compatibleMessages.removedToolParts} stale tool parts across ${compatibleMessages.removedMessages} messages for ${chatModel?.provider}/${chatModel?.model}`,
+          );
+        }
+        const sendToolDefinitions = shouldSendToolDefinitionsToProvider({
+          provider: chatModel?.provider,
+          tools: vercelAITooles,
+        });
 
         const result = streamText({
           model,
           system: systemPrompt,
-          messages: modelMessages,
+          messages: compatibleMessages.messages,
           experimental_transform: smoothStream({ chunking: "word" }),
           maxRetries: 2,
-          tools: vercelAITooles,
           stopWhen: stepCountIs(useImageTool ? 1 : 10),
-          toolChoice: "auto",
           abortSignal: request.signal,
+          ...(sendToolDefinitions
+            ? {
+                tools: vercelAITooles,
+                toolChoice: "auto" as const,
+              }
+            : {}),
           // Disable reasoning/thinking when generating images — it adds no
           // value for a simple tool call decision and pollutes the UI.
           ...(useImageTool && {

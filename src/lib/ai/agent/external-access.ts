@@ -28,6 +28,10 @@ import {
   loadWaveAgentContinueCapabilities,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
+import {
+  sanitizeModelMessagesForProvider,
+  shouldSendToolDefinitionsToProvider,
+} from "lib/ai/provider-compatibility";
 import { getDbModel } from "lib/ai/provider-factory";
 import { workflowToVercelAITool } from "@/app/api/chat/shared.chat";
 import { createKnowledgeDocsTool } from "lib/ai/tools/knowledge-tool";
@@ -430,6 +434,7 @@ export function buildWaveRunAgentMessages(input: WaveRunAgentInput) {
 
 async function runStreamedTextTask(options: {
   model: LanguageModel;
+  provider?: string | null;
   system: string;
   messages: ModelMessage[];
   tools: Record<string, Tool>;
@@ -448,15 +453,33 @@ async function runStreamedTextTask(options: {
   };
 
   options.onProgress?.(35, options.startMessage);
+  const compatibleMessages = sanitizeModelMessagesForProvider({
+    provider: options.provider,
+    messages: options.messages,
+    tools: options.tools,
+  });
+  if (compatibleMessages.removedToolParts > 0) {
+    logger.info(
+      `provider compatibility pruned ${compatibleMessages.removedToolParts} stale tool parts across ${compatibleMessages.removedMessages} messages for external provider ${options.provider ?? "unknown"}`,
+    );
+  }
+  const sendToolDefinitions = shouldSendToolDefinitionsToProvider({
+    provider: options.provider,
+    tools: options.tools,
+  });
   const result = streamText({
     model: options.model,
     system: options.system,
-    messages: options.messages,
-    tools: options.tools,
+    messages: compatibleMessages.messages,
     stopWhen: stepCountIs(10),
-    toolChoice: "auto",
     maxRetries: options.maxRetries ?? 2,
     abortSignal: options.abortSignal,
+    ...(sendToolDefinitions
+      ? {
+          tools: options.tools,
+          toolChoice: "auto" as const,
+        }
+      : {}),
     onChunk: async ({ chunk }) => {
       if (chunk.type === "tool-call") {
         nudgeProgress(
@@ -542,20 +565,29 @@ export async function streamWaveManagedAgentRun(options: {
   });
 
   options.onProgress?.(30, "Running model");
+  const tools = {
+    ...toolset.mcpTools,
+    ...toolset.workflowTools,
+    ...toolset.subagentTools,
+    ...toolset.knowledgeTools,
+    ...toolset.skillTools,
+    ...toolset.appDefaultTools,
+  };
+  const compatibleMessages = sanitizeModelMessagesForProvider({
+    provider: chatModel.provider,
+    messages: options.messages,
+    tools,
+  });
+  if (compatibleMessages.removedToolParts > 0) {
+    logger.info(
+      `provider compatibility pruned ${compatibleMessages.removedToolParts} stale tool parts across ${compatibleMessages.removedMessages} messages for external provider ${chatModel.provider}`,
+    );
+  }
   return streamText({
     model,
     system: systemPrompt,
-    messages: options.messages,
-    tools: {
-      ...toolset.mcpTools,
-      ...toolset.workflowTools,
-      ...toolset.subagentTools,
-      ...toolset.knowledgeTools,
-      ...toolset.skillTools,
-      ...toolset.appDefaultTools,
-    },
+    messages: compatibleMessages.messages,
     stopWhen: stepCountIs(10),
-    toolChoice: "auto",
     maxRetries: 2,
     abortSignal: options.abortSignal,
     temperature: options.temperature,
@@ -575,6 +607,15 @@ export async function streamWaveManagedAgentRun(options: {
     onFinish: async () => {
       options.onProgress?.(100, "Completed");
     },
+    ...(shouldSendToolDefinitionsToProvider({
+      provider: chatModel.provider,
+      tools,
+    })
+      ? {
+          tools,
+          toolChoice: "auto" as const,
+        }
+      : {}),
   });
 }
 
@@ -654,6 +695,7 @@ export async function executeSubAgentExternalTool(
 
   return runStreamedTextTask({
     model,
+    provider: chatModel.provider,
     system: buildWaveAgentSystemPrompt({
       extraPrompts: [
         instructions,
@@ -1120,9 +1162,11 @@ export async function streamContinueManagedTools(options: {
         }),
       }),
     }),
-    messages: convertOpenAiMessagesToModelMessages(options.request.messages),
-    tools: mergedTools.tools,
-    toolChoice: mapOpenAiToolChoice(options.request.tool_choice),
+    messages: sanitizeModelMessagesForProvider({
+      provider: chatModel.provider,
+      messages: convertOpenAiMessagesToModelMessages(options.request.messages),
+      tools: mergedTools.tools,
+    }).messages,
     abortSignal: options.abortSignal,
     maxRetries: 2,
     temperature: options.request.temperature,
@@ -1133,6 +1177,15 @@ export async function streamContinueManagedTools(options: {
       : options.request.stop
         ? [options.request.stop]
         : undefined,
+    ...(shouldSendToolDefinitionsToProvider({
+      provider: chatModel.provider,
+      tools: mergedTools.tools,
+    })
+      ? {
+          tools: mergedTools.tools,
+          toolChoice: mapOpenAiToolChoice(options.request.tool_choice),
+        }
+      : {}),
   });
 }
 
