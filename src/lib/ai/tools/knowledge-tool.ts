@@ -9,31 +9,35 @@ import {
   QueryKnowledgeDocsOptions,
 } from "lib/knowledge/retriever";
 
-/**
- * Creates a Context7-style full-doc retrieval tool for a knowledge group.
- * Uses embedding + BM25 + reranking to identify the most relevant documents,
- * then returns their full markdown content within a configurable token budget.
- */
+const DEFAULT_AGENT_KNOWLEDGE_TOKENS = 5000;
+
 export function createKnowledgeDocsTool(
   group: KnowledgeSummary,
   options: Pick<QueryKnowledgeDocsOptions, "userId" | "source"> = {},
 ) {
   return tool({
-    description: `Search the "${group.name}" knowledge base${group.description ? `: ${group.description}` : ""}. Returns full document content ranked by relevance using semantic search. Use this to find comprehensive information from this knowledge group.`,
+    description: `Search the "${group.name}" knowledge base${group.description ? `: ${group.description}` : ""}. By default, return section-first context: the most relevant sections plus their parent or continuation context. Use mode="full-doc" only when the user explicitly needs the whole document or a complete document-wide summary.`,
     inputSchema: z.object({
       query: z.string().describe("The search query to find relevant documents"),
       tokens: z
         .number()
         .optional()
         .describe(
-          "Maximum token budget for the response (default: 10000). Higher values return more content.",
+          "Maximum token budget for the response (default: 5000). Higher values return more context.",
+        ),
+      mode: z
+        .enum(["section-first", "full-doc"])
+        .optional()
+        .describe(
+          "Retrieval mode. Use section-first for targeted answers and full-doc only when complete document context is required.",
         ),
     }),
-    execute: async ({ query, tokens }) => {
+    execute: async ({ query, tokens, mode }) => {
       const docs = await queryKnowledgeAsDocs(group, query, {
         ...options,
         source: options.source ?? "agent",
-        tokens: tokens ?? 10000,
+        tokens: tokens ?? DEFAULT_AGENT_KNOWLEDGE_TOKENS,
+        resultMode: mode ?? "section-first",
       });
       return formatDocsAsText(group.name, docs, query);
     },

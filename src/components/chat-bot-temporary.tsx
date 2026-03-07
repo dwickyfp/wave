@@ -347,7 +347,9 @@ function DrawerTemporaryContent({
 
       <div className={"w-full my-6 mt-auto"}>
         <PromptInput
+          additionalContextText={temporaryChat.instructions}
           input={input}
+          messages={messages}
           sendMessage={sendMessage}
           disabledMention={true}
           model={temporaryChat.chatModel}

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { rerank } from "ai";
-import { KnowledgeQueryResult } from "app-types/knowledge";
+import { KnowledgeQueryResult, KnowledgeSection } from "app-types/knowledge";
 import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { knowledgeRepository } from "lib/db/repository";
 import { settingsRepository } from "lib/db/repository";
@@ -808,92 +808,155 @@ function trimMarkdownByMatchedSections(input: {
   return `${selected.map((s) => s.content).join("\n\n---\n\n")}\n\n[... content trimmed for token budget]`;
 }
 
-function headingFromChunkMatch(match: KnowledgeQueryResult): string {
-  const raw =
-    match.chunk.metadata?.headingPath ||
-    match.chunk.metadata?.sectionTitle ||
-    match.chunk.metadata?.section ||
-    "";
-  const heading = raw.trim();
-  if (heading) return heading;
-  return `${match.documentName} > Chunk ${match.chunk.chunkIndex + 1}`;
+type NormalizedDocsResultMode = "section-first" | "full-doc";
+
+function normalizeDocsResultMode(
+  resultMode: QueryKnowledgeDocsOptions["resultMode"],
+): NormalizedDocsResultMode {
+  return resultMode === "full-doc" ? "full-doc" : "section-first";
 }
 
-function buildMatchedSectionsMarkdown(input: {
+function getSectionGraphVersion(
+  metadata?: Record<string, unknown> | null,
+): number | null {
+  const rawValue = metadata?.sectionGraphVersion;
+  if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+    return rawValue;
+  }
+  if (typeof rawValue === "string") {
+    const parsed = Number(rawValue);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+type RankedDocCandidate = Omit<
+  DocRetrievalResult,
+  "markdown" | "matchedSections"
+> & {
+  sectionGraphVersion: number | null;
+};
+
+type SectionBundleCandidate = {
+  doc: RankedDocCandidate;
+  section: KnowledgeSection;
   matches: KnowledgeQueryResult[];
+  score: number;
+  hitCount: number;
+};
+
+function formatSectionHeading(section: KnowledgeSection): string {
+  if (section.partCount > 1) {
+    return `${section.headingPath} (Part ${section.partIndex + 1}/${section.partCount})`;
+  }
+  return section.headingPath;
+}
+
+function getSplitSiblingSection(
+  section: KnowledgeSection,
+  relatedSectionMap: Map<string, KnowledgeSection>,
+  direction: "prev" | "next",
+): KnowledgeSection | null {
+  if (section.partCount <= 1) return null;
+
+  const relatedId =
+    direction === "prev" ? section.prevSectionId : section.nextSectionId;
+  if (!relatedId) return null;
+
+  const sibling = relatedSectionMap.get(relatedId);
+  if (!sibling) return null;
+  if (sibling.documentId !== section.documentId) return null;
+  if (sibling.headingPath !== section.headingPath) return null;
+  return sibling;
+}
+
+function buildSectionBundleMarkdown(input: {
+  section: KnowledgeSection;
+  relatedSectionMap: Map<string, KnowledgeSection>;
   budgetTokens: number;
-  maxSections?: number;
-}): {
-  markdown: string;
-  matchedSections: Array<{ heading: string; score: number }>;
-} {
-  const { matches, budgetTokens, maxSections = 6 } = input;
-  if (budgetTokens < 80 || matches.length === 0) {
-    return { markdown: "", matchedSections: [] };
-  }
+}): { markdown: string; tokenCount: number } {
+  const { section, relatedSectionMap, budgetTokens } = input;
+  if (budgetTokens < 100) return { markdown: "", tokenCount: 0 };
 
-  const ranked = matches
-    .map((m) => ({
-      match: m,
-      score: Math.max(0, m.rerankScore ?? m.score),
-      heading: headingFromChunkMatch(m),
-    }))
-    .filter((r) => r.score > 0)
-    .sort((a, b) => b.score - a.score);
-
-  if (ranked.length === 0) {
-    return { markdown: "", matchedSections: [] };
-  }
-
-  const seen = new Set<string>();
   const blocks: string[] = [];
-  const matchedSections: Array<{ heading: string; score: number }> = [];
   let remaining = budgetTokens;
 
-  for (const row of ranked) {
-    if (blocks.length >= maxSections || remaining < 80) break;
-
-    const dedupeKey = `${row.heading.toLowerCase()}::${row.match.chunk.chunkIndex}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-
-    const summaryLine = row.match.chunk.contextSummary
-      ? `_${row.match.chunk.contextSummary}_\n\n`
-      : "";
-    const content = row.match.chunk.content.trim();
-    if (!content) continue;
-
-    const baseHeading = `### ${row.heading}`;
-    const candidate = `${baseHeading}\n${summaryLine}${content}`.trim();
-    const candidateTokens = estimateTokens(candidate);
-
-    if (candidateTokens <= remaining) {
-      blocks.push(candidate);
-      matchedSections.push({ heading: row.heading, score: row.score });
-      remaining -= candidateTokens;
-      continue;
+  const pushBlock = (
+    text: string,
+    options: { minTokens?: number; suffixWhenTrimmed?: string } = {},
+  ) => {
+    const minTokens = options.minTokens ?? 1;
+    const tokenCount = estimateTokens(text);
+    if (tokenCount <= remaining) {
+      blocks.push(text);
+      remaining -= tokenCount;
+      return true;
     }
 
-    const headingCost = estimateTokens(baseHeading) + 8;
-    if (remaining <= headingCost + 20) break;
-    const trimmed = trimTextToTokenBudget(content, remaining - headingCost);
-    if (!trimmed) break;
+    if (remaining < minTokens) return false;
 
-    const partial =
-      `${baseHeading}\n${summaryLine}${trimmed}\n\n[... section trimmed]`.trim();
-    blocks.push(partial);
-    matchedSections.push({ heading: row.heading, score: row.score });
-    remaining -= estimateTokens(partial);
-    break;
+    const trimmed = trimTextToTokenBudget(text, remaining);
+    if (!trimmed) return false;
+
+    const finalText = options.suffixWhenTrimmed
+      ? `${trimmed}\n\n${options.suffixWhenTrimmed}`.trim()
+      : trimmed;
+    const finalTokens = estimateTokens(finalText);
+    if (finalTokens > remaining) return false;
+
+    blocks.push(finalText);
+    remaining -= finalTokens;
+    return true;
+  };
+
+  if (!pushBlock(`### ${formatSectionHeading(section)}`, { minTokens: 12 })) {
+    return { markdown: "", tokenCount: 0 };
   }
 
-  if (blocks.length === 0) {
-    return { markdown: "", matchedSections: [] };
+  const parentSection = section.parentSectionId
+    ? relatedSectionMap.get(section.parentSectionId)
+    : undefined;
+  if (parentSection?.summary) {
+    pushBlock(
+      `_Parent context: ${trimTextToTokenBudget(parentSection.summary, 120)}_`,
+      { minTokens: 24 },
+    );
   }
 
+  const currentContent = section.content.trim();
+  if (
+    !pushBlock(currentContent, {
+      minTokens: 80,
+      suffixWhenTrimmed: "[... section trimmed]",
+    })
+  ) {
+    return { markdown: "", tokenCount: 0 };
+  }
+
+  const previousPart = getSplitSiblingSection(
+    section,
+    relatedSectionMap,
+    "prev",
+  );
+  if (previousPart) {
+    pushBlock(
+      `#### Previous Part\n${trimTextToTokenBudget(previousPart.content, Math.min(220, remaining))}`,
+      { minTokens: 40 },
+    );
+  }
+
+  const nextPart = getSplitSiblingSection(section, relatedSectionMap, "next");
+  if (nextPart) {
+    pushBlock(
+      `#### Next Part\n${trimTextToTokenBudget(nextPart.content, Math.min(220, remaining))}`,
+      { minTokens: 40 },
+    );
+  }
+
+  const markdown = blocks.join("\n\n").trim();
   return {
-    markdown: `${blocks.join("\n\n---\n\n")}\n\n[... matched sections only]`,
-    matchedSections,
+    markdown,
+    tokenCount: markdown ? estimateTokens(markdown) : 0,
   };
 }
 
@@ -983,8 +1046,8 @@ function chunkMatchesLibraryScope(input: {
 export interface QueryKnowledgeDocsOptions {
   topic?: string;
   tokens?: number;
-  /** full-doc = Context7-style whole-doc context, matched-sections = focused snippet cards */
-  resultMode?: "full-doc" | "matched-sections";
+  /** section-first is the default compact mode; matched-sections remains as a compatibility alias. */
+  resultMode?: "section-first" | "full-doc" | "matched-sections";
   /** Hard cap of returned documents (applied after ranking/filtering). */
   maxDocs?: number;
   /** Optional library scope (Context7-style query-docs). */
@@ -1017,6 +1080,238 @@ export interface DocRetrievalResult {
   }>;
 }
 
+async function assembleFullDocResults(input: {
+  docsToAssemble: RankedDocCandidate[];
+  chunkStats: Map<
+    string,
+    {
+      name: string;
+      chunkHits: number;
+      sumScore: number;
+      maxScore: number;
+      matches: KnowledgeQueryResult[];
+    }
+  >;
+  query: string;
+  tokenBudget: number;
+}): Promise<{ results: DocRetrievalResult[]; tokensUsed: number }> {
+  const { docsToAssemble, chunkStats, query, tokenBudget } = input;
+  const results: DocRetrievalResult[] = [];
+  let tokensUsed = 0;
+
+  for (const doc of docsToAssemble) {
+    const remaining = tokenBudget - tokensUsed;
+    if (remaining < 120) break;
+
+    const docData = await knowledgeRepository.getDocumentMarkdown(
+      doc.documentId,
+    );
+    if (!docData?.markdown) continue;
+
+    const contentTokens = estimateTokens(docData.markdown);
+    if (contentTokens + tokensUsed <= tokenBudget) {
+      results.push({
+        documentId: doc.documentId,
+        documentName: doc.documentName,
+        sourceGroupId: doc.sourceGroupId,
+        sourceGroupName: doc.sourceGroupName,
+        isInherited: doc.isInherited,
+        relevanceScore: doc.relevanceScore,
+        chunkHits: doc.chunkHits,
+        markdown: docData.markdown,
+      });
+      tokensUsed += contentTokens;
+      continue;
+    }
+
+    if (remaining < 160) break;
+    const truncated = trimMarkdownByMatchedSections({
+      markdown: docData.markdown,
+      query,
+      budgetTokens: remaining,
+      chunkMatches: chunkStats.get(doc.documentId)?.matches ?? [],
+    });
+    if (!truncated) break;
+
+    results.push({
+      documentId: doc.documentId,
+      documentName: doc.documentName,
+      sourceGroupId: doc.sourceGroupId,
+      sourceGroupName: doc.sourceGroupName,
+      isInherited: doc.isInherited,
+      relevanceScore: doc.relevanceScore,
+      chunkHits: doc.chunkHits,
+      markdown: truncated,
+    });
+    tokensUsed += estimateTokens(truncated);
+    break;
+  }
+
+  return { results, tokensUsed };
+}
+
+async function assembleSectionFirstResults(input: {
+  docsToAssemble: RankedDocCandidate[];
+  chunkStats: Map<
+    string,
+    {
+      name: string;
+      chunkHits: number;
+      sumScore: number;
+      maxScore: number;
+      matches: KnowledgeQueryResult[];
+    }
+  >;
+  tokenBudget: number;
+  threshold: number;
+}): Promise<{
+  results: DocRetrievalResult[];
+  tokensUsed: number;
+  sectionCount: number;
+}> {
+  const { docsToAssemble, chunkStats, tokenBudget, threshold } = input;
+  if (docsToAssemble.length === 0) {
+    return { results: [], tokensUsed: 0, sectionCount: 0 };
+  }
+
+  const sectionCandidates = new Map<
+    string,
+    {
+      doc: RankedDocCandidate;
+      matches: KnowledgeQueryResult[];
+      topScore: number;
+    }
+  >();
+
+  for (const doc of docsToAssemble) {
+    const matches = chunkStats.get(doc.documentId)?.matches ?? [];
+    for (const match of matches) {
+      const sectionId = match.chunk.sectionId;
+      if (!sectionId) continue;
+
+      const score = Math.max(0, match.rerankScore ?? match.score);
+      const existing = sectionCandidates.get(sectionId);
+      if (existing) {
+        existing.matches.push(match);
+        existing.topScore = Math.max(existing.topScore, score);
+      } else {
+        sectionCandidates.set(sectionId, {
+          doc,
+          matches: [match],
+          topScore: score,
+        });
+      }
+    }
+  }
+
+  if (sectionCandidates.size === 0) {
+    return { results: [], tokensUsed: 0, sectionCount: 0 };
+  }
+
+  const sectionIds = Array.from(sectionCandidates.keys());
+  const sections = await knowledgeRepository.getSectionsByIds(sectionIds);
+  if (sections.length === 0) {
+    return { results: [], tokensUsed: 0, sectionCount: 0 };
+  }
+
+  const sectionMap = new Map(sections.map((section) => [section.id, section]));
+  const relatedSections =
+    await knowledgeRepository.getRelatedSections(sectionIds);
+  const relatedSectionMap = new Map(
+    [...sections, ...relatedSections].map((section) => [section.id, section]),
+  );
+
+  const minConfidence = Math.max(threshold, 0.2);
+  const bundles: SectionBundleCandidate[] = Array.from(
+    sectionCandidates.entries(),
+  )
+    .map(([sectionId, candidate]) => {
+      const section = sectionMap.get(sectionId);
+      if (!section) return null;
+
+      return {
+        doc: candidate.doc,
+        section,
+        matches: candidate.matches,
+        score:
+          candidate.topScore + Math.min(candidate.matches.length - 1, 3) * 0.05,
+        hitCount: candidate.matches.length,
+      } satisfies SectionBundleCandidate;
+    })
+    .filter(
+      (bundle): bundle is SectionBundleCandidate =>
+        bundle !== null && bundle.score >= minConfidence,
+    )
+    .sort((a, b) => b.score - a.score);
+
+  if (bundles.length === 0) {
+    return { results: [], tokensUsed: 0, sectionCount: 0 };
+  }
+
+  const aggregated = new Map<
+    string,
+    RankedDocCandidate & {
+      blocks: string[];
+      matchedSections: Array<{ heading: string; score: number }>;
+    }
+  >();
+  let tokensUsed = 0;
+  let sectionCount = 0;
+
+  for (const bundle of bundles) {
+    const remaining = tokenBudget - tokensUsed;
+    if (remaining < 120) break;
+
+    const rendered = buildSectionBundleMarkdown({
+      section: bundle.section,
+      relatedSectionMap,
+      budgetTokens: remaining,
+    });
+    if (!rendered.markdown) continue;
+
+    tokensUsed += rendered.tokenCount;
+    sectionCount += 1;
+
+    const existing = aggregated.get(bundle.doc.documentId);
+    if (existing) {
+      existing.blocks.push(rendered.markdown);
+      existing.matchedSections.push({
+        heading: formatSectionHeading(bundle.section),
+        score: bundle.score,
+      });
+      continue;
+    }
+
+    aggregated.set(bundle.doc.documentId, {
+      ...bundle.doc,
+      blocks: [rendered.markdown],
+      matchedSections: [
+        {
+          heading: formatSectionHeading(bundle.section),
+          score: bundle.score,
+        },
+      ],
+    });
+  }
+
+  const results = docsToAssemble
+    .map((doc) => aggregated.get(doc.documentId))
+    .filter(Boolean)
+    .map((doc) => ({
+      documentId: doc!.documentId,
+      documentName: doc!.documentName,
+      sourceGroupId: doc!.sourceGroupId,
+      sourceGroupName: doc!.sourceGroupName,
+      isInherited: doc!.isInherited,
+      relevanceScore: doc!.relevanceScore,
+      chunkHits: doc!.chunkHits,
+      markdown: `${doc!.blocks.join("\n\n---\n\n")}\n\n[... section-first context]`,
+      matchedSections: doc!.matchedSections,
+    }));
+
+  return { results, tokensUsed, sectionCount };
+}
+
 /**
  * Context7-style full-document retrieval with semantic ranking.
  *
@@ -1037,12 +1332,9 @@ export async function queryKnowledgeAsDocs(
     Math.max(options.tokens || DEFAULT_FULL_DOC_TOKENS, 500),
     MAX_FULL_DOC_TOKENS,
   );
-  const resultMode = options.resultMode ?? "full-doc";
+  const resultMode = normalizeDocsResultMode(options.resultMode);
   const maxDocs = Math.min(
-    Math.max(
-      options.maxDocs ?? (resultMode === "matched-sections" ? 8 : 50),
-      1,
-    ),
+    Math.max(options.maxDocs ?? (resultMode === "section-first" ? 8 : 50), 1),
     50,
   );
   const start = Date.now();
@@ -1189,6 +1481,7 @@ export async function queryKnowledgeAsDocs(
         isInherited: doc.groupId !== group.id,
         chunkHits: stats?.chunkHits ?? 0,
         relevanceScore: effectiveScore,
+        sectionGraphVersion: getSectionGraphVersion(doc.metadata),
       };
     })
     .sort((a, b) => b.relevanceScore - a.relevanceScore);
@@ -1210,7 +1503,7 @@ export async function queryKnowledgeAsDocs(
       : normalizedRankedDocs;
   if (filteredDocs.length === 0) return [];
   const docsToAssemble =
-    resultMode === "matched-sections"
+    resultMode === "section-first"
       ? filteredDocs
           .filter(
             (d) =>
@@ -1218,66 +1511,61 @@ export async function queryKnowledgeAsDocs(
           )
           .slice(0, maxDocs)
       : filteredDocs.slice(0, maxDocs);
-  if (docsToAssemble.length === 0) return [];
+  if (resultMode === "full-doc" && docsToAssemble.length === 0) return [];
 
-  // ── Step 3: Fetch markdown and assemble with section-aware trimming ─────
-  const results: DocRetrievalResult[] = [];
+  // ── Step 3: Assemble retrieval payload ──────────────────────────────────
+  let results: DocRetrievalResult[] = [];
   let tokensUsed = 0;
-  const perDocSectionBudget =
-    resultMode === "matched-sections"
-      ? Math.max(220, Math.floor(tokenBudget / docsToAssemble.length))
-      : tokenBudget;
+  let sectionCount = 0;
+  let fallbackUsed = false;
 
-  for (const doc of docsToAssemble) {
-    const remaining = tokenBudget - tokensUsed;
-    if (remaining < 120) break;
-
-    if (resultMode === "matched-sections") {
-      const matchPayload = buildMatchedSectionsMarkdown({
-        matches: chunkStats.get(doc.documentId)?.matches ?? [],
-        budgetTokens: Math.min(remaining, perDocSectionBudget),
-      });
-      if (!matchPayload.markdown) continue;
-      results.push({
-        ...doc,
-        markdown: matchPayload.markdown,
-        matchedSections: matchPayload.matchedSections,
-      });
-      tokensUsed += estimateTokens(matchPayload.markdown);
-      continue;
-    }
-
-    const docData = await knowledgeRepository.getDocumentMarkdown(
-      doc.documentId,
+  if (resultMode === "section-first") {
+    const sectionReadyDocs = docsToAssemble.filter(
+      (doc) => (doc.sectionGraphVersion ?? 0) >= 1,
     );
-    if (!docData?.markdown) continue;
+    const assembled = await assembleSectionFirstResults({
+      docsToAssemble: sectionReadyDocs,
+      chunkStats,
+      tokenBudget,
+      threshold,
+    });
 
-    const contentTokens = estimateTokens(docData.markdown);
+    results = assembled.results;
+    tokensUsed = assembled.tokensUsed;
+    sectionCount = assembled.sectionCount;
 
-    if (contentTokens + tokensUsed <= tokenBudget) {
-      // Entire document fits
-      results.push({ ...doc, markdown: docData.markdown });
-      tokensUsed += contentTokens;
-    } else {
-      // Section-aware trim to fit remaining budget.
-      if (remaining < 160) break;
-
-      const truncated = trimMarkdownByMatchedSections({
-        markdown: docData.markdown,
+    if (results.length === 0) {
+      fallbackUsed = true;
+      const fallback = await assembleFullDocResults({
+        docsToAssemble: filteredDocs.slice(0, 1),
+        chunkStats,
         query,
-        budgetTokens: remaining,
-        chunkMatches: chunkStats.get(doc.documentId)?.matches ?? [],
+        tokenBudget,
       });
-      if (!truncated) break;
-
-      results.push({
-        ...doc,
-        markdown: truncated,
-      });
-      tokensUsed += estimateTokens(truncated);
-      break;
+      results = fallback.results;
+      tokensUsed = fallback.tokensUsed;
     }
+  } else {
+    const assembled = await assembleFullDocResults({
+      docsToAssemble,
+      chunkStats,
+      query,
+      tokenBudget,
+    });
+    results = assembled.results;
+    tokensUsed = assembled.tokensUsed;
   }
+
+  const docVersions = new Map(
+    filteredDocs.map((doc) => [doc.documentId, doc.sectionGraphVersion]),
+  );
+  const tokensReturned =
+    tokensUsed ||
+    results.reduce((sum, result) => sum + estimateTokens(result.markdown), 0);
+  const sectionGraphVersion = Math.max(
+    0,
+    ...results.map((result) => docVersions.get(result.documentId) ?? 0),
+  );
 
   // ── Step 4: Log usage ─────────────────────────────────────────────────
   const latencyMs = Date.now() - start;
@@ -1289,6 +1577,15 @@ export async function queryKnowledgeAsDocs(
       source: options.source ?? "chat",
       chunksRetrieved: scopedChunkResults.length,
       latencyMs,
+      metadata: {
+        resultMode,
+        tokenBudget,
+        tokensReturned,
+        docCount: results.length,
+        sectionCount,
+        fallbackUsed,
+        sectionGraphVersion: sectionGraphVersion || null,
+      },
     })
     .catch(() => {});
 

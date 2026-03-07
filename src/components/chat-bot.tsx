@@ -512,6 +512,7 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
 
             <PromptInput
               input={input}
+              messages={messages}
               threadId={threadId}
               sendMessage={sendMessage}
               setInput={setInput}

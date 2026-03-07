@@ -41,6 +41,11 @@ import {
   queryKnowledgeAsDocs,
   formatDocsAsText,
 } from "lib/knowledge/retriever";
+import {
+  allocateSequentialKnowledgeTokens,
+  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
+  estimateKnowledgePromptTokens,
+} from "lib/knowledge/token-budget";
 import { serverFileStorage } from "lib/file-storage";
 import {
   type SnowflakeCortexMessage,
@@ -495,11 +500,16 @@ export async function POST(request: Request) {
     }
 
     // ── Knowledge mention RAG context ────────────────────────────────────────
-    const knowledgeMentionIds = mentions
-      .filter((m) => m.type === "knowledge")
-      .map(
-        (m) => (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
-      );
+    const knowledgeMentionIds = Array.from(
+      new Set(
+        mentions
+          .filter((m) => m.type === "knowledge")
+          .map(
+            (m) =>
+              (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
+          ),
+      ),
+    );
 
     const userQueryText = message.parts
       .filter((p: any) => p.type === "text")
@@ -509,23 +519,38 @@ export async function POST(request: Request) {
 
     const knowledgeContexts: string[] = [];
     if (knowledgeMentionIds.length && userQueryText) {
-      for (const groupId of knowledgeMentionIds) {
+      let remainingKnowledgeBudget = CHAT_KNOWLEDGE_CONTEXT_TOKENS;
+
+      for (const [index, groupId] of knowledgeMentionIds.entries()) {
+        if (remainingKnowledgeBudget < 200) break;
+
         const group = await knowledgeRepository
           .selectGroupById(groupId, session.user.id)
           .catch(() => null);
         if (!group) continue;
+
+        const allocatedTokens = allocateSequentialKnowledgeTokens(
+          remainingKnowledgeBudget,
+          knowledgeMentionIds.length - index,
+        );
+
         const docs = await queryKnowledgeAsDocs(group, userQueryText, {
           userId: session.user.id,
           source: "chat",
+          tokens: allocatedTokens,
+          resultMode: "section-first",
         }).catch((err) => {
           logger.warn(
             `[Knowledge RAG] retrieval failed for group ${groupId}: ${err}`,
           );
           return null;
         });
-        if (docs) {
-          knowledgeContexts.push(
-            formatDocsAsText(group.name, docs, userQueryText),
+        if (docs && docs.length > 0) {
+          const formatted = formatDocsAsText(group.name, docs, userQueryText);
+          knowledgeContexts.push(formatted);
+          remainingKnowledgeBudget = Math.max(
+            0,
+            remainingKnowledgeBudget - estimateKnowledgePromptTokens(formatted),
           );
         }
       }

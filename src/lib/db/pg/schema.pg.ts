@@ -757,6 +757,38 @@ export const KnowledgeDocumentTable = pgTable(
   (t) => [index("knowledge_document_group_id_idx").on(t.groupId)],
 );
 
+export const KnowledgeSectionTable = pgTable(
+  "knowledge_section",
+  {
+    id: uuid("id").primaryKey().notNull(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    parentSectionId: uuid("parent_section_id"),
+    prevSectionId: uuid("prev_section_id"),
+    nextSectionId: uuid("next_section_id"),
+    heading: text("heading").notNull(),
+    headingPath: text("heading_path").notNull(),
+    level: integer("level").notNull().default(1),
+    partIndex: integer("part_index").notNull().default(0),
+    partCount: integer("part_count").notNull().default(1),
+    content: text("content").notNull(),
+    summary: text("summary").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_section_group_id_idx").on(t.groupId),
+    index("knowledge_section_document_id_idx").on(t.documentId),
+    index("knowledge_section_parent_section_id_idx").on(t.parentSectionId),
+  ],
+);
+
 export const KnowledgeChunkTable = pgTable(
   "knowledge_chunk",
   {
@@ -767,6 +799,9 @@ export const KnowledgeChunkTable = pgTable(
     groupId: uuid("group_id")
       .notNull()
       .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    sectionId: uuid("section_id").references(() => KnowledgeSectionTable.id, {
+      onDelete: "set null",
+    }),
     content: text("content").notNull(),
     contextSummary: text("context_summary"),
     embedding: vector("embedding"),
@@ -798,6 +833,7 @@ export const KnowledgeChunkTable = pgTable(
   (t) => [
     index("knowledge_chunk_group_id_idx").on(t.groupId),
     index("knowledge_chunk_document_id_idx").on(t.documentId),
+    index("knowledge_chunk_section_id_idx").on(t.sectionId),
   ],
 );
 
@@ -970,6 +1006,7 @@ export type KnowledgeGroupSourceEntity =
   typeof KnowledgeGroupSourceTable.$inferSelect;
 export type KnowledgeDocumentEntity =
   typeof KnowledgeDocumentTable.$inferSelect;
+export type KnowledgeSectionEntity = typeof KnowledgeSectionTable.$inferSelect;
 export type KnowledgeChunkEntity = typeof KnowledgeChunkTable.$inferSelect;
 export type KnowledgeGroupAgentEntity =
   typeof KnowledgeGroupAgentTable.$inferSelect;

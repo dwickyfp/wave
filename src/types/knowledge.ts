@@ -108,10 +108,29 @@ export interface KnowledgeDocument {
   updatedAt: Date;
 }
 
+export interface KnowledgeSection {
+  id: string;
+  documentId: string;
+  groupId: string;
+  parentSectionId?: string | null;
+  prevSectionId?: string | null;
+  nextSectionId?: string | null;
+  heading: string;
+  headingPath: string;
+  level: number;
+  partIndex: number;
+  partCount: number;
+  content: string;
+  summary: string;
+  tokenCount: number;
+  createdAt: Date;
+}
+
 export interface KnowledgeChunk {
   id: string;
   documentId: string;
   groupId: string;
+  sectionId?: string | null;
   content: string;
   contextSummary?: string | null;
   chunkIndex: number;
@@ -277,6 +296,7 @@ export interface KnowledgeRepository {
       title?: string;
       description?: string | null;
       metadataEmbedding?: number[] | null;
+      metadata?: Record<string, unknown> | null;
     },
   ): Promise<KnowledgeDocument | null>;
   updateDocumentAutoMetadata(
@@ -285,6 +305,7 @@ export interface KnowledgeRepository {
       title?: string;
       description?: string | null;
       metadataEmbedding?: number[] | null;
+      metadata?: Record<string, unknown> | null;
     },
   ): Promise<void>;
   deleteDocument(id: string): Promise<void>;
@@ -316,6 +337,7 @@ export interface KnowledgeRepository {
       groupId: string;
       name: string;
       description?: string | null;
+      metadata?: Record<string, unknown> | null;
       updatedAt: Date;
     }>
   >;
@@ -329,6 +351,14 @@ export interface KnowledgeRepository {
     embedding: number[],
     limit: number,
   ): Promise<Array<{ documentId: string; score: number }>>;
+
+  // Sections
+  insertSections(
+    sections: Array<Omit<KnowledgeSection, "createdAt">>,
+  ): Promise<void>;
+  deleteSectionsByDocumentId(documentId: string): Promise<void>;
+  getSectionsByIds(ids: string[]): Promise<KnowledgeSection[]>;
+  getRelatedSections(sectionIds: string[]): Promise<KnowledgeSection[]>;
 
   // Chunks
   insertChunks(
@@ -371,6 +401,7 @@ export interface KnowledgeRepository {
     source: UsageSource;
     chunksRetrieved: number;
     latencyMs?: number;
+    metadata?: Record<string, unknown> | null;
   }): Promise<void>;
   getUsageStats(groupId: string, days?: number): Promise<KnowledgeUsageStats>;
 }

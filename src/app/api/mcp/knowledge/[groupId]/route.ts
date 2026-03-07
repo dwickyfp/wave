@@ -639,6 +639,7 @@ async function handleJsonRpcRequest(
         .parse(args);
       const docs = await queryKnowledgeAsDocs(group, parsed.query, {
         tokens: parsed.tokens ?? 10000,
+        resultMode: "full-doc",
         source: "mcp",
       });
       const text = formatDocsAsText(group.name, docs, parsed.query);

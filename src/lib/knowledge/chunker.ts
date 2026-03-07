@@ -1,4 +1,5 @@
 export interface TextChunk {
+  sectionId?: string | null;
   content: string;
   chunkIndex: number;
   tokenCount: number;
@@ -22,6 +23,19 @@ export interface TextChunk {
     /** Whether this chunk contains a table or code block */
     hasStructuredContent?: boolean;
   };
+}
+
+export interface ChunkableKnowledgeSection {
+  id: string;
+  heading: string;
+  headingPath: string;
+  level: number;
+  content: string;
+  headings?: string[];
+  sourcePath?: string;
+  libraryId?: string;
+  libraryVersion?: string;
+  includeHeadingInChunkContent?: boolean;
 }
 
 // ─── Token Estimation ──────────────────────────────────────────────────────────
@@ -679,4 +693,50 @@ export function chunkMarkdown(
 
   // Step 5: Deduplicate
   return deduplicateChunks(allChunks);
+}
+
+export function chunkKnowledgeSections(
+  sections: ChunkableKnowledgeSection[],
+  chunkSize = 512,
+  overlapPercent = 20,
+): TextChunk[] {
+  if (sections.length === 0) return [];
+
+  const allChunks: TextChunk[] = [];
+
+  for (const section of sections) {
+    const headingPrefix =
+      section.includeHeadingInChunkContent !== false && section.heading
+        ? `${"#".repeat(Math.max(1, Math.min(section.level, 6)))} ${section.heading}\n\n`
+        : "";
+    const fullContent = `${headingPrefix}${section.content}`.trim();
+    if (!fullContent) continue;
+
+    const blocks = splitIntoBlocks(fullContent);
+    const sectionChunks = chunkSectionContent(
+      blocks,
+      chunkSize,
+      overlapPercent,
+      {
+        section: section.heading,
+        sectionTitle: section.heading,
+        headings: section.headings,
+        headingPath: section.headingPath,
+        sourcePath: section.sourcePath,
+        libraryId: section.libraryId,
+        libraryVersion: section.libraryVersion,
+      },
+      allChunks.length,
+    ).map((chunk) => ({
+      ...chunk,
+      sectionId: section.id,
+    }));
+
+    allChunks.push(...sectionChunks);
+  }
+
+  return deduplicateChunks(allChunks).map((chunk, index) => ({
+    ...chunk,
+    chunkIndex: index,
+  }));
 }

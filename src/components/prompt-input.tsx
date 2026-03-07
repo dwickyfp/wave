@@ -16,8 +16,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "ui/button";
-import { UIMessage, UseChatHelpers } from "@ai-sdk/react";
+import { UseChatHelpers } from "@ai-sdk/react";
 import { SelectModel } from "./select-model";
+import { ContextWindowIndicator } from "./context-window-indicator";
 import { appStore, UploadedFile } from "@/app/store";
 import { useShallow } from "zustand/shallow";
 import { ChatMention, ChatModel } from "app-types/chat";
@@ -54,8 +55,12 @@ import { useThreadFileUploader } from "@/hooks/use-thread-file-uploader";
 import { EMOJI_DATA } from "lib/const";
 import { AgentSummary } from "app-types/agent";
 import { KnowledgeSummary } from "app-types/knowledge";
-import { FileUIPart, TextUIPart } from "ai";
+import { FileUIPart, TextUIPart, UIMessage } from "ai";
 import { toast } from "sonner";
+import {
+  estimateChatContextTokens,
+  estimatePromptTokens,
+} from "@/lib/ai/context-window";
 import { isFilePartSupported, isIngestSupported } from "@/lib/ai/file-support";
 import { useChatModels } from "@/hooks/queries/use-chat-models";
 
@@ -73,6 +78,8 @@ interface PromptInputProps {
   threadId?: string;
   disabledMention?: boolean;
   onFocus?: () => void;
+  messages?: UIMessage[];
+  additionalContextText?: string;
 }
 
 const ChatMentionInput = dynamic(() => import("./chat-mention-input"), {
@@ -96,6 +103,8 @@ export default function PromptInput({
   voiceDisabled,
   threadId,
   disabledMention,
+  messages,
+  additionalContextText,
 }: PromptInputProps) {
   const t = useTranslations("Chat");
   const [isUploadDropdownOpen, setIsUploadDropdownOpen] = useState(false);
@@ -119,15 +128,19 @@ export default function PromptInput({
     ]),
   );
 
+  const chatModel = useMemo(() => {
+    return model ?? globalModel;
+  }, [model, globalModel]);
+
   const modelInfo = useMemo(() => {
     const provider = providers?.find(
-      (provider) => provider.provider === globalModel?.provider,
+      (provider) => provider.provider === chatModel?.provider,
     );
     const model = provider?.models.find(
-      (model) => model.name === globalModel?.model,
+      (model) => model.name === chatModel?.model,
     );
     return model;
-  }, [providers, globalModel]);
+  }, [providers, chatModel]);
 
   const supportedFileMimeTypes = modelInfo?.supportedFileMimeTypes;
   const canUploadImages =
@@ -148,9 +161,18 @@ export default function PromptInput({
     return threadImageToolModel[threadId];
   }, [threadImageToolModel, threadId]);
 
-  const chatModel = useMemo(() => {
-    return model ?? globalModel;
-  }, [model, globalModel]);
+  const baseContextTokens = useMemo(() => {
+    return estimateChatContextTokens({
+      messages,
+      mentions,
+      uploadedFiles,
+      extraContext: additionalContextText,
+    });
+  }, [additionalContextText, mentions, messages, uploadedFiles]);
+
+  const estimatedContextTokens = useMemo(() => {
+    return baseContextTokens + estimatePromptTokens(input);
+  }, [baseContextTokens, input]);
 
   const editorRef = useRef<Editor | null>(null);
 
@@ -629,6 +651,13 @@ export default function PromptInput({
                   ))}
 
                 <div className="flex-1" />
+
+                {modelInfo?.contextLength ? (
+                  <ContextWindowIndicator
+                    totalTokens={modelInfo.contextLength}
+                    usedTokens={estimatedContextTokens}
+                  />
+                ) : null}
 
                 <SelectModel onSelect={setChatModel} currentModel={chatModel}>
                   <Button

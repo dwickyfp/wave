@@ -4,6 +4,7 @@ import {
   KnowledgeGroup,
   KnowledgeGroupSource,
   KnowledgeRepository,
+  KnowledgeSection,
   KnowledgeSummary,
   KnowledgeUsageStats,
   UsageSource,
@@ -16,6 +17,7 @@ import {
   KnowledgeDocumentTable,
   KnowledgeGroupAgentTable,
   KnowledgeGroupSourceTable,
+  KnowledgeSectionTable,
   KnowledgeGroupTable,
   KnowledgeUsageLogTable,
   UserTable,
@@ -53,6 +55,17 @@ function mapDocument(
     processingProgress: row.processingProgress ?? null,
     metadata: (row.metadata as Record<string, unknown>) ?? null,
     markdownContent: row.markdownContent ?? null,
+  };
+}
+
+function mapSection(
+  row: typeof KnowledgeSectionTable.$inferSelect,
+): KnowledgeSection {
+  return {
+    ...row,
+    parentSectionId: row.parentSectionId ?? null,
+    prevSectionId: row.prevSectionId ?? null,
+    nextSectionId: row.nextSectionId ?? null,
   };
 }
 
@@ -620,6 +633,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       setData.metadataEmbedding =
         embeddingLiteral === null ? null : sql`${embeddingLiteral}::vector`;
     }
+    if (data.metadata !== undefined) {
+      setData.metadata = data.metadata ?? null;
+    }
 
     const [row] = await db
       .update(KnowledgeDocumentTable)
@@ -662,6 +678,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         THEN ${KnowledgeDocumentTable.metadataEmbedding}
         ELSE ${embeddingExpr}
       END`;
+    }
+    if (data.metadata !== undefined) {
+      setData.metadata = data.metadata ?? null;
     }
 
     await db
@@ -784,6 +803,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         groupId: KnowledgeDocumentTable.groupId,
         name: KnowledgeDocumentTable.name,
         description: KnowledgeDocumentTable.description,
+        metadata: KnowledgeDocumentTable.metadata,
         updatedAt: KnowledgeDocumentTable.updatedAt,
       })
       .from(KnowledgeDocumentTable)
@@ -799,6 +819,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       groupId: r.groupId,
       name: r.name,
       description: r.description ?? null,
+      metadata: (r.metadata as Record<string, unknown>) ?? null,
       updatedAt: r.updatedAt,
     }));
   },
@@ -905,6 +926,88 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }));
   },
 
+  // ─── Sections ───────────────────────────────────────────────────────────────
+
+  async insertSections(sections) {
+    if (sections.length === 0) return;
+    const BATCH = 100;
+    for (let i = 0; i < sections.length; i += BATCH) {
+      const batch = sections.slice(i, i + BATCH);
+      await db.insert(KnowledgeSectionTable).values(
+        batch.map((section) => ({
+          id: section.id,
+          documentId: section.documentId,
+          groupId: section.groupId,
+          parentSectionId: section.parentSectionId ?? null,
+          prevSectionId: section.prevSectionId ?? null,
+          nextSectionId: section.nextSectionId ?? null,
+          heading: section.heading,
+          headingPath: section.headingPath,
+          level: section.level,
+          partIndex: section.partIndex,
+          partCount: section.partCount,
+          content: section.content,
+          summary: section.summary,
+          tokenCount: section.tokenCount,
+          createdAt: new Date(),
+        })),
+      );
+    }
+  },
+
+  async deleteSectionsByDocumentId(documentId) {
+    await db
+      .delete(KnowledgeSectionTable)
+      .where(eq(KnowledgeSectionTable.documentId, documentId));
+  },
+
+  async getSectionsByIds(ids) {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select()
+      .from(KnowledgeSectionTable)
+      .where(inArray(KnowledgeSectionTable.id, ids));
+
+    return rows.map(mapSection);
+  },
+
+  async getRelatedSections(sectionIds) {
+    if (sectionIds.length === 0) return [];
+
+    const relationRows = await db
+      .select({
+        parentSectionId: KnowledgeSectionTable.parentSectionId,
+        prevSectionId: KnowledgeSectionTable.prevSectionId,
+        nextSectionId: KnowledgeSectionTable.nextSectionId,
+      })
+      .from(KnowledgeSectionTable)
+      .where(inArray(KnowledgeSectionTable.id, sectionIds));
+
+    const relatedIds = Array.from(
+      new Set(
+        relationRows
+          .flatMap((row) => [
+            row.parentSectionId,
+            row.prevSectionId,
+            row.nextSectionId,
+          ])
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    );
+
+    if (relatedIds.length === 0) return [];
+
+    const rows = await db
+      .select()
+      .from(KnowledgeSectionTable)
+      .where(inArray(KnowledgeSectionTable.id, relatedIds));
+
+    return rows.map(mapSection);
+  },
+
   // ─── Chunks ─────────────────────────────────────────────────────────────────
 
   async insertChunks(chunks) {
@@ -917,6 +1020,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           id: generateUUID(),
           documentId: c.documentId,
           groupId: c.groupId,
+          sectionId: c.sectionId ?? null,
           content: c.content,
           contextSummary: c.contextSummary ?? null,
           embedding: (c as any).embedding ?? null,
@@ -949,6 +1053,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       id: string;
       document_id: string;
       group_id: string;
+      section_id: string | null;
       content: string;
       context_summary: string | null;
       chunk_index: number;
@@ -960,7 +1065,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }>(
       sql`
         SELECT
-          kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
+          kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name,
           1 - (kc.embedding <=> ${embeddingStr}::vector) AS score
@@ -979,6 +1084,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         id: r.id,
         documentId: r.document_id,
         groupId: r.group_id,
+        sectionId: r.section_id,
         content: r.content,
         contextSummary: r.context_summary,
         chunkIndex: r.chunk_index,
@@ -997,6 +1103,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       id: string;
       document_id: string;
       group_id: string;
+      section_id: string | null;
       content: string;
       context_summary: string | null;
       chunk_index: number;
@@ -1015,7 +1122,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             '%' || ${query} || '%' AS ilike_q
         )
         SELECT
-          kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
+          kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name,
           (
@@ -1125,6 +1232,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         id: r.id,
         documentId: r.document_id,
         groupId: r.group_id,
+        sectionId: r.section_id,
         content: r.content,
         contextSummary: r.context_summary,
         chunkIndex: r.chunk_index,
@@ -1152,6 +1260,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       id: string;
       document_id: string;
       group_id: string;
+      section_id: string | null;
       content: string;
       context_summary: string | null;
       chunk_index: number;
@@ -1162,7 +1271,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }>(
       sql`
         SELECT
-          kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
+          kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name
         FROM knowledge_chunk kc
@@ -1177,6 +1286,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         id: r.id,
         documentId: r.document_id,
         groupId: r.group_id,
+        sectionId: r.section_id,
         content: r.content,
         contextSummary: r.context_summary,
         chunkIndex: r.chunk_index,
@@ -1299,6 +1409,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       source: data.source,
       chunksRetrieved: data.chunksRetrieved,
       latencyMs: data.latencyMs ?? null,
+      metadata: data.metadata ?? null,
       createdAt: new Date(),
     });
   },

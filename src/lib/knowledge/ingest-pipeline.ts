@@ -14,7 +14,7 @@
  */
 import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
-import { chunkMarkdown } from "./chunker";
+import { chunkKnowledgeSections } from "./chunker";
 import { enrichChunksWithContext } from "./context-enricher";
 import {
   buildDocumentMetadataEmbeddingText,
@@ -24,6 +24,10 @@ import { embedSingleText, embedTexts } from "./embedder";
 import { parseDocumentToMarkdown } from "./markdown-parser";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
 import { processDocument } from "./processor";
+import {
+  buildKnowledgeSectionGraph,
+  SECTION_GRAPH_VERSION,
+} from "./section-graph";
 
 const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
 
@@ -95,6 +99,7 @@ export async function runIngestPipeline(
 
   // ── 4. Auto metadata extraction ──────────────────────────────────────────
   await reportProgress(40);
+  const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId);
   const autoMeta = extractAutoDocumentMetadata(markdown, documentTitle);
   const effectiveMetaTitle = doc.titleManual ? doc.name : autoMeta.title;
   const effectiveMetaDescription = doc.descriptionManual
@@ -131,22 +136,31 @@ export async function runIngestPipeline(
     markdownContent: markdown,
     processingProgress: 45,
   });
+  const mergedMetadata = {
+    ...(doc.metadata ?? {}),
+    sectionGraphVersion: SECTION_GRAPH_VERSION,
+  };
   await knowledgeRepository.updateDocumentAutoMetadata(documentId, {
     title: autoMeta.title,
     description: autoMeta.description,
     ...(metadataEmbedding !== undefined ? { metadataEmbedding } : {}),
+    metadata: mergedMetadata,
   });
 
   // ── 5. Chunk ──────────────────────────────────────────────────────────────
   await reportProgress(50);
   await knowledgeRepository.deleteChunksByDocumentId(documentId);
+  await knowledgeRepository.deleteSectionsByDocumentId(documentId);
 
-  const chunks = chunkMarkdown(
-    markdown,
+  const chunks = chunkKnowledgeSections(
+    sections,
     group.chunkSize,
     group.chunkOverlapPercent,
   );
   if (chunks.length === 0) {
+    if (sections.length > 0) {
+      await knowledgeRepository.insertSections(sections);
+    }
     await knowledgeRepository.updateDocumentStatus(documentId, "ready", {
       chunkCount: 0,
       tokenCount: 0,
@@ -159,7 +173,13 @@ export async function runIngestPipeline(
   const enrichedChunks = await enrichChunksWithContext(
     chunks,
     autoMeta.title || documentTitle,
-    markdown,
+    sections.map((section) => ({
+      id: section.id,
+      headingPath: section.headingPath,
+      content: section.content,
+      summary: section.summary,
+      parentSectionId: section.parentSectionId ?? null,
+    })),
   );
 
   // ── 7. Embed chunks ───────────────────────────────────────────────────────
@@ -175,10 +195,12 @@ export async function runIngestPipeline(
 
   // ── 8. Store chunks ───────────────────────────────────────────────────────
   await reportProgress(90);
+  await knowledgeRepository.insertSections(sections);
   await knowledgeRepository.insertChunks(
     enrichedChunks.map((c, i) => ({
       documentId,
       groupId,
+      sectionId: c.sectionId ?? null,
       content: c.content,
       contextSummary: c.contextSummary || null,
       chunkIndex: c.chunkIndex,
