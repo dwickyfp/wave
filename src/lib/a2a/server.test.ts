@@ -6,7 +6,7 @@ vi.mock("server-only", () => ({}));
 
 let buildPublishedA2AAgentCard: typeof import(
   "./server",
-).buildPublishedA2AAgentCard;
+)["buildPublishedA2AAgentCard"];
 
 function createAgent(overrides: Partial<Agent> = {}): Agent {
   return {

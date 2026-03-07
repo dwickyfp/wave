@@ -668,11 +668,12 @@ export async function authenticatePublishedA2ARequest(
   if (!token) return false;
 
   const agentInfo = await agentRepository.getAgentByA2aKey(agentId);
-  if (!agentInfo?.a2aEnabled || !agentInfo.a2aApiKeyHash) {
+  const keyHash = agentInfo?.mcpApiKeyHash ?? agentInfo?.a2aApiKeyHash;
+  if (!agentInfo?.a2aEnabled || !keyHash) {
     return false;
   }
 
-  return compare(token, agentInfo.a2aApiKeyHash);
+  return compare(token, keyHash);
 }
 
 export async function loadPublishedA2AAgent(agentId: string) {
@@ -728,7 +729,8 @@ export function buildPublishedA2AAgentCard(input: {
               type: "http",
               scheme: "Bearer",
               bearerFormat: "API Key",
-              description: "Use the Wave A2A API key as a bearer token.",
+              description:
+                "Use the Wave external agent access API key as a bearer token.",
             },
           },
           security: [{ [A2A_SECURITY_SCHEME_NAME]: [] }],

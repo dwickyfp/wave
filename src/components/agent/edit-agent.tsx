@@ -185,7 +185,7 @@ export default function EditAgent({
   );
   const [agentMcpApiKey, setAgentMcpApiKey] = useState<string | null>(null);
   const [agentMcpKeyPreview, setAgentMcpKeyPreview] = useState(
-    initialAgent?.mcpApiKeyPreview ?? null,
+    initialAgent?.mcpApiKeyPreview ?? initialAgent?.a2aApiKeyPreview ?? null,
   );
   const [isAgentMcpGeneratingKey, setIsAgentMcpGeneratingKey] = useState(false);
   const [isAgentMcpRevokingKey, setIsAgentMcpRevokingKey] = useState(false);
@@ -666,7 +666,10 @@ export default function EditAgent({
       }
 
       const storedPreview = parsed.preview || parsed.key.slice(-4);
-      const serverPreview = initialAgent?.mcpApiKeyPreview || null;
+      const serverPreview =
+        initialAgent?.mcpApiKeyPreview ||
+        initialAgent?.a2aApiKeyPreview ||
+        null;
 
       if (!serverPreview || storedPreview !== serverPreview) {
         removeStored();
@@ -678,7 +681,11 @@ export default function EditAgent({
     } catch {
       removeStored();
     }
-  }, [agentMcpLocalStorageKey, initialAgent?.mcpApiKeyPreview]);
+  }, [
+    agentMcpLocalStorageKey,
+    initialAgent?.a2aApiKeyPreview,
+    initialAgent?.mcpApiKeyPreview,
+  ]);
 
   const copyToClipboard = useCallback(
     (text: string) => {
@@ -1601,7 +1608,7 @@ export default function EditAgent({
                         <A2APublishPanel
                           agentId={initialAgent.id}
                           initialEnabled={initialAgent.a2aEnabled ?? false}
-                          initialPreview={initialAgent.a2aApiKeyPreview ?? null}
+                          initialPreview={agentMcpKeyPreview}
                           isOwner={isOwner}
                           embedded
                         />

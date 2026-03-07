@@ -70,21 +70,22 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (!ownershipCheck.ok) return ownershipCheck.response;
 
     if (action === "revoke") {
-      await agentRepository.setA2aApiKey(id, session.user.id, null, null);
-      await agentRepository.setA2aEnabled(id, session.user.id, false);
+      await Promise.all([
+        agentRepository.setMcpApiKey(id, session.user.id, null, null),
+        agentRepository.setA2aApiKey(id, session.user.id, null, null),
+        agentRepository.setA2aEnabled(id, session.user.id, false),
+      ]);
       return NextResponse.json({ success: true });
     }
 
-    const rawKey = `wavea2a_${nanoid(40)}`;
+    const rawKey = `wavea_${nanoid(40)}`;
     const keyHash = await hash(rawKey, 10);
     const keyPreview = rawKey.slice(-4);
 
-    await agentRepository.setA2aApiKey(
-      id,
-      session.user.id,
-      keyHash,
-      keyPreview,
-    );
+    await Promise.all([
+      agentRepository.setMcpApiKey(id, session.user.id, keyHash, keyPreview),
+      agentRepository.setA2aApiKey(id, session.user.id, keyHash, keyPreview),
+    ]);
 
     return NextResponse.json({ key: rawKey, preview: keyPreview });
   } catch (error) {
@@ -122,9 +123,15 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const ownershipCheck = await loadOwnedAgent(id, session.user.id);
     if (!ownershipCheck.ok) return ownershipCheck.response;
 
-    if (enabled && !ownershipCheck.agent?.a2aApiKeyHash) {
+    const sharedKeyHash =
+      ownershipCheck.agent?.mcpApiKeyHash ??
+      ownershipCheck.agent?.a2aApiKeyHash;
+
+    if (enabled && !sharedKeyHash) {
       return NextResponse.json(
-        { error: "Generate an A2A key before enabling publishing." },
+        {
+          error: "Generate an external access key before enabling publishing.",
+        },
         { status: 400 },
       );
     }

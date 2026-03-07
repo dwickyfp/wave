@@ -523,7 +523,11 @@ export default function A2AAgentForm({
           <A2APublishPanel
             agentId={initialAgent?.id}
             initialEnabled={initialAgent?.a2aEnabled ?? false}
-            initialPreview={initialAgent?.a2aApiKeyPreview ?? null}
+            initialPreview={
+              initialAgent?.mcpApiKeyPreview ??
+              initialAgent?.a2aApiKeyPreview ??
+              null
+            }
             isOwner={isOwner}
           />
 

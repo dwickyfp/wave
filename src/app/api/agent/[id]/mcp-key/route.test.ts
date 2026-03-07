@@ -8,6 +8,8 @@ vi.mock("lib/db/repository", () => ({
   agentRepository: {
     selectAgentById: vi.fn(),
     setMcpApiKey: vi.fn(),
+    setA2aApiKey: vi.fn(),
+    setA2aEnabled: vi.fn(),
     setMcpEnabled: vi.fn(),
     setMcpModel: vi.fn(),
     setMcpCodingMode: vi.fn(),
@@ -91,7 +93,7 @@ describe("agent mcp key route", () => {
     expect(res.status).toBe(403);
   });
 
-  it("rejects snowflake agents", async () => {
+  it("generates a shared external key for snowflake agents", async () => {
     vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
     vi.mocked(agentRepository.selectAgentById).mockResolvedValue({
       id: "a1",
@@ -107,7 +109,9 @@ describe("agent mcp key route", () => {
       withParams("a1"),
     );
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(vi.mocked(agentRepository.setMcpApiKey)).toHaveBeenCalledOnce();
+    expect(vi.mocked(agentRepository.setA2aApiKey)).toHaveBeenCalledOnce();
   });
 
   it("generates and stores mcp key", async () => {
@@ -156,6 +160,17 @@ describe("agent mcp key route", () => {
       null,
       null,
     );
+    expect(vi.mocked(agentRepository.setA2aApiKey)).toHaveBeenCalledWith(
+      "a1",
+      "u1",
+      null,
+      null,
+    );
+    expect(vi.mocked(agentRepository.setA2aEnabled)).toHaveBeenCalledWith(
+      "a1",
+      "u1",
+      false,
+    );
   });
 
   it("updates mcp enabled flag", async () => {
@@ -180,6 +195,25 @@ describe("agent mcp key route", () => {
       "u1",
       true,
     );
+  });
+
+  it("rejects MCP settings updates for non-standard agents", async () => {
+    vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
+    vi.mocked(agentRepository.selectAgentById).mockResolvedValue({
+      id: "a1",
+      userId: "u1",
+      agentType: "snowflake_cortex",
+    } as any);
+
+    const res = await PUT(
+      new Request("http://localhost/api/agent/a1/mcp-key", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: true }),
+      }) as any,
+      withParams("a1"),
+    );
+
+    expect(res.status).toBe(400);
   });
 
   it("updates continue coding mode flag", async () => {

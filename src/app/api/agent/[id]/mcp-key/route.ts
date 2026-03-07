@@ -97,12 +97,15 @@ async function validateAutocompleteModelSelection(input: {
   );
 }
 
-async function loadOwnedStandardAgent(
+async function loadOwnedAgent(
   agentId: string,
   userId: string,
 ): Promise<
   | {
       ok: true;
+      agent: NonNullable<
+        Awaited<ReturnType<typeof agentRepository.selectAgentById>>
+      >;
     }
   | { ok: false; response: NextResponse }
 > {
@@ -124,7 +127,27 @@ async function loadOwnedStandardAgent(
     };
   }
 
-  if (agent.agentType === "snowflake_cortex") {
+  return { ok: true, agent };
+}
+
+async function loadOwnedStandardAgent(
+  agentId: string,
+  userId: string,
+): Promise<
+  | {
+      ok: true;
+      agent: NonNullable<
+        Awaited<ReturnType<typeof agentRepository.selectAgentById>>
+      >;
+    }
+  | { ok: false; response: NextResponse }
+> {
+  const ownershipCheck = await loadOwnedAgent(agentId, userId);
+  if (!ownershipCheck.ok) {
+    return ownershipCheck;
+  }
+
+  if (ownershipCheck.agent.agentType !== "standard") {
     return {
       ok: false,
       response: NextResponse.json(
@@ -134,7 +157,7 @@ async function loadOwnedStandardAgent(
     };
   }
 
-  return { ok: true };
+  return ownershipCheck;
 }
 
 export async function POST(req: NextRequest, { params }: Params) {
@@ -147,11 +170,15 @@ export async function POST(req: NextRequest, { params }: Params) {
     const { id } = await params;
     const { action } = actionSchema.parse(await req.json());
 
-    const ownershipCheck = await loadOwnedStandardAgent(id, session.user.id);
+    const ownershipCheck = await loadOwnedAgent(id, session.user.id);
     if (!ownershipCheck.ok) return ownershipCheck.response;
 
     if (action === "revoke") {
-      await agentRepository.setMcpApiKey(id, session.user.id, null, null);
+      await Promise.all([
+        agentRepository.setMcpApiKey(id, session.user.id, null, null),
+        agentRepository.setA2aApiKey(id, session.user.id, null, null),
+        agentRepository.setA2aEnabled(id, session.user.id, false),
+      ]);
       return NextResponse.json({ success: true });
     }
 
@@ -159,12 +186,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     const keyHash = await hash(rawKey, 10);
     const keyPreview = rawKey.slice(-4);
 
-    await agentRepository.setMcpApiKey(
-      id,
-      session.user.id,
-      keyHash,
-      keyPreview,
-    );
+    await Promise.all([
+      agentRepository.setMcpApiKey(id, session.user.id, keyHash, keyPreview),
+      agentRepository.setA2aApiKey(id, session.user.id, keyHash, keyPreview),
+    ]);
     return NextResponse.json({ key: rawKey, preview: keyPreview });
   } catch (error) {
     if (error instanceof z.ZodError) {

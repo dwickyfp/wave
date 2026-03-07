@@ -180,7 +180,12 @@ export type AgentRepository = {
     agentId: string,
   ): Promise<Pick<
     Agent,
-    "id" | "userId" | "agentType" | "a2aApiKeyHash" | "a2aEnabled"
+    | "id"
+    | "userId"
+    | "agentType"
+    | "mcpApiKeyHash"
+    | "a2aApiKeyHash"
+    | "a2aEnabled"
   > | null>;
 };
 

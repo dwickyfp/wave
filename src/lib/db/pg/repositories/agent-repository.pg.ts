@@ -442,6 +442,7 @@ export const pgAgentRepository: AgentRepository = {
         id: AgentTable.id,
         userId: AgentTable.userId,
         agentType: AgentTable.agentType,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
         a2aApiKeyHash: AgentTable.a2aApiKeyHash,
         a2aEnabled: AgentTable.a2aEnabled,
       })
@@ -454,6 +455,7 @@ export const pgAgentRepository: AgentRepository = {
       id: row.id,
       userId: row.userId,
       agentType: row.agentType,
+      mcpApiKeyHash: row.mcpApiKeyHash ?? null,
       a2aApiKeyHash: row.a2aApiKeyHash ?? null,
       a2aEnabled: row.a2aEnabled,
     };

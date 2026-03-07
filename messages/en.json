@@ -486,7 +486,7 @@
     "agentAccessOwnerOnlyTitle": "Owner access only",
     "agentAccessOwnerOnlyDescription": "Only the owner can manage external access settings and API keys for this agent.",
     "agentAccessTitle": "External Agent Access",
-    "agentAccessDescription": "Reuse one per-agent endpoint configuration across MCP and Continue/OpenAI transports.",
+    "agentAccessDescription": "Reuse one per-agent access key across A2A publishing, MCP, and Continue/OpenAI transports.",
     "agentMcpSaveFirstTitle": "Save this agent first",
     "agentMcpSaveFirstDescription": "Create the agent before exposing it via MCP.",
     "agentMcpOwnerOnlyTitle": "Owner access only",

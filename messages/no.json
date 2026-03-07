@@ -485,7 +485,7 @@
     "agentAccessOwnerOnlyTitle": "Kun eier har tilgang",
     "agentAccessOwnerOnlyDescription": "Bare eieren kan administrere ekstern tilgang og API-nøkler for denne agenten.",
     "agentAccessTitle": "Ekstern agenttilgang",
-    "agentAccessDescription": "Gjenbruk én per-agent-konfigurasjon på tvers av MCP- og Continue/OpenAI-transportene.",
+    "agentAccessDescription": "Gjenbruk én per-agent-tilgangsnøkkel på tvers av A2A-publisering, MCP og Continue/OpenAI-transportene.",
     "agentMcpSaveFirstTitle": "Lagre denne agenten først",
     "agentMcpSaveFirstDescription": "Opprett agenten før du eksponerer den via MCP.",
     "agentMcpOwnerOnlyTitle": "Kun eier har tilgang",

@@ -37,7 +37,7 @@ export function A2APublishPanel({
   const [isToggling, setIsToggling] = useState(false);
 
   const localStorageKey = useMemo(
-    () => (agentId ? `wave:agent-a2a-api-key:${agentId}` : null),
+    () => (agentId ? `wave:agent-mcp-api-key:${agentId}` : null),
     [agentId],
   );
   const rpcUrl = useMemo(() => {
@@ -59,7 +59,7 @@ export function A2APublishPanel({
           cardUrl ||
           "https://your-domain/api/a2a/agent/{agentId}/.well-known/agent-card.json",
         headers: {
-          Authorization: `Bearer ${apiKey ?? "YOUR_A2A_API_KEY"}`,
+          Authorization: `Bearer ${apiKey ?? "YOUR_AGENT_API_KEY"}`,
         },
       },
       null,
@@ -72,6 +72,14 @@ export function A2APublishPanel({
       setBrowserOrigin(window.location.origin);
     }
   }, []);
+
+  useEffect(() => {
+    setEnabled(initialEnabled);
+  }, [initialEnabled]);
+
+  useEffect(() => {
+    setKeyPreview(initialPreview);
+  }, [initialPreview]);
 
   useEffect(() => {
     if (!localStorageKey || typeof window === "undefined") return;
@@ -112,7 +120,7 @@ export function A2APublishPanel({
 
     setIsGenerating(true);
     try {
-      const response = await fetch(`/api/agent/${agentId}/a2a-key`, {
+      const response = await fetch(`/api/agent/${agentId}/mcp-key`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "generate" }),
@@ -133,10 +141,12 @@ export function A2APublishPanel({
           createdAt: Date.now(),
         }),
       );
-      toast.success("A2A API key generated");
+      toast.success("External access API key generated");
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to generate A2A key",
+        error instanceof Error
+          ? error.message
+          : "Failed to generate external access key",
       );
     } finally {
       setIsGenerating(false);
@@ -148,7 +158,7 @@ export function A2APublishPanel({
 
     setIsRevoking(true);
     try {
-      const response = await fetch(`/api/agent/${agentId}/a2a-key`, {
+      const response = await fetch(`/api/agent/${agentId}/mcp-key`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "revoke" }),
@@ -162,10 +172,12 @@ export function A2APublishPanel({
       setApiKey(null);
       setKeyPreview(null);
       setEnabled(false);
-      toast.success("A2A API key revoked");
+      toast.success("External access API key revoked");
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to revoke A2A key",
+        error instanceof Error
+          ? error.message
+          : "Failed to revoke external access key",
       );
     } finally {
       setIsRevoking(false);
@@ -284,62 +296,75 @@ export function A2APublishPanel({
         </div>
       )}
 
-      <div className="space-y-2">
-        <Label className="text-sm">API Key</Label>
-        <div className="flex items-center gap-2">
-          <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono break-all">
-            {apiKey ? (
-              <span>{apiKey}</span>
-            ) : keyPreview ? (
-              <span className="text-muted-foreground">
-                ••••••••••••{keyPreview}
-              </span>
-            ) : (
-              <span className="text-muted-foreground italic">
-                No API key generated
-              </span>
+      {embedded ? (
+        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+          <p className="text-xs font-medium">Authentication</p>
+          <p className="text-xs text-muted-foreground">
+            Uses the External Agent Access API key from this page as the A2A
+            bearer token.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <Label className="text-sm">External Access API Key</Label>
+          <p className="text-xs text-muted-foreground">
+            Shared across A2A publishing and other external agent transports.
+          </p>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono break-all">
+              {apiKey ? (
+                <span>{apiKey}</span>
+              ) : keyPreview ? (
+                <span className="text-muted-foreground">
+                  ••••••••••••{keyPreview}
+                </span>
+              ) : (
+                <span className="text-muted-foreground italic">
+                  No API key generated
+                </span>
+              )}
+            </div>
+            {apiKey && (
+              <Button
+                size="icon"
+                variant="outline"
+                className="size-9 shrink-0"
+                onClick={() => copyToClipboard(apiKey)}
+              >
+                <CopyIcon className="size-3.5" />
+              </Button>
             )}
-          </div>
-          {apiKey && (
             <Button
-              size="icon"
+              size="sm"
               variant="outline"
-              className="size-9 shrink-0"
-              onClick={() => copyToClipboard(apiKey)}
+              className="gap-1.5 shrink-0"
+              onClick={handleGenerateKey}
+              disabled={isBusy}
             >
-              <CopyIcon className="size-3.5" />
+              {isGenerating ? (
+                <RefreshCwIcon className="size-3.5 animate-spin" />
+              ) : (
+                <KeyRound className="size-3.5" />
+              )}
+              {keyPreview ? "Regenerate" : "Generate"}
+            </Button>
+          </div>
+          {keyPreview && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="px-0 text-xs text-muted-foreground hover:text-destructive w-fit"
+              onClick={handleRevokeKey}
+              disabled={isBusy}
+            >
+              {isRevoking && (
+                <RefreshCwIcon className="size-3.5 animate-spin mr-1" />
+              )}
+              Revoke API key
             </Button>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5 shrink-0"
-            onClick={handleGenerateKey}
-            disabled={isBusy}
-          >
-            {isGenerating ? (
-              <RefreshCwIcon className="size-3.5 animate-spin" />
-            ) : (
-              <KeyRound className="size-3.5" />
-            )}
-            {keyPreview ? "Regenerate" : "Generate"}
-          </Button>
         </div>
-        {keyPreview && (
-          <Button
-            size="sm"
-            variant="ghost"
-            className="px-0 text-xs text-muted-foreground hover:text-destructive w-fit"
-            onClick={handleRevokeKey}
-            disabled={isBusy}
-          >
-            {isRevoking && (
-              <RefreshCwIcon className="size-3.5 animate-spin mr-1" />
-            )}
-            Revoke API key
-          </Button>
-        )}
-      </div>
+      )}
 
       <div className="space-y-2">
         <Label className="text-sm">Agent Card URL</Label>
