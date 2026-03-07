@@ -23,8 +23,8 @@ export function ContextWindowIndicator({
   const usageRatio = usedTokens / totalTokens;
   const clampedRatio = Math.min(Math.max(usageRatio, 0), 1);
   const strokeDashoffset = INDICATOR_CIRCUMFERENCE * (1 - clampedRatio);
-  const displayPercent = Math.round(usageRatio * 100);
-  const remainingPercent = Math.max(0, 100 - displayPercent);
+  const displayPercent = Math.round(clampedRatio * 100);
+  const remainingPercent = 100 - displayPercent;
   const indicatorClassName =
     usageRatio >= 0.9
       ? "text-destructive"

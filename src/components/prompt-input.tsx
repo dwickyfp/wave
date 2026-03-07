@@ -21,7 +21,11 @@ import { SelectModel } from "./select-model";
 import { ContextWindowIndicator } from "./context-window-indicator";
 import { appStore, UploadedFile } from "@/app/store";
 import { useShallow } from "zustand/shallow";
-import { ChatMention, ChatModel } from "app-types/chat";
+import {
+  ChatMention,
+  ChatModel,
+  ChatThreadCompactionCheckpoint,
+} from "app-types/chat";
 import dynamic from "next/dynamic";
 import { ToolModeDropdown } from "./tool-mode-dropdown";
 
@@ -58,6 +62,8 @@ import { KnowledgeSummary } from "app-types/knowledge";
 import { FileUIPart, TextUIPart, UIMessage } from "ai";
 import { toast } from "sonner";
 import {
+  COMPACTED_HISTORY_TARGET_RATIO,
+  estimateChatMessageHistoryTokens,
   estimateChatContextTokens,
   estimatePromptTokens,
 } from "@/lib/ai/context-window";
@@ -80,6 +86,14 @@ interface PromptInputProps {
   onFocus?: () => void;
   messages?: UIMessage[];
   additionalContextText?: string;
+  compactionCheckpoint?: Pick<
+    ChatThreadCompactionCheckpoint,
+    "summaryText" | "compactedMessageCount" | "summaryTokenCount"
+  > | null;
+  sessionCompactionBaseline?: {
+    usedTokens: number;
+    messageCount: number;
+  } | null;
 }
 
 const ChatMentionInput = dynamic(() => import("./chat-mention-input"), {
@@ -105,6 +119,8 @@ export default function PromptInput({
   disabledMention,
   messages,
   additionalContextText,
+  compactionCheckpoint,
+  sessionCompactionBaseline,
 }: PromptInputProps) {
   const t = useTranslations("Chat");
   const [isUploadDropdownOpen, setIsUploadDropdownOpen] = useState(false);
@@ -162,17 +178,45 @@ export default function PromptInput({
   }, [threadImageToolModel, threadId]);
 
   const baseContextTokens = useMemo(() => {
+    const compactedHistoryMaxPromptTokens =
+      compactionCheckpoint?.summaryText && modelInfo?.contextLength
+        ? Math.floor(modelInfo.contextLength * COMPACTED_HISTORY_TARGET_RATIO)
+        : undefined;
+
     return estimateChatContextTokens({
       messages,
       mentions,
       uploadedFiles,
       extraContext: additionalContextText,
+      checkpoint: compactionCheckpoint,
+      contextLength: modelInfo?.contextLength,
+      maxPromptTokens: compactedHistoryMaxPromptTokens,
     });
-  }, [additionalContextText, mentions, messages, uploadedFiles]);
+  }, [
+    additionalContextText,
+    compactionCheckpoint,
+    mentions,
+    messages,
+    modelInfo?.contextLength,
+    uploadedFiles,
+  ]);
 
   const estimatedContextTokens = useMemo(() => {
-    return baseContextTokens + estimatePromptTokens(input);
-  }, [baseContextTokens, input]);
+    const clientEstimate = baseContextTokens + estimatePromptTokens(input);
+    if (!sessionCompactionBaseline) {
+      return clientEstimate;
+    }
+
+    const suffixMessages = (messages ?? []).slice(
+      Math.max(0, sessionCompactionBaseline.messageCount),
+    );
+    const sessionEstimate =
+      sessionCompactionBaseline.usedTokens +
+      estimateChatMessageHistoryTokens(suffixMessages) +
+      estimatePromptTokens(input);
+
+    return Math.min(clientEstimate, sessionEstimate);
+  }, [baseContextTokens, input, messages, sessionCompactionBaseline]);
 
   const editorRef = useRef<Editor | null>(null);
 

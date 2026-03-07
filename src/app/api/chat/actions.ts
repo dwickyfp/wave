@@ -68,7 +68,7 @@ export async function selectThreadWithMessagesAction(threadId: string) {
   if (!session) {
     throw new Error("Unauthorized");
   }
-  const thread = await chatRepository.selectThread(threadId);
+  const thread = await chatRepository.selectThreadDetails(threadId);
 
   if (!thread) {
     logger.error("Thread not found", threadId);
@@ -77,8 +77,12 @@ export async function selectThreadWithMessagesAction(threadId: string) {
   if (thread.userId !== session?.user.id) {
     return null;
   }
-  const messages = await chatRepository.selectMessagesByThreadId(threadId);
-  return { ...thread, messages: messages ?? [] };
+  return {
+    ...thread,
+    messages: thread.messages ?? [],
+    compactionCheckpoint: thread.compactionCheckpoint ?? null,
+    compactionState: thread.compactionState ?? null,
+  };
 }
 
 export async function deleteMessageAction(messageId: string) {
@@ -272,6 +276,11 @@ export async function forkThreadAction(
       })),
     );
     lastMessageAt = now + messages.length - 1;
+  }
+
+  const checkpoint = await chatRepository.selectCompactionCheckpoint(threadId);
+  if (checkpoint && messages.length >= checkpoint.compactedMessageCount) {
+    await chatRepository.copyCompactionCheckpoint(threadId, newThreadId);
   }
 
   return {

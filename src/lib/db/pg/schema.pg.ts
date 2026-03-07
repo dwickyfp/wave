@@ -42,7 +42,13 @@ const vector = customType<{ data: number[]; config?: { dimensions?: number } }>(
 );
 import { TipTapMentionJsonContent } from "@/types/util";
 import { UIMessage } from "ai";
-import { ChatMention, ChatMetadata } from "app-types/chat";
+import {
+  ChatMention,
+  ChatCompactionSource,
+  ChatCompactionStatus,
+  ChatCompactionSummary,
+  ChatMetadata,
+} from "app-types/chat";
 import { DBEdge, DBNode, DBWorkflow } from "app-types/workflow";
 import { isNotNull } from "drizzle-orm";
 
@@ -80,6 +86,63 @@ export const ChatMessageTable = pgTable("chat_message", {
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const ChatThreadCompactionCheckpointTable = pgTable(
+  "chat_thread_compaction_checkpoint",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
+    schemaVersion: integer("schema_version").notNull().default(1),
+    summaryJson: json("summary_json").notNull().$type<ChatCompactionSummary>(),
+    summaryText: text("summary_text").notNull(),
+    compactedMessageCount: integer("compacted_message_count")
+      .notNull()
+      .default(0),
+    sourceTokenCount: integer("source_token_count").notNull().default(0),
+    summaryTokenCount: integer("summary_token_count").notNull().default(0),
+    modelProvider: text("model_provider").notNull(),
+    modelName: text("model_name").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.threadId),
+    index("chat_thread_compaction_checkpoint_thread_id_idx").on(table.threadId),
+  ],
+);
+
+export const ChatThreadCompactionStateTable = pgTable(
+  "chat_thread_compaction_state",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
+    status: text("status").notNull().$type<ChatCompactionStatus>(),
+    source: text("source").notNull().$type<ChatCompactionSource>(),
+    beforeTokens: integer("before_tokens"),
+    afterTokens: integer("after_tokens"),
+    failureCode: text("failure_code"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.threadId),
+    index("chat_thread_compaction_state_thread_id_idx").on(table.threadId),
+  ],
+);
 
 export const AgentTable = pgTable("agent", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),

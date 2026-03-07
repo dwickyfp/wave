@@ -1,7 +1,7 @@
 import {
+  ModelMessage,
   Tool,
   UIMessage,
-  convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   smoothStream,
@@ -12,8 +12,10 @@ import {
 import { getDbModel } from "lib/ai/provider-factory";
 
 import {
+  ChatContextPressureBreakdown,
   ChatMention,
   ChatMetadata,
+  ChatThreadCompactionCheckpoint,
   ChatUsage,
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
@@ -54,10 +56,21 @@ import {
 } from "lib/snowflake/client";
 import { generateUUID } from "lib/utils";
 import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
+import { shouldSendToolDefinitionsToProvider } from "lib/ai/provider-compatibility";
 import {
-  sanitizeModelMessagesForProvider,
-  shouldSendToolDefinitionsToProvider,
-} from "lib/ai/provider-compatibility";
+  buildCompactionAssembly,
+  buildChatStreamSeedMessages,
+  collectUsedToolNamesFromModelMessages,
+  CONTEXT_COMPACTION_HARD_ERROR_MESSAGE,
+  CONTEXT_COMPACTION_HARD_RATIO,
+  CONTEXT_COMPACTION_TARGET_RATIO,
+  CONTEXT_COMPACTION_TRIGGER_RATIO,
+  extractAttachmentPreviewText,
+  generateCompactionCheckpoint,
+  stripAttachmentPreviewParts,
+  stripAttachmentPreviewPartsFromMessages,
+} from "lib/ai/chat-compaction";
+import { updateThreadCompactionState } from "lib/ai/chat-compaction-background";
 import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
@@ -74,6 +87,40 @@ import {
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
 });
+
+const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
+  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
+  2500,
+  1200,
+  0,
+];
+
+function buildCompactionFailureMessage(input: {
+  failureCode?: string;
+  breakdown: ChatContextPressureBreakdown;
+}) {
+  const segments = [
+    { label: "history", value: input.breakdown?.historyTokens },
+    { label: "knowledge", value: input.breakdown?.knowledgeTokens },
+    { label: "tools", value: input.breakdown?.toolTokens },
+    { label: "current", value: input.breakdown?.currentTurnTokens },
+    { label: "files", value: input.breakdown?.attachmentPreviewTokens },
+  ]
+    .filter((segment) => (segment.value ?? 0) > 0)
+    .map((segment) => `${segment.label} ${segment.value}`);
+
+  if (segments.length === 0 && !input.failureCode) {
+    return CONTEXT_COMPACTION_HARD_ERROR_MESSAGE;
+  }
+
+  return [
+    CONTEXT_COMPACTION_HARD_ERROR_MESSAGE,
+    input.failureCode ? `code: ${input.failureCode}` : "",
+    segments.length ? `breakdown: ${segments.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 
 export async function POST(request: Request) {
   try {
@@ -206,6 +253,7 @@ export async function POST(request: Request) {
       }
     }
 
+    const persistedMessages = [...messages];
     messages.push(message);
 
     const supportToolCall = dbModelResult.supportsTools;
@@ -521,44 +569,17 @@ export async function POST(request: Request) {
       .join(" ")
       .trim();
 
-    const knowledgeContexts: string[] = [];
-    if (knowledgeMentionIds.length && userQueryText) {
-      let remainingKnowledgeBudget = CHAT_KNOWLEDGE_CONTEXT_TOKENS;
-
-      for (const [index, groupId] of knowledgeMentionIds.entries()) {
-        if (remainingKnowledgeBudget < 200) break;
-
-        const group = await knowledgeRepository
-          .selectGroupById(groupId, session.user.id)
-          .catch(() => null);
-        if (!group) continue;
-
-        const allocatedTokens = allocateSequentialKnowledgeTokens(
-          remainingKnowledgeBudget,
-          knowledgeMentionIds.length - index,
-        );
-
-        const docs = await queryKnowledgeAsDocs(group, userQueryText, {
-          userId: session.user.id,
-          source: "chat",
-          tokens: allocatedTokens,
-          resultMode: "section-first",
-        }).catch((err) => {
-          logger.warn(
-            `[Knowledge RAG] retrieval failed for group ${groupId}: ${err}`,
-          );
-          return null;
-        });
-        if (docs && docs.length > 0) {
-          const formatted = formatDocsAsText(group.name, docs, userQueryText);
-          knowledgeContexts.push(formatted);
-          remainingKnowledgeBudget = Math.max(
-            0,
-            remainingKnowledgeBudget - estimateKnowledgePromptTokens(formatted),
-          );
-        }
-      }
-    }
+    const knowledgeMentionGroups = (
+      await Promise.all(
+        knowledgeMentionIds.map((groupId) =>
+          knowledgeRepository
+            .selectGroupById(groupId, session.user.id)
+            .catch(() => null),
+        ),
+      )
+    ).filter((group) => group !== null) as NonNullable<
+      Awaited<ReturnType<typeof knowledgeRepository.selectGroupById>>
+    >[];
     // ── end knowledge context ─────────────────────────────────────────────────
 
     const useImageTool = Boolean(imageTool?.provider && imageTool?.model);
@@ -624,17 +645,101 @@ export async function POST(request: Request) {
           })
           .map((v) => filterMcpServerCustomizations(toolset.mcpTools as any, v))
           .orElse({});
+        const buildKnowledgeContextsForBudget = (() => {
+          const cache = new Map<number, Promise<string[]>>();
 
-        const systemPrompt = buildWaveAgentSystemPrompt({
-          user: session.user,
-          userPreferences,
-          agent,
-          subAgents: toolset.subAgents,
-          attachedSkills: toolset.attachedSkills,
-          knowledgeContexts,
-          mcpServerCustomizations,
-          toolCallUnsupported: !supportToolCall,
-        });
+          return async (totalBudget: number) => {
+            if (
+              !knowledgeMentionGroups.length ||
+              !userQueryText ||
+              totalBudget < 1
+            ) {
+              return [];
+            }
+
+            if (!cache.has(totalBudget)) {
+              cache.set(
+                totalBudget,
+                (async () => {
+                  const contexts: string[] = [];
+                  let remainingKnowledgeBudget = totalBudget;
+
+                  for (const [
+                    index,
+                    group,
+                  ] of knowledgeMentionGroups.entries()) {
+                    if (remainingKnowledgeBudget < 200) break;
+
+                    const allocatedTokens = allocateSequentialKnowledgeTokens(
+                      remainingKnowledgeBudget,
+                      knowledgeMentionGroups.length - index,
+                    );
+
+                    const docs = await queryKnowledgeAsDocs(
+                      group,
+                      userQueryText,
+                      {
+                        userId: session.user.id,
+                        source: "chat",
+                        tokens: allocatedTokens,
+                        resultMode: "section-first",
+                      },
+                    ).catch((err) => {
+                      logger.warn(
+                        `[Knowledge RAG] retrieval failed for group ${group.id}: ${err}`,
+                      );
+                      return null;
+                    });
+
+                    if (docs && docs.length > 0) {
+                      const formatted = formatDocsAsText(
+                        group.name,
+                        docs,
+                        userQueryText,
+                      );
+                      contexts.push(formatted);
+                      remainingKnowledgeBudget = Math.max(
+                        0,
+                        remainingKnowledgeBudget -
+                          estimateKnowledgePromptTokens(formatted),
+                      );
+                    }
+                  }
+
+                  return contexts;
+                })(),
+              );
+            }
+
+            return await cache.get(totalBudget)!;
+          };
+        })();
+
+        const buildSystemPromptForKnowledgeBudget = async (
+          knowledgeBudget: number,
+        ) => {
+          const knowledgeContexts =
+            await buildKnowledgeContextsForBudget(knowledgeBudget);
+
+          return {
+            knowledgeContexts,
+            systemPrompt: buildWaveAgentSystemPrompt({
+              user: session.user,
+              userPreferences,
+              agent,
+              subAgents: toolset.subAgents,
+              attachedSkills: toolset.attachedSkills,
+              knowledgeContexts,
+              mcpServerCustomizations,
+              toolCallUnsupported: !supportToolCall,
+            }),
+          };
+        };
+
+        const initialPromptContext = await buildSystemPromptForKnowledgeBudget(
+          CHAT_KNOWLEDGE_CONTEXT_TOKENS,
+        );
+        const systemPrompt = initialPromptContext.systemPrompt;
 
         const IMAGE_TOOL: Record<string, Tool> = await (async (): Promise<
           Record<string, Tool>
@@ -662,26 +767,43 @@ export async function POST(request: Request) {
             return {};
           }
         })();
-        const vercelAITooles = safe({
-          ...toolset.mcpTools,
-          ...toolset.workflowTools,
-          ...toolset.subagentTools,
-          ...toolset.knowledgeTools,
-          ...toolset.skillTools,
-        })
-          .map((t) => {
-            const bindingTools =
-              toolChoice === "manual" ||
-              (message.metadata as ChatMetadata)?.toolChoice === "manual"
-                ? excludeToolExecution(t)
-                : t;
-            return {
-              ...bindingTools,
-              ...toolset.appDefaultTools, // APP_DEFAULT_TOOLS Not Supported Manual
-              ...IMAGE_TOOL,
-            };
+
+        const buildVercelAITools = (options?: {
+          includeAppDefaultTools?: boolean;
+          excludedMcpToolKeys?: Set<string>;
+        }) => {
+          const filteredMcpTools = Object.fromEntries(
+            Object.entries(toolset.mcpTools ?? {}).filter(
+              ([toolName]) => !options?.excludedMcpToolKeys?.has(toolName),
+            ),
+          );
+
+          return safe({
+            ...filteredMcpTools,
+            ...toolset.workflowTools,
+            ...toolset.subagentTools,
+            ...toolset.knowledgeTools,
+            ...toolset.skillTools,
           })
-          .unwrap();
+            .map((t) => {
+              const bindingTools =
+                toolChoice === "manual" ||
+                (message.metadata as ChatMetadata)?.toolChoice === "manual"
+                  ? excludeToolExecution(t)
+                  : t;
+
+              return {
+                ...bindingTools,
+                ...(options?.includeAppDefaultTools === false
+                  ? {}
+                  : toolset.appDefaultTools),
+                ...IMAGE_TOOL,
+              };
+            })
+            .unwrap();
+        };
+
+        const vercelAITooles = buildVercelAITools();
         metadata.toolCount = Object.keys(vercelAITooles).length;
 
         const allowedMcpTools = Object.values(allowedMcpServers ?? {})
@@ -705,56 +827,390 @@ export async function POST(request: Request) {
           );
         }
         logger.info(`model: ${chatModel?.provider}/${chatModel?.model}`);
-
-        // Strip base64 image data from image tool results in the conversation
-        // history. The client stores the full base64 for display purposes, but
-        // sending it back to the LLM on every subsequent request would exceed
-        // the token limit (1MB image ≈ 1M tokens).
-        const modelMessages = (await convertToModelMessages(messages)).map(
-          (msg) => {
-            if (msg.role !== "tool") return msg;
-            return {
-              ...msg,
-              content: msg.content.map((part) => {
-                if (part.type !== "tool-result") return part;
-                if (part.toolName !== ImageToolName) return part;
-                const output = part.output;
-                if (output.type !== "json") return part;
-                const val = output.value as Record<string, unknown>;
-                return {
-                  ...part,
-                  output: {
-                    type: "text" as const,
-                    value: (val?.guide as string) ?? "Image generated.",
-                  },
-                };
-              }),
-            };
-          },
-        );
-        const compatibleMessages = sanitizeModelMessagesForProvider({
-          provider: chatModel?.provider,
-          messages: modelMessages,
-          tools: vercelAITooles,
-        });
-        if (compatibleMessages.removedToolParts > 0) {
-          logger.info(
-            `provider compatibility pruned ${compatibleMessages.removedToolParts} stale tool parts across ${compatibleMessages.removedMessages} messages for ${chatModel?.provider}/${chatModel?.model}`,
-          );
-        }
         const sendToolDefinitions = shouldSendToolDefinitionsToProvider({
           provider: chatModel?.provider,
           tools: vercelAITooles,
         });
+        const strippedPersistedMessages =
+          stripAttachmentPreviewPartsFromMessages(persistedMessages);
+        const strippedCurrentMessage = stripAttachmentPreviewParts(message);
+        const attachmentPreviewText = extractAttachmentPreviewText([
+          ...persistedMessages,
+          message,
+        ]);
+        const buildToolStages = (currentLoopMessages: ModelMessage[]) => {
+          const hasExplicitMcpMentions = mentions.some(
+            (mention) =>
+              mention.type === "mcpTool" || mention.type === "mcpServer",
+          );
+          const usedToolNames =
+            collectUsedToolNamesFromModelMessages(currentLoopMessages);
+          const stages = [
+            {
+              reason: "full",
+              tools: vercelAITooles,
+              activeToolNames: Object.keys(vercelAITooles),
+            },
+          ];
+
+          if (Object.keys(toolset.appDefaultTools ?? {}).length > 0) {
+            const toolsWithoutAppDefault = buildVercelAITools({
+              includeAppDefaultTools: false,
+            });
+            stages.push({
+              reason: "without_app_default_tools",
+              tools: toolsWithoutAppDefault,
+              activeToolNames: Object.keys(toolsWithoutAppDefault),
+            });
+          }
+
+          if (
+            !hasExplicitMcpMentions &&
+            Object.keys(toolset.mcpTools ?? {}).length
+          ) {
+            const excludedMcpToolKeys = new Set(
+              Object.keys(toolset.mcpTools ?? {}).filter(
+                (toolName) => !usedToolNames.has(toolName),
+              ),
+            );
+            if (excludedMcpToolKeys.size > 0) {
+              const toolsWithoutOptionalMcp = buildVercelAITools({
+                includeAppDefaultTools: false,
+                excludedMcpToolKeys,
+              });
+              stages.push({
+                reason: "without_optional_mcp_tools",
+                tools: toolsWithoutOptionalMcp,
+                activeToolNames: Object.keys(toolsWithoutOptionalMcp),
+              });
+            }
+          }
+
+          return stages.filter(
+            (stage, index, allStages) =>
+              index ===
+              allStages.findIndex(
+                (other) =>
+                  other.activeToolNames.join(",") ===
+                  stage.activeToolNames.join(","),
+              ),
+          );
+        };
+        const seedMessages = await buildChatStreamSeedMessages(message);
+        const seedMessageCount = seedMessages.length;
+        const compactionRuntime: {
+          checkpoint: ChatThreadCompactionCheckpoint | null;
+          currentLoopMessages: ModelMessage[];
+        } = {
+          checkpoint: thread?.compactionCheckpoint ?? null,
+          currentLoopMessages: [],
+        };
 
         const result = streamText({
           model,
           system: systemPrompt,
-          messages: compatibleMessages.messages,
+          messages: seedMessages,
           experimental_transform: smoothStream({ chunking: "word" }),
           maxRetries: 2,
           stopWhen: stepCountIs(useImageTool ? 1 : 10),
           abortSignal: request.signal,
+          experimental_context: compactionRuntime,
+          prepareStep: async ({ messages: stepMessages, stepNumber }) => {
+            if (stepNumber > 0) {
+              compactionRuntime.currentLoopMessages =
+                stepMessages.slice(seedMessageCount);
+            }
+
+            const contextLength = dbModelResult.contextLength;
+            let activeKnowledgeBudget = CHAT_KNOWLEDGE_CONTEXT_TOKENS;
+            let stripAttachmentPreviews = false;
+            const toolStages = buildToolStages(
+              compactionRuntime.currentLoopMessages,
+            );
+            let activeToolStage = toolStages[0] ?? {
+              reason: "full",
+              tools: vercelAITooles,
+              activeToolNames: Object.keys(vercelAITooles),
+            };
+
+            const buildAssemblyForCurrentState = async () => {
+              const promptContext = await buildSystemPromptForKnowledgeBudget(
+                activeKnowledgeBudget,
+              );
+              const assembly = await buildCompactionAssembly({
+                persistedMessages: stripAttachmentPreviews
+                  ? strippedPersistedMessages
+                  : persistedMessages,
+                currentMessage: stripAttachmentPreviews
+                  ? strippedCurrentMessage
+                  : message,
+                currentLoopMessages: compactionRuntime.currentLoopMessages,
+                checkpoint: compactionRuntime.checkpoint,
+                contextLength,
+                systemPrompt: promptContext.systemPrompt,
+                provider: chatModel?.provider,
+                tools: activeToolStage.tools,
+                dynamicTailEnabled: Boolean(
+                  compactionRuntime.checkpoint?.summaryText,
+                ),
+                knowledgeContexts: promptContext.knowledgeContexts,
+                attachmentPreviewText: stripAttachmentPreviews
+                  ? ""
+                  : attachmentPreviewText,
+              });
+
+              return {
+                assembly,
+              };
+            };
+
+            let { assembly } = await buildAssemblyForCurrentState();
+
+            if (assembly.removedToolParts > 0) {
+              logger.info(
+                `provider compatibility pruned ${assembly.removedToolParts} stale tool parts across ${assembly.removedMessages} messages for ${chatModel?.provider}/${chatModel?.model}`,
+              );
+            }
+
+            const beforeTokens = assembly.totalTokens;
+            let afterTokens = beforeTokens;
+            let checkpointUpdated = false;
+            let generationFailureCode: string | undefined;
+            let sheddingFailureCode: string | undefined;
+            const shouldEvaluateCompaction =
+              contextLength > 0 &&
+              beforeTokens / contextLength >= CONTEXT_COMPACTION_TRIGGER_RATIO;
+            const compactionStartedAt = new Date();
+
+            if (shouldEvaluateCompaction) {
+              await updateThreadCompactionState({
+                threadId: thread!.id,
+                source: "pre-send",
+                status: "running",
+                beforeTokens,
+                afterTokens: null,
+                failureCode: null,
+                startedAt: compactionStartedAt,
+                finishedAt: null,
+              });
+              dataStream.write({
+                type: "data-compaction-status",
+                data: {
+                  active: true,
+                  usedTokens: beforeTokens,
+                  totalTokens: contextLength,
+                  thresholdPercent: Math.round(
+                    CONTEXT_COMPACTION_TRIGGER_RATIO * 100,
+                  ),
+                },
+                transient: true,
+              });
+
+              try {
+                if (assembly.compactableMessages.length > 0) {
+                  let lastError: unknown = null;
+                  for (let attempt = 0; attempt < 2; attempt += 1) {
+                    try {
+                      const checkpoint = await generateCompactionCheckpoint({
+                        model,
+                        chatModel,
+                        checkpoint: compactionRuntime.checkpoint,
+                        compactableMessages: assembly.compactableMessages,
+                        summaryBudgetTokens: assembly.summaryBudgetTokens,
+                        contextLength,
+                        abortSignal: request.signal,
+                      });
+
+                      compactionRuntime.checkpoint =
+                        await chatRepository.upsertCompactionCheckpoint({
+                          threadId: thread!.id,
+                          ...checkpoint,
+                        });
+                      checkpointUpdated = true;
+
+                      ({ assembly } = await buildAssemblyForCurrentState());
+                      afterTokens = assembly.totalTokens;
+
+                      dataStream.write({
+                        type: "data-compaction-checkpoint",
+                        data: {
+                          summaryText: compactionRuntime.checkpoint.summaryText,
+                          compactedMessageCount:
+                            compactionRuntime.checkpoint.compactedMessageCount,
+                          summaryTokenCount:
+                            compactionRuntime.checkpoint.summaryTokenCount,
+                          usedTokensAfterCompaction: afterTokens,
+                        },
+                        transient: true,
+                      });
+
+                      lastError = null;
+                      break;
+                    } catch (error) {
+                      lastError = error;
+                    }
+                  }
+
+                  if (lastError) {
+                    generationFailureCode = "generation_failed";
+                    logger.warn(
+                      `context compaction failed for thread ${thread!.id}: ${lastError}`,
+                    );
+                  }
+                } else {
+                  generationFailureCode = "no_compactable_history";
+                }
+
+                if (
+                  contextLength > 0 &&
+                  afterTokens / contextLength >= CONTEXT_COMPACTION_HARD_RATIO
+                ) {
+                  for (const knowledgeBudget of KNOWLEDGE_CONTEXT_BUDGET_STAGES) {
+                    if (knowledgeBudget === activeKnowledgeBudget) continue;
+                    activeKnowledgeBudget = knowledgeBudget;
+                    ({ assembly } = await buildAssemblyForCurrentState());
+                    afterTokens = assembly.totalTokens;
+                    sheddingFailureCode = `knowledge_budget_${knowledgeBudget}`;
+                    if (
+                      afterTokens / contextLength <
+                      CONTEXT_COMPACTION_HARD_RATIO
+                    ) {
+                      break;
+                    }
+                  }
+                }
+
+                if (
+                  contextLength > 0 &&
+                  afterTokens / contextLength >=
+                    CONTEXT_COMPACTION_HARD_RATIO &&
+                  attachmentPreviewText.trim()
+                ) {
+                  stripAttachmentPreviews = true;
+                  ({ assembly } = await buildAssemblyForCurrentState());
+                  afterTokens = assembly.totalTokens;
+                  sheddingFailureCode = "attachment_preview_removed";
+                }
+
+                if (
+                  contextLength > 0 &&
+                  afterTokens / contextLength >= CONTEXT_COMPACTION_HARD_RATIO
+                ) {
+                  for (const toolStage of toolStages.slice(1)) {
+                    activeToolStage = toolStage;
+                    ({ assembly } = await buildAssemblyForCurrentState());
+                    afterTokens = assembly.totalTokens;
+                    sheddingFailureCode = toolStage.reason;
+                    if (
+                      afterTokens / contextLength <
+                      CONTEXT_COMPACTION_HARD_RATIO
+                    ) {
+                      break;
+                    }
+                  }
+                }
+              } finally {
+                dataStream.write({
+                  type: "data-compaction-status",
+                  data: { active: false },
+                  transient: true,
+                });
+              }
+            }
+
+            if (
+              contextLength > 0 &&
+              afterTokens / contextLength >= CONTEXT_COMPACTION_HARD_RATIO
+            ) {
+              const hardFailureCode =
+                generationFailureCode && sheddingFailureCode
+                  ? `${generationFailureCode}:${sheddingFailureCode}`
+                  : (generationFailureCode ??
+                    sheddingFailureCode ??
+                    `prompt_still_above_${Math.round(
+                      CONTEXT_COMPACTION_HARD_RATIO * 100,
+                    )}_percent`);
+              await updateThreadCompactionState({
+                threadId: thread!.id,
+                source: "pre-send",
+                status: "failed",
+                beforeTokens,
+                afterTokens,
+                failureCode: hardFailureCode,
+                startedAt: compactionStartedAt,
+                finishedAt: new Date(),
+              });
+              metadata.compaction = {
+                performed: checkpointUpdated,
+                beforeTokens,
+                afterTokens,
+                compactedMessageCount:
+                  compactionRuntime.checkpoint?.compactedMessageCount,
+                checkpointUpdated,
+                failureCode: hardFailureCode,
+                breakdown: assembly.breakdown,
+              };
+              throw new Error(
+                buildCompactionFailureMessage({
+                  failureCode: hardFailureCode,
+                  breakdown: assembly.breakdown,
+                }),
+              );
+            }
+
+            if (
+              shouldEvaluateCompaction ||
+              checkpointUpdated ||
+              generationFailureCode ||
+              sheddingFailureCode ||
+              afterTokens / Math.max(contextLength, 1) >
+                CONTEXT_COMPACTION_TARGET_RATIO
+            ) {
+              if (shouldEvaluateCompaction) {
+                const finalFailureCode =
+                  generationFailureCode && sheddingFailureCode
+                    ? `${generationFailureCode}:${sheddingFailureCode}`
+                    : (generationFailureCode ?? sheddingFailureCode ?? null);
+                await updateThreadCompactionState({
+                  threadId: thread!.id,
+                  source: "pre-send",
+                  status: finalFailureCode ? "failed" : "completed",
+                  beforeTokens,
+                  afterTokens,
+                  failureCode: finalFailureCode,
+                  startedAt: compactionStartedAt,
+                  finishedAt: new Date(),
+                });
+              }
+              metadata.compaction = {
+                performed: checkpointUpdated,
+                beforeTokens,
+                afterTokens,
+                compactedMessageCount:
+                  compactionRuntime.checkpoint?.compactedMessageCount,
+                checkpointUpdated,
+                failureCode:
+                  generationFailureCode && sheddingFailureCode
+                    ? `${generationFailureCode}:${sheddingFailureCode}`
+                    : (generationFailureCode ?? sheddingFailureCode),
+                breakdown: assembly.breakdown,
+              };
+            }
+
+            return {
+              system: assembly.systemPrompt,
+              messages: assembly.messages,
+              experimental_context: compactionRuntime,
+              ...(sendToolDefinitions
+                ? {
+                    activeTools: activeToolStage.activeToolNames,
+                    toolChoice: activeToolStage.activeToolNames.length
+                      ? ("auto" as const)
+                      : ("none" as const),
+                  }
+                : {}),
+            };
+          },
           ...(sendToolDefinitions
             ? {
                 tools: vercelAITooles,

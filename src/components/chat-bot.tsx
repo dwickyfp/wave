@@ -25,6 +25,7 @@ import {
   ChatApiSchemaRequestBody,
   ChatAttachment,
   ChatModel,
+  ChatThreadCompactionCheckpoint,
 } from "app-types/chat";
 import { useToRef } from "@/hooks/use-latest";
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
@@ -54,7 +55,13 @@ import { CitationPreviewPanel } from "./citation-preview-panel";
 type Props = {
   threadId: string;
   initialMessages: Array<UIMessage>;
+  initialCompactionCheckpoint?: ChatThreadCompactionCheckpoint | null;
   selectedChatModel?: string;
+};
+
+type SessionCompactionBaseline = {
+  usedTokens: number;
+  messageCount: number;
 };
 
 const LightRays = dynamic(() => import("ui/light-rays"), {
@@ -71,7 +78,11 @@ const firstTimeStorage = getStorageManager("IS_FIRST");
 const isFirstTime = firstTimeStorage.get() ?? true;
 firstTimeStorage.set(false);
 
-export default function ChatBot({ threadId, initialMessages }: Props) {
+export default function ChatBot({
+  threadId,
+  initialMessages,
+  initialCompactionCheckpoint,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -116,8 +127,16 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
   });
 
   const [showParticles, setShowParticles] = useState(isFirstTime);
+  const [isCompactingContext, setIsCompactingContext] = useState(false);
+  const [compactionCheckpoint, setCompactionCheckpoint] = useState<Pick<
+    ChatThreadCompactionCheckpoint,
+    "summaryText" | "compactedMessageCount" | "summaryTokenCount"
+  > | null>(initialCompactionCheckpoint ?? null);
+  const [sessionCompactionBaseline, setSessionCompactionBaseline] =
+    useState<SessionCompactionBaseline | null>(null);
 
   const onFinish = useCallback(() => {
+    setIsCompactingContext(false);
     const messages = latestRef.current.messages;
     const prevThread = latestRef.current.threadList.find(
       (v) => v.id === threadId,
@@ -229,6 +248,29 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
     generateId: generateUUID,
     experimental_throttle: 100,
     onFinish,
+    onData: (part: any) => {
+      if (part?.type === "data-compaction-status") {
+        setIsCompactingContext(Boolean(part.data?.active));
+        return;
+      }
+
+      if (part?.type === "data-compaction-checkpoint") {
+        setCompactionCheckpoint({
+          summaryText: String(part.data?.summaryText ?? ""),
+          compactedMessageCount: Number(part.data?.compactedMessageCount ?? 0),
+          summaryTokenCount: Number(part.data?.summaryTokenCount ?? 0),
+        });
+        const usedTokensAfterCompaction = Number(
+          part.data?.usedTokensAfterCompaction ?? 0,
+        );
+        if (usedTokensAfterCompaction > 0) {
+          setSessionCompactionBaseline({
+            usedTokens: usedTokensAfterCompaction,
+            messageCount: latestRef.current.messages.length,
+          });
+        }
+      }
+    },
   });
   const [isDeleteThreadPopupOpen, setIsDeleteThreadPopupOpen] = useState(false);
 
@@ -281,6 +323,8 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
     if (lastPart.state.startsWith("output")) return false;
     return true;
   }, [status, messages]);
+
+  const shouldShowCompactionStatusRow = isCompactingContext;
 
   const space = useMemo(() => {
     if (!isLoading || error) return false;
@@ -480,6 +524,7 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
                     />
                   );
                 })}
+                {shouldShowCompactionStatusRow && <CompactionStatusRow />}
                 {space && (
                   <>
                     <div className="w-full mx-auto max-w-3xl px-6 relative">
@@ -513,6 +558,8 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
             <PromptInput
               input={input}
               messages={messages}
+              compactionCheckpoint={compactionCheckpoint}
+              sessionCompactionBaseline={sessionCompactionBaseline}
               threadId={threadId}
               sendMessage={sendMessage}
               setInput={setInput}
@@ -530,6 +577,17 @@ export default function ChatBot({ threadId, initialMessages }: Props) {
         <CitationPreviewPanel />
       </div>
     </>
+  );
+}
+
+function CompactionStatusRow() {
+  return (
+    <div className="w-full mx-auto max-w-3xl px-6">
+      <div className="flex items-center gap-2 rounded-full border border-border/70 bg-background/80 px-3 py-2 text-sm text-muted-foreground w-fit shadow-xs">
+        <Loader className="size-3.5 animate-spin" />
+        <span>Compacting context...</span>
+      </div>
+    </div>
   );
 }
 

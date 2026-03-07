@@ -36,6 +36,8 @@
     "db:migrate": "cross-env TSX_DISABLE_CACHE=1 tsx scripts/db-migrate.ts",
     "worker:knowledge": "NODE_OPTIONS='--conditions=react-server' tsx --env-file=.env src/lib/knowledge/worker.ts",
     "worker:knowledge-win": "cross-env NODE_OPTIONS=--conditions=react-server tsx --env-file=.env src/lib/knowledge/worker.ts",
+    "worker:chat-compaction": "NODE_OPTIONS='--conditions=react-server' tsx --env-file=.env src/lib/ai/chat-compaction-worker.ts",
+    "worker:chat-compaction-win": "cross-env NODE_OPTIONS=--conditions=react-server tsx --env-file=.env src/lib/ai/chat-compaction-worker.ts",
     "db:pull": "drizzle-kit pull",
     "db:check": "drizzle-kit check",
     "docker-compose:up": "docker-compose -f docker/compose.yml up -d --build",

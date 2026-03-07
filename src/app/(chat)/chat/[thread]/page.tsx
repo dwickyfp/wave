@@ -1,12 +1,12 @@
 import { selectThreadWithMessagesAction } from "@/app/api/chat/actions";
 import ChatBot from "@/components/chat-bot";
 
-import { ChatMessage, ChatThread } from "app-types/chat";
+import { ChatThreadDetails } from "app-types/chat";
 import { redirect, RedirectType } from "next/navigation";
 
 const fetchThread = async (
   threadId: string,
-): Promise<(ChatThread & { messages: ChatMessage[] }) | null> => {
+): Promise<ChatThreadDetails | null> => {
   return await selectThreadWithMessagesAction(threadId);
 };
 
@@ -23,5 +23,11 @@ export default async function Page({
 
   if (!thread) redirect("/", RedirectType.replace);
 
-  return <ChatBot threadId={threadId} initialMessages={thread.messages} />;
+  return (
+    <ChatBot
+      threadId={threadId}
+      initialMessages={thread.messages}
+      initialCompactionCheckpoint={thread.compactionCheckpoint ?? null}
+    />
+  );
 }

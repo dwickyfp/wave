@@ -1,8 +1,12 @@
 import {
+  ChatModel,
+  ChatThreadCompactionCheckpoint,
+  ChatThreadCompactionState,
   ChatMessage,
   ChatMessageFeedback,
   ChatFeedbackType,
   ChatRepository,
+  ChatThreadDetails,
   ChatThread,
 } from "app-types/chat";
 
@@ -13,9 +17,41 @@ import {
   UserTable,
   ArchiveItemTable,
   ChatMessageFeedbackTable,
+  ChatThreadCompactionCheckpointTable,
+  ChatThreadCompactionStateTable,
 } from "../schema.pg";
 
 import { and, desc, eq, gte, sql } from "drizzle-orm";
+
+async function invalidateCheckpointIfMessageIsCompacted(messageId: string) {
+  const [message] = await db
+    .select({
+      id: ChatMessageTable.id,
+      threadId: ChatMessageTable.threadId,
+    })
+    .from(ChatMessageTable)
+    .where(eq(ChatMessageTable.id, messageId));
+
+  if (!message) return;
+
+  const checkpoint = await pgChatRepository.selectCompactionCheckpoint(
+    message.threadId,
+  );
+  if (!checkpoint || checkpoint.compactedMessageCount < 1) return;
+
+  const orderedMessageIds = await db
+    .select({ id: ChatMessageTable.id })
+    .from(ChatMessageTable)
+    .where(eq(ChatMessageTable.threadId, message.threadId))
+    .orderBy(ChatMessageTable.createdAt, ChatMessageTable.id);
+
+  const messageIndex = orderedMessageIds.findIndex(
+    (item) => item.id === message.id,
+  );
+  if (messageIndex !== -1 && messageIndex < checkpoint.compactedMessageCount) {
+    await pgChatRepository.deleteCompactionCheckpoint(message.threadId);
+  }
+}
 
 export const pgChatRepository: ChatRepository = {
   insertThread: async (
@@ -34,6 +70,7 @@ export const pgChatRepository: ChatRepository = {
   },
 
   deleteChatMessage: async (id: string): Promise<void> => {
+    await invalidateCheckpointIfMessageIsCompacted(id);
     await db.delete(ChatMessageTable).where(eq(ChatMessageTable.id, id));
   },
 
@@ -45,7 +82,9 @@ export const pgChatRepository: ChatRepository = {
     return result;
   },
 
-  selectThreadDetails: async (id: string) => {
+  selectThreadDetails: async (
+    id: string,
+  ): Promise<ChatThreadDetails | null> => {
     if (!id) {
       return null;
     }
@@ -60,6 +99,9 @@ export const pgChatRepository: ChatRepository = {
     }
 
     const messages = await pgChatRepository.selectMessagesByThreadId(id);
+    const compactionCheckpoint =
+      await pgChatRepository.selectCompactionCheckpoint(id);
+    const compactionState = await pgChatRepository.selectCompactionState(id);
     return {
       id: thread.chat_thread.id,
       title: thread.chat_thread.title,
@@ -69,6 +111,8 @@ export const pgChatRepository: ChatRepository = {
       snowflakeParentMessageId: thread.chat_thread.snowflakeParentMessageId,
       userPreferences: thread.user?.preferences ?? undefined,
       messages,
+      compactionCheckpoint,
+      compactionState,
     };
   },
 
@@ -79,8 +123,52 @@ export const pgChatRepository: ChatRepository = {
       .select()
       .from(ChatMessageTable)
       .where(eq(ChatMessageTable.threadId, threadId))
-      .orderBy(ChatMessageTable.createdAt);
+      .orderBy(ChatMessageTable.createdAt, ChatMessageTable.id);
     return result as ChatMessage[];
+  },
+
+  selectCompactionCheckpoint: async (
+    threadId: string,
+  ): Promise<ChatThreadCompactionCheckpoint | null> => {
+    const [checkpoint] = await db
+      .select()
+      .from(ChatThreadCompactionCheckpointTable)
+      .where(eq(ChatThreadCompactionCheckpointTable.threadId, threadId));
+
+    return (checkpoint as ChatThreadCompactionCheckpoint | undefined) ?? null;
+  },
+
+  selectCompactionState: async (
+    threadId: string,
+  ): Promise<ChatThreadCompactionState | null> => {
+    const [state] = await db
+      .select()
+      .from(ChatThreadCompactionStateTable)
+      .where(eq(ChatThreadCompactionStateTable.threadId, threadId));
+
+    return (state as ChatThreadCompactionState | undefined) ?? null;
+  },
+
+  selectLatestThreadChatModel: async (
+    threadId: string,
+  ): Promise<ChatModel | null> => {
+    const messages = await db
+      .select({
+        metadata: ChatMessageTable.metadata,
+      })
+      .from(ChatMessageTable)
+      .where(eq(ChatMessageTable.threadId, threadId))
+      .orderBy(desc(ChatMessageTable.createdAt), desc(ChatMessageTable.id));
+
+    for (const message of messages) {
+      const chatModel = (message.metadata as ChatMessage["metadata"])
+        ?.chatModel as ChatModel | undefined;
+      if (chatModel?.provider && chatModel?.model) {
+        return chatModel;
+      }
+    }
+
+    return null;
   },
 
   selectThreadsByUserId: async (
@@ -207,9 +295,113 @@ export const pgChatRepository: ChatRepository = {
     return result[0] as ChatMessage;
   },
 
+  upsertCompactionCheckpoint: async (
+    checkpoint,
+  ): Promise<ChatThreadCompactionCheckpoint> => {
+    const values = {
+      id: checkpoint.id,
+      threadId: checkpoint.threadId,
+      schemaVersion: checkpoint.schemaVersion,
+      summaryJson: checkpoint.summaryJson,
+      summaryText: checkpoint.summaryText,
+      compactedMessageCount: checkpoint.compactedMessageCount,
+      sourceTokenCount: checkpoint.sourceTokenCount,
+      summaryTokenCount: checkpoint.summaryTokenCount,
+      modelProvider: checkpoint.modelProvider,
+      modelName: checkpoint.modelName,
+      updatedAt: new Date(),
+    };
+
+    const [result] = await db
+      .insert(ChatThreadCompactionCheckpointTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [ChatThreadCompactionCheckpointTable.threadId],
+        set: {
+          schemaVersion: values.schemaVersion,
+          summaryJson: values.summaryJson,
+          summaryText: values.summaryText,
+          compactedMessageCount: values.compactedMessageCount,
+          sourceTokenCount: values.sourceTokenCount,
+          summaryTokenCount: values.summaryTokenCount,
+          modelProvider: values.modelProvider,
+          modelName: values.modelName,
+          updatedAt: values.updatedAt,
+        },
+      })
+      .returning();
+
+    return result as ChatThreadCompactionCheckpoint;
+  },
+
+  upsertCompactionState: async (state): Promise<ChatThreadCompactionState> => {
+    const values = {
+      id: state.id,
+      threadId: state.threadId,
+      status: state.status,
+      source: state.source,
+      beforeTokens: state.beforeTokens ?? null,
+      afterTokens: state.afterTokens ?? null,
+      failureCode: state.failureCode ?? null,
+      startedAt: state.startedAt ?? null,
+      finishedAt: state.finishedAt ?? null,
+      updatedAt: new Date(),
+    };
+
+    const [result] = await db
+      .insert(ChatThreadCompactionStateTable)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [ChatThreadCompactionStateTable.threadId],
+        set: {
+          status: values.status,
+          source: values.source,
+          beforeTokens: values.beforeTokens,
+          afterTokens: values.afterTokens,
+          failureCode: values.failureCode,
+          startedAt: values.startedAt,
+          finishedAt: values.finishedAt,
+          updatedAt: values.updatedAt,
+        },
+      })
+      .returning();
+
+    return result as ChatThreadCompactionState;
+  },
+
+  deleteCompactionCheckpoint: async (threadId: string): Promise<void> => {
+    await db
+      .delete(ChatThreadCompactionCheckpointTable)
+      .where(eq(ChatThreadCompactionCheckpointTable.threadId, threadId));
+  },
+
+  copyCompactionCheckpoint: async (
+    sourceThreadId: string,
+    targetThreadId: string,
+  ): Promise<ChatThreadCompactionCheckpoint | null> => {
+    const checkpoint =
+      await pgChatRepository.selectCompactionCheckpoint(sourceThreadId);
+
+    if (!checkpoint) return null;
+
+    return await pgChatRepository.upsertCompactionCheckpoint({
+      threadId: targetThreadId,
+      schemaVersion: checkpoint.schemaVersion,
+      summaryJson: checkpoint.summaryJson,
+      summaryText: checkpoint.summaryText,
+      compactedMessageCount: checkpoint.compactedMessageCount,
+      sourceTokenCount: checkpoint.sourceTokenCount,
+      summaryTokenCount: checkpoint.summaryTokenCount,
+      modelProvider: checkpoint.modelProvider,
+      modelName: checkpoint.modelName,
+    });
+  },
+
   deleteMessagesByChatIdAfterTimestamp: async (
     messageId: string,
   ): Promise<void> => {
+    await invalidateCheckpointIfMessageIsCompacted(messageId);
+
     const [message] = await db
       .select()
       .from(ChatMessageTable)
