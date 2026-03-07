@@ -18,6 +18,7 @@ interface A2APublishPanelProps {
   initialEnabled?: boolean;
   initialPreview?: string | null;
   isOwner?: boolean;
+  embedded?: boolean;
 }
 
 export function A2APublishPanel({
@@ -25,6 +26,7 @@ export function A2APublishPanel({
   initialEnabled = false,
   initialPreview = null,
   isOwner = true,
+  embedded = false,
 }: A2APublishPanelProps) {
   const [browserOrigin, setBrowserOrigin] = useState("");
   const [enabled, setEnabled] = useState(initialEnabled);
@@ -206,7 +208,13 @@ export function A2APublishPanel({
 
   if (!agentId) {
     return (
-      <div className="border rounded-xl p-4 flex items-start gap-3">
+      <div
+        className={
+          embedded
+            ? "flex items-start gap-3"
+            : "border rounded-xl p-4 flex items-start gap-3"
+        }
+      >
         <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
         <div>
           <p className="text-sm font-medium">Save this agent first</p>
@@ -220,7 +228,13 @@ export function A2APublishPanel({
 
   if (!isOwner) {
     return (
-      <div className="border rounded-xl p-4 flex items-start gap-3">
+      <div
+        className={
+          embedded
+            ? "flex items-start gap-3"
+            : "border rounded-xl p-4 flex items-start gap-3"
+        }
+      >
         <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
         <div>
           <p className="text-sm font-medium">Owner access only</p>
@@ -235,23 +249,40 @@ export function A2APublishPanel({
   const isBusy = isGenerating || isRevoking || isToggling;
 
   return (
-    <div className="border rounded-xl p-4 space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <WaypointsIcon className="size-4 text-primary" />
-            <p className="text-sm font-medium">Publish via A2A</p>
+    <div className={embedded ? "space-y-4" : "border rounded-xl p-4 space-y-4"}>
+      {embedded ? (
+        <div className="flex items-start justify-between gap-4 rounded-lg border bg-secondary/30 p-3">
+          <div className="space-y-1">
+            <p className="text-xs font-medium">Enable publishing</p>
+            <p className="text-xs text-muted-foreground">
+              Expose this agent through its A2A endpoints and require the
+              generated bearer key.
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Expose this agent as a per-agent A2A server endpoint.
-          </p>
+          <Switch
+            checked={enabled}
+            onCheckedChange={handleToggleEnabled}
+            disabled={isBusy}
+          />
         </div>
-        <Switch
-          checked={enabled}
-          onCheckedChange={handleToggleEnabled}
-          disabled={isBusy}
-        />
-      </div>
+      ) : (
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <WaypointsIcon className="size-4 text-primary" />
+              <p className="text-sm font-medium">Publish via A2A</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Expose this agent as a per-agent A2A server endpoint.
+            </p>
+          </div>
+          <Switch
+            checked={enabled}
+            onCheckedChange={handleToggleEnabled}
+            disabled={isBusy}
+          />
+        </div>
+      )}
 
       <div className="space-y-2">
         <Label className="text-sm">API Key</Label>

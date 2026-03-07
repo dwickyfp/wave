@@ -28,6 +28,7 @@ import {
   RefreshCwIcon,
   ServerIcon,
   ShieldAlertIcon,
+  WaypointsIcon,
   WandSparklesIcon,
 } from "lucide-react";
 import { Button } from "ui/button";
@@ -1577,18 +1578,36 @@ export default function EditAgent({
                     </div>
                   </div>
 
-                  <A2APublishPanel
-                    agentId={initialAgent.id}
-                    initialEnabled={initialAgent.a2aEnabled ?? false}
-                    initialPreview={initialAgent.a2aApiKeyPreview ?? null}
-                    isOwner={isOwner}
-                  />
+                  <Accordion type="multiple" className="space-y-4">
+                    <AccordionItem
+                      value="agent-a2a"
+                      className="rounded-xl border px-4 last:border-b"
+                    >
+                      <AccordionTrigger className="py-4 hover:no-underline">
+                        <div className="flex min-w-0 items-start gap-3 text-left">
+                          <WaypointsIcon className="mt-0.5 size-4 text-primary" />
+                          <div className="min-w-0 space-y-1">
+                            <p className="text-sm font-medium">
+                              Publish via A2A
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              Expose this agent as a per-agent A2A server
+                              endpoint.
+                            </p>
+                          </div>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="space-y-4 pb-4">
+                        <A2APublishPanel
+                          agentId={initialAgent.id}
+                          initialEnabled={initialAgent.a2aEnabled ?? false}
+                          initialPreview={initialAgent.a2aApiKeyPreview ?? null}
+                          isOwner={isOwner}
+                          embedded
+                        />
+                      </AccordionContent>
+                    </AccordionItem>
 
-                  <Accordion
-                    type="multiple"
-                    defaultValue={["agent-mcp", "continue-openai"]}
-                    className="space-y-4"
-                  >
                     <AccordionItem
                       value="agent-mcp"
                       className="rounded-xl border px-4 last:border-b"
