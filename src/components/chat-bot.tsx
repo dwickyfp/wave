@@ -51,6 +51,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useThreadFileUploader } from "@/hooks/use-thread-file-uploader";
 import { useFileDragOverlay } from "@/hooks/use-file-drag-overlay";
 import { CitationPreviewPanel } from "./citation-preview-panel";
+import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
 
 type Props = {
   threadId: string;
@@ -128,6 +129,12 @@ export default function ChatBot({
 
   const [showParticles, setShowParticles] = useState(isFirstTime);
   const [isCompactingContext, setIsCompactingContext] = useState(false);
+  const setMessagesRef = useRef<
+    | ((
+        messages: UIMessage[] | ((messages: UIMessage[]) => UIMessage[]),
+      ) => void)
+    | null
+  >(null);
   const [compactionCheckpoint, setCompactionCheckpoint] = useState<Pick<
     ChatThreadCompactionCheckpoint,
     "summaryText" | "compactedMessageCount" | "summaryTokenCount"
@@ -135,34 +142,63 @@ export default function ChatBot({
   const [sessionCompactionBaseline, setSessionCompactionBaseline] =
     useState<SessionCompactionBaseline | null>(null);
 
-  const onFinish = useCallback(() => {
-    setIsCompactingContext(false);
-    const messages = latestRef.current.messages;
-    const prevThread = latestRef.current.threadList.find(
-      (v) => v.id === threadId,
-    );
-    const isNewThread =
-      !prevThread?.title &&
-      messages.filter((v) => v.role === "user" || v.role === "assistant")
-        .length < 3;
-    if (isNewThread) {
-      const part = messages
-        .slice(0, 2)
-        .flatMap((m) =>
-          m.parts
-            .filter((v) => v.type === "text")
-            .map(
-              (p) =>
-                `${m.role}: ${truncateString((p as TextUIPart).text, 500)}`,
-            ),
+  const onFinish = useCallback(
+    ({
+      message,
+      messages: finishedMessages,
+      isAbort,
+    }: {
+      message: UIMessage;
+      messages: UIMessage[];
+      isAbort: boolean;
+    }) => {
+      const normalizedMessages = isAbort
+        ? finishedMessages.map((currentMessage) =>
+            currentMessage.id === message.id
+              ? appendAbortedResponseNotice(currentMessage)
+              : currentMessage,
+          )
+        : finishedMessages;
+
+      if (isAbort) {
+        setMessagesRef.current?.((currentMessages) =>
+          currentMessages.map((currentMessage) =>
+            currentMessage.id === message.id
+              ? appendAbortedResponseNotice(currentMessage)
+              : currentMessage,
+          ),
         );
-      if (part.length > 0) {
-        generateTitle(part.join("\n\n"));
       }
-    } else if (latestRef.current.threadList[0]?.id !== threadId) {
-      mutate("/api/thread");
-    }
-  }, []);
+
+      setIsCompactingContext(false);
+      const prevThread = latestRef.current.threadList.find(
+        (v) => v.id === threadId,
+      );
+      const isNewThread =
+        !prevThread?.title &&
+        normalizedMessages.filter(
+          (v) => v.role === "user" || v.role === "assistant",
+        ).length < 3;
+      if (isNewThread) {
+        const part = normalizedMessages
+          .slice(0, 2)
+          .flatMap((m) =>
+            m.parts
+              .filter((v) => v.type === "text")
+              .map(
+                (p) =>
+                  `${m.role}: ${truncateString((p as TextUIPart).text, 500)}`,
+              ),
+          );
+        if (part.length > 0) {
+          generateTitle(part.join("\n\n"));
+        }
+      } else if (latestRef.current.threadList[0]?.id !== threadId) {
+        mutate("/api/thread");
+      }
+    },
+    [],
+  );
 
   const [input, setInput] = useState("");
 
@@ -295,6 +331,7 @@ export default function ChatBot({
     mentions: threadMentions[threadId],
     threadImageToolModel,
   });
+  setMessagesRef.current = setMessages;
 
   const isLoading = useMemo(
     () => status === "streaming" || status === "submitted",

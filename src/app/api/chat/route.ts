@@ -1,6 +1,7 @@
 import {
   ModelMessage,
   Tool,
+  consumeStream,
   UIMessage,
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -83,6 +84,7 @@ import {
   handleError,
   manualToolExecuteByLastMessage,
 } from "./shared.chat";
+import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -481,7 +483,11 @@ export async function POST(request: Request) {
           }
         },
         generateId: generateUUID,
-        onFinish: async ({ responseMessage }) => {
+        onFinish: async ({ responseMessage, isAborted }) => {
+          const finalResponseMessage = isAborted
+            ? appendAbortedResponseNotice(responseMessage)
+            : responseMessage;
+
           // Populate metadata from the captured Snowflake usage/model info
           if (sfCapture.usage) {
             sfMetadata.usage = attachUsageCost({
@@ -516,11 +522,11 @@ export async function POST(request: Request) {
             );
           }
 
-          if (responseMessage.id === message.id) {
+          if (finalResponseMessage.id === message.id) {
             await chatRepository.upsertMessage({
               threadId: thread!.id,
-              ...responseMessage,
-              parts: responseMessage.parts.map(convertToSavePart),
+              ...finalResponseMessage,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
               metadata: sfMetadata,
             });
           } else {
@@ -532,9 +538,9 @@ export async function POST(request: Request) {
             });
             await chatRepository.upsertMessage({
               threadId: thread!.id,
-              role: responseMessage.role,
-              id: responseMessage.id,
-              parts: responseMessage.parts.map(convertToSavePart),
+              role: finalResponseMessage.role,
+              id: finalResponseMessage.id,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
               metadata: sfMetadata,
             });
           }
@@ -543,7 +549,10 @@ export async function POST(request: Request) {
         originalMessages: messages,
       });
 
-      return createUIMessageStreamResponse({ stream: sfStream });
+      return createUIMessageStreamResponse({
+        stream: sfStream,
+        consumeSseStream: consumeStream,
+      });
     }
     // ── end Snowflake intercept ────────────────────────────────────────────
 
@@ -1244,12 +1253,16 @@ export async function POST(request: Request) {
       },
 
       generateId: generateUUID,
-      onFinish: async ({ responseMessage }) => {
-        if (responseMessage.id == message.id) {
+      onFinish: async ({ responseMessage, isAborted }) => {
+        const finalResponseMessage = isAborted
+          ? appendAbortedResponseNotice(responseMessage)
+          : responseMessage;
+
+        if (finalResponseMessage.id == message.id) {
           await chatRepository.upsertMessage({
             threadId: thread!.id,
-            ...responseMessage,
-            parts: responseMessage.parts.map(convertToSavePart),
+            ...finalResponseMessage,
+            parts: finalResponseMessage.parts.map(convertToSavePart),
             metadata,
           });
         } else {
@@ -1261,9 +1274,9 @@ export async function POST(request: Request) {
           });
           await chatRepository.upsertMessage({
             threadId: thread!.id,
-            role: responseMessage.role,
-            id: responseMessage.id,
-            parts: responseMessage.parts.map(convertToSavePart),
+            role: finalResponseMessage.role,
+            id: finalResponseMessage.id,
+            parts: finalResponseMessage.parts.map(convertToSavePart),
             metadata,
           });
         }
@@ -1280,6 +1293,7 @@ export async function POST(request: Request) {
 
     return createUIMessageStreamResponse({
       stream,
+      consumeSseStream: consumeStream,
     });
   } catch (error: any) {
     logger.error(error);
