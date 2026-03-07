@@ -44,6 +44,81 @@ export function createNoopDataStream() {
   } as unknown as UIMessageStreamWriter;
 }
 
+export async function loadWaveAgentContinueCapabilities(options: {
+  agent?: Agent | null;
+  userId: string;
+  dataStream: UIMessageStreamWriter;
+  abortSignal: AbortSignal;
+  chatModel: ChatModel;
+  source: "agent" | "mcp";
+  isToolCallAllowed?: boolean;
+}) {
+  const isToolCallAllowed = options.isToolCallAllowed ?? true;
+  const agent = options.agent;
+
+  const emptyResult = {
+    subagentTools: {} as Record<string, Tool>,
+    knowledgeTools: {} as Record<string, Tool>,
+    skillTools: {} as Record<string, Tool>,
+    subAgents: [] as Agent["subAgents"],
+    knowledgeGroups: [] as Awaited<
+      ReturnType<typeof knowledgeRepository.getGroupsByAgentId>
+    >,
+    attachedSkills: [] as SkillSummary[],
+  };
+
+  if (!isToolCallAllowed || !agent) {
+    return emptyResult;
+  }
+
+  const [subAgents, knowledgeGroups, attachedSkills] = await Promise.all([
+    agent.subAgentsEnabled
+      ? subAgentRepository.selectSubAgentsByAgentId(agent.id)
+      : Promise.resolve([]),
+    knowledgeRepository.getGroupsByAgentId(agent.id),
+    skillRepository.getSkillsByAgentId(agent.id),
+  ]);
+
+  const subagentTools =
+    agent.subAgentsEnabled && subAgents.length > 0
+      ? await loadSubAgentTools(
+          {
+            ...agent,
+            subAgents,
+          },
+          options.dataStream,
+          options.abortSignal,
+          options.chatModel,
+        )
+      : {};
+
+  const knowledgeTools = knowledgeGroups.reduce(
+    (acc, group) => {
+      acc[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(group, {
+        userId: options.userId,
+        source: options.source,
+      });
+      return acc;
+    },
+    {} as Record<string, Tool>,
+  );
+
+  const skillTools: Record<string, Tool> = attachedSkills.length
+    ? {
+        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
+      }
+    : {};
+
+  return {
+    subagentTools,
+    knowledgeTools,
+    skillTools,
+    subAgents,
+    knowledgeGroups,
+    attachedSkills,
+  };
+}
+
 export async function loadWaveAgentBoundTools(options: {
   agent?: Agent | null;
   userId: string;
@@ -67,6 +142,9 @@ export async function loadWaveAgentBoundTools(options: {
     knowledgeTools: {} as Record<string, Tool>,
     skillTools: {} as Record<string, Tool>,
     subAgents: [],
+    knowledgeGroups: [] as Awaited<
+      ReturnType<typeof knowledgeRepository.getGroupsByAgentId>
+    >,
     attachedSkills: [] as SkillSummary[],
   };
 
@@ -93,48 +171,13 @@ export async function loadWaveAgentBoundTools(options: {
         : Promise.resolve([]),
     ]);
 
-  const subagentTools =
-    agent?.subAgentsEnabled && subAgents.length > 0
-      ? await loadSubAgentTools(
-          {
-            ...agent,
-            subAgents,
-          },
-          options.dataStream,
-          options.abortSignal,
-          options.chatModel,
-        )
-      : {};
-
-  const [knowledgeTools, attachedSkills] = agent?.id
-    ? await Promise.all([
-        knowledgeRepository.getGroupsByAgentId(agent.id).then((groups) =>
-          groups.reduce(
-            (acc, group) => {
-              acc[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(
-                group,
-                {
-                  userId: options.userId,
-                  source: options.source,
-                },
-              );
-              return acc;
-            },
-            {} as Record<string, Tool>,
-          ),
-        ),
-        skillRepository.getSkillsByAgentId(agent.id),
-      ])
-    : [
-        {} as Record<string, Tool>,
-        [] as Awaited<ReturnType<typeof skillRepository.getSkillsByAgentId>>,
-      ];
-
-  const skillTools: Record<string, Tool> = attachedSkills.length
-    ? {
-        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
-      }
-    : {};
+  const {
+    subagentTools,
+    knowledgeTools,
+    skillTools,
+    knowledgeGroups,
+    attachedSkills,
+  } = await loadWaveAgentContinueCapabilities(options);
 
   return {
     mcpTools,
@@ -144,6 +187,7 @@ export async function loadWaveAgentBoundTools(options: {
     knowledgeTools,
     skillTools,
     subAgents,
+    knowledgeGroups,
     attachedSkills,
   };
 }

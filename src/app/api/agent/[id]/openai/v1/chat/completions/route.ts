@@ -9,6 +9,7 @@ import {
   mapFinishReasonToOpenAi,
   normalizeOpenAiTextContent,
   openAiChatCompletionsRequestSchema,
+  openAiMessageSchema,
   resolveExternalAgentModelSelection,
   summarizeExternalPreview,
   streamContinueManagedTools,
@@ -58,6 +59,17 @@ function createOpenAiToolCalls(
       arguments: JSON.stringify(toolCall.input ?? {}),
     },
   }));
+}
+
+function createAssistantResponseMessage(
+  text: string,
+  toolCalls: ReturnType<typeof createOpenAiToolCalls>,
+): z.infer<typeof openAiMessageSchema> {
+  return {
+    role: "assistant",
+    content: text || null,
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  };
 }
 
 async function startAgentRun(options: {
@@ -152,6 +164,7 @@ async function recordChatUsage(options: {
   agentId: string;
   userAgent: string | null;
   request: z.infer<typeof openAiChatCompletionsRequestSchema>;
+  responseMessage?: z.infer<typeof openAiMessageSchema> | null;
   responsePreview?: string | null;
   finishReason?: string | null;
   usage?: {
@@ -173,6 +186,7 @@ async function recordChatUsage(options: {
       agentId: options.agentId,
       userAgent: options.userAgent,
       messages: options.request.messages,
+      responseMessage: options.responseMessage,
       requestPreview: buildChatRequestPreview(options.request.messages),
       responsePreview: options.responsePreview || options.errorMessage || null,
       promptTokens: options.usage?.inputTokens,
@@ -244,6 +258,10 @@ export async function POST(req: NextRequest, { params }: Params) {
         agentId,
         userAgent: req.headers.get("user-agent"),
         request: requestBody,
+        responseMessage: createAssistantResponseMessage(
+          text || "",
+          openAiToolCalls,
+        ),
         responsePreview:
           summarizeExternalPreview(text || "") ||
           summarizeExternalPreview(
@@ -299,8 +317,20 @@ export async function POST(req: NextRequest, { params }: Params) {
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const toolIndexes = new Map<string, number>();
+      const streamedToolCalls = new Map<
+        string,
+        {
+          id: string;
+          type: "function";
+          function: {
+            name: string;
+            arguments: string;
+          };
+        }
+      >();
       let nextToolIndex = 0;
       let finishSent = false;
+      let responseText = "";
       let responsePreviewText = "";
 
       const send = (payload: unknown) => {
@@ -318,6 +348,7 @@ export async function POST(req: NextRequest, { params }: Params) {
 
         for await (const part of started.run.fullStream) {
           if (part.type === "text-delta") {
+            responseText += part.text;
             responsePreviewText = summarizeExternalPreview(
               `${responsePreviewText}${part.text}`,
               280,
@@ -342,6 +373,15 @@ export async function POST(req: NextRequest, { params }: Params) {
                 nextToolIndex += 1;
                 return value;
               })();
+
+            streamedToolCalls.set(part.toolCallId, {
+              id: part.toolCallId,
+              type: "function",
+              function: {
+                name: part.toolName,
+                arguments: JSON.stringify(part.input ?? {}),
+              },
+            });
 
             send(
               createChatCompletionChunk({
@@ -403,6 +443,10 @@ export async function POST(req: NextRequest, { params }: Params) {
           agentId,
           userAgent: req.headers.get("user-agent"),
           request: requestBody,
+          responseMessage: createAssistantResponseMessage(
+            responseText,
+            Array.from(streamedToolCalls.values()),
+          ),
           responsePreview: responsePreviewText,
           finishReason,
           usage: totalUsage,

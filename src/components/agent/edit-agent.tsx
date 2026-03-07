@@ -31,6 +31,12 @@ import {
   WandSparklesIcon,
 } from "lucide-react";
 import { Button } from "ui/button";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
 import {
   DropdownMenu,
@@ -1570,309 +1576,357 @@ export default function EditAgent({
                     </div>
                   </div>
 
-                  <div className="border rounded-xl p-4 flex flex-col gap-4">
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">
-                        {t("Agent.agentMcpTitle")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentMcpDescription")}
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentMcpPresentationModeLabel")}
-                      </p>
-                      <Select
-                        value={agentMcpPresentationMode}
-                        onValueChange={handleChangeAgentMcpPresentationMode}
-                        disabled={isAgentMcpBusy}
-                      >
-                        <SelectTrigger className="w-full h-8 text-xs">
-                          <SelectValue
-                            placeholder={t(
-                              "Agent.agentMcpPresentationModePlaceholder",
-                            )}
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={MCP_PRESENTATION_COMPATIBILITY}>
-                            {t("Agent.agentMcpPresentationModeCompatibility")}
-                          </SelectItem>
-                          <SelectItem value={MCP_PRESENTATION_COPILOT_NATIVE}>
-                            {t("Agent.agentMcpPresentationModeCopilotNative")}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">
-                        {agentMcpPresentationMode ===
-                        MCP_PRESENTATION_COPILOT_NATIVE
-                          ? t("Agent.agentMcpPresentationModeNativeDescription")
-                          : t(
-                              "Agent.agentMcpPresentationModeCompatibilityDescription",
-                            )}
-                      </p>
-                    </div>
-
-                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentMcpToolInventoryLabel")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {agentMcpVisibleToolsDescription}
-                      </p>
-                    </div>
-
-                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentMcpVisibilityLimitTitle")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentMcpVisibilityLimitDescription")}
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label className="text-sm">
-                        {t("Agent.agentMcpEndpointLabel")}
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
-                          {agentMcpUrl}
+                  <Accordion
+                    type="multiple"
+                    defaultValue={["agent-mcp", "continue-openai"]}
+                    className="space-y-4"
+                  >
+                    <AccordionItem
+                      value="agent-mcp"
+                      className="rounded-xl border px-4 last:border-b"
+                    >
+                      <AccordionTrigger className="py-4 hover:no-underline">
+                        <div className="flex min-w-0 items-start gap-3 text-left">
+                          <ServerIcon className="mt-0.5 size-4 text-primary" />
+                          <div className="min-w-0 space-y-1">
+                            <p className="text-sm font-medium">
+                              {t("Agent.agentMcpTitle")}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {t("Agent.agentMcpDescription")}
+                            </p>
+                          </div>
                         </div>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="size-9 shrink-0"
-                          onClick={() => copyToClipboard(agentMcpUrl)}
-                        >
-                          <CopyIcon className="size-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label className="text-sm">
-                        {t("Agent.agentMcpConfigLabel")}
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentMcpAuthHint")}
-                      </p>
-                      <div className="relative">
-                        <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
-                          {agentMcpConfig}
-                        </pre>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="size-7 absolute top-2 right-2"
-                          onClick={() => copyToClipboard(agentMcpConfig)}
-                        >
-                          <CopyIcon className="size-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="border rounded-xl p-4 flex flex-col gap-4">
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium">
-                        {t("Agent.agentContinueTitle")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentContinueDescription")}
-                      </p>
-                    </div>
-
-                    <div className="flex items-start justify-between gap-4 rounded-lg border bg-secondary/30 p-3">
-                      <div className="space-y-1">
-                        <p className="text-xs font-medium">
-                          {t("Agent.agentContinueCodingModeLabel")}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {t("Agent.agentContinueCodingModeDescription")}
-                        </p>
-                      </div>
-                      <Switch
-                        checked={agentContinueCodingMode}
-                        onCheckedChange={handleToggleAgentContinueCodingMode}
-                        disabled={isAgentMcpBusy}
-                      />
-                    </div>
-
-                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentContinueCodingModeSummaryTitle")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentContinueCodingModeSummaryDescription")}
-                      </p>
-                    </div>
-
-                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentContinueConstraintTitle")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentContinueConstraintDescription")}
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentContinueAutocompleteModelLabel")}
-                      </p>
-                      <Select
-                        value={agentAutocompleteModelValue}
-                        onValueChange={handleChangeAgentAutocompleteModel}
-                        disabled={isAgentMcpBusy || isChatModelsLoading}
-                      >
-                        <SelectTrigger className="w-full h-8 text-xs">
-                          <SelectValue
-                            placeholder={t(
-                              "Agent.agentContinueAutocompleteModelPlaceholder",
-                            )}
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value={MCP_AUTOCOMPLETE_MODEL_NONE_VALUE}>
-                            {t("Agent.agentContinueAutocompleteModelNone")}
-                          </SelectItem>
-                          {autocompleteModelProviders.map((provider) => (
-                            <SelectGroup key={provider.provider}>
-                              <SelectLabel>{provider.provider}</SelectLabel>
-                              {provider.models.map((model) => (
-                                <SelectItem
-                                  key={`${provider.provider}:${model.name}`}
-                                  value={makeMcpModelValue({
-                                    provider: provider.provider,
-                                    model: model.name,
-                                  })}
-                                >
-                                  {model.name}
-                                </SelectItem>
-                              ))}
-                            </SelectGroup>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">
-                        {isChatModelsLoading
-                          ? t("Agent.agentMcpModelLoading")
-                          : !isAgentAutocompleteModelAvailable
-                            ? t(
-                                "Agent.agentContinueAutocompleteModelUnavailable",
-                              )
-                            : agentAutocompleteModel
+                      </AccordionTrigger>
+                      <AccordionContent className="space-y-4 pb-4">
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentMcpPresentationModeLabel")}
+                          </p>
+                          <Select
+                            value={agentMcpPresentationMode}
+                            onValueChange={handleChangeAgentMcpPresentationMode}
+                            disabled={isAgentMcpBusy}
+                          >
+                            <SelectTrigger className="w-full h-8 text-xs">
+                              <SelectValue
+                                placeholder={t(
+                                  "Agent.agentMcpPresentationModePlaceholder",
+                                )}
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem
+                                value={MCP_PRESENTATION_COMPATIBILITY}
+                              >
+                                {t(
+                                  "Agent.agentMcpPresentationModeCompatibility",
+                                )}
+                              </SelectItem>
+                              <SelectItem
+                                value={MCP_PRESENTATION_COPILOT_NATIVE}
+                              >
+                                {t(
+                                  "Agent.agentMcpPresentationModeCopilotNative",
+                                )}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            {agentMcpPresentationMode ===
+                            MCP_PRESENTATION_COPILOT_NATIVE
                               ? t(
-                                  "Agent.agentContinueAutocompleteModelDescription",
+                                  "Agent.agentMcpPresentationModeNativeDescription",
                                 )
                               : t(
-                                  "Agent.agentContinueAutocompleteModelSelectFirst",
+                                  "Agent.agentMcpPresentationModeCompatibilityDescription",
                                 )}
-                      </p>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label className="text-sm">
-                        {t("Agent.agentContinueApiBaseLabel")}
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
-                          {agentContinueApiBase}
+                          </p>
                         </div>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="size-9 shrink-0"
-                          onClick={() => copyToClipboard(agentContinueApiBase)}
-                        >
-                          <CopyIcon className="size-3.5" />
-                        </Button>
-                      </div>
-                    </div>
 
-                    <div className="space-y-2">
-                      <Label className="text-sm">
-                        {t("Agent.agentContinueModelIdLabel")}
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
-                          {agentContinueModelId}
+                        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentMcpToolInventoryLabel")}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {agentMcpVisibleToolsDescription}
+                          </p>
                         </div>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="size-9 shrink-0"
-                          onClick={() => copyToClipboard(agentContinueModelId)}
-                        >
-                          <CopyIcon className="size-3.5" />
-                        </Button>
-                      </div>
-                    </div>
 
-                    <div className="space-y-2">
-                      <Label className="text-sm">
-                        {t("Agent.agentContinueAutocompleteModelIdLabel")}
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
-                          {agentContinueAutocompleteModelId}
+                        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentMcpVisibilityLimitTitle")}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {t("Agent.agentMcpVisibilityLimitDescription")}
+                          </p>
                         </div>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="size-9 shrink-0"
-                          onClick={() =>
-                            copyToClipboard(agentContinueAutocompleteModelId)
-                          }
-                        >
-                          <CopyIcon className="size-3.5" />
-                        </Button>
-                      </div>
-                    </div>
 
-                    <div className="space-y-2">
-                      <Label className="text-sm">
-                        {t("Agent.agentContinueConfigLabel")}
-                      </Label>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentContinueConfigHint")}
-                      </p>
-                      <div className="relative">
-                        <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
-                          {agentContinueConfig}
-                        </pre>
-                        <Button
-                          size="icon"
-                          variant="outline"
-                          className="size-7 absolute top-2 right-2"
-                          onClick={() => copyToClipboard(agentContinueConfig)}
-                        >
-                          <CopyIcon className="size-3" />
-                        </Button>
-                      </div>
-                    </div>
+                        <div className="space-y-2">
+                          <Label className="text-sm">
+                            {t("Agent.agentMcpEndpointLabel")}
+                          </Label>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                              {agentMcpUrl}
+                            </div>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="size-9 shrink-0"
+                              onClick={() => copyToClipboard(agentMcpUrl)}
+                            >
+                              <CopyIcon className="size-3.5" />
+                            </Button>
+                          </div>
+                        </div>
 
-                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentContinueContextTitle")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentContinueContextDescription")}
-                      </p>
-                    </div>
+                        <div className="space-y-2">
+                          <Label className="text-sm">
+                            {t("Agent.agentMcpConfigLabel")}
+                          </Label>
+                          <p className="text-xs text-muted-foreground">
+                            {t("Agent.agentMcpAuthHint")}
+                          </p>
+                          <div className="relative">
+                            <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
+                              {agentMcpConfig}
+                            </pre>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="size-7 absolute top-2 right-2"
+                              onClick={() => copyToClipboard(agentMcpConfig)}
+                            >
+                              <CopyIcon className="size-3" />
+                            </Button>
+                          </div>
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
 
-                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
-                      <p className="text-xs font-medium">
-                        {t("Agent.agentContinueDocsTitle")}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {t("Agent.agentContinueDocsDescription")}
-                      </p>
-                    </div>
-                  </div>
+                    <AccordionItem
+                      value="continue-openai"
+                      className="rounded-xl border px-4 last:border-b"
+                    >
+                      <AccordionTrigger className="py-4 hover:no-underline">
+                        <div className="flex min-w-0 items-start gap-3 text-left">
+                          <WandSparklesIcon className="mt-0.5 size-4 text-primary" />
+                          <div className="min-w-0 space-y-1">
+                            <p className="text-sm font-medium">
+                              {t("Agent.agentContinueTitle")}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {t("Agent.agentContinueDescription")}
+                            </p>
+                          </div>
+                        </div>
+                      </AccordionTrigger>
+                      <AccordionContent className="space-y-4 pb-4">
+                        <div className="flex items-start justify-between gap-4 rounded-lg border bg-secondary/30 p-3">
+                          <div className="space-y-1">
+                            <p className="text-xs font-medium">
+                              {t("Agent.agentContinueCodingModeLabel")}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {t("Agent.agentContinueCodingModeDescription")}
+                            </p>
+                          </div>
+                          <Switch
+                            checked={agentContinueCodingMode}
+                            onCheckedChange={
+                              handleToggleAgentContinueCodingMode
+                            }
+                            disabled={isAgentMcpBusy}
+                          />
+                        </div>
+
+                        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentContinueCodingModeSummaryTitle")}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {t(
+                              "Agent.agentContinueCodingModeSummaryDescription",
+                            )}
+                          </p>
+                        </div>
+
+                        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentContinueConstraintTitle")}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {t("Agent.agentContinueConstraintDescription")}
+                          </p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentContinueAutocompleteModelLabel")}
+                          </p>
+                          <Select
+                            value={agentAutocompleteModelValue}
+                            onValueChange={handleChangeAgentAutocompleteModel}
+                            disabled={isAgentMcpBusy || isChatModelsLoading}
+                          >
+                            <SelectTrigger className="w-full h-8 text-xs">
+                              <SelectValue
+                                placeholder={t(
+                                  "Agent.agentContinueAutocompleteModelPlaceholder",
+                                )}
+                              />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem
+                                value={MCP_AUTOCOMPLETE_MODEL_NONE_VALUE}
+                              >
+                                {t("Agent.agentContinueAutocompleteModelNone")}
+                              </SelectItem>
+                              {autocompleteModelProviders.map((provider) => (
+                                <SelectGroup key={provider.provider}>
+                                  <SelectLabel>{provider.provider}</SelectLabel>
+                                  {provider.models.map((model) => (
+                                    <SelectItem
+                                      key={`${provider.provider}:${model.name}`}
+                                      value={makeMcpModelValue({
+                                        provider: provider.provider,
+                                        model: model.name,
+                                      })}
+                                    >
+                                      {model.name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            {isChatModelsLoading
+                              ? t("Agent.agentMcpModelLoading")
+                              : !isAgentAutocompleteModelAvailable
+                                ? t(
+                                    "Agent.agentContinueAutocompleteModelUnavailable",
+                                  )
+                                : agentAutocompleteModel
+                                  ? t(
+                                      "Agent.agentContinueAutocompleteModelDescription",
+                                    )
+                                  : t(
+                                      "Agent.agentContinueAutocompleteModelSelectFirst",
+                                    )}
+                          </p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-sm">
+                            {t("Agent.agentContinueApiBaseLabel")}
+                          </Label>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                              {agentContinueApiBase}
+                            </div>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="size-9 shrink-0"
+                              onClick={() =>
+                                copyToClipboard(agentContinueApiBase)
+                              }
+                            >
+                              <CopyIcon className="size-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-sm">
+                            {t("Agent.agentContinueModelIdLabel")}
+                          </Label>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                              {agentContinueModelId}
+                            </div>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="size-9 shrink-0"
+                              onClick={() =>
+                                copyToClipboard(agentContinueModelId)
+                              }
+                            >
+                              <CopyIcon className="size-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-sm">
+                            {t("Agent.agentContinueAutocompleteModelIdLabel")}
+                          </Label>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                              {agentContinueAutocompleteModelId}
+                            </div>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="size-9 shrink-0"
+                              onClick={() =>
+                                copyToClipboard(
+                                  agentContinueAutocompleteModelId,
+                                )
+                              }
+                            >
+                              <CopyIcon className="size-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-sm">
+                            {t("Agent.agentContinueConfigLabel")}
+                          </Label>
+                          <p className="text-xs text-muted-foreground">
+                            {t("Agent.agentContinueConfigHint")}
+                          </p>
+                          <div className="relative">
+                            <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
+                              {agentContinueConfig}
+                            </pre>
+                            <Button
+                              size="icon"
+                              variant="outline"
+                              className="size-7 absolute top-2 right-2"
+                              onClick={() =>
+                                copyToClipboard(agentContinueConfig)
+                              }
+                            >
+                              <CopyIcon className="size-3" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentContinueContextTitle")}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {t("Agent.agentContinueContextDescription")}
+                          </p>
+                        </div>
+
+                        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                          <p className="text-xs font-medium">
+                            {t("Agent.agentContinueDocsTitle")}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {t("Agent.agentContinueDocsDescription")}
+                          </p>
+                        </div>
+                      </AccordionContent>
+                    </AccordionItem>
+                  </Accordion>
                 </div>
               )}
             </TabsContent>

@@ -25,6 +25,7 @@ import {
 import {
   buildWaveAgentSystemPrompt,
   createNoopDataStream,
+  loadWaveAgentContinueCapabilities,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
 import { getDbModel } from "lib/ai/provider-factory";
@@ -37,6 +38,7 @@ import {
   subAgentRepository,
   workflowRepository,
 } from "lib/db/repository";
+import logger from "logger";
 import { z } from "zod";
 
 export const MCP_PRESENTATION_MODE_COMPATIBILITY = "compatibility";
@@ -529,6 +531,11 @@ export async function streamWaveManagedAgentRun(options: {
           role: message.role,
           content: message.content,
         })),
+        capabilityState: getContinueCapabilityState({
+          knowledgeGroups: toolset.knowledgeGroups,
+          subAgents: toolset.subAgents ?? [],
+          attachedSkills: toolset.attachedSkills,
+        }),
       }),
       getUnifiedDiffInstruction(options.responseMode ?? "text"),
     ],
@@ -1014,6 +1021,43 @@ export function createContinueManagedToolSet(
   );
 }
 
+function getContinueCapabilityState(options: {
+  knowledgeGroups: Array<{ name: string }>;
+  subAgents: Array<{ name: string }>;
+  attachedSkills: Array<{ title: string }>;
+}) {
+  return {
+    knowledgeGroups: options.knowledgeGroups.map((group) => group.name),
+    subAgents: options.subAgents.map((subAgent) => subAgent.name),
+    skills: options.attachedSkills.map((skill) => skill.title),
+  };
+}
+
+function mergeContinueManagedTools(options: {
+  continueTools: Record<string, Tool>;
+  internalTools: Record<string, Tool>;
+}) {
+  const collisions = Object.keys(options.continueTools).filter((toolName) =>
+    Object.prototype.hasOwnProperty.call(options.internalTools, toolName),
+  );
+
+  if (collisions.length > 0) {
+    logger.warn(
+      `External Access: Continue client tools override internal Wave capability tools for: ${collisions.join(
+        ", ",
+      )}`,
+    );
+  }
+
+  return {
+    tools: {
+      ...options.internalTools,
+      ...options.continueTools,
+    },
+    collisions,
+  };
+}
+
 export function mapOpenAiToolChoice(
   toolChoice: z.infer<typeof openAiChatCompletionsRequestSchema>["tool_choice"],
 ): ToolChoice<Record<string, Tool>> | undefined {
@@ -1035,24 +1079,49 @@ export async function streamContinueManagedTools(options: {
     options.agent.id,
     options.agent,
   );
-  const { model } = await resolveExternalAgentModelRuntime(resolvedAgent);
+  const { chatModel, model } =
+    await resolveExternalAgentModelRuntime(resolvedAgent);
+  const dataStream = createNoopDataStream();
   const externalTools = createContinueManagedToolSet(
     options.request.tools ?? [],
   );
+  const internalCapabilities = await loadWaveAgentContinueCapabilities({
+    agent: resolvedAgent,
+    userId: resolvedAgent.userId,
+    dataStream,
+    abortSignal: options.abortSignal,
+    chatModel,
+    source: "mcp",
+  });
+  const mergedTools = mergeContinueManagedTools({
+    continueTools: externalTools,
+    internalTools: {
+      ...internalCapabilities.knowledgeTools,
+      ...internalCapabilities.subagentTools,
+      ...internalCapabilities.skillTools,
+    },
+  });
 
   return streamText({
     model,
     system: buildWaveAgentSystemPrompt({
       agent: resolvedAgent,
+      subAgents: internalCapabilities.subAgents,
+      attachedSkills: internalCapabilities.attachedSkills,
       extraPrompts: buildContinueRoutePrompt({
         codingMode: resolvedAgent.mcpCodingMode ?? false,
         agentName: resolvedAgent.name,
         messages: options.request.messages,
         clientOwnsWorkspaceTools: true,
+        capabilityState: getContinueCapabilityState({
+          knowledgeGroups: internalCapabilities.knowledgeGroups,
+          subAgents: internalCapabilities.subAgents ?? [],
+          attachedSkills: internalCapabilities.attachedSkills,
+        }),
       }),
     }),
     messages: convertOpenAiMessagesToModelMessages(options.request.messages),
-    tools: externalTools,
+    tools: mergedTools.tools,
     toolChoice: mapOpenAiToolChoice(options.request.tool_choice),
     abortSignal: options.abortSignal,
     maxRetries: 2,

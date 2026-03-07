@@ -42,4 +42,23 @@ describe("continue prompt profiles", () => {
     expect(prompts.join("\n")).toContain("Continue owns workspace reads");
     expect(buildContinueAgentSystemMessage("Coder")).toContain("Wave agent");
   });
+
+  it("describes preserved Wave capabilities for Continue tool mode", () => {
+    const prompts = buildContinueRoutePrompt({
+      codingMode: false,
+      agentName: "Coder",
+      clientOwnsWorkspaceTools: true,
+      messages: [{ role: "user", content: "Review the repository." }],
+      capabilityState: {
+        knowledgeGroups: ["Architecture Docs"],
+        subAgents: ["Planner"],
+        skills: ["Review Workflow"],
+      },
+    });
+
+    const promptText = prompts.join("\n");
+    expect(promptText).toContain("Attached Wave knowledge tools");
+    expect(promptText).toContain("Attached Wave subagents");
+    expect(promptText).toContain("load_skill");
+  });
 });

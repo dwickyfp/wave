@@ -5,11 +5,19 @@ import { useTranslations } from "next-intl";
 import { format } from "date-fns";
 import type {
   AgentAutocompleteRequestSummary,
+  AgentDashboardSessionSource,
   AgentExternalChatSessionSummary,
   AgentInAppSessionSummary,
   AgentUsageTimelinePoint,
 } from "app-types/agent-dashboard";
 import { useAgentDashboard } from "@/hooks/queries/use-agent-dashboard";
+import { AgentDashboardSessionDialog } from "./agent-dashboard-session-dialog";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "ui/accordion";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "ui/card";
@@ -91,7 +99,7 @@ function UsageChart(props: {
             />
             <Bar
               dataKey="totalTokens"
-              fill="hsl(var(--primary))"
+              fill="var(--chart-1)"
               radius={[4, 4, 0, 0]}
             />
           </BarChart>
@@ -110,18 +118,22 @@ function EmptyState({ label }: { label: string }) {
 function InAppSessionList({
   items,
   emptyLabel,
+  onSelect,
 }: {
   items: AgentInAppSessionSummary[];
   emptyLabel: string;
+  onSelect: (threadId: string) => void;
 }) {
   if (!items.length) return <EmptyState label={emptyLabel} />;
 
   return (
     <div className="flex flex-col gap-1.5">
       {items.map((item) => (
-        <div
+        <button
           key={item.threadId}
-          className="flex items-center gap-3 rounded-lg border bg-secondary/25 px-3 py-2"
+          type="button"
+          onClick={() => onSelect(item.threadId)}
+          className="flex w-full items-center gap-3 rounded-lg border bg-secondary/25 px-3 py-2 text-left transition-colors hover:bg-secondary/45"
         >
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">{item.title}</p>
@@ -133,7 +145,7 @@ function InAppSessionList({
           <time className="shrink-0 text-xs text-muted-foreground">
             {format(new Date(item.lastMessageAt), "MMM d HH:mm")}
           </time>
-        </div>
+        </button>
       ))}
     </div>
   );
@@ -142,18 +154,22 @@ function InAppSessionList({
 function ExternalSessionList({
   items,
   emptyLabel,
+  onSelect,
 }: {
   items: AgentExternalChatSessionSummary[];
   emptyLabel: string;
+  onSelect: (sessionId: string) => void;
 }) {
   if (!items.length) return <EmptyState label={emptyLabel} />;
 
   return (
     <div className="flex flex-col gap-1.5">
       {items.map((item) => (
-        <div
+        <button
           key={item.sessionId}
-          className="flex items-center gap-3 rounded-lg border bg-secondary/25 px-3 py-2"
+          type="button"
+          onClick={() => onSelect(item.sessionId)}
+          className="flex w-full items-center gap-3 rounded-lg border bg-secondary/25 px-3 py-2 text-left transition-colors hover:bg-secondary/45"
         >
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium">
@@ -172,7 +188,7 @@ function ExternalSessionList({
               {format(new Date(item.updatedAt), "MMM d HH:mm")}
             </time>
           </div>
-        </div>
+        </button>
       ))}
     </div>
   );
@@ -219,6 +235,10 @@ function AutocompleteRequestList({
 export function AgentDashboardTab({ agentId }: { agentId: string }) {
   const t = useTranslations();
   const [days, setDays] = useState(30);
+  const [selectedSession, setSelectedSession] = useState<{
+    id: string;
+    source: AgentDashboardSessionSource;
+  } | null>(null);
   const { data, isLoading } = useAgentDashboard(agentId, days);
 
   const dayOptions = useMemo(
@@ -269,135 +289,199 @@ export function AgentDashboardTab({ agentId }: { agentId: string }) {
         </div>
       </div>
 
-      <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <MessageSquareIcon className="size-4 text-primary" />
-          <p className="text-sm font-medium">{t("Agent.dashboardWaveChat")}</p>
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatCard
-            title={t("Agent.dashboardTotalSessions")}
-            value={data.inApp.totalSessions}
-            icon={TicketIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardTotalTurns")}
-            value={data.inApp.totalAssistantMessages}
-            icon={MessageSquareIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardTotalTokens")}
-            value={formatTokens(data.inApp.totalTokens)}
-            icon={BotIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardPromptTokens")}
-            value={formatTokens(data.inApp.promptTokens)}
-            icon={BotIcon}
-          />
-        </div>
-        <UsageChart
-          data={data.inApp.daily}
-          label={t("Agent.dashboardTokenTrend")}
-        />
-        <div className="space-y-2">
-          <p className="text-sm font-medium">
-            {t("Agent.dashboardRecentSessions")}
-          </p>
-          <InAppSessionList
-            items={data.inApp.recentSessions}
-            emptyLabel={t("Agent.dashboardEmptyInApp")}
-          />
-        </div>
-      </div>
+      <Accordion
+        type="multiple"
+        defaultValue={["wave-in-app", "continue-openai", "autocomplete"]}
+        className="space-y-4"
+      >
+        <AccordionItem value="wave-in-app" className="rounded-lg border px-4">
+          <AccordionTrigger className="py-3 hover:no-underline">
+            <div className="flex min-w-0 items-center gap-2 text-left">
+              <MessageSquareIcon className="size-4 text-primary" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium">
+                  {t("Agent.dashboardWaveChat")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {data.inApp.totalSessions.toLocaleString()}{" "}
+                  {t("Agent.dashboardTotalSessions").toLowerCase()} ·{" "}
+                  {formatTokens(data.inApp.totalTokens)}{" "}
+                  {t("Agent.dashboardTotalTokens").toLowerCase()}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="space-y-4 pb-0">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <StatCard
+                title={t("Agent.dashboardTotalSessions")}
+                value={data.inApp.totalSessions}
+                icon={TicketIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardTotalTurns")}
+                value={data.inApp.totalAssistantMessages}
+                icon={MessageSquareIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardTotalTokens")}
+                value={formatTokens(data.inApp.totalTokens)}
+                icon={BotIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardPromptTokens")}
+                value={formatTokens(data.inApp.promptTokens)}
+                icon={BotIcon}
+              />
+            </div>
+            <UsageChart
+              data={data.inApp.daily}
+              label={t("Agent.dashboardTokenTrend")}
+            />
+            <div className="space-y-2">
+              <p className="text-sm font-medium">
+                {t("Agent.dashboardRecentSessions")}
+              </p>
+              <InAppSessionList
+                items={data.inApp.recentSessions}
+                emptyLabel={t("Agent.dashboardEmptyInApp")}
+                onSelect={(threadId) =>
+                  setSelectedSession({ id: threadId, source: "in_app" })
+                }
+              />
+            </div>
+          </AccordionContent>
+        </AccordionItem>
 
-      <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <BotIcon className="size-4 text-primary" />
-          <p className="text-sm font-medium">
-            {t("Agent.dashboardContinueChat")}
-          </p>
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatCard
-            title={t("Agent.dashboardTotalSessions")}
-            value={data.externalChat.totalSessions}
-            icon={TicketIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardTotalTurns")}
-            value={data.externalChat.totalTurns}
-            icon={MessageSquareIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardTotalTokens")}
-            value={formatTokens(data.externalChat.totalTokens)}
-            icon={BotIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardPromptTokens")}
-            value={formatTokens(data.externalChat.promptTokens)}
-            icon={BotIcon}
-          />
-        </div>
-        <UsageChart
-          data={data.externalChat.daily}
-          label={t("Agent.dashboardTokenTrend")}
-        />
-        <div className="space-y-2">
-          <p className="text-sm font-medium">
-            {t("Agent.dashboardRecentSessions")}
-          </p>
-          <ExternalSessionList
-            items={data.externalChat.recentSessions}
-            emptyLabel={t("Agent.dashboardEmptyExternalChat")}
-          />
-        </div>
-      </div>
+        <AccordionItem
+          value="continue-openai"
+          className="rounded-lg border px-4"
+        >
+          <AccordionTrigger className="py-3 hover:no-underline">
+            <div className="flex min-w-0 items-center gap-2 text-left">
+              <BotIcon className="size-4 text-primary" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium">
+                  {t("Agent.dashboardContinueChat")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {data.externalChat.totalSessions.toLocaleString()}{" "}
+                  {t("Agent.dashboardTotalSessions").toLowerCase()} ·{" "}
+                  {formatTokens(data.externalChat.totalTokens)}{" "}
+                  {t("Agent.dashboardTotalTokens").toLowerCase()}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="space-y-4 pb-0">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <StatCard
+                title={t("Agent.dashboardTotalSessions")}
+                value={data.externalChat.totalSessions}
+                icon={TicketIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardTotalTurns")}
+                value={data.externalChat.totalTurns}
+                icon={MessageSquareIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardTotalTokens")}
+                value={formatTokens(data.externalChat.totalTokens)}
+                icon={BotIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardPromptTokens")}
+                value={formatTokens(data.externalChat.promptTokens)}
+                icon={BotIcon}
+              />
+            </div>
+            <UsageChart
+              data={data.externalChat.daily}
+              label={t("Agent.dashboardTokenTrend")}
+            />
+            <div className="space-y-2">
+              <p className="text-sm font-medium">
+                {t("Agent.dashboardRecentSessions")}
+              </p>
+              <ExternalSessionList
+                items={data.externalChat.recentSessions}
+                emptyLabel={t("Agent.dashboardEmptyExternalChat")}
+                onSelect={(sessionId) =>
+                  setSelectedSession({ id: sessionId, source: "external_chat" })
+                }
+              />
+            </div>
+          </AccordionContent>
+        </AccordionItem>
 
-      <div className="space-y-4">
-        <div className="flex items-center gap-2">
-          <SparklesIcon className="size-4 text-primary" />
-          <p className="text-sm font-medium">
-            {t("Agent.dashboardAutocomplete")}
-          </p>
-        </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <StatCard
-            title={t("Agent.dashboardTotalRequests")}
-            value={data.autocomplete.totalRequests}
-            icon={SparklesIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardTotalTokens")}
-            value={formatTokens(data.autocomplete.totalTokens)}
-            icon={BotIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardPromptTokens")}
-            value={formatTokens(data.autocomplete.promptTokens)}
-            icon={BotIcon}
-          />
-          <StatCard
-            title={t("Agent.dashboardCompletionTokens")}
-            value={formatTokens(data.autocomplete.completionTokens)}
-            icon={BotIcon}
-          />
-        </div>
-        <UsageChart
-          data={data.autocomplete.daily}
-          label={t("Agent.dashboardTokenTrend")}
-        />
-        <div className="space-y-2">
-          <p className="text-sm font-medium">
-            {t("Agent.dashboardRecentRequests")}
-          </p>
-          <AutocompleteRequestList
-            items={data.autocomplete.recentRequests}
-            emptyLabel={t("Agent.dashboardEmptyAutocomplete")}
-          />
-        </div>
-      </div>
+        <AccordionItem value="autocomplete" className="rounded-lg border px-4">
+          <AccordionTrigger className="py-3 hover:no-underline">
+            <div className="flex min-w-0 items-center gap-2 text-left">
+              <SparklesIcon className="size-4 text-primary" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium">
+                  {t("Agent.dashboardAutocomplete")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {data.autocomplete.totalRequests.toLocaleString()}{" "}
+                  {t("Agent.dashboardTotalRequests").toLowerCase()} ·{" "}
+                  {formatTokens(data.autocomplete.totalTokens)}{" "}
+                  {t("Agent.dashboardTotalTokens").toLowerCase()}
+                </p>
+              </div>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="space-y-4 pb-0">
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <StatCard
+                title={t("Agent.dashboardTotalRequests")}
+                value={data.autocomplete.totalRequests}
+                icon={SparklesIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardTotalTokens")}
+                value={formatTokens(data.autocomplete.totalTokens)}
+                icon={BotIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardPromptTokens")}
+                value={formatTokens(data.autocomplete.promptTokens)}
+                icon={BotIcon}
+              />
+              <StatCard
+                title={t("Agent.dashboardCompletionTokens")}
+                value={formatTokens(data.autocomplete.completionTokens)}
+                icon={BotIcon}
+              />
+            </div>
+            <UsageChart
+              data={data.autocomplete.daily}
+              label={t("Agent.dashboardTokenTrend")}
+            />
+            <div className="space-y-2">
+              <p className="text-sm font-medium">
+                {t("Agent.dashboardRecentRequests")}
+              </p>
+              <AutocompleteRequestList
+                items={data.autocomplete.recentRequests}
+                emptyLabel={t("Agent.dashboardEmptyAutocomplete")}
+              />
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+
+      <AgentDashboardSessionDialog
+        agentId={agentId}
+        session={selectedSession}
+        open={!!selectedSession}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedSession(null);
+          }
+        }}
+      />
     </div>
   );
 }

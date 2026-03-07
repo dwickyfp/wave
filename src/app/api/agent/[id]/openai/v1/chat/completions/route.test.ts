@@ -128,6 +128,7 @@ const {
 const { loadMcpTools, loadAppDefaultTools, loadWorkFlowTools } = await import(
   "@/app/api/chat/shared.chat"
 );
+const { loadSubAgentTools } = await import("lib/ai/agent/subagent-loader");
 
 function withParams(id: string) {
   return {
@@ -276,6 +277,16 @@ describe("agent continue/openai route", () => {
     expect(
       vi.mocked(agentAnalyticsRepository.recordContinueChatUsage),
     ).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(agentAnalyticsRepository.recordContinueChatUsage).mock
+        .calls[0]?.[0],
+    ).toMatchObject({
+      messages: [{ role: "user", content: "hello" }],
+      responseMessage: {
+        role: "assistant",
+        content: "done",
+      },
+    });
   });
 
   it("returns tool calls and skips wave-managed tool loading when OpenAI tools are supplied", async () => {
@@ -428,6 +439,302 @@ describe("agent continue/openai route", () => {
         },
       ],
     });
+  });
+
+  it("preserves knowledge, subagent, and skill tools for Continue-managed tool conversations", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      mcpCodingMode: false,
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [],
+      },
+      subAgentsEnabled: true,
+    } as any);
+    vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([
+      { id: "kg1", name: "Architecture Docs" },
+    ] as any);
+    vi.mocked(skillRepository.getSkillsByAgentId).mockResolvedValue([
+      {
+        id: "skill-1",
+        title: "Review Workflow",
+        description: "Review changes",
+        instructions: "Do the review",
+      },
+    ] as any);
+    vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue([
+      {
+        id: "sa1",
+        name: "Planner",
+        enabled: true,
+        tools: [],
+      },
+    ] as any);
+    vi.mocked(loadSubAgentTools).mockResolvedValue({
+      subagent_planner_sa1: {
+        description: "Planner subagent",
+      },
+    } as any);
+
+    const res = (await POST(
+      makeNextRequest(
+        "http://localhost/api/agent/agent-1/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            model: "codex-agent_one",
+            messages: [{ role: "user", content: "inspect the file" }],
+            tools: [
+              {
+                type: "function",
+                function: {
+                  name: "read_file",
+                  description: "Read a workspace file",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      path: { type: "string" },
+                    },
+                    required: ["path"],
+                  },
+                },
+              },
+            ],
+          }),
+        },
+      ) as any,
+      withParams("agent-1"),
+    )) as Response;
+
+    expect(res.status).toBe(200);
+    const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0] as any;
+    expect(callArgs.tools.read_file.description).toBe("Read a workspace file");
+    expect(callArgs.tools.get_docs_kg1).toBeDefined();
+    expect(callArgs.tools.subagent_planner_sa1).toBeDefined();
+    expect(callArgs.tools.load_skill).toBeDefined();
+    expect(callArgs.system).toContain("Attached Wave knowledge tools");
+    expect(callArgs.system).not.toContain(
+      "Focus on production-grade software work",
+    );
+  });
+
+  it("keeps preserved capabilities when coding mode is enabled", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      mcpCodingMode: true,
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [],
+      },
+      subAgentsEnabled: true,
+    } as any);
+    vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([
+      { id: "kg1", name: "Architecture Docs" },
+    ] as any);
+    vi.mocked(skillRepository.getSkillsByAgentId).mockResolvedValue([
+      {
+        id: "skill-1",
+        title: "Review Workflow",
+        description: "Review changes",
+        instructions: "Do the review",
+      },
+    ] as any);
+    vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue([
+      {
+        id: "sa1",
+        name: "Planner",
+        enabled: true,
+        tools: [],
+      },
+    ] as any);
+    vi.mocked(loadSubAgentTools).mockResolvedValue({
+      subagent_planner_sa1: {
+        description: "Planner subagent",
+      },
+    } as any);
+
+    const res = (await POST(
+      makeNextRequest(
+        "http://localhost/api/agent/agent-1/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            model: "codex-agent_one",
+            messages: [{ role: "user", content: "fix the failing tests" }],
+            tools: [
+              {
+                type: "function",
+                function: {
+                  name: "read_file",
+                  description: "Read a workspace file",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      path: { type: "string" },
+                    },
+                    required: ["path"],
+                  },
+                },
+              },
+            ],
+          }),
+        },
+      ) as any,
+      withParams("agent-1"),
+    )) as Response;
+
+    expect(res.status).toBe(200);
+    const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0] as any;
+    expect(callArgs.tools.read_file).toBeDefined();
+    expect(callArgs.tools.get_docs_kg1).toBeDefined();
+    expect(callArgs.tools.subagent_planner_sa1).toBeDefined();
+    expect(callArgs.tools.load_skill).toBeDefined();
+    expect(callArgs.system).toContain(
+      "Focus on production-grade software work",
+    );
+  });
+
+  it("prefers Continue client tools when names collide with internal capability tools", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [],
+      },
+      subAgentsEnabled: false,
+    } as any);
+    vi.mocked(skillRepository.getSkillsByAgentId).mockResolvedValue([
+      {
+        id: "skill-1",
+        title: "Review Workflow",
+        description: "Review changes",
+        instructions: "Do the review",
+      },
+    ] as any);
+
+    const res = (await POST(
+      makeNextRequest(
+        "http://localhost/api/agent/agent-1/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            model: "codex-agent_one",
+            messages: [{ role: "user", content: "inspect the file" }],
+            tools: [
+              {
+                type: "function",
+                function: {
+                  name: "load_skill",
+                  description: "Client skill loader",
+                  parameters: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                    },
+                  },
+                },
+              },
+            ],
+          }),
+        },
+      ) as any,
+      withParams("agent-1"),
+    )) as Response;
+
+    expect(res.status).toBe(200);
+    const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0] as any;
+    expect(callArgs.tools.load_skill.description).toBe("Client skill loader");
+  });
+
+  it("keeps the full Wave-managed toolset on non-Continue-managed runs", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [],
+      },
+      subAgentsEnabled: true,
+    } as any);
+    vi.mocked(loadMcpTools).mockResolvedValue({
+      remote_lookup: { description: "Remote lookup" },
+    } as any);
+    vi.mocked(loadWorkFlowTools).mockResolvedValue({
+      run_workflow: { description: "Run workflow" },
+    } as any);
+    vi.mocked(loadAppDefaultTools).mockResolvedValue({
+      execute_js: { description: "Execute JS" },
+    } as any);
+    vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([
+      { id: "kg1", name: "Architecture Docs" },
+    ] as any);
+    vi.mocked(skillRepository.getSkillsByAgentId).mockResolvedValue([
+      {
+        id: "skill-1",
+        title: "Review Workflow",
+        description: "Review changes",
+        instructions: "Do the review",
+      },
+    ] as any);
+    vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue([
+      {
+        id: "sa1",
+        name: "Planner",
+        enabled: true,
+        tools: [],
+      },
+    ] as any);
+    vi.mocked(loadSubAgentTools).mockResolvedValue({
+      subagent_planner_sa1: {
+        description: "Planner subagent",
+      },
+    } as any);
+
+    const res = (await POST(
+      makeNextRequest(
+        "http://localhost/api/agent/agent-1/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            model: "codex-agent_one",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        },
+      ) as any,
+      withParams("agent-1"),
+    )) as Response;
+
+    expect(res.status).toBe(200);
+    const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0] as any;
+    expect(callArgs.tools.remote_lookup).toBeDefined();
+    expect(callArgs.tools.run_workflow).toBeDefined();
+    expect(callArgs.tools.execute_js).toBeDefined();
+    expect(callArgs.tools.get_docs_kg1).toBeDefined();
+    expect(callArgs.tools.subagent_planner_sa1).toBeDefined();
+    expect(callArgs.tools.load_skill).toBeDefined();
   });
 
   it("returns SSE chunks and [DONE] when stream=true", async () => {

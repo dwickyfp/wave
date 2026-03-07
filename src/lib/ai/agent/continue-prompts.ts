@@ -23,6 +23,12 @@ type ContinueMessageLike = {
   content?: unknown;
 };
 
+type ContinueCapabilityState = {
+  knowledgeGroups?: string[];
+  subAgents?: string[];
+  skills?: string[];
+};
+
 function normalizeWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -180,11 +186,50 @@ export function buildContinueAutocompleteSystemMessage(agentName?: string) {
   ].join("\n\n");
 }
 
+function formatCapabilityList(values: string[]) {
+  return values.map((value) => `"${value}"`).join(", ");
+}
+
+function buildCapabilityAvailabilityRules(
+  capabilityState?: ContinueCapabilityState,
+) {
+  if (!capabilityState) return [];
+
+  const prompts: string[] = [];
+
+  if (capabilityState.knowledgeGroups?.length) {
+    prompts.push(
+      `Attached Wave knowledge tools are available for ${formatCapabilityList(
+        capabilityState.knowledgeGroups,
+      )}. Use them for repository/domain lookup and documentation retrieval.`,
+    );
+  }
+
+  if (capabilityState.subAgents?.length) {
+    prompts.push(
+      `Attached Wave subagents are available: ${formatCapabilityList(
+        capabilityState.subAgents,
+      )}. Delegate specialized work to them when useful.`,
+    );
+  }
+
+  if (capabilityState.skills?.length) {
+    prompts.push(
+      `Attached Wave skills are available through the load_skill tool: ${formatCapabilityList(
+        capabilityState.skills,
+      )}. Load the relevant skill before following its workflow.`,
+    );
+  }
+
+  return prompts;
+}
+
 export function buildContinueRoutePrompt(options: {
   codingMode: boolean;
   agentName?: string;
   messages: ContinueMessageLike[];
   clientOwnsWorkspaceTools?: boolean;
+  capabilityState?: ContinueCapabilityState;
 }) {
   const prompts: string[] = [];
 
@@ -198,6 +243,7 @@ export function buildContinueRoutePrompt(options: {
       );
     }
 
+    prompts.push(...buildCapabilityAvailabilityRules(options.capabilityState));
     return prompts;
   }
 
@@ -215,6 +261,7 @@ export function buildContinueRoutePrompt(options: {
     );
   }
 
+  prompts.push(...buildCapabilityAvailabilityRules(options.capabilityState));
   return prompts;
 }
 

@@ -1,8 +1,14 @@
+import type { UIMessage } from "ai";
+
 export type AgentExternalTransport = "continue_chat" | "continue_autocomplete";
 
 export type AgentExternalUsageKind = "chat_turn" | "autocomplete_request";
 
 export type AgentExternalUsageStatus = "success" | "error" | "cancelled";
+
+export type AgentDashboardSessionSource = "in_app" | "external_chat";
+
+export type AgentDashboardTranscriptMode = "full" | "preview";
 
 export type AgentUsageTimelinePoint = {
   date: string;
@@ -81,4 +87,22 @@ export type AgentDashboardStats = {
   inApp: AgentInAppUsageStats;
   externalChat: AgentExternalChatUsageStats;
   autocomplete: AgentAutocompleteUsageStats;
+};
+
+export type AgentDashboardSessionDetail = {
+  source: AgentDashboardSessionSource;
+  sessionId: string;
+  title: string;
+  summary: string | null;
+  transcriptMode: AgentDashboardTranscriptMode;
+  totalTurns: number;
+  totalTokens: number;
+  promptTokens: number;
+  completionTokens: number;
+  status: AgentExternalUsageStatus | null;
+  modelProvider: string | null;
+  modelName: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  messages: UIMessage[];
 };

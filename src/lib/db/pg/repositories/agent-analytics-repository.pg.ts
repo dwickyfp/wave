@@ -1,4 +1,5 @@
 import {
+  AgentDashboardSessionDetail,
   AgentAutocompleteRequestSummary,
   AgentAutocompleteUsageStats,
   AgentDashboardStats,
@@ -10,6 +11,11 @@ import {
 } from "app-types/agent-dashboard";
 import { z } from "zod";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
+import {
+  buildExternalChatTranscriptFromPreviews,
+  buildExternalChatTranscriptFromSnapshot,
+  type StoredDashboardOpenAiMessage,
+} from "lib/ai/agent/dashboard-session-transcript";
 import { generateUUID } from "lib/utils";
 import { createHash } from "node:crypto";
 import { pgDb as db } from "../db.pg";
@@ -138,6 +144,10 @@ export const pgAgentAnalyticsRepository = {
     agentId: string;
     userAgent?: string | null;
     messages: Array<z.infer<typeof continueChatMessageSchema>>;
+    responseMessage?:
+      | z.infer<typeof continueChatMessageSchema>
+      | null
+      | undefined;
     requestPreview?: string | null;
     responsePreview?: string | null;
     promptTokens?: number;
@@ -264,6 +274,8 @@ export const pgAgentAnalyticsRepository = {
         requestPreview:
           summarizeText(input.requestPreview, 220) ?? latestUserPreview,
         responsePreview: summarizeText(input.responsePreview, 220),
+        requestMessages: input.messages as unknown,
+        responseMessage: (input.responseMessage as unknown) ?? null,
         requestMessageCount,
         clientFingerprint,
         userAgent: input.userAgent ?? null,
@@ -309,6 +321,87 @@ export const pgAgentAnalyticsRepository = {
       userAgent: input.userAgent ?? null,
       createdAt: new Date(),
     });
+  },
+
+  async getExternalChatSessionDetail(
+    agentId: string,
+    sessionId: string,
+  ): Promise<AgentDashboardSessionDetail | null> {
+    const [session] = await db
+      .select()
+      .from(AgentExternalChatSessionTable)
+      .where(
+        and(
+          eq(AgentExternalChatSessionTable.agentId, agentId),
+          eq(AgentExternalChatSessionTable.id, sessionId),
+        ),
+      )
+      .limit(1);
+
+    if (!session) {
+      return null;
+    }
+
+    const logs = await db
+      .select({
+        id: AgentExternalUsageLogTable.id,
+        requestPreview: AgentExternalUsageLogTable.requestPreview,
+        responsePreview: AgentExternalUsageLogTable.responsePreview,
+        requestMessages: AgentExternalUsageLogTable.requestMessages,
+        responseMessage: AgentExternalUsageLogTable.responseMessage,
+        createdAt: AgentExternalUsageLogTable.createdAt,
+      })
+      .from(AgentExternalUsageLogTable)
+      .where(
+        and(
+          eq(AgentExternalUsageLogTable.agentId, agentId),
+          eq(AgentExternalUsageLogTable.sessionId, sessionId),
+          eq(AgentExternalUsageLogTable.kind, "chat_turn"),
+        ),
+      )
+      .orderBy(AgentExternalUsageLogTable.createdAt);
+
+    if (!logs.length) {
+      return null;
+    }
+
+    const latestSnapshotLog = [...logs]
+      .reverse()
+      .find((log) => Array.isArray(log.requestMessages));
+
+    const messages = latestSnapshotLog
+      ? buildExternalChatTranscriptFromSnapshot({
+          requestMessages:
+            latestSnapshotLog.requestMessages as StoredDashboardOpenAiMessage[],
+          responseMessage:
+            (latestSnapshotLog.responseMessage as StoredDashboardOpenAiMessage | null) ??
+            null,
+        })
+      : buildExternalChatTranscriptFromPreviews(
+          logs.map((log) => ({
+            id: log.id,
+            requestPreview: log.requestPreview,
+            responsePreview: log.responsePreview,
+          })),
+        );
+
+    return {
+      source: "external_chat",
+      sessionId: session.id,
+      title: session.firstUserPreview,
+      summary: session.summaryPreview,
+      transcriptMode: latestSnapshotLog ? "full" : "preview",
+      totalTurns: session.turnCount,
+      totalTokens: session.totalTokens,
+      promptTokens: session.promptTokens,
+      completionTokens: session.completionTokens,
+      status: session.lastStatus as AgentExternalUsageStatus,
+      modelProvider: session.lastModelProvider,
+      modelName: session.lastModelName,
+      createdAt: toIsoString(session.createdAt),
+      updatedAt: toIsoString(session.updatedAt),
+      messages,
+    };
   },
 
   async getDashboardStats(

@@ -932,6 +932,8 @@ export const AgentExternalUsageLogTable = pgTable(
       .default("success"),
     requestPreview: text("request_preview"),
     responsePreview: text("response_preview"),
+    requestMessages: json("request_messages"),
+    responseMessage: json("response_message"),
     requestMessageCount: integer("request_message_count"),
     clientFingerprint: text("client_fingerprint"),
     userAgent: text("user_agent"),
