@@ -19,9 +19,33 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "wave-chatbot",
+  title: "Emma AI",
   description:
-    "Wave Chatbot is a chatbot that uses the Tools to answer questions.",
+    "Emma AI is a chatbot workspace that uses tools to answer questions.",
+  icons: {
+    icon: [
+      { url: "/emma-tab-icon.svg", type: "image/svg+xml" },
+      {
+        url: "/emma-tab-icon-32x32.png",
+        sizes: "32x32",
+        type: "image/png",
+      },
+      {
+        url: "/emma-tab-icon-16x16.png",
+        sizes: "16x16",
+        type: "image/png",
+      },
+      { url: "/emma-tab-icon.ico", sizes: "any" },
+    ],
+    shortcut: [
+      {
+        url: "/emma-tab-icon-32x32.png",
+        sizes: "32x32",
+        type: "image/png",
+      },
+    ],
+    apple: [{ url: "/emma-tab-apple-touch-icon.png", sizes: "180x180" }],
+  },
 };
 
 export default async function RootLayout({

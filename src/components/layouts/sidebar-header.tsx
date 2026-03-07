@@ -66,7 +66,7 @@ export function SidebarHeaderShared({
   return (
     <SidebarHeader>
       <SidebarMenu>
-        <SidebarMenuItem className="flex items-center gap-0.5 mb-1">
+        <SidebarMenuItem className="flex items-center gap-0.5 -mb-1 mt-2">
           <SidebarMenuButton asChild className="hover:bg-transparent">
             <Link href={href} onClick={handleLinkClick}>
               <h4 className="font-bold">{title}</h4>
