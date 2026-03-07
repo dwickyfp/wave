@@ -68,6 +68,15 @@ import {
   WeatherExample,
 } from "lib/ai/agent/example";
 import { notify } from "lib/notify";
+import {
+  buildContinueAgentSystemMessage,
+  buildContinuePlanSystemMessage,
+} from "lib/ai/agent/continue-prompts";
+import {
+  getExternalAgentAutocompleteOpenAiModelId,
+  getExternalAgentOpenAiModelId,
+} from "lib/ai/agent/external-agent-model-id";
+import { AgentDashboardTab } from "./agent-dashboard-tab";
 
 const defaultConfig = (): PartialBy<
   Omit<Agent, "createdAt" | "updatedAt" | "userId">,
@@ -94,6 +103,13 @@ const defaultConfig = (): PartialBy<
 };
 
 const MCP_MODEL_AUTO_VALUE = "__mcp_model_auto__";
+const MCP_AUTOCOMPLETE_MODEL_NONE_VALUE = "__mcp_autocomplete_model_none__";
+const MCP_PRESENTATION_COMPATIBILITY = "compatibility";
+const MCP_PRESENTATION_COPILOT_NATIVE = "copilot_native";
+
+type AgentMcpPresentationMode =
+  | typeof MCP_PRESENTATION_COMPATIBILITY
+  | typeof MCP_PRESENTATION_COPILOT_NATIVE;
 
 function makeMcpModelValue(model: ChatModel) {
   return `${model.provider}::${model.model}`;
@@ -109,6 +125,10 @@ function parseMcpModelValue(value: string): ChatModel | null {
 
   if (!provider || !model) return null;
   return { provider, model };
+}
+
+function yamlScalar(value: string) {
+  return JSON.stringify(value);
 }
 
 interface EditAgentProps {
@@ -163,6 +183,18 @@ export default function EditAgent({
   const [isAgentMcpRevokingKey, setIsAgentMcpRevokingKey] = useState(false);
   const [isAgentMcpToggling, setIsAgentMcpToggling] = useState(false);
   const [isAgentMcpUpdatingModel, setIsAgentMcpUpdatingModel] = useState(false);
+  const [
+    isAgentContinueUpdatingCodingMode,
+    setIsAgentContinueUpdatingCodingMode,
+  ] = useState(false);
+  const [
+    isAgentContinueUpdatingAutocompleteModel,
+    setIsAgentContinueUpdatingAutocompleteModel,
+  ] = useState(false);
+  const [
+    isAgentMcpUpdatingPresentationMode,
+    setIsAgentMcpUpdatingPresentationMode,
+  ] = useState(false);
   const [agentMcpModel, setAgentMcpModel] = useState<ChatModel | null>(
     initialAgent?.mcpModelProvider && initialAgent?.mcpModelName
       ? {
@@ -171,6 +203,25 @@ export default function EditAgent({
         }
       : null,
   );
+  const [agentContinueCodingMode, setAgentContinueCodingMode] = useState(
+    initialAgent?.mcpCodingMode ?? false,
+  );
+  const [agentAutocompleteModel, setAgentAutocompleteModel] =
+    useState<ChatModel | null>(
+      initialAgent?.mcpAutocompleteModelProvider &&
+        initialAgent?.mcpAutocompleteModelName
+        ? {
+            provider: initialAgent.mcpAutocompleteModelProvider,
+            model: initialAgent.mcpAutocompleteModelName,
+          }
+        : null,
+    );
+  const [agentMcpPresentationMode, setAgentMcpPresentationMode] =
+    useState<AgentMcpPresentationMode>(
+      initialAgent?.mcpPresentationMode === MCP_PRESENTATION_COPILOT_NATIVE
+        ? MCP_PRESENTATION_COPILOT_NATIVE
+        : MCP_PRESENTATION_COMPATIBILITY,
+    );
   const [activeTab, setActiveTab] = useState("details");
   const [browserOrigin, setBrowserOrigin] = useState("");
 
@@ -193,12 +244,32 @@ export default function EditAgent({
       initialAgent?.id ? `wave:agent-mcp-api-key:${initialAgent.id}` : null,
     [initialAgent?.id],
   );
+  const showAgentAccessTab =
+    !initialAgent || initialAgent.agentType !== "snowflake_cortex";
+  const showDashboardTab = showAgentAccessTab && isOwner;
   const agentMcpPath = initialAgent?.id
     ? `/api/mcp/agent/${initialAgent.id}`
     : "";
   const agentMcpUrl = browserOrigin
     ? `${browserOrigin}${agentMcpPath}`
     : agentMcpPath;
+  const agentContinueApiBasePath = initialAgent?.id
+    ? `/api/agent/${initialAgent.id}/openai/v1`
+    : "";
+  const agentContinueApiBase = browserOrigin
+    ? `${browserOrigin}${agentContinueApiBasePath}`
+    : agentContinueApiBasePath;
+  const agentContinueModelId = useMemo(
+    () => getExternalAgentOpenAiModelId(agent.name || initialAgent?.name),
+    [agent.name, initialAgent?.name],
+  );
+  const agentContinueAutocompleteModelId = useMemo(
+    () =>
+      getExternalAgentAutocompleteOpenAiModelId(
+        agent.name || initialAgent?.name,
+      ),
+    [agent.name, initialAgent?.name],
+  );
 
   const { data: mcpList, isLoading: isMcpLoading } = useMcpList();
   const { data: workflowToolList, isLoading: isWorkflowLoading } =
@@ -212,6 +283,16 @@ export default function EditAgent({
         .map((provider) => ({
           provider: provider.provider,
           models: provider.models.filter((item) => !item.isToolCallUnsupported),
+        }))
+        .filter((provider) => provider.models.length > 0),
+    [chatModelProviders],
+  );
+  const autocompleteModelProviders = useMemo(
+    () =>
+      (chatModelProviders ?? [])
+        .map((provider) => ({
+          provider: provider.provider,
+          models: provider.models,
         }))
         .filter((provider) => provider.models.length > 0),
     [chatModelProviders],
@@ -233,6 +314,23 @@ export default function EditAgent({
 
     return makeMcpModelValue(agentMcpModel);
   }, [agentMcpModel, isAgentMcpModelAvailable]);
+  const isAgentAutocompleteModelAvailable = useMemo(() => {
+    if (!agentAutocompleteModel) return true;
+
+    return autocompleteModelProviders.some((provider) => {
+      if (provider.provider !== agentAutocompleteModel.provider) return false;
+      return provider.models.some(
+        (model) => model.name === agentAutocompleteModel.model,
+      );
+    });
+  }, [agentAutocompleteModel, autocompleteModelProviders]);
+  const agentAutocompleteModelValue = useMemo(() => {
+    if (!agentAutocompleteModel || !isAgentAutocompleteModelAvailable) {
+      return MCP_AUTOCOMPLETE_MODEL_NONE_VALUE;
+    }
+
+    return makeMcpModelValue(agentAutocompleteModel);
+  }, [agentAutocompleteModel, isAgentAutocompleteModelAvailable]);
 
   const assignToolsByNames = useCallback(
     (toolNames: string[]) => {
@@ -532,6 +630,17 @@ export default function EditAgent({
   }, []);
 
   useEffect(() => {
+    if (!showAgentAccessTab && activeTab !== "details") {
+      setActiveTab("details");
+      return;
+    }
+
+    if (!showDashboardTab && activeTab === "dashboard") {
+      setActiveTab("details");
+    }
+  }, [activeTab, showAgentAccessTab, showDashboardTab]);
+
+  useEffect(() => {
     if (!agentMcpLocalStorageKey || typeof window === "undefined") return;
 
     const removeStored = () => {
@@ -686,6 +795,111 @@ export default function EditAgent({
     [initialAgent?.id, t],
   );
 
+  const handleToggleAgentContinueCodingMode = useCallback(
+    async (enabled: boolean) => {
+      if (!initialAgent?.id) return;
+
+      setIsAgentContinueUpdatingCodingMode(true);
+      try {
+        const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            codingMode: enabled,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to update coding mode");
+        }
+
+        setAgentContinueCodingMode(enabled);
+        toast.success(
+          enabled
+            ? t("Agent.agentContinueCodingModeEnabled")
+            : t("Agent.agentContinueCodingModeDisabled"),
+        );
+      } catch {
+        toast.error(t("Agent.agentContinueCodingModeUpdateFailed"));
+      } finally {
+        setIsAgentContinueUpdatingCodingMode(false);
+      }
+    },
+    [initialAgent?.id, t],
+  );
+
+  const handleChangeAgentAutocompleteModel = useCallback(
+    async (value: string) => {
+      if (!initialAgent?.id) return;
+
+      const parsedModel =
+        value === MCP_AUTOCOMPLETE_MODEL_NONE_VALUE
+          ? null
+          : parseMcpModelValue(value);
+
+      setIsAgentContinueUpdatingAutocompleteModel(true);
+      try {
+        const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            autocompleteModel: parsedModel,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to update autocomplete model");
+        }
+
+        setAgentAutocompleteModel(parsedModel);
+        toast.success(
+          parsedModel
+            ? t("Agent.agentContinueAutocompleteModelUpdated")
+            : t("Agent.agentContinueAutocompleteModelCleared"),
+        );
+      } catch {
+        toast.error(t("Agent.agentContinueAutocompleteModelUpdateFailed"));
+      } finally {
+        setIsAgentContinueUpdatingAutocompleteModel(false);
+      }
+    },
+    [initialAgent?.id, t],
+  );
+
+  const handleChangeAgentMcpPresentationMode = useCallback(
+    async (value: string) => {
+      if (!initialAgent?.id) return;
+
+      const presentationMode =
+        value === MCP_PRESENTATION_COPILOT_NATIVE
+          ? MCP_PRESENTATION_COPILOT_NATIVE
+          : MCP_PRESENTATION_COMPATIBILITY;
+
+      setIsAgentMcpUpdatingPresentationMode(true);
+      try {
+        const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            presentationMode,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to update MCP presentation mode");
+        }
+
+        setAgentMcpPresentationMode(presentationMode);
+        toast.success(t("Agent.agentMcpPresentationModeUpdated"));
+      } catch {
+        toast.error(t("Agent.agentMcpPresentationModeUpdateFailed"));
+      } finally {
+        setIsAgentMcpUpdatingPresentationMode(false);
+      }
+    },
+    [initialAgent?.id, t],
+  );
+
   const handleAgentChange = useCallback(
     (generatedData: any) => {
       if (textareaRef.current) {
@@ -761,7 +975,7 @@ export default function EditAgent({
           type: "http",
           url: agentMcpUrl || "https://your-domain/api/mcp/agent/{agentId}",
           headers: {
-            EMMA_AGENT_KEY: agentMcpApiKey ?? "YOUR_AGENT_API_KEY",
+            Authorization: `Bearer ${agentMcpApiKey ?? "YOUR_AGENT_API_KEY"}`,
           },
         },
         null,
@@ -769,19 +983,101 @@ export default function EditAgent({
       ),
     [agentMcpApiKey, agentMcpUrl],
   );
+  const continueAgentSystemMessage = useMemo(
+    () =>
+      buildContinueAgentSystemMessage(
+        agent.name || initialAgent?.name || undefined,
+      ),
+    [agent.name, initialAgent?.name],
+  );
+  const continuePlanSystemMessage = useMemo(
+    () =>
+      buildContinuePlanSystemMessage(
+        agent.name || initialAgent?.name || undefined,
+      ),
+    [agent.name, initialAgent?.name],
+  );
+  const agentContinueConfig = useMemo(
+    () =>
+      [
+        `- name: ${yamlScalar(agent.name || "Wave Agent")}`,
+        "  provider: openai",
+        `  model: ${yamlScalar(agentContinueModelId)}`,
+        `  apiBase: ${yamlScalar(
+          agentContinueApiBase ||
+            "https://your-domain/api/agent/{agentId}/openai/v1",
+        )}`,
+        `  apiKey: ${yamlScalar(agentMcpApiKey ?? "YOUR_AGENT_API_KEY")}`,
+        "  roles:",
+        "    - chat",
+        "    - edit",
+        "    - apply",
+        "  capabilities:",
+        "    - tool_use",
+        ...(agentContinueCodingMode
+          ? [
+              "  chatOptions:",
+              `    baseAgentSystemMessage: ${yamlScalar(
+                continueAgentSystemMessage,
+              )}`,
+              `    basePlanSystemMessage: ${yamlScalar(
+                continuePlanSystemMessage,
+              )}`,
+            ]
+          : []),
+        "",
+        ...(agentAutocompleteModel
+          ? []
+          : [t("Agent.agentContinueConfigAutocompleteWarning")]),
+        `- name: ${yamlScalar(`${agent.name || "Wave Agent"} Autocomplete`)}`,
+        "  provider: openai",
+        `  model: ${yamlScalar(agentContinueAutocompleteModelId)}`,
+        `  apiBase: ${yamlScalar(
+          agentContinueApiBase ||
+            "https://your-domain/api/agent/{agentId}/openai/v1",
+        )}`,
+        `  apiKey: ${yamlScalar(agentMcpApiKey ?? "YOUR_AGENT_API_KEY")}`,
+        "  roles:",
+        "    - autocomplete",
+        "  useLegacyCompletionsEndpoint: true",
+      ].join("\n"),
+    [
+      agent.name,
+      agentAutocompleteModel,
+      agentContinueApiBase,
+      agentContinueAutocompleteModelId,
+      agentContinueCodingMode,
+      agentContinueModelId,
+      agentMcpApiKey,
+      continueAgentSystemMessage,
+      continuePlanSystemMessage,
+      t,
+    ],
+  );
   const isAgentMcpBusy = useMemo(
     () =>
       isAgentMcpGeneratingKey ||
       isAgentMcpRevokingKey ||
       isAgentMcpToggling ||
-      isAgentMcpUpdatingModel,
+      isAgentMcpUpdatingModel ||
+      isAgentContinueUpdatingCodingMode ||
+      isAgentContinueUpdatingAutocompleteModel ||
+      isAgentMcpUpdatingPresentationMode,
     [
       isAgentMcpGeneratingKey,
       isAgentMcpRevokingKey,
       isAgentMcpToggling,
       isAgentMcpUpdatingModel,
+      isAgentContinueUpdatingCodingMode,
+      isAgentContinueUpdatingAutocompleteModel,
+      isAgentMcpUpdatingPresentationMode,
     ],
   );
+  const agentMcpVisibleToolsDescription = useMemo(() => {
+    return agentMcpPresentationMode === MCP_PRESENTATION_COPILOT_NATIVE
+      ? t("Agent.agentMcpToolInventoryNative")
+      : t("Agent.agentMcpToolInventoryCompatibility");
+  }, [agentMcpPresentationMode, t]);
 
   const isLoading = useMemo(() => {
     return (
@@ -935,13 +1231,29 @@ export default function EditAgent({
           onValueChange={setActiveTab}
           className="w-full mt-2 gap-4"
         >
-          <TabsList className="grid w-full grid-cols-2 max-w-xs">
+          <TabsList
+            className={cn(
+              "grid w-full",
+              showAgentAccessTab && showDashboardTab
+                ? "max-w-md grid-cols-3"
+                : showAgentAccessTab
+                  ? "max-w-xs grid-cols-2"
+                  : "max-w-[140px] grid-cols-1",
+            )}
+          >
             <TabsTrigger value="details">
               {t("Agent.agentMcpTabDetails")}
             </TabsTrigger>
-            <TabsTrigger value="agent-mcp">
-              {t("Agent.agentMcpTabAgentMcp")}
-            </TabsTrigger>
+            {showAgentAccessTab && (
+              <TabsTrigger value="agent-access">
+                {t("Agent.agentAccessTabLabel")}
+              </TabsTrigger>
+            )}
+            {showDashboardTab && (
+              <TabsTrigger value="dashboard" disabled={!initialAgent}>
+                {t("Agent.agentDashboardTabLabel")}
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="details" className="flex flex-col gap-6 mt-2">
@@ -1097,49 +1409,59 @@ export default function EditAgent({
             )}
           </TabsContent>
 
-          <TabsContent value="agent-mcp" className="mt-2">
-            {!initialAgent && (
-              <div className="border rounded-xl p-4 flex items-start gap-3">
-                <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">
-                    {t("Agent.agentMcpSaveFirstTitle")}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {t("Agent.agentMcpSaveFirstDescription")}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {initialAgent && !isOwner && (
-              <div className="border rounded-xl p-4 flex items-start gap-3">
-                <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">
-                    {t("Agent.agentMcpOwnerOnlyTitle")}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {t("Agent.agentMcpOwnerOnlyDescription")}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {initialAgent && isOwner && (
-              <div className="border rounded-xl p-4 flex flex-col gap-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <ServerIcon className="size-4 text-primary" />
-                      <p className="text-sm font-medium">
-                        {t("Agent.agentMcpTitle")}
-                      </p>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {t("Agent.agentMcpDescription")}
+          {showAgentAccessTab && (
+            <TabsContent value="agent-access" className="mt-2">
+              {!initialAgent && (
+                <div className="border rounded-xl p-4 flex items-start gap-3">
+                  <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
+                  <div>
+                    <p className="text-sm font-medium">
+                      {t("Agent.agentAccessSaveFirstTitle")}
                     </p>
-                    <div className="space-y-2 pt-1">
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {t("Agent.agentAccessSaveFirstDescription")}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {initialAgent && !isOwner && (
+                <div className="border rounded-xl p-4 flex items-start gap-3">
+                  <ShieldAlertIcon className="size-4 mt-0.5 text-muted-foreground" />
+                  <div>
+                    <p className="text-sm font-medium">
+                      {t("Agent.agentAccessOwnerOnlyTitle")}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {t("Agent.agentAccessOwnerOnlyDescription")}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {initialAgent && isOwner && (
+                <div className="flex flex-col gap-4">
+                  <div className="border rounded-xl p-4 flex flex-col gap-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <ServerIcon className="size-4 text-primary" />
+                          <p className="text-sm font-medium">
+                            {t("Agent.agentAccessTitle")}
+                          </p>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          {t("Agent.agentAccessDescription")}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={agentMcpEnabled}
+                        onCheckedChange={handleToggleAgentMcp}
+                        disabled={isAgentMcpBusy}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
                       <p className="text-xs font-medium">
                         {t("Agent.agentMcpModelLabel")}
                       </p>
@@ -1185,115 +1507,382 @@ export default function EditAgent({
                               : t("Agent.agentMcpModelNotFound")}
                       </p>
                     </div>
-                  </div>
-                  <Switch
-                    checked={agentMcpEnabled}
-                    onCheckedChange={handleToggleAgentMcp}
-                    disabled={isAgentMcpBusy}
-                  />
-                </div>
 
-                <div className="space-y-2">
-                  <Label className="text-sm">
-                    {t("Agent.agentMcpApiKeyLabel")}
-                  </Label>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono break-all">
-                      {agentMcpApiKey ? (
-                        <span>{agentMcpApiKey}</span>
-                      ) : agentMcpKeyPreview ? (
-                        <span className="text-muted-foreground">
-                          ••••••••••••{agentMcpKeyPreview}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground italic">
-                          {t("Agent.agentMcpNoKey")}
-                        </span>
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        {t("Agent.agentMcpApiKeyLabel")}
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono break-all">
+                          {agentMcpApiKey ? (
+                            <span>{agentMcpApiKey}</span>
+                          ) : agentMcpKeyPreview ? (
+                            <span className="text-muted-foreground">
+                              ••••••••••••{agentMcpKeyPreview}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground italic">
+                              {t("Agent.agentMcpNoKey")}
+                            </span>
+                          )}
+                        </div>
+                        {agentMcpApiKey && (
+                          <Button
+                            size="icon"
+                            variant="outline"
+                            className="size-9 shrink-0"
+                            onClick={() => copyToClipboard(agentMcpApiKey)}
+                          >
+                            <CopyIcon className="size-3.5" />
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="gap-1.5 shrink-0"
+                          onClick={handleGenerateAgentMcpKey}
+                          disabled={isAgentMcpBusy}
+                        >
+                          {isAgentMcpGeneratingKey ? (
+                            <RefreshCwIcon className="size-3.5 animate-spin" />
+                          ) : (
+                            <KeyIcon className="size-3.5" />
+                          )}
+                          {agentMcpKeyPreview
+                            ? t("Agent.agentMcpRegenerate")
+                            : t("Agent.agentMcpGenerate")}
+                        </Button>
+                      </div>
+                      {agentMcpKeyPreview && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="px-0 text-xs text-muted-foreground hover:text-destructive w-fit"
+                          onClick={handleRevokeAgentMcpKey}
+                          disabled={isAgentMcpBusy}
+                        >
+                          {isAgentMcpRevokingKey && (
+                            <RefreshCwIcon className="size-3.5 animate-spin mr-1" />
+                          )}
+                          {t("Agent.agentMcpRevoke")}
+                        </Button>
                       )}
                     </div>
-                    {agentMcpApiKey && (
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        className="size-9 shrink-0"
-                        onClick={() => copyToClipboard(agentMcpApiKey)}
+                  </div>
+
+                  <div className="border rounded-xl p-4 flex flex-col gap-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">
+                        {t("Agent.agentMcpTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentMcpDescription")}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentMcpPresentationModeLabel")}
+                      </p>
+                      <Select
+                        value={agentMcpPresentationMode}
+                        onValueChange={handleChangeAgentMcpPresentationMode}
+                        disabled={isAgentMcpBusy}
                       >
-                        <CopyIcon className="size-3.5" />
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="gap-1.5 shrink-0"
-                      onClick={handleGenerateAgentMcpKey}
-                      disabled={isAgentMcpBusy}
-                    >
-                      {isAgentMcpGeneratingKey ? (
-                        <RefreshCwIcon className="size-3.5 animate-spin" />
-                      ) : (
-                        <KeyIcon className="size-3.5" />
-                      )}
-                      {agentMcpKeyPreview
-                        ? t("Agent.agentMcpRegenerate")
-                        : t("Agent.agentMcpGenerate")}
-                    </Button>
-                  </div>
-                  {agentMcpKeyPreview && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="px-0 text-xs text-muted-foreground hover:text-destructive w-fit"
-                      onClick={handleRevokeAgentMcpKey}
-                      disabled={isAgentMcpBusy}
-                    >
-                      {isAgentMcpRevokingKey && (
-                        <RefreshCwIcon className="size-3.5 animate-spin mr-1" />
-                      )}
-                      {t("Agent.agentMcpRevoke")}
-                    </Button>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label className="text-sm">
-                    {t("Agent.agentMcpEndpointLabel")}
-                  </Label>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
-                      {agentMcpUrl}
+                        <SelectTrigger className="w-full h-8 text-xs">
+                          <SelectValue
+                            placeholder={t(
+                              "Agent.agentMcpPresentationModePlaceholder",
+                            )}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={MCP_PRESENTATION_COMPATIBILITY}>
+                            {t("Agent.agentMcpPresentationModeCompatibility")}
+                          </SelectItem>
+                          <SelectItem value={MCP_PRESENTATION_COPILOT_NATIVE}>
+                            {t("Agent.agentMcpPresentationModeCopilotNative")}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {agentMcpPresentationMode ===
+                        MCP_PRESENTATION_COPILOT_NATIVE
+                          ? t("Agent.agentMcpPresentationModeNativeDescription")
+                          : t(
+                              "Agent.agentMcpPresentationModeCompatibilityDescription",
+                            )}
+                      </p>
                     </div>
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      className="size-9 shrink-0"
-                      onClick={() => copyToClipboard(agentMcpUrl)}
-                    >
-                      <CopyIcon className="size-3.5" />
-                    </Button>
-                  </div>
-                </div>
 
-                <div className="space-y-2">
-                  <Label className="text-sm">
-                    {t("Agent.agentMcpConfigLabel")}
-                  </Label>
-                  <div className="relative">
-                    <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
-                      {agentMcpConfig}
-                    </pre>
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      className="size-7 absolute top-2 right-2"
-                      onClick={() => copyToClipboard(agentMcpConfig)}
-                    >
-                      <CopyIcon className="size-3" />
-                    </Button>
+                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentMcpToolInventoryLabel")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {agentMcpVisibleToolsDescription}
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentMcpVisibilityLimitTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentMcpVisibilityLimitDescription")}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        {t("Agent.agentMcpEndpointLabel")}
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                          {agentMcpUrl}
+                        </div>
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="size-9 shrink-0"
+                          onClick={() => copyToClipboard(agentMcpUrl)}
+                        >
+                          <CopyIcon className="size-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        {t("Agent.agentMcpConfigLabel")}
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentMcpAuthHint")}
+                      </p>
+                      <div className="relative">
+                        <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
+                          {agentMcpConfig}
+                        </pre>
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="size-7 absolute top-2 right-2"
+                          onClick={() => copyToClipboard(agentMcpConfig)}
+                        >
+                          <CopyIcon className="size-3" />
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="border rounded-xl p-4 flex flex-col gap-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium">
+                        {t("Agent.agentContinueTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentContinueDescription")}
+                      </p>
+                    </div>
+
+                    <div className="flex items-start justify-between gap-4 rounded-lg border bg-secondary/30 p-3">
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium">
+                          {t("Agent.agentContinueCodingModeLabel")}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {t("Agent.agentContinueCodingModeDescription")}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={agentContinueCodingMode}
+                        onCheckedChange={handleToggleAgentContinueCodingMode}
+                        disabled={isAgentMcpBusy}
+                      />
+                    </div>
+
+                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentContinueCodingModeSummaryTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentContinueCodingModeSummaryDescription")}
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentContinueConstraintTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentContinueConstraintDescription")}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentContinueAutocompleteModelLabel")}
+                      </p>
+                      <Select
+                        value={agentAutocompleteModelValue}
+                        onValueChange={handleChangeAgentAutocompleteModel}
+                        disabled={isAgentMcpBusy || isChatModelsLoading}
+                      >
+                        <SelectTrigger className="w-full h-8 text-xs">
+                          <SelectValue
+                            placeholder={t(
+                              "Agent.agentContinueAutocompleteModelPlaceholder",
+                            )}
+                          />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={MCP_AUTOCOMPLETE_MODEL_NONE_VALUE}>
+                            {t("Agent.agentContinueAutocompleteModelNone")}
+                          </SelectItem>
+                          {autocompleteModelProviders.map((provider) => (
+                            <SelectGroup key={provider.provider}>
+                              <SelectLabel>{provider.provider}</SelectLabel>
+                              {provider.models.map((model) => (
+                                <SelectItem
+                                  key={`${provider.provider}:${model.name}`}
+                                  value={makeMcpModelValue({
+                                    provider: provider.provider,
+                                    model: model.name,
+                                  })}
+                                >
+                                  {model.name}
+                                </SelectItem>
+                              ))}
+                            </SelectGroup>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {isChatModelsLoading
+                          ? t("Agent.agentMcpModelLoading")
+                          : !isAgentAutocompleteModelAvailable
+                            ? t(
+                                "Agent.agentContinueAutocompleteModelUnavailable",
+                              )
+                            : agentAutocompleteModel
+                              ? t(
+                                  "Agent.agentContinueAutocompleteModelDescription",
+                                )
+                              : t(
+                                  "Agent.agentContinueAutocompleteModelSelectFirst",
+                                )}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        {t("Agent.agentContinueApiBaseLabel")}
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                          {agentContinueApiBase}
+                        </div>
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="size-9 shrink-0"
+                          onClick={() => copyToClipboard(agentContinueApiBase)}
+                        >
+                          <CopyIcon className="size-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        {t("Agent.agentContinueModelIdLabel")}
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                          {agentContinueModelId}
+                        </div>
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="size-9 shrink-0"
+                          onClick={() => copyToClipboard(agentContinueModelId)}
+                        >
+                          <CopyIcon className="size-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        {t("Agent.agentContinueAutocompleteModelIdLabel")}
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono truncate">
+                          {agentContinueAutocompleteModelId}
+                        </div>
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="size-9 shrink-0"
+                          onClick={() =>
+                            copyToClipboard(agentContinueAutocompleteModelId)
+                          }
+                        >
+                          <CopyIcon className="size-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm">
+                        {t("Agent.agentContinueConfigLabel")}
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentContinueConfigHint")}
+                      </p>
+                      <div className="relative">
+                        <pre className="text-xs p-3 bg-secondary/40 border rounded-lg overflow-x-auto">
+                          {agentContinueConfig}
+                        </pre>
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="size-7 absolute top-2 right-2"
+                          onClick={() => copyToClipboard(agentContinueConfig)}
+                        >
+                          <CopyIcon className="size-3" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentContinueContextTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentContinueContextDescription")}
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
+                      <p className="text-xs font-medium">
+                        {t("Agent.agentContinueDocsTitle")}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {t("Agent.agentContinueDocsDescription")}
+                      </p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
-          </TabsContent>
+              )}
+            </TabsContent>
+          )}
+
+          {showDashboardTab && initialAgent && (
+            <TabsContent value="dashboard" className="mt-2">
+              <AgentDashboardTab agentId={initialAgent.id} />
+            </TabsContent>
+          )}
         </Tabs>
       </div>
 

@@ -105,6 +105,13 @@ export const AgentTable = pgTable("agent", {
   mcpApiKeyPreview: text("mcp_api_key_preview"),
   mcpModelProvider: text("mcp_model_provider"),
   mcpModelName: text("mcp_model_name"),
+  mcpCodingMode: boolean("mcp_coding_mode").notNull().default(false),
+  mcpAutocompleteModelProvider: text("mcp_autocomplete_model_provider"),
+  mcpAutocompleteModelName: text("mcp_autocomplete_model_name"),
+  mcpPresentationMode: text("mcp_presentation_mode")
+    .$type<"compatibility" | "copilot_native">()
+    .notNull()
+    .default("compatibility"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -863,6 +870,82 @@ export const KnowledgeUsageLogTable = pgTable(
   ],
 );
 
+export const AgentExternalChatSessionTable = pgTable(
+  "agent_external_chat_session",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    clientFingerprint: text("client_fingerprint").notNull(),
+    firstUserMessageHash: text("first_user_message_hash").notNull(),
+    firstUserPreview: text("first_user_preview").notNull(),
+    lastTranscriptMessageHash: text("last_transcript_message_hash").notNull(),
+    lastMessageCount: integer("last_message_count").notNull().default(0),
+    summaryPreview: text("summary_preview"),
+    turnCount: integer("turn_count").notNull().default(0),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    lastModelProvider: text("last_model_provider"),
+    lastModelName: text("last_model_name"),
+    lastStatus: text("last_status").notNull().default("success"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("agent_external_chat_session_agent_id_idx").on(table.agentId),
+    index("agent_external_chat_session_updated_at_idx").on(table.updatedAt),
+  ],
+);
+
+export const AgentExternalUsageLogTable = pgTable(
+  "agent_external_usage_log",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").references(
+      () => AgentExternalChatSessionTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    transport: text("transport")
+      .$type<"continue_chat" | "continue_autocomplete">()
+      .notNull(),
+    kind: text("kind").$type<"chat_turn" | "autocomplete_request">().notNull(),
+    modelProvider: text("model_provider"),
+    modelName: text("model_name"),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    finishReason: text("finish_reason"),
+    status: text("status")
+      .$type<"success" | "error" | "cancelled">()
+      .notNull()
+      .default("success"),
+    requestPreview: text("request_preview"),
+    responsePreview: text("response_preview"),
+    requestMessageCount: integer("request_message_count"),
+    clientFingerprint: text("client_fingerprint"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("agent_external_usage_log_agent_id_idx").on(table.agentId),
+    index("agent_external_usage_log_session_id_idx").on(table.sessionId),
+    index("agent_external_usage_log_created_at_idx").on(table.createdAt),
+  ],
+);
+
 export type KnowledgeGroupEntity = typeof KnowledgeGroupTable.$inferSelect;
 export type KnowledgeGroupSourceEntity =
   typeof KnowledgeGroupSourceTable.$inferSelect;
@@ -875,3 +958,7 @@ export type SkillEntity = typeof SkillTable.$inferSelect;
 export type SkillAgentEntity = typeof SkillAgentTable.$inferSelect;
 export type KnowledgeUsageLogEntity =
   typeof KnowledgeUsageLogTable.$inferSelect;
+export type AgentExternalChatSessionEntity =
+  typeof AgentExternalChatSessionTable.$inferSelect;
+export type AgentExternalUsageLogEntity =
+  typeof AgentExternalUsageLogTable.$inferSelect;

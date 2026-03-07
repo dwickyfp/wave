@@ -18,6 +18,7 @@ import {
 } from "@/app/api/chat/shared.chat";
 import globalLogger from "logger";
 import { colorize } from "consola/utils";
+import { errorToString, safeJSONParse } from "lib/utils";
 import {
   buildSubAgentToolName,
   extractSubAgentNameFromToolName,
@@ -28,6 +29,101 @@ export { buildSubAgentToolName, extractSubAgentNameFromToolName };
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `SubAgent Loader: `),
 });
+
+const SUBAGENT_MAX_ATTEMPTS = 3;
+const SUBAGENT_RETRY_DELAYS_MS = [1000, 2500];
+
+function toAbortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("Aborted");
+}
+
+function collectErrorMessages(error: unknown): string[] {
+  const values = new Set<string>();
+
+  const push = (value: unknown) => {
+    if (typeof value === "string" && value.trim()) {
+      values.add(value.trim());
+    }
+  };
+
+  push(errorToString(error));
+
+  if (error && typeof error === "object" && "message" in error) {
+    push((error as { message?: unknown }).message);
+  }
+
+  return Array.from(values);
+}
+
+function extractHttpStatus(error: unknown): number | null {
+  const queue = collectErrorMessages(error);
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) continue;
+
+    const parsed = safeJSONParse<Record<string, unknown>>(current);
+    if (!parsed.success || !parsed.value || typeof parsed.value !== "object") {
+      continue;
+    }
+
+    const httpStatus = parsed.value.httpStatus;
+    if (typeof httpStatus === "number") {
+      return httpStatus;
+    }
+
+    if (typeof parsed.value.message === "string") {
+      queue.push(parsed.value.message);
+    }
+  }
+
+  return null;
+}
+
+function isTransientSubagentError(error: unknown): boolean {
+  const httpStatus = extractHttpStatus(error);
+  if (httpStatus && [429, 500, 502, 503, 504].includes(httpStatus)) {
+    return true;
+  }
+
+  const message = collectErrorMessages(error).join(" ").toLowerCase();
+  return [
+    "provider_unavailable",
+    "service temporarily unavailable",
+    "temporarily unavailable",
+    "at capacity",
+    "try again later",
+    "rate limit",
+    "too many requests",
+    "timeout",
+    "timed out",
+    "econnreset",
+    "gateway",
+  ].some((pattern) => message.includes(pattern));
+}
+
+async function waitForRetryDelay(delayMs: number, signal?: AbortSignal) {
+  if (!delayMs) return;
+  if (signal?.aborted) {
+    throw toAbortError(signal);
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+
+    const onAbort = () => {
+      clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", onAbort);
+      reject(toAbortError(signal));
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /**
  * Convert the agent's subagents into Vercel AI SDK tool definitions.
@@ -88,6 +184,7 @@ When you have finished, write a clear summary of your findings as your final res
           instructions,
           tools: subAgentTools,
           stopWhen: stepCountIs(10),
+          maxRetries: 4,
         });
 
         const description =
@@ -107,19 +204,44 @@ When you have finished, write a clear summary of your findings as your final res
             { task },
             { abortSignal: toolAbortSignal },
           ) {
+            const effectiveAbortSignal = toolAbortSignal ?? abortSignal;
             logger.info(
               `Delegating to subagent "${subagent.name}": ${task.slice(0, 100)}...`,
             );
 
-            const streamResult = await subAgentLoopAgent.stream({
-              prompt: task,
-              abortSignal: toolAbortSignal ?? abortSignal,
-            });
+            for (let attempt = 1; attempt <= SUBAGENT_MAX_ATTEMPTS; attempt++) {
+              let yieldedAny = false;
 
-            for await (const message of readUIMessageStream({
-              stream: streamResult.toUIMessageStream(),
-            })) {
-              yield message;
+              try {
+                const streamResult = await subAgentLoopAgent.stream({
+                  prompt: task,
+                  abortSignal: effectiveAbortSignal,
+                });
+
+                for await (const message of readUIMessageStream({
+                  stream: streamResult.toUIMessageStream(),
+                })) {
+                  yieldedAny = true;
+                  yield message;
+                }
+
+                return;
+              } catch (error) {
+                if (
+                  effectiveAbortSignal?.aborted ||
+                  yieldedAny ||
+                  attempt >= SUBAGENT_MAX_ATTEMPTS ||
+                  !isTransientSubagentError(error)
+                ) {
+                  throw error;
+                }
+
+                const delayMs = SUBAGENT_RETRY_DELAYS_MS[attempt - 1] ?? 2500;
+                logger.warn(
+                  `Transient provider failure in subagent "${subagent.name}" (attempt ${attempt}/${SUBAGENT_MAX_ATTEMPTS}): ${errorToString(error)}. Retrying in ${delayMs}ms.`,
+                );
+                await waitForRetryDelay(delayMs, effectiveAbortSignal);
+              }
             }
           },
           toModelOutput: ({ output: message }) => {

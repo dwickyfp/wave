@@ -16,6 +16,8 @@ const actionSchema = z.object({
 const updateSchema = z
   .object({
     enabled: z.boolean().optional(),
+    codingMode: z.boolean().optional(),
+    presentationMode: z.enum(["compatibility", "copilot_native"]).optional(),
     model: z
       .object({
         provider: z.string().min(1),
@@ -23,10 +25,26 @@ const updateSchema = z
       })
       .nullable()
       .optional(),
+    autocompleteModel: z
+      .object({
+        provider: z.string().min(1),
+        model: z.string().min(1),
+      })
+      .nullable()
+      .optional(),
   })
-  .refine((value) => value.enabled !== undefined || value.model !== undefined, {
-    message: "At least one of enabled/model is required",
-  });
+  .refine(
+    (value) =>
+      value.enabled !== undefined ||
+      value.codingMode !== undefined ||
+      value.model !== undefined ||
+      value.autocompleteModel !== undefined ||
+      value.presentationMode !== undefined,
+    {
+      message:
+        "At least one of enabled/codingMode/model/autocompleteModel/presentationMode is required",
+    },
+  );
 
 function isToolCapableLlmModel(candidate: {
   enabled: boolean;
@@ -55,6 +73,26 @@ async function validateMcpModelSelection(input: {
   return matchedProvider.models.some(
     (candidate) =>
       isToolCapableLlmModel(candidate) &&
+      (candidate.uiName === input.model || candidate.apiName === input.model),
+  );
+}
+
+async function validateAutocompleteModelSelection(input: {
+  provider: string;
+  model: string;
+}): Promise<boolean> {
+  const providers = await settingsRepository.getProviders({
+    enabledOnly: true,
+  });
+  const matchedProvider = providers.find((provider) => {
+    return provider.name === input.provider;
+  });
+  if (!matchedProvider) return false;
+
+  return matchedProvider.models.some(
+    (candidate) =>
+      candidate.enabled &&
+      (!candidate.modelType || candidate.modelType === "llm") &&
       (candidate.uiName === input.model || candidate.apiName === input.model),
   );
 }
@@ -150,13 +188,18 @@ export async function PUT(req: NextRequest, { params }: Params) {
     }
 
     const { id } = await params;
-    const { enabled, model } = updateSchema.parse(await req.json());
+    const { enabled, codingMode, model, autocompleteModel, presentationMode } =
+      updateSchema.parse(await req.json());
 
     const ownershipCheck = await loadOwnedStandardAgent(id, session.user.id);
     if (!ownershipCheck.ok) return ownershipCheck.response;
 
     if (enabled !== undefined) {
       await agentRepository.setMcpEnabled(id, session.user.id, enabled);
+    }
+
+    if (codingMode !== undefined) {
+      await agentRepository.setMcpCodingMode(id, session.user.id, codingMode);
     }
 
     if (model !== undefined) {
@@ -181,6 +224,44 @@ export async function PUT(req: NextRequest, { params }: Params) {
           model.model,
         );
       }
+    }
+
+    if (autocompleteModel !== undefined) {
+      if (autocompleteModel === null) {
+        await agentRepository.setMcpAutocompleteModel(
+          id,
+          session.user.id,
+          null,
+          null,
+        );
+      } else {
+        const validSelection =
+          await validateAutocompleteModelSelection(autocompleteModel);
+        if (!validSelection) {
+          return NextResponse.json(
+            {
+              error:
+                "Invalid autocomplete model selection. Select an enabled LLM model.",
+            },
+            { status: 400 },
+          );
+        }
+
+        await agentRepository.setMcpAutocompleteModel(
+          id,
+          session.user.id,
+          autocompleteModel.provider,
+          autocompleteModel.model,
+        );
+      }
+    }
+
+    if (presentationMode !== undefined) {
+      await agentRepository.setMcpPresentationMode(
+        id,
+        session.user.id,
+        presentationMode,
+      );
     }
 
     return NextResponse.json({ success: true });

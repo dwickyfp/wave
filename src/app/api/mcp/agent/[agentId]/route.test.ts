@@ -21,6 +21,9 @@ vi.mock("lib/db/repository", () => ({
   subAgentRepository: {
     selectSubAgentsByAgentId: vi.fn(),
   },
+  workflowRepository: {
+    selectToolByIds: vi.fn(),
+  },
 }));
 
 vi.mock("lib/ai/provider-factory", () => ({
@@ -34,6 +37,15 @@ vi.mock("@/app/api/chat/shared.chat", () => ({
   mergeSystemPrompt: vi.fn((...prompts: string[]) =>
     prompts.filter(Boolean).join("\n\n"),
   ),
+  workflowToVercelAITool: vi.fn(({ name }) => ({
+    execute: vi.fn(async (input: any) => ({
+      status: "success",
+      result: {
+        workflowName: name,
+        input,
+      },
+    })),
+  })),
 }));
 
 vi.mock("lib/ai/agent/subagent-loader", () => ({
@@ -41,7 +53,12 @@ vi.mock("lib/ai/agent/subagent-loader", () => ({
 }));
 
 vi.mock("lib/ai/tools/knowledge-tool", () => ({
-  createKnowledgeDocsTool: vi.fn(() => ({})),
+  createKnowledgeDocsTool: vi.fn((group: { name: string }) => ({
+    execute: vi.fn(
+      async ({ query }: { query: string }) =>
+        `Knowledge result from ${group.name}: ${query}`,
+    ),
+  })),
   knowledgeDocsToolName: vi.fn((id: string) => `get_docs_${id}`),
 }));
 
@@ -52,18 +69,51 @@ vi.mock("lib/ai/tools/skill-tool", () => ({
 
 vi.mock("lib/ai/prompts", () => ({
   buildAgentSkillsSystemPrompt: vi.fn(() => ""),
+  buildKnowledgeContextSystemPrompt: vi.fn(() => ""),
+  buildMcpServerCustomizationsSystemPrompt: vi.fn(() => ""),
   buildParallelSubAgentSystemPrompt: vi.fn(() => ""),
+  buildToolCallUnsupportedModelSystemPrompt: "unsupported",
   buildUserSystemPrompt: vi.fn(() => "base"),
 }));
 
 vi.mock("ai", () => ({
-  generateText: vi.fn(async () => ({ text: "done" })),
+  streamText: vi.fn((options: any) => {
+    void options?.onChunk?.({
+      chunk: {
+        type: "tool-call",
+        toolName: "mock_tool",
+        toolCallId: "tc-1",
+        input: {},
+      },
+    });
+    void options?.onChunk?.({
+      chunk: {
+        type: "tool-result",
+        toolName: "mock_tool",
+        toolCallId: "tc-1",
+        output: {},
+      },
+    });
+    void options?.onChunk?.({
+      chunk: {
+        type: "text-delta",
+        id: "txt-1",
+        text: "done",
+      },
+    });
+    void options?.onStepFinish?.({});
+    void options?.onFinish?.({});
+
+    return {
+      text: Promise.resolve("done"),
+    };
+  }),
   stepCountIs: vi.fn((n: number) => n),
 }));
 
-const { POST } = await import("./route");
+const { GET, POST } = await import("./route");
 const { compare } = await import("bcrypt-ts");
-const { generateText } = await import("ai");
+const { streamText } = await import("ai");
 const { getDbModel } = await import("lib/ai/provider-factory");
 const {
   agentRepository,
@@ -71,6 +121,7 @@ const {
   settingsRepository,
   skillRepository,
   subAgentRepository,
+  workflowRepository,
 } = await import("lib/db/repository");
 
 function withParams(agentId: string) {
@@ -109,6 +160,7 @@ describe("agent mcp route", () => {
       userId: "user-1",
       agentType: "standard",
       mcpEnabled: true,
+      mcpPresentationMode: "compatibility",
       instructions: {
         role: "assistant",
         systemPrompt: "helpful",
@@ -141,6 +193,7 @@ describe("agent mcp route", () => {
     vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue(
       [],
     );
+    vi.mocked(workflowRepository.selectToolByIds).mockResolvedValue([]);
   });
 
   it("returns 401 when api key is missing", async () => {
@@ -210,6 +263,87 @@ describe("agent mcp route", () => {
     const json = await res.json();
     expect(json.result.tools).toHaveLength(1);
     expect(json.result.tools[0].name).toBe("wave_run_agent");
+  });
+
+  it("lists dynamic copilot-native tools when presentation mode is enabled", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      mcpPresentationMode: "copilot_native",
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [
+          {
+            type: "workflow",
+            workflowId: "workflow-1",
+            name: "Create Issue",
+          },
+        ],
+      },
+      subAgentsEnabled: true,
+    } as any);
+    vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue([
+      {
+        id: "sa-planner",
+        name: "Planner",
+        description: "Plan work",
+        tools: [],
+        enabled: true,
+      },
+      {
+        id: "sa-coder",
+        name: "Coder",
+        description: "Write code",
+        tools: [],
+        enabled: true,
+      },
+    ] as any);
+    vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([
+      {
+        id: "kg-1",
+        name: "Product Docs",
+        description: "Internal docs",
+      },
+    ] as any);
+    vi.mocked(workflowRepository.selectToolByIds).mockResolvedValue([
+      {
+        id: "workflow-1",
+        name: "Create Issue",
+        description: "File a ticket",
+        schema: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+          },
+          required: ["title"],
+        },
+      },
+    ] as any);
+
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ method: "tools/list", id: 1, jsonrpc: "2.0" }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.result.tools.map((tool: any) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "wave_run_agent",
+        "wave_subagent_planner",
+        "wave_subagent_coder",
+        "wave_workflow_create_issue",
+        "wave_knowledge_product_docs",
+      ]),
+    );
   });
 
   it("accepts x-emma-agent-key header alias", async () => {
@@ -308,6 +442,37 @@ describe("agent mcp route", () => {
     expect(json.error.code).toBe(-32602);
   });
 
+  it("returns validation error for invalid files payload", async () => {
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: "tools/call",
+          id: 1,
+          jsonrpc: "2.0",
+          params: {
+            name: "wave_run_agent",
+            arguments: {
+              task: "Update file",
+              files: [
+                {
+                  path: "",
+                  content: "x",
+                },
+              ],
+            },
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.error.code).toBe(-32602);
+  });
+
   it("returns unknown tool error", async () => {
     const res = await POST(
       makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
@@ -389,7 +554,309 @@ describe("agent mcp route", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.result.content[0].text).toBe("done");
-    expect(vi.mocked(generateText)).toHaveBeenCalledOnce();
+    expect(vi.mocked(streamText)).toHaveBeenCalledOnce();
+  });
+
+  it("supports file context + unified_diff response mode", async () => {
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: "tools/call",
+          id: "patch-1",
+          jsonrpc: "2.0",
+          params: {
+            name: "wave_run_agent",
+            arguments: {
+              task: "Update algorithm implementation",
+              responseMode: "unified_diff",
+              files: [
+                {
+                  path: "main.py",
+                  language: "python",
+                  content: "print('old')",
+                },
+              ],
+            },
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0] as any;
+    const lastMessage = callArgs.messages[callArgs.messages.length - 1];
+
+    expect(callArgs.system).toContain("unified diff patch");
+    expect(lastMessage.content).toContain("File: main.py");
+    expect(lastMessage.content).toContain("print('old')");
+  });
+
+  it("executes a direct subagent tool in copilot-native mode", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      mcpPresentationMode: "copilot_native",
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [],
+      },
+      subAgentsEnabled: true,
+    } as any);
+    vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue([
+      {
+        id: "sa-planner",
+        name: "Planner",
+        description: "Plan work",
+        instructions: "Plan carefully",
+        tools: [],
+        enabled: true,
+      },
+    ] as any);
+
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: "tools/call",
+          id: "subagent-1",
+          jsonrpc: "2.0",
+          params: {
+            name: "wave_subagent_planner",
+            arguments: {
+              task: "Plan this feature",
+            },
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.result.content[0].text).toBe("done");
+    const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0] as any;
+    expect(callArgs.system).toContain("Plan carefully");
+  });
+
+  it("executes a direct workflow tool in copilot-native mode", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      mcpPresentationMode: "copilot_native",
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [
+          {
+            type: "workflow",
+            workflowId: "workflow-1",
+            name: "Create Issue",
+          },
+        ],
+      },
+      subAgentsEnabled: false,
+    } as any);
+    vi.mocked(workflowRepository.selectToolByIds).mockResolvedValue([
+      {
+        id: "workflow-1",
+        name: "Create Issue",
+        description: "File a ticket",
+        schema: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+          },
+          required: ["title"],
+        },
+      },
+    ] as any);
+
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: "tools/call",
+          id: "workflow-1",
+          jsonrpc: "2.0",
+          params: {
+            name: "wave_workflow_create_issue",
+            arguments: {
+              title: "Bug report",
+            },
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.result.content[0].text).toContain(
+      '"workflowName": "Create Issue"',
+    );
+    expect(json.result.content[0].text).toContain('"title": "Bug report"');
+  });
+
+  it("executes a direct knowledge tool in copilot-native mode", async () => {
+    vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
+      id: "agent-1",
+      name: "Agent One",
+      userId: "user-1",
+      agentType: "standard",
+      mcpEnabled: true,
+      mcpPresentationMode: "copilot_native",
+      instructions: {
+        role: "assistant",
+        systemPrompt: "helpful",
+        mentions: [],
+      },
+      subAgentsEnabled: false,
+    } as any);
+    vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([
+      {
+        id: "kg-1",
+        name: "Product Docs",
+        description: "Internal docs",
+      },
+    ] as any);
+
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: "tools/call",
+          id: "knowledge-1",
+          jsonrpc: "2.0",
+          params: {
+            name: "wave_knowledge_product_docs",
+            arguments: {
+              query: "deployment",
+            },
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.result.content[0].text).toContain(
+      "Knowledge result from Product Docs: deployment",
+    );
+  });
+
+  it("supports streamable POST SSE with progress and final response", async () => {
+    const res = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          method: "tools/call",
+          id: "stream-1",
+          jsonrpc: "2.0",
+          params: {
+            name: "wave_run_agent",
+            _meta: {
+              progressToken: "p-1",
+            },
+            arguments: {
+              task: "Generate code",
+            },
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+    const bodyText = await res.text();
+    expect(bodyText).toContain('"method":"notifications/progress"');
+    expect(bodyText).toContain('"progressToken":"p-1"');
+    expect(bodyText).toContain('"id":"stream-1"');
+    expect(bodyText).toContain('"result"');
+  });
+
+  it("aborts in-flight run when notifications/cancelled is received", async () => {
+    vi.mocked(streamText).mockImplementationOnce(((options: any) => {
+      return {
+        text: new Promise<string>((_resolve, reject) => {
+          options.abortSignal?.addEventListener(
+            "abort",
+            () => {
+              const reason = options.abortSignal?.reason;
+              reject(
+                reason instanceof Error ? reason : new Error("client-cancel"),
+              );
+            },
+            { once: true },
+          );
+        }),
+      } as any;
+    }) as any);
+
+    const runningPromise = POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: "tools/call",
+          id: "run-1",
+          jsonrpc: "2.0",
+          params: {
+            name: "wave_run_agent",
+            arguments: {
+              task: "Long running task",
+            },
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const cancelRes = await POST(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          method: "notifications/cancelled",
+          jsonrpc: "2.0",
+          params: {
+            requestId: "run-1",
+            reason: "client-cancel",
+          },
+        }),
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(cancelRes.status).toBe(202);
+
+    const runningRes = await runningPromise;
+    expect(runningRes.status).toBe(200);
+
+    const runningJson = await runningRes.json();
+    expect(runningJson.error.code).toBe(-32603);
+    expect(runningJson.error.message).toContain("client-cancel");
   });
 
   it("supports legacy enabled tool-capable models without modelType", async () => {
@@ -514,5 +981,28 @@ describe("agent mcp route", () => {
     const json = await res.json();
     expect(json.error.code).toBe(-32603);
     expect(json.error.message).toContain("Configured MCP model is unavailable");
+  });
+
+  it("keeps legacy GET SSE support", async () => {
+    const res = await GET(
+      makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
+        method: "GET",
+        headers: {
+          ...authHeaders(),
+          accept: "text/event-stream",
+        },
+      }) as any,
+      withParams("agent-1"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+
+    const reader = res.body?.getReader();
+    expect(reader).toBeTruthy();
+    const first = await reader!.read();
+    const text = new TextDecoder().decode(first.value);
+    expect(text).toContain("event: endpoint");
+    await reader!.cancel();
   });
 });

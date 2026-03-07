@@ -14,6 +14,7 @@ import { pgSnowflakeAgentRepository } from "./pg/repositories/snowflake-agent-re
 import { pgSettingsRepository } from "./pg/repositories/settings-repository.pg";
 import { pgKnowledgeRepository } from "./pg/repositories/knowledge-repository.pg";
 import { pgSkillRepository } from "./pg/repositories/skill-repository.pg";
+import { pgAgentAnalyticsRepository } from "./pg/repositories/agent-analytics-repository.pg";
 
 export const chatRepository = pgChatRepository;
 export const userRepository = pgUserRepository;
@@ -34,3 +35,4 @@ export const snowflakeAgentRepository = pgSnowflakeAgentRepository;
 export const settingsRepository = pgSettingsRepository;
 export const knowledgeRepository = pgKnowledgeRepository;
 export const skillRepository = pgSkillRepository;
+export const agentAnalyticsRepository = pgAgentAnalyticsRepository;

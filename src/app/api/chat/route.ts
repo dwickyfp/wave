@@ -17,40 +17,25 @@ import {
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
 import {
-  buildAgentSkillsSystemPrompt,
-  buildKnowledgeContextSystemPrompt,
-  buildMcpServerCustomizationsSystemPrompt,
-  buildParallelSubAgentSystemPrompt,
-  buildToolCallUnsupportedModelSystemPrompt,
-  buildUserSystemPrompt,
-} from "lib/ai/prompts";
-import {
   agentRepository,
   chatRepository,
   knowledgeRepository,
   settingsRepository,
-  skillRepository,
   snowflakeAgentRepository,
-  subAgentRepository,
 } from "lib/db/repository";
 import globalLogger from "logger";
 
-import { errorIf, safe } from "ts-safe";
+import { safe } from "ts-safe";
 
 import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
 import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
-import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
+import {
+  buildWaveAgentSystemPrompt,
+  loadWaveAgentBoundTools,
+} from "lib/ai/agent/runtime";
 import { ImageToolName } from "lib/ai/tools";
 import { createDbImageTool } from "lib/ai/tools/image";
-import {
-  createKnowledgeDocsTool,
-  knowledgeDocsToolName,
-} from "lib/ai/tools/knowledge-tool";
-import {
-  createLoadSkillTool,
-  LOAD_SKILL_TOOL_NAME,
-} from "lib/ai/tools/skill-tool";
 import {
   queryKnowledgeAsDocs,
   formatDocsAsText,
@@ -72,11 +57,7 @@ import {
   extractInProgressToolPart,
   filterMcpServerCustomizations,
   handleError,
-  loadAppDefaultTools,
-  loadMcpTools,
-  loadWorkFlowTools,
   manualToolExecuteByLastMessage,
-  mergeSystemPrompt,
 } from "./shared.chat";
 
 const logger = globalLogger.withDefaults({
@@ -556,105 +537,18 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        let attachedSkills: Awaited<
-          ReturnType<typeof skillRepository.getSkillsByAgentId>
-        > = [];
-
-        const MCP_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(() =>
-            loadMcpTools({
-              mentions,
-              allowedMcpServers,
-            }),
-          )
-          .orElse({});
-
-        const WORKFLOW_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(() =>
-            loadWorkFlowTools({
-              mentions,
-              dataStream,
-            }),
-          )
-          .orElse({});
-
-        const APP_DEFAULT_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(() =>
-            loadAppDefaultTools({
-              mentions,
-              allowedAppDefaultToolkit,
-            }),
-          )
-          .orElse({});
-
-        const agentWithSubAgents =
-          agent?.subAgentsEnabled && agent.id
-            ? {
-                ...agent,
-                subAgents: await subAgentRepository.selectSubAgentsByAgentId(
-                  agent.id,
-                ),
-              }
-            : agent;
-
-        const SUBAGENT_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(
-            errorIf(
-              () =>
-                !agentWithSubAgents?.subAgentsEnabled &&
-                "Subagents not enabled",
-            ),
-          )
-          .map(() =>
-            loadSubAgentTools(
-              agentWithSubAgents!,
-              dataStream,
-              request.signal,
-              chatModel!,
-            ),
-          )
-          .orElse({});
-
-        // Knowledge tools for agents with attached knowledge groups
-        const KNOWLEDGE_TOOLS: Record<string, Tool> = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(errorIf(() => !agent?.id && "No agent"))
-          .map(async () => {
-            const groups = await knowledgeRepository.getGroupsByAgentId(
-              agent!.id,
-            );
-            const tools: Record<string, Tool> = {};
-            for (const group of groups) {
-              tools[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(
-                group,
-                {
-                  userId: session.user.id,
-                  source: "agent",
-                },
-              );
-            }
-            return tools;
-          })
-          .orElse({});
-
-        // On-demand skill loading for agents with attached skills
-        const SKILL_TOOLS: Record<string, Tool> = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(errorIf(() => !agent?.id && "No agent"))
-          .map(async () => {
-            attachedSkills = await skillRepository.getSkillsByAgentId(
-              agent!.id,
-            );
-            if (!attachedSkills.length) return {} as Record<string, Tool>;
-            return {
-              [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
-            } as Record<string, Tool>;
-          })
-          .orElse({} as Record<string, Tool>);
+        const toolset = await loadWaveAgentBoundTools({
+          agent,
+          userId: session.user.id,
+          mentions,
+          allowedMcpServers,
+          allowedAppDefaultToolkit,
+          dataStream,
+          abortSignal: request.signal,
+          chatModel: chatModel!,
+          source: "agent",
+          isToolCallAllowed,
+        });
 
         const inProgressToolParts = extractInProgressToolPart(message);
         if (inProgressToolParts.length) {
@@ -662,7 +556,11 @@ export async function POST(request: Request) {
             inProgressToolParts.map(async (part) => {
               const output = await manualToolExecuteByLastMessage(
                 part,
-                { ...MCP_TOOLS, ...WORKFLOW_TOOLS, ...APP_DEFAULT_TOOLS },
+                {
+                  ...toolset.mcpTools,
+                  ...toolset.workflowTools,
+                  ...toolset.appDefaultTools,
+                },
                 request.signal,
               );
               part.output = output;
@@ -680,23 +578,23 @@ export async function POST(request: Request) {
 
         const mcpServerCustomizations = await safe()
           .map(() => {
-            if (Object.keys(MCP_TOOLS ?? {}).length === 0)
+            if (Object.keys(toolset.mcpTools ?? {}).length === 0)
               throw new Error("No tools found");
             return rememberMcpServerCustomizationsAction(session.user.id);
           })
-          .map((v) => filterMcpServerCustomizations(MCP_TOOLS!, v))
+          .map((v) => filterMcpServerCustomizations(toolset.mcpTools as any, v))
           .orElse({});
 
-        const systemPrompt = mergeSystemPrompt(
-          buildUserSystemPrompt(session.user, userPreferences, agent),
-          buildMcpServerCustomizationsSystemPrompt(mcpServerCustomizations),
-          buildParallelSubAgentSystemPrompt(
-            agentWithSubAgents?.subAgents ?? [],
-          ),
-          buildAgentSkillsSystemPrompt(attachedSkills),
-          !supportToolCall && buildToolCallUnsupportedModelSystemPrompt,
-          buildKnowledgeContextSystemPrompt(knowledgeContexts),
-        );
+        const systemPrompt = buildWaveAgentSystemPrompt({
+          user: session.user,
+          userPreferences,
+          agent,
+          subAgents: toolset.subAgents,
+          attachedSkills: toolset.attachedSkills,
+          knowledgeContexts,
+          mcpServerCustomizations,
+          toolCallUnsupported: !supportToolCall,
+        });
 
         const IMAGE_TOOL: Record<string, Tool> = await (async (): Promise<
           Record<string, Tool>
@@ -725,11 +623,11 @@ export async function POST(request: Request) {
           }
         })();
         const vercelAITooles = safe({
-          ...MCP_TOOLS,
-          ...WORKFLOW_TOOLS,
-          ...SUBAGENT_TOOLS,
-          ...KNOWLEDGE_TOOLS,
-          ...SKILL_TOOLS,
+          ...toolset.mcpTools,
+          ...toolset.workflowTools,
+          ...toolset.subagentTools,
+          ...toolset.knowledgeTools,
+          ...toolset.skillTools,
         })
           .map((t) => {
             const bindingTools =
@@ -739,7 +637,7 @@ export async function POST(request: Request) {
                 : t;
             return {
               ...bindingTools,
-              ...APP_DEFAULT_TOOLS, // APP_DEFAULT_TOOLS Not Supported Manual
+              ...toolset.appDefaultTools, // APP_DEFAULT_TOOLS Not Supported Manual
               ...IMAGE_TOOL,
             };
           })
@@ -763,7 +661,7 @@ export async function POST(request: Request) {
           );
         } else {
           logger.info(
-            `binding tool count APP_DEFAULT: ${Object.keys(APP_DEFAULT_TOOLS ?? {}).length}, MCP: ${Object.keys(MCP_TOOLS ?? {}).length}, Workflow: ${Object.keys(WORKFLOW_TOOLS ?? {}).length}`,
+            `binding tool count APP_DEFAULT: ${Object.keys(toolset.appDefaultTools ?? {}).length}, MCP: ${Object.keys(toolset.mcpTools ?? {}).length}, Workflow: ${Object.keys(toolset.workflowTools ?? {}).length}`,
           );
         }
         logger.info(`model: ${chatModel?.provider}/${chatModel?.model}`);

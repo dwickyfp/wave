@@ -32,6 +32,10 @@ export const pgAgentRepository: AgentRepository = {
       mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
       mcpModelProvider: result.mcpModelProvider ?? null,
       mcpModelName: result.mcpModelName ?? null,
+      mcpCodingMode: result.mcpCodingMode ?? false,
+      mcpAutocompleteModelProvider: result.mcpAutocompleteModelProvider ?? null,
+      mcpAutocompleteModelName: result.mcpAutocompleteModelName ?? null,
+      mcpPresentationMode: result.mcpPresentationMode ?? "compatibility",
     };
   },
 
@@ -52,6 +56,10 @@ export const pgAgentRepository: AgentRepository = {
         mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
         mcpModelProvider: AgentTable.mcpModelProvider,
         mcpModelName: AgentTable.mcpModelName,
+        mcpCodingMode: AgentTable.mcpCodingMode,
+        mcpAutocompleteModelProvider: AgentTable.mcpAutocompleteModelProvider,
+        mcpAutocompleteModelName: AgentTable.mcpAutocompleteModelName,
+        mcpPresentationMode: AgentTable.mcpPresentationMode,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         isBookmarked: sql<boolean>`${BookmarkTable.id} IS NOT NULL`,
@@ -87,6 +95,10 @@ export const pgAgentRepository: AgentRepository = {
       mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
       mcpModelProvider: result.mcpModelProvider ?? null,
       mcpModelName: result.mcpModelName ?? null,
+      mcpCodingMode: result.mcpCodingMode ?? false,
+      mcpAutocompleteModelProvider: result.mcpAutocompleteModelProvider ?? null,
+      mcpAutocompleteModelName: result.mcpAutocompleteModelName ?? null,
+      mcpPresentationMode: result.mcpPresentationMode ?? "compatibility",
       isBookmarked: result.isBookmarked ?? false,
     };
   },
@@ -108,6 +120,10 @@ export const pgAgentRepository: AgentRepository = {
         mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
         mcpModelProvider: AgentTable.mcpModelProvider,
         mcpModelName: AgentTable.mcpModelName,
+        mcpCodingMode: AgentTable.mcpCodingMode,
+        mcpAutocompleteModelProvider: AgentTable.mcpAutocompleteModelProvider,
+        mcpAutocompleteModelName: AgentTable.mcpAutocompleteModelName,
+        mcpPresentationMode: AgentTable.mcpPresentationMode,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
       })
@@ -125,6 +141,10 @@ export const pgAgentRepository: AgentRepository = {
       mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
       mcpModelProvider: result.mcpModelProvider ?? null,
       mcpModelName: result.mcpModelName ?? null,
+      mcpCodingMode: result.mcpCodingMode ?? false,
+      mcpAutocompleteModelProvider: result.mcpAutocompleteModelProvider ?? null,
+      mcpAutocompleteModelName: result.mcpAutocompleteModelName ?? null,
+      mcpPresentationMode: result.mcpPresentationMode ?? "compatibility",
     };
   },
 
@@ -143,6 +163,10 @@ export const pgAgentRepository: AgentRepository = {
         mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
         mcpModelProvider: AgentTable.mcpModelProvider,
         mcpModelName: AgentTable.mcpModelName,
+        mcpCodingMode: AgentTable.mcpCodingMode,
+        mcpAutocompleteModelProvider: AgentTable.mcpAutocompleteModelProvider,
+        mcpAutocompleteModelName: AgentTable.mcpAutocompleteModelName,
+        mcpPresentationMode: AgentTable.mcpPresentationMode,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         userName: UserTable.name,
@@ -164,6 +188,10 @@ export const pgAgentRepository: AgentRepository = {
       mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
       mcpModelProvider: result.mcpModelProvider ?? null,
       mcpModelName: result.mcpModelName ?? null,
+      mcpCodingMode: result.mcpCodingMode ?? false,
+      mcpAutocompleteModelProvider: result.mcpAutocompleteModelProvider ?? null,
+      mcpAutocompleteModelName: result.mcpAutocompleteModelName ?? null,
+      mcpPresentationMode: result.mcpPresentationMode ?? "compatibility",
       userName: result.userName ?? undefined,
       userAvatar: result.userAvatar ?? undefined,
       isBookmarked: false, // Always false for owned agents
@@ -198,6 +226,10 @@ export const pgAgentRepository: AgentRepository = {
       mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
       mcpModelProvider: result.mcpModelProvider ?? null,
       mcpModelName: result.mcpModelName ?? null,
+      mcpCodingMode: result.mcpCodingMode ?? false,
+      mcpAutocompleteModelProvider: result.mcpAutocompleteModelProvider ?? null,
+      mcpAutocompleteModelName: result.mcpAutocompleteModelName ?? null,
+      mcpPresentationMode: result.mcpPresentationMode ?? "compatibility",
     };
   },
 
@@ -346,6 +378,37 @@ export const pgAgentRepository: AgentRepository = {
       .set({
         mcpModelProvider: modelProvider,
         mcpModelName: modelName,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpCodingMode(id, userId, enabled) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpCodingMode: enabled,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpAutocompleteModel(id, userId, modelProvider, modelName) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpAutocompleteModelProvider: modelProvider,
+        mcpAutocompleteModelName: modelName,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpPresentationMode(id, userId, presentationMode) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpPresentationMode: presentationMode,
         updatedAt: new Date(),
       })
       .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));

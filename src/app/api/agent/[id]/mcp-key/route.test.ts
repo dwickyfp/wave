@@ -10,6 +10,9 @@ vi.mock("lib/db/repository", () => ({
     setMcpApiKey: vi.fn(),
     setMcpEnabled: vi.fn(),
     setMcpModel: vi.fn(),
+    setMcpCodingMode: vi.fn(),
+    setMcpAutocompleteModel: vi.fn(),
+    setMcpPresentationMode: vi.fn(),
   },
   settingsRepository: {
     getProviders: vi.fn(),
@@ -179,6 +182,30 @@ describe("agent mcp key route", () => {
     );
   });
 
+  it("updates continue coding mode flag", async () => {
+    vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
+    vi.mocked(agentRepository.selectAgentById).mockResolvedValue({
+      id: "a1",
+      userId: "u1",
+      agentType: "standard",
+    } as any);
+
+    const res = await PUT(
+      new Request("http://localhost/api/agent/a1/mcp-key", {
+        method: "PUT",
+        body: JSON.stringify({ codingMode: true }),
+      }) as any,
+      withParams("a1"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(agentRepository.setMcpCodingMode)).toHaveBeenCalledWith(
+      "a1",
+      "u1",
+      true,
+    );
+  });
+
   it("returns 400 on invalid payload", async () => {
     vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
 
@@ -266,5 +293,77 @@ describe("agent mcp key route", () => {
     );
 
     expect(res.status).toBe(400);
+  });
+
+  it("updates autocomplete model", async () => {
+    vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
+    vi.mocked(agentRepository.selectAgentById).mockResolvedValue({
+      id: "a1",
+      userId: "u1",
+      agentType: "standard",
+    } as any);
+
+    const res = await PUT(
+      new Request("http://localhost/api/agent/a1/mcp-key", {
+        method: "PUT",
+        body: JSON.stringify({
+          autocompleteModel: { provider: "openai", model: "gpt-4.1-mini" },
+        }),
+      }) as any,
+      withParams("a1"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      vi.mocked(agentRepository.setMcpAutocompleteModel),
+    ).toHaveBeenCalledWith("a1", "u1", "openai", "gpt-4.1-mini");
+  });
+
+  it("clears autocomplete model", async () => {
+    vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
+    vi.mocked(agentRepository.selectAgentById).mockResolvedValue({
+      id: "a1",
+      userId: "u1",
+      agentType: "standard",
+    } as any);
+
+    const res = await PUT(
+      new Request("http://localhost/api/agent/a1/mcp-key", {
+        method: "PUT",
+        body: JSON.stringify({
+          autocompleteModel: null,
+        }),
+      }) as any,
+      withParams("a1"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      vi.mocked(agentRepository.setMcpAutocompleteModel),
+    ).toHaveBeenCalledWith("a1", "u1", null, null);
+  });
+
+  it("updates mcp presentation mode", async () => {
+    vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
+    vi.mocked(agentRepository.selectAgentById).mockResolvedValue({
+      id: "a1",
+      userId: "u1",
+      agentType: "standard",
+    } as any);
+
+    const res = await PUT(
+      new Request("http://localhost/api/agent/a1/mcp-key", {
+        method: "PUT",
+        body: JSON.stringify({
+          presentationMode: "copilot_native",
+        }),
+      }) as any,
+      withParams("a1"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      vi.mocked(agentRepository.setMcpPresentationMode),
+    ).toHaveBeenCalledWith("a1", "u1", "copilot_native");
   });
 });

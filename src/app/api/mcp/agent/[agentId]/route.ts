@@ -1,42 +1,24 @@
-import {
-  buildAgentSkillsSystemPrompt,
-  buildParallelSubAgentSystemPrompt,
-  buildUserSystemPrompt,
-} from "lib/ai/prompts";
-import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
-import {
-  loadAppDefaultTools,
-  loadMcpTools,
-  loadWorkFlowTools,
-  mergeSystemPrompt,
-} from "@/app/api/chat/shared.chat";
-import {
-  agentRepository,
-  knowledgeRepository,
-  settingsRepository,
-  skillRepository,
-  subAgentRepository,
-} from "lib/db/repository";
-import {
-  createKnowledgeDocsTool,
-  knowledgeDocsToolName,
-} from "lib/ai/tools/knowledge-tool";
-import {
-  createLoadSkillTool,
-  LOAD_SKILL_TOOL_NAME,
-} from "lib/ai/tools/skill-tool";
-import { getDbModel } from "lib/ai/provider-factory";
-import { compare } from "bcrypt-ts";
-import type { ChatModel } from "app-types/chat";
-import {
-  generateText,
-  ModelMessage,
-  stepCountIs,
-  Tool,
-  UIMessageStreamWriter,
-} from "ai";
 import { NextRequest, NextResponse } from "next/server";
+import type { KnowledgeSummary } from "app-types/knowledge";
+import type { SubAgent } from "app-types/subagent";
 import { z } from "zod";
+import {
+  MCP_PRESENTATION_MODE_COPILOT_NATIVE,
+  authenticateExternalAgentRequest,
+  buildDynamicToolName,
+  createUnauthorizedResponse,
+  createProgressReporter,
+  executeKnowledgeExternalTool,
+  executeSubAgentExternalTool,
+  executeWaveRunAgent,
+  executeWorkflowExternalTool,
+  getAgentPresentationMode,
+  getCopilotNativeMcpResources,
+  knowledgeQuerySchema,
+  loadExternalAccessAgent,
+  type ExternalAccessAgent,
+  waveRunAgentSchema,
+} from "lib/ai/agent/external-access";
 
 interface Params {
   params: Promise<{ agentId: string }>;
@@ -45,20 +27,45 @@ interface Params {
 const TOOL_RUN_AGENT = "wave_run_agent";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
-const messageSchema = z.object({
-  role: z.enum(["user", "assistant", "system"]),
-  content: z.string(),
-});
+type JsonRpcResponsePayload =
+  | { jsonrpc: "2.0"; id: unknown; result: unknown }
+  | { jsonrpc: "2.0"; id: unknown; error: { code: number; message: string } };
 
-const waveRunAgentSchema = z.object({
-  task: z.string().min(1),
-  messages: z.array(messageSchema).optional().default([]),
-});
+type JsonRpcNotificationPayload = {
+  jsonrpc: "2.0";
+  method: string;
+  params?: unknown;
+};
+
+type JsonRpcMessagePayload =
+  | JsonRpcResponsePayload
+  | JsonRpcNotificationPayload;
+
+type ProgressToken = string | number;
+
+type ActiveSseSession = {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  keepAlive: ReturnType<typeof setInterval>;
+};
+
+type ToolExecutionContext = {
+  agent: ExternalAccessAgent;
+  abortSignal: AbortSignal;
+  onProgress?: (progress: number, message: string) => void;
+};
+
+type McpRouteToolDefinition = {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  validateInput?: (input: unknown) => unknown;
+  execute: (input: unknown, context: ToolExecutionContext) => Promise<string>;
+};
 
 const WAVE_RUN_AGENT_TOOL = {
   name: TOOL_RUN_AGENT,
   description:
-    "Run this Wave base agent with its configured capabilities (subagents, workflows, default tools, MCP tools, knowledge, and skills).",
+    "Run this Wave base agent with its configured capabilities (subagents, workflows, default tools, MCP tools, knowledge, and skills). In Copilot Native mode, prefer direct wave_subagent_*, wave_workflow_*, and wave_knowledge_* tools when you want separate top-level tool sections. For coding workflows, pass file context and optionally request unified_diff output so Copilot can apply changes with native file tools.",
   inputSchema: {
     type: "object",
     properties: {
@@ -85,22 +92,44 @@ const WAVE_RUN_AGENT_TOOL = {
           additionalProperties: false,
         },
       },
+      files: {
+        type: "array",
+        description:
+          "Optional file context to help coding tasks (for example files read from workspace by Copilot).",
+        items: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Workspace path for the file.",
+            },
+            content: {
+              type: "string",
+              description: "Current file content.",
+            },
+            language: {
+              type: "string",
+              description: "Optional language hint (for example python).",
+            },
+          },
+          required: ["path", "content"],
+          additionalProperties: false,
+        },
+      },
+      responseMode: {
+        type: "string",
+        enum: ["text", "unified_diff"],
+        description:
+          "Response format. Use unified_diff for patch output that can be applied to files.",
+      },
     },
     required: ["task"],
     additionalProperties: false,
   },
 } as const;
 
-type JsonRpcResponsePayload =
-  | { jsonrpc: "2.0"; id: unknown; result: unknown }
-  | { jsonrpc: "2.0"; id: unknown; error: { code: number; message: string } };
-
-type ActiveSseSession = {
-  controller: ReadableStreamDefaultController<Uint8Array>;
-  keepAlive: ReturnType<typeof setInterval>;
-};
-
 const sseSessions = new Map<string, ActiveSseSession>();
+const inFlightRequests = new Map<string, AbortController>();
 const sseEncoder = new TextEncoder();
 const SSE_KEEPALIVE_MS = 15000;
 
@@ -157,6 +186,16 @@ function encodeSseBlock(input: {
   return sseEncoder.encode(`${lines.join("\n")}\n`);
 }
 
+function mcpSseHeaders() {
+  return {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no",
+    "mcp-protocol-version": MCP_PROTOCOL_VERSION,
+  };
+}
+
 function cleanupSseSession(sessionId: string) {
   const session = sseSessions.get(sessionId);
   if (!session) return;
@@ -184,7 +223,7 @@ function sendSseEndpointEvent(sessionId: string, endpoint: string): boolean {
 
 function sendSseRpcMessage(
   sessionId: string,
-  payload: JsonRpcResponsePayload,
+  payload: JsonRpcMessagePayload,
 ): boolean {
   const session = sseSessions.get(sessionId);
   if (!session) return false;
@@ -202,232 +241,193 @@ function sendSseRpcMessage(
   }
 }
 
-async function authenticate(
-  req: NextRequest,
-  agentId: string,
-): Promise<boolean> {
-  const headerCandidates = [
-    req.headers.get("emma_agent_key"),
-    req.headers.get("emma-agent-key"),
-    req.headers.get("x_emma_agent_key"),
-    req.headers.get("x-emma-agent-key"),
-    req.headers.get("wave_agent_api_key"),
-    req.headers.get("wave-agent-api-key"),
-    req.headers.get("x-wave-agent-api-key"),
-  ];
-  const headerKey = headerCandidates
-    .find((candidate) => !!candidate?.trim())
-    ?.trim();
+function createStreamablePostSseResponse(
+  execute: (send: (payload: JsonRpcMessagePayload) => void) => Promise<void>,
+) {
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const keepAlive = setInterval(() => {
+        try {
+          controller.enqueue(encodeSseBlock({ comment: "keepalive" }));
+        } catch {}
+      }, SSE_KEEPALIVE_MS);
 
-  const authHeader = req.headers.get("authorization");
-  let authKey: string | null = null;
-  if (authHeader?.trim()) {
-    const normalized = authHeader.trim();
-    if (/^Bearer\s+/i.test(normalized)) {
-      authKey = normalized.replace(/^Bearer\s+/i, "").trim();
-    } else if (!normalized.includes(" ")) {
-      authKey = normalized;
-    }
-  }
+      const send = (payload: JsonRpcMessagePayload) => {
+        try {
+          controller.enqueue(
+            encodeSseBlock({
+              data: JSON.stringify(payload),
+            }),
+          );
+        } catch {}
+      };
 
-  const rawKey = headerKey || authKey;
-  if (!rawKey) return false;
-
-  const agentInfo = await agentRepository.getAgentByMcpKey(agentId);
-  if (!agentInfo || !agentInfo.mcpApiKeyHash) {
-    return false;
-  }
-
-  return compare(rawKey, agentInfo.mcpApiKeyHash);
-}
-
-function isToolCapableLlmModel(candidate: {
-  enabled: boolean;
-  supportsTools: boolean;
-  modelType?: string | null;
-}) {
-  return (
-    candidate.enabled &&
-    candidate.supportsTools &&
-    (!candidate.modelType || candidate.modelType === "llm")
-  );
-}
-
-async function resolveAgentMcpModel(agent: {
-  mcpModelProvider?: string | null;
-  mcpModelName?: string | null;
-}): Promise<ChatModel | null> {
-  const providers = await settingsRepository.getProviders({
-    enabledOnly: true,
+      void (async () => {
+        try {
+          await execute(send);
+        } finally {
+          clearInterval(keepAlive);
+          try {
+            controller.close();
+          } catch {}
+        }
+      })();
+    },
+    cancel() {},
   });
 
-  if (agent.mcpModelProvider && agent.mcpModelName) {
-    const provider = providers.find(
-      (item) => item.name === agent.mcpModelProvider,
-    );
-    const model = provider?.models.find(
-      (candidate) =>
-        isToolCapableLlmModel(candidate) &&
-        (candidate.uiName === agent.mcpModelName ||
-          candidate.apiName === agent.mcpModelName),
-    );
+  return new NextResponse(stream, {
+    headers: mcpSseHeaders(),
+  });
+}
 
-    if (!provider || !model) {
-      throw new Error(
-        "Configured MCP model is unavailable or not tool-capable. Update this agent's MCP model selection.",
+function getInFlightRequestKey(agentId: string, requestId: unknown): string {
+  return `${agentId}:${JSON.stringify(requestId)}`;
+}
+
+function extractProgressToken(reqParams: unknown): ProgressToken | undefined {
+  if (!reqParams || typeof reqParams !== "object" || Array.isArray(reqParams)) {
+    return;
+  }
+
+  const meta =
+    "_meta" in reqParams ? (reqParams as { _meta?: unknown })._meta : undefined;
+
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
+    return;
+  }
+
+  const progressToken =
+    "progressToken" in meta
+      ? (meta as { progressToken?: unknown }).progressToken
+      : undefined;
+
+  if (typeof progressToken === "string" || typeof progressToken === "number") {
+    return progressToken;
+  }
+}
+
+async function buildMcpToolRegistry(
+  agent: ExternalAccessAgent,
+): Promise<Map<string, McpRouteToolDefinition>> {
+  const registry = new Map<string, McpRouteToolDefinition>();
+  const usedNames = new Set<string>([TOOL_RUN_AGENT]);
+
+  registry.set(TOOL_RUN_AGENT, {
+    ...WAVE_RUN_AGENT_TOOL,
+    validateInput: (input) => waveRunAgentSchema.parse(input),
+    execute: (input, context) =>
+      executeWaveRunAgent(input as z.infer<typeof waveRunAgentSchema>, context),
+  });
+
+  if (
+    getAgentPresentationMode(agent) !== MCP_PRESENTATION_MODE_COPILOT_NATIVE
+  ) {
+    return registry;
+  }
+
+  const { subAgents, workflows, knowledgeGroups } =
+    await getCopilotNativeMcpResources(agent);
+
+  subAgents
+    .filter((subagent) => subagent.enabled)
+    .forEach((subagent: SubAgent) => {
+      const toolName = buildDynamicToolName(
+        "wave_subagent",
+        subagent.name,
+        subagent.id,
+        usedNames,
       );
-    }
 
-    return {
-      provider: provider.name,
-      model: model.uiName || model.apiName,
-    };
-  }
-
-  for (const provider of providers) {
-    const model = provider.models.find(isToolCapableLlmModel);
-    if (!model) continue;
-
-    return {
-      provider: provider.name,
-      model: model.uiName || model.apiName,
-    };
-  }
-
-  return null;
-}
-
-async function executeWaveRunAgent(
-  input: z.infer<typeof waveRunAgentSchema>,
-  {
-    agentId,
-    abortSignal,
-  }: {
-    agentId: string;
-    abortSignal: AbortSignal;
-  },
-): Promise<string> {
-  const agent = await agentRepository.selectAgentByIdForMcp(agentId);
-  if (!agent) {
-    throw new Error("Agent not found");
-  }
-  if (agent.agentType === "snowflake_cortex") {
-    throw new Error("Snowflake agents are not supported on this endpoint");
-  }
-  if (!agent.mcpEnabled) {
-    throw new Error("MCP is not enabled for this agent");
-  }
-
-  const chatModel = await resolveAgentMcpModel(agent);
-  if (!chatModel) {
-    throw new Error(
-      "No enabled tool-capable chat model is configured. Configure one in Settings > AI Providers.",
-    );
-  }
-
-  const dbModelResult = await getDbModel(chatModel);
-  if (!dbModelResult) {
-    throw new Error(
-      "Configured chat model is not available. Verify provider key/model settings.",
-    );
-  }
-
-  const toolMentions = agent.instructions?.mentions ?? [];
-  const noopDataStream = {
-    write() {},
-    merge() {},
-  } as unknown as UIMessageStreamWriter;
-
-  const [mcpTools, workflowTools, appDefaultTools] = await Promise.all([
-    loadMcpTools({ mentions: toolMentions }),
-    loadWorkFlowTools({
-      mentions: toolMentions,
-      dataStream: noopDataStream,
-    }),
-    toolMentions.length
-      ? loadAppDefaultTools({ mentions: toolMentions })
-      : loadAppDefaultTools({ allowedAppDefaultToolkit: [] }),
-  ]);
-
-  const subAgents = agent.subAgentsEnabled
-    ? await subAgentRepository.selectSubAgentsByAgentId(agent.id)
-    : [];
-  const subagentTools = agent.subAgentsEnabled
-    ? await loadSubAgentTools(
-        {
-          ...agent,
-          subAgents,
-        },
-        noopDataStream,
-        abortSignal,
-        chatModel,
-      )
-    : {};
-
-  const knowledgeGroups = await knowledgeRepository.getGroupsByAgentId(
-    agent.id,
-  );
-  const knowledgeTools = knowledgeGroups.reduce(
-    (acc, group) => {
-      acc[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(group, {
-        userId: agent.userId,
-        source: "mcp",
+      registry.set(toolName, {
+        name: toolName,
+        description:
+          subagent.description?.trim() ||
+          `Run the ${subagent.name} Wave subagent directly. Use this instead of wave_run_agent when you want a dedicated Copilot tool section.`,
+        inputSchema: WAVE_RUN_AGENT_TOOL.inputSchema,
+        validateInput: (input) => waveRunAgentSchema.parse(input),
+        execute: (input, context) =>
+          executeSubAgentExternalTool(subagent, input, context),
       });
-      return acc;
-    },
-    {} as Record<string, Tool>,
-  );
+    });
 
-  const attachedSkills = await skillRepository.getSkillsByAgentId(agent.id);
-  const skillTools: Record<string, Tool> = attachedSkills.length
-    ? {
-        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
-      }
-    : {};
+  workflows.forEach((workflow) => {
+    const toolName = buildDynamicToolName(
+      "wave_workflow",
+      workflow.name,
+      workflow.id,
+      usedNames,
+    );
 
-  const systemPrompt = mergeSystemPrompt(
-    buildUserSystemPrompt(undefined, undefined, agent),
-    buildParallelSubAgentSystemPrompt(subAgents),
-    buildAgentSkillsSystemPrompt(attachedSkills),
-  );
-
-  const modelMessages: ModelMessage[] = [
-    ...input.messages.map((message) => ({
-      role: message.role,
-      content: message.content,
-    })),
-    {
-      role: "user",
-      content: input.task,
-    },
-  ];
-
-  const result = await generateText({
-    model: dbModelResult.model,
-    system: systemPrompt,
-    messages: modelMessages,
-    tools: {
-      ...mcpTools,
-      ...workflowTools,
-      ...subagentTools,
-      ...knowledgeTools,
-      ...skillTools,
-      ...appDefaultTools,
-    },
-    stopWhen: stepCountIs(10),
-    toolChoice: "auto",
-    maxRetries: 2,
-    abortSignal,
+    registry.set(toolName, {
+      name: toolName,
+      description:
+        workflow.description?.trim() ||
+        `Run the ${workflow.name} workflow directly on the Wave server.`,
+      inputSchema: workflow.schema as Record<string, unknown>,
+      validateInput: (input) => {
+        if (!input || typeof input !== "object" || Array.isArray(input)) {
+          return {};
+        }
+        return input;
+      },
+      execute: (input, context) =>
+        executeWorkflowExternalTool(
+          {
+            ...workflow,
+            schema: workflow.schema as Record<string, unknown>,
+          },
+          input,
+          context,
+        ),
+    });
   });
 
-  const finalText = result.text?.trim();
-  return finalText || "Task completed.";
+  knowledgeGroups.forEach((group: KnowledgeSummary) => {
+    const toolName = buildDynamicToolName(
+      "wave_knowledge",
+      group.name,
+      group.id,
+      usedNames,
+    );
+
+    registry.set(toolName, {
+      name: toolName,
+      description:
+        group.description?.trim() ||
+        `Search the ${group.name} knowledge base directly from Wave.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The search query to run against this knowledge base.",
+          },
+          tokens: {
+            type: "number",
+            description: "Optional token budget for returned document content.",
+          },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+      validateInput: (input) => knowledgeQuerySchema.parse(input),
+      execute: (input, context) =>
+        executeKnowledgeExternalTool(group, input, context),
+    });
+  });
+
+  return registry;
 }
 
 async function handleJsonRpcRequest(
   agentId: string,
+  agent: ExternalAccessAgent,
   body: unknown,
-  abortSignal: AbortSignal,
+  context: {
+    abortSignal: AbortSignal;
+    sendNotification?: (payload: JsonRpcNotificationPayload) => void;
+  },
 ): Promise<JsonRpcResponsePayload | null> {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return jsonRpcErrorPayload(null, -32600, "Invalid Request");
@@ -448,6 +448,30 @@ async function handleJsonRpcRequest(
     return null;
   }
 
+  if (method === "notifications/cancelled") {
+    const params = z
+      .object({
+        requestId: z.unknown().optional(),
+        reason: z.string().optional(),
+      })
+      .catch({ requestId: undefined, reason: undefined })
+      .parse(reqParams);
+
+    if (params.requestId !== undefined) {
+      const key = getInFlightRequestKey(agentId, params.requestId);
+      const requestController = inFlightRequests.get(key);
+      if (requestController) {
+        requestController.abort(
+          params.reason
+            ? new Error(params.reason)
+            : new Error("Cancelled by MCP client"),
+        );
+      }
+    }
+
+    return null;
+  }
+
   if (method === "ping") {
     return jsonRpcResultPayload(id, {});
   }
@@ -461,7 +485,14 @@ async function handleJsonRpcRequest(
   }
 
   if (method === "tools/list") {
-    return jsonRpcResultPayload(id, { tools: [WAVE_RUN_AGENT_TOOL] });
+    const toolRegistry = await buildMcpToolRegistry(agent);
+    return jsonRpcResultPayload(id, {
+      tools: Array.from(toolRegistry.values()).map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      })),
+    });
   }
 
   if (method === "tools/call") {
@@ -469,10 +500,19 @@ async function handleJsonRpcRequest(
       .object({
         name: z.string(),
         arguments: z.unknown().optional(),
+        _meta: z
+          .object({
+            progressToken: z.union([z.string(), z.number()]).optional(),
+          })
+          .passthrough()
+          .optional(),
       })
+      .passthrough()
       .parse(reqParams);
 
-    if (callRequest.name !== TOOL_RUN_AGENT) {
+    const toolRegistry = await buildMcpToolRegistry(agent);
+    const selectedTool = toolRegistry.get(callRequest.name);
+    if (!selectedTool) {
       return jsonRpcErrorPayload(
         id,
         -32601,
@@ -480,11 +520,47 @@ async function handleJsonRpcRequest(
       );
     }
 
-    const parsedInput = waveRunAgentSchema.parse(callRequest.arguments ?? {});
-    const text = await executeWaveRunAgent(parsedInput, {
-      agentId,
-      abortSignal,
+    const progressToken =
+      callRequest._meta?.progressToken ?? extractProgressToken(reqParams);
+    const reportProgress = createProgressReporter({
+      progressToken,
+      emit: context.sendNotification,
     });
+
+    const requestAbortController = new AbortController();
+    if (context.abortSignal.aborted) {
+      requestAbortController.abort(context.abortSignal.reason);
+    } else {
+      context.abortSignal.addEventListener(
+        "abort",
+        () => {
+          requestAbortController.abort(context.abortSignal.reason);
+        },
+        { once: true },
+      );
+    }
+
+    const requestKey = hasId ? getInFlightRequestKey(agentId, id) : null;
+    if (requestKey) {
+      inFlightRequests.set(requestKey, requestAbortController);
+    }
+
+    const parsedInput = selectedTool.validateInput
+      ? selectedTool.validateInput(callRequest.arguments ?? {})
+      : (callRequest.arguments ?? {});
+
+    let text = "";
+    try {
+      text = await selectedTool.execute(parsedInput, {
+        agent,
+        abortSignal: requestAbortController.signal,
+        onProgress: reportProgress,
+      });
+    } finally {
+      if (requestKey) {
+        inFlightRequests.delete(requestKey);
+      }
+    }
 
     return jsonRpcResultPayload(id, {
       content: [
@@ -506,12 +582,15 @@ async function handleJsonRpcRequest(
 export async function POST(req: NextRequest, { params }: Params) {
   const { agentId } = await params;
 
-  const isAuthorized = await authenticate(req, agentId);
+  const isAuthorized = await authenticateExternalAgentRequest(
+    req.headers,
+    agentId,
+  );
   if (!isAuthorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return createUnauthorizedResponse();
   }
 
-  const agent = await agentRepository.selectAgentByIdForMcp(agentId);
+  const agent = await loadExternalAccessAgent(agentId);
   if (!agent || !agent.mcpEnabled || agent.agentType === "snowflake_cortex") {
     return NextResponse.json(
       { error: "MCP not enabled for this base agent" },
@@ -527,6 +606,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     );
   }
 
+  const supportsStreamableSse =
+    !sessionId &&
+    (req.headers.get("accept") ?? "").includes("text/event-stream");
+
   let body: unknown;
   try {
     body = await req.json();
@@ -536,12 +619,99 @@ export async function POST(req: NextRequest, { params }: Params) {
       sendSseRpcMessage(sessionId, payload);
       return acceptedResponse();
     }
+    if (supportsStreamableSse) {
+      return createStreamablePostSseResponse(async (send) => {
+        send(payload);
+      });
+    }
     return jsonRpcResponse(payload);
+  }
+
+  if (sessionId) {
+    let payload: JsonRpcResponsePayload | null;
+    try {
+      payload = await handleJsonRpcRequest(agentId, agent, body, {
+        abortSignal: req.signal,
+        sendNotification: (notification) => {
+          if (!sendSseRpcMessage(sessionId, notification)) {
+            throw new Error("Failed to deliver SSE notification");
+          }
+        },
+      });
+    } catch (error: any) {
+      const id =
+        body && typeof body === "object" && !Array.isArray(body) && "id" in body
+          ? (body as { id: unknown }).id
+          : null;
+      if (error instanceof z.ZodError) {
+        payload = jsonRpcErrorPayload(
+          id,
+          -32602,
+          `Invalid params: ${error.issues.map((issue) => issue.message).join("; ")}`,
+        );
+      } else {
+        payload = jsonRpcErrorPayload(
+          id,
+          -32603,
+          error?.message || "Internal error",
+        );
+      }
+    }
+
+    if (payload && !sendSseRpcMessage(sessionId, payload)) {
+      return NextResponse.json(
+        { error: "Failed to deliver SSE response" },
+        { status: 410 },
+      );
+    }
+    return acceptedResponse();
+  }
+
+  if (supportsStreamableSse) {
+    return createStreamablePostSseResponse(async (send) => {
+      let payload: JsonRpcResponsePayload | null;
+      try {
+        payload = await handleJsonRpcRequest(agentId, agent, body, {
+          abortSignal: req.signal,
+          sendNotification: send,
+        });
+      } catch (error: any) {
+        const id =
+          body &&
+          typeof body === "object" &&
+          !Array.isArray(body) &&
+          "id" in body
+            ? (body as { id: unknown }).id
+            : null;
+
+        if (error instanceof z.ZodError) {
+          payload = jsonRpcErrorPayload(
+            id,
+            -32602,
+            `Invalid params: ${error.issues
+              .map((issue) => issue.message)
+              .join("; ")}`,
+          );
+        } else {
+          payload = jsonRpcErrorPayload(
+            id,
+            -32603,
+            error?.message || "Internal error",
+          );
+        }
+      }
+
+      if (payload) {
+        send(payload);
+      }
+    });
   }
 
   let payload: JsonRpcResponsePayload | null;
   try {
-    payload = await handleJsonRpcRequest(agentId, body, req.signal);
+    payload = await handleJsonRpcRequest(agentId, agent, body, {
+      abortSignal: req.signal,
+    });
   } catch (error: any) {
     const id =
       body && typeof body === "object" && !Array.isArray(body) && "id" in body
@@ -562,16 +732,6 @@ export async function POST(req: NextRequest, { params }: Params) {
     }
   }
 
-  if (sessionId) {
-    if (payload && !sendSseRpcMessage(sessionId, payload)) {
-      return NextResponse.json(
-        { error: "Failed to deliver SSE response" },
-        { status: 410 },
-      );
-    }
-    return acceptedResponse();
-  }
-
   if (!payload) {
     return acceptedResponse();
   }
@@ -582,12 +742,15 @@ export async function POST(req: NextRequest, { params }: Params) {
 export async function GET(req: NextRequest, { params }: Params) {
   const { agentId } = await params;
 
-  const isAuthorized = await authenticate(req, agentId);
+  const isAuthorized = await authenticateExternalAgentRequest(
+    req.headers,
+    agentId,
+  );
   if (!isAuthorized) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return createUnauthorizedResponse();
   }
 
-  const agent = await agentRepository.selectAgentByIdForMcp(agentId);
+  const agent = await loadExternalAccessAgent(agentId);
   if (!agent || !agent.mcpEnabled || agent.agentType === "snowflake_cortex") {
     return NextResponse.json({ error: "MCP not enabled" }, { status: 403 });
   }
@@ -621,20 +784,13 @@ export async function GET(req: NextRequest, { params }: Params) {
     });
 
     return new NextResponse(stream, {
-      headers: {
-        "content-type": "text/event-stream; charset=utf-8",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-        "x-accel-buffering": "no",
-        "mcp-protocol-version": MCP_PROTOCOL_VERSION,
-      },
+      headers: mcpSseHeaders(),
     });
   }
 
   return NextResponse.json({
     name: `wave-agent-${agentId}`,
-    version: "1.0.0",
-    description: `Wave MCP endpoint for "${agent.name}"`,
-    tools: [WAVE_RUN_AGENT_TOOL],
+    protocolVersion: MCP_PROTOCOL_VERSION,
+    capabilities: { tools: {} },
   });
 }

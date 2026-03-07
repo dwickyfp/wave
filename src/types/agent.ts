@@ -77,6 +77,10 @@ export type AgentSummary = {
   mcpApiKeyPreview?: string | null;
   mcpModelProvider?: string | null;
   mcpModelName?: string | null;
+  mcpCodingMode?: boolean;
+  mcpAutocompleteModelProvider?: string | null;
+  mcpAutocompleteModelName?: string | null;
+  mcpPresentationMode?: "compatibility" | "copilot_native";
   userName?: string;
   userAvatar?: string;
   isBookmarked?: boolean;
@@ -133,6 +137,21 @@ export type AgentRepository = {
     userId: string,
     modelProvider: string | null,
     modelName: string | null,
+  ): Promise<void>;
+
+  setMcpCodingMode(id: string, userId: string, enabled: boolean): Promise<void>;
+
+  setMcpAutocompleteModel(
+    id: string,
+    userId: string,
+    modelProvider: string | null,
+    modelName: string | null,
+  ): Promise<void>;
+
+  setMcpPresentationMode(
+    id: string,
+    userId: string,
+    presentationMode: "compatibility" | "copilot_native",
   ): Promise<void>;
 
   getAgentByMcpKey(
