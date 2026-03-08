@@ -24,6 +24,7 @@ import type {
   PilotChatContinueRequest,
   PilotChatRequest,
   PilotTaskState,
+  PilotVisualContext,
 } from "app-types/pilot";
 import { z } from "zod";
 import { convertToSavePart } from "@/app/api/chat/shared.chat";
@@ -66,6 +67,7 @@ import {
   shouldRetryForPilotCoverage,
 } from "./orchestrator";
 import { resolveDefaultPilotChatModel } from "./server";
+import { getPilotVisualMetadata, withPilotVisualContext } from "./visual-input";
 
 function buildPilotProposalTools(snapshot?: PageSnapshot) {
   return {
@@ -242,6 +244,7 @@ function buildPilotProposalTools(snapshot?: PageSnapshot) {
             title: "",
             visibleText: "",
             forms: [],
+            standaloneFields: [],
             actionables: [],
           },
         );
@@ -396,6 +399,7 @@ function buildPilotResponseMetadata(input: {
   taskState: PilotTaskState;
   toolCount: number;
   usage?: ChatUsage;
+  pageVisualContext?: PilotVisualContext;
 }) {
   return {
     source: "emma_pilot",
@@ -409,6 +413,7 @@ function buildPilotResponseMetadata(input: {
     lastApprovedActionSummary: summarizeActionResults(input.actionResults),
     pilotProposals: input.proposals,
     pilotTaskState: input.taskState,
+    ...getPilotVisualMetadata(input.pageVisualContext),
   } satisfies ChatMetadata;
 }
 
@@ -430,6 +435,7 @@ async function executePilotModelTurn(input: {
   abortSignal?: AbortSignal;
   modeOverride?: PilotTaskState["mode"];
   extraPrompt?: string;
+  pageVisualContext?: PilotVisualContext;
 }) {
   const mode =
     input.modeOverride ??
@@ -484,6 +490,7 @@ async function executePilotModelTurn(input: {
         tabUrl: input.tabContext.url,
         tabTitle: input.tabContext.title,
         snapshot: input.pageSnapshot,
+        pageVisualContext: input.pageVisualContext,
         actionResults: input.actionResults,
         relevantForm,
         taskState: baseTaskState,
@@ -594,6 +601,7 @@ async function executePilotModelTurn(input: {
     lastApprovedActionSummary: summarizeActionResults(input.actionResults),
     pilotProposals: proposals,
     pilotTaskState: taskState,
+    ...getPilotVisualMetadata(input.pageVisualContext),
   };
 
   return {
@@ -627,6 +635,7 @@ async function streamPilotModelTurn(input: {
   abortSignal?: AbortSignal;
   modeOverride?: PilotTaskState["mode"];
   extraPrompt?: string;
+  pageVisualContext?: PilotVisualContext;
 }) {
   const mode =
     input.modeOverride ??
@@ -681,6 +690,7 @@ async function streamPilotModelTurn(input: {
         tabUrl: input.tabContext.url,
         tabTitle: input.tabContext.title,
         snapshot: input.pageSnapshot,
+        pageVisualContext: input.pageVisualContext,
         actionResults: input.actionResults,
         relevantForm,
         taskState: baseTaskState,
@@ -778,6 +788,7 @@ async function streamPilotModelTurn(input: {
           taskState: finalTaskState,
           toolCount: streamedToolNames.size,
           usage: streamedUsage,
+          pageVisualContext: input.pageVisualContext,
         });
       }
 
@@ -790,6 +801,7 @@ async function streamPilotModelTurn(input: {
           proposals: [],
           taskState: baseTaskState,
           toolCount: 0,
+          pageVisualContext: input.pageVisualContext,
         });
       }
 
@@ -820,6 +832,7 @@ async function streamPilotModelTurn(input: {
         taskState: finalTaskState,
         toolCount: streamedToolNames.size,
         usage: streamedUsage,
+        pageVisualContext: input.pageVisualContext,
       });
 
       await chatRepository.upsertMessage({
@@ -862,12 +875,16 @@ export async function runPilotChat(input: {
     attachments: input.request.attachments ?? [],
     userId: input.userId,
   });
-  messages.push(currentMessage);
+  const modelCurrentMessage = withPilotVisualContext(
+    currentMessage,
+    input.request.pageVisualContext,
+  );
+  const messagesWithCurrent = [...messages, modelCurrentMessage];
 
   const currentMessageMetadata = currentMessage.metadata as
     | ChatMetadata
     | undefined;
-  const latestSelections = getLatestPilotSelections(messages);
+  const latestSelections = getLatestPilotSelections(messagesWithCurrent);
   const mentions = [...(input.request.mentions ?? [])];
   const selectedAgent = await resolvePilotAgent(
     input.userId,
@@ -901,14 +918,15 @@ export async function runPilotChat(input: {
 
   const turnResult = await executePilotModelTurn({
     userId: input.userId,
-    messages,
-    taskUserText: getLatestUserText(messages),
+    messages: messagesWithCurrent,
+    taskUserText: getLatestUserText(messagesWithCurrent),
     selectedAgent,
     mentions,
     resolvedModel,
     user,
     userPreferences,
     pageSnapshot: input.request.pageSnapshot,
+    pageVisualContext: input.request.pageVisualContext,
     tabContext: input.request.tabContext,
     actionResults: input.request.actionResults,
     previousTaskState: getLatestPilotTaskState(messages),
@@ -924,6 +942,7 @@ export async function runPilotChat(input: {
     lastApprovedActionSummary: summarizeActionResults(
       input.request.actionResults,
     ),
+    ...getPilotVisualMetadata(input.request.pageVisualContext),
   };
 
   await chatRepository.upsertMessage({
@@ -989,11 +1008,15 @@ export async function streamPilotChat(input: {
     attachments: input.request.attachments ?? [],
     userId: input.userId,
   });
+  const modelCurrentMessage = withPilotVisualContext(
+    currentMessage,
+    input.request.pageVisualContext,
+  );
 
   const currentMessageMetadata = currentMessage.metadata as
     | ChatMetadata
     | undefined;
-  const messagesWithCurrent = [...messages, currentMessage];
+  const messagesWithCurrent = [...messages, modelCurrentMessage];
   const latestSelections = getLatestPilotSelections(messagesWithCurrent);
   const mentions = [...(input.request.mentions ?? [])];
   const selectedAgent = await resolvePilotAgent(
@@ -1035,6 +1058,7 @@ export async function streamPilotChat(input: {
     lastApprovedActionSummary: summarizeActionResults(
       input.request.actionResults,
     ),
+    ...getPilotVisualMetadata(input.request.pageVisualContext),
   };
 
   await chatRepository.upsertMessage({
@@ -1067,6 +1091,7 @@ export async function streamPilotChat(input: {
     user,
     userPreferences,
     pageSnapshot: input.request.pageSnapshot,
+    pageVisualContext: input.request.pageVisualContext,
     tabContext: input.request.tabContext,
     actionResults: input.request.actionResults,
     previousTaskState: getLatestPilotTaskState(messages),
@@ -1123,6 +1148,10 @@ export async function continuePilotChat(input: {
       },
     ],
   };
+  const modelSyntheticMessage = withPilotVisualContext(
+    syntheticMessage,
+    input.request.pageVisualContext,
+  );
 
   const user = await userRepository.getUserById(input.userId);
   if (!user) {
@@ -1132,7 +1161,7 @@ export async function continuePilotChat(input: {
 
   const turnResult = await executePilotModelTurn({
     userId: input.userId,
-    messages: [...messages, syntheticMessage],
+    messages: [...messages, modelSyntheticMessage],
     taskUserText,
     selectedAgent,
     mentions: [],
@@ -1140,6 +1169,7 @@ export async function continuePilotChat(input: {
     user,
     userPreferences,
     pageSnapshot: input.request.pageSnapshot,
+    pageVisualContext: input.request.pageVisualContext,
     tabContext: input.request.tabContext,
     actionResults: input.request.actionResults,
     previousTaskState,
@@ -1214,6 +1244,10 @@ export async function streamPilotContinuationChat(input: {
       },
     ],
   };
+  const modelSyntheticMessage = withPilotVisualContext(
+    syntheticMessage,
+    input.request.pageVisualContext,
+  );
 
   const user = await userRepository.getUserById(input.userId);
   if (!user) {
@@ -1224,7 +1258,7 @@ export async function streamPilotContinuationChat(input: {
   return await streamPilotModelTurn({
     threadId: input.request.threadId,
     originalMessages: messages,
-    modelMessages: [...messages, syntheticMessage],
+    modelMessages: [...messages, modelSyntheticMessage],
     taskUserText,
     selectedAgent,
     mentions: [],
@@ -1232,6 +1266,7 @@ export async function streamPilotContinuationChat(input: {
     user,
     userPreferences,
     pageSnapshot: input.request.pageSnapshot,
+    pageVisualContext: input.request.pageVisualContext,
     tabContext: input.request.tabContext,
     actionResults: input.request.actionResults,
     previousTaskState,

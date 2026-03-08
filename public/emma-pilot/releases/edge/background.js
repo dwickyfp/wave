@@ -1,6 +1,8 @@
 const AUTH_STORAGE_KEY = "emmaPilotAuth";
 const ALL_URLS_PERMISSION = { origins: ["<all_urls>"] };
+const MIN_CAPTURE_INTERVAL_MS = 700;
 let runtimeConfigPromise = null;
+let lastVisibleCaptureAt = 0;
 
 async function getRuntimeConfig() {
   runtimeConfigPromise ??= (async () => {
@@ -64,6 +66,23 @@ async function getActiveTab() {
   return tab;
 }
 
+async function captureVisibleTabForPilot(windowId) {
+  const delay = Math.max(
+    0,
+    MIN_CAPTURE_INTERVAL_MS - (Date.now() - lastVisibleCaptureAt),
+  );
+
+  if (delay > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
+  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
+    format: "png",
+  });
+  lastVisibleCaptureAt = Date.now();
+  return dataUrl;
+}
+
 async function configurePanelBehavior() {
   if (chrome.sidePanel?.setPanelBehavior) {
     await chrome.sidePanel.setPanelBehavior({
@@ -72,7 +91,7 @@ async function configurePanelBehavior() {
   }
 }
 
-async function startAuthFlow() {
+async function startAuthFlow(options = {}) {
   const config = await getRuntimeConfig();
   const state = crypto.randomUUID();
   const browserInfo = config.browser === "edge" ? "edge" : "chrome";
@@ -83,7 +102,7 @@ async function startAuthFlow() {
 
   const callbackUrl = await chrome.identity.launchWebAuthFlow({
     url: authorizeUrl.toString(),
-    interactive: true,
+    interactive: options.interactive !== false,
   });
 
   if (!callbackUrl) {
@@ -143,8 +162,25 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
       case "pilot.startAuth": {
         sendResponse({
-          auth: await startAuthFlow(),
+          auth: await startAuthFlow({
+            interactive: message.interactive !== false,
+          }),
         });
+        return;
+      }
+
+      case "pilot.tryAutoAuth": {
+        try {
+          sendResponse({
+            auth: await startAuthFlow({
+              interactive: false,
+            }),
+          });
+        } catch {
+          sendResponse({
+            auth: null,
+          });
+        }
         return;
       }
 
@@ -188,6 +224,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             title: tab.title,
           },
           snapshot,
+        });
+        return;
+      }
+
+      case "pilot.collectVisualContext": {
+        const tab = await getActiveTab();
+        const captureDataUrl = await captureVisibleTabForPilot(tab.windowId);
+        sendResponse({
+          tab: {
+            tabId: tab.id,
+            url: tab.url,
+            title: tab.title,
+          },
+          captureDataUrl,
+          mediaType: "image/png",
+          capturedAt: new Date().toISOString(),
         });
         return;
       }

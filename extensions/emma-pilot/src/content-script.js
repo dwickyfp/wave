@@ -6,6 +6,20 @@
   globalThis.__emmaPilotContentScriptLoaded = true;
 
   const PILOT_ATTR = "data-emma-pilot-id";
+  const SENSITIVE_FIELD_TOKENS = [
+    "password",
+    "passcode",
+    "secret",
+    "card",
+    "credit",
+    "cvv",
+    "cvc",
+    "security code",
+    "iban",
+    "routing",
+    "account number",
+    "ssn",
+  ];
 
   function normalizeText(value) {
     return (value || "").replace(/\s+/g, " ").trim();
@@ -34,6 +48,20 @@
 
     const rect = element.getBoundingClientRect();
     return rect.width > 0 && rect.height > 0;
+  }
+
+  function getElementRect(element) {
+    const rect = element.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return undefined;
+    }
+
+    return {
+      x: rect.left,
+      y: rect.top,
+      width: rect.width,
+      height: rect.height,
+    };
   }
 
   function getLabelForField(element) {
@@ -72,6 +100,16 @@
     return "";
   }
 
+  function isSensitiveField(input) {
+    const haystack = normalizeText(
+      [input.type, input.label, input.name, input.placeholder, input.text]
+        .filter(Boolean)
+        .join(" "),
+    ).toLowerCase();
+
+    return SENSITIVE_FIELD_TOKENS.some((token) => haystack.includes(token));
+  }
+
   function serializeField(element) {
     if (!isVisible(element)) return null;
 
@@ -83,6 +121,7 @@
       placeholder: element.getAttribute("placeholder") || undefined,
       text: normalizeText(element.textContent),
       disabled: element.disabled || undefined,
+      rect: getElementRect(element),
     };
 
     if (element instanceof HTMLInputElement) {
@@ -137,8 +176,16 @@
           action: form.getAttribute("action") || undefined,
           method: form.getAttribute("method") || undefined,
           fields,
+          rect: getElementRect(form),
         };
       })
+      .filter(Boolean);
+  }
+
+  function collectStandaloneFields() {
+    return Array.from(document.querySelectorAll("input, textarea, select"))
+      .filter((element) => !element.closest("form"))
+      .map((field) => serializeField(field))
       .filter(Boolean);
   }
 
@@ -178,6 +225,7 @@
             element instanceof HTMLSelectElement
               ? element.disabled || undefined
               : undefined,
+          rect: getElementRect(element),
         };
       })
       .filter(Boolean);
@@ -190,6 +238,24 @@
       document.activeElement.matches("input, textarea, select")
         ? serializeField(document.activeElement)
         : null;
+    const forms = collectForms();
+    const standaloneFields = collectStandaloneFields();
+    const sensitiveFieldRects = [
+      ...forms.flatMap((form) => form.fields),
+      ...standaloneFields,
+    ]
+      .filter((field) => field.rect && isSensitiveField(field))
+      .map((field) => ({
+        elementId: field.elementId,
+        label: field.label,
+        rect: field.rect,
+      }))
+      .filter(
+        (field, index, collection) =>
+          collection.findIndex(
+            (candidate) => candidate.elementId === field.elementId,
+          ) === index,
+      );
 
     return {
       url: window.location.href,
@@ -200,8 +266,17 @@
       ),
       selectedText: selectedText || undefined,
       focusedElement: activeElement || undefined,
-      forms: collectForms(),
+      forms,
+      standaloneFields,
       actionables: collectActionables(),
+      viewport: {
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        devicePixelRatio: window.devicePixelRatio || 1,
+      },
+      sensitiveFieldRects,
       generatedAt: new Date().toISOString(),
     };
   }

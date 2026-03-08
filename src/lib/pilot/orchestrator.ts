@@ -1,7 +1,6 @@
 import type { Agent } from "app-types/agent";
-import type { ChatMetadata, ChatModel } from "app-types/chat";
 import type {
-  PageField,
+  PilotVisualContext,
   PageForm,
   PageSnapshot,
   PilotActionProposal,
@@ -11,68 +10,20 @@ import type {
   PilotTaskMode,
   PilotTaskState,
 } from "app-types/pilot";
-import type { UIMessage } from "ai";
 import { truncateString } from "lib/utils";
 import {
   createPilotActionProposal,
-  isSensitiveField,
   validateProposalAgainstSnapshot,
 } from "./browser-actions";
+import { findFormByElementId, normalizePilotText } from "./page-context";
 
-const FORM_FILL_TOKENS = [
-  "fill",
-  "form",
-  "field",
-  "complete",
-  "populate",
-  "enter",
-  "input",
-  "set",
-  "type",
-  "choose",
-  "select",
-  "check",
-  "tick",
-  "apply",
-  "registration",
-  "signup",
-  "register",
-  "checkout",
-  "profile",
-];
-
-const EXPLAIN_TOKENS = [
-  "explain",
-  "meaning",
-  "what is",
-  "what does",
-  "help me understand",
-];
-
-const ANALYZE_TOKENS = ["analyze", "inspect", "review", "look at", "summarize"];
-
-const NAVIGATE_TOKENS = [
-  "open",
-  "go to",
-  "navigate",
-  "visit",
-  "search",
-  "find",
-  "play",
-];
-
-const SUBMIT_ACTION_TOKENS = [
-  "submit",
-  "save",
-  "update",
-  "apply",
-  "continue",
-  "next",
-  "confirm",
-  "send",
-  "finish",
-  "search",
-];
+export {
+  buildRelevantFormContext,
+  getLatestPilotSelections,
+  getLatestPilotTaskState,
+  getLatestUserText,
+  resolvePilotTaskMode,
+} from "./page-context";
 
 const CLARIFICATION_TOKENS = [
   "which",
@@ -85,399 +36,6 @@ const CLARIFICATION_TOKENS = [
   "before i can fill",
   "before i continue",
 ];
-
-function normalizeText(value?: string | null) {
-  return value?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
-}
-
-function getTokens(value?: string | null) {
-  return normalizeText(value)
-    .split(/[^a-z0-9]+/i)
-    .filter((token) => token.length >= 2);
-}
-
-function countSharedTokens(a: string[], b: string[]) {
-  const other = new Set(b);
-  return a.reduce((count, token) => count + (other.has(token) ? 1 : 0), 0);
-}
-
-function messageText(message?: UIMessage | null) {
-  if (!message) return "";
-  return message.parts
-    .filter(
-      (
-        part,
-      ): part is Extract<
-        UIMessage["parts"][number],
-        { type: "text"; text: string }
-      > => part.type === "text" && typeof part.text === "string",
-    )
-    .map((part) => part.text)
-    .join("\n")
-    .trim();
-}
-
-function fieldText(field: PageField) {
-  return [field.label, field.name, field.placeholder, field.text, field.type]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function fieldHasValue(field: PageField) {
-  return Boolean(field.value?.trim()) || field.checked === true;
-}
-
-function isEditableField(field: PageField) {
-  return !field.disabled && normalizeText(field.type) !== "hidden";
-}
-
-function buildCoverage(
-  field: PageField,
-  bucket: PilotFieldCoverage["bucket"],
-  reason: string,
-): PilotFieldCoverage {
-  return {
-    elementId: field.elementId,
-    label: field.label,
-    name: field.name,
-    bucket,
-    reason,
-  };
-}
-
-function findFormByElementId(
-  snapshot: PageSnapshot | undefined,
-  elementId: string,
-): PageForm | null {
-  if (!snapshot) return null;
-  for (const form of snapshot.forms) {
-    if (form.fields.some((field) => field.elementId === elementId)) {
-      return form;
-    }
-  }
-  return null;
-}
-
-function scoreFormAgainstText(
-  form: PageForm,
-  queryTokens: string[],
-  snapshot: PageSnapshot | undefined,
-  previousState?: PilotTaskState,
-) {
-  let score = 0;
-
-  if (previousState?.targetFormId === form.formId) {
-    score += 240;
-  }
-
-  if (
-    snapshot?.focusedElement?.elementId &&
-    form.fields.some(
-      (field) => field.elementId === snapshot.focusedElement?.elementId,
-    )
-  ) {
-    score += 160;
-  }
-
-  const formTokens = getTokens(
-    [form.label, form.action, form.method].join(" "),
-  );
-  score += countSharedTokens(formTokens, queryTokens) * 16;
-
-  for (const field of form.fields) {
-    const fieldTokens = getTokens(fieldText(field));
-    score += Math.min(countSharedTokens(fieldTokens, queryTokens) * 10, 60);
-  }
-
-  if (form.fields.some((field) => field.required)) {
-    score += 12;
-  }
-
-  return score;
-}
-
-function selectRelevantForm(input: {
-  snapshot?: PageSnapshot;
-  userText: string;
-  previousState?: PilotTaskState;
-  mode: PilotTaskMode;
-}) {
-  const forms = input.snapshot?.forms ?? [];
-  if (!forms.length) {
-    return null;
-  }
-
-  if (input.previousState?.targetFormId) {
-    const previousMatch = forms.find(
-      (form) => form.formId === input.previousState?.targetFormId,
-    );
-    if (previousMatch) {
-      return {
-        form: previousMatch,
-        reason: "Continuing work on the previously targeted form.",
-      };
-    }
-  }
-
-  if (input.snapshot?.focusedElement?.elementId) {
-    const focusedForm = findFormByElementId(
-      input.snapshot,
-      input.snapshot.focusedElement.elementId,
-    );
-    if (focusedForm) {
-      return {
-        form: focusedForm,
-        reason: "Using the form around the currently focused field.",
-      };
-    }
-  }
-
-  const queryTokens = getTokens(input.userText);
-  let bestForm = forms[0];
-  let bestScore = Number.NEGATIVE_INFINITY;
-
-  for (const form of forms) {
-    const score = scoreFormAgainstText(
-      form,
-      queryTokens,
-      input.snapshot,
-      input.previousState,
-    );
-
-    if (score > bestScore) {
-      bestForm = form;
-      bestScore = score;
-    }
-  }
-
-  if (bestScore <= 0 && forms.length > 1 && input.mode !== "fill") {
-    return null;
-  }
-
-  return {
-    form: bestForm,
-    reason:
-      bestScore > 0
-        ? "Closest match based on the user request and page focus."
-        : "Single available form on the page.",
-  };
-}
-
-function buildLikelySubmitActions(
-  snapshot: PageSnapshot | undefined,
-  query: string,
-) {
-  const queryText = normalizeText(query);
-  return (snapshot?.actionables ?? [])
-    .filter((actionable) => {
-      if (actionable.disabled) {
-        return false;
-      }
-      const haystack = normalizeText(
-        [actionable.label, actionable.text].filter(Boolean).join(" "),
-      );
-      return SUBMIT_ACTION_TOKENS.some(
-        (token) => haystack.includes(token) || queryText.includes(token),
-      );
-    })
-    .slice(0, 4)
-    .map((actionable) => ({
-      elementId: actionable.elementId,
-      label: actionable.label,
-      text: actionable.text,
-    }));
-}
-
-export function getLatestPilotTaskState(messages: UIMessage[]) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const metadata = messages[index]?.metadata as ChatMetadata | undefined;
-    if (metadata?.pilotTaskState) {
-      return metadata.pilotTaskState;
-    }
-  }
-  return undefined;
-}
-
-export function getLatestPilotSelections(messages: UIMessage[]) {
-  let agentId: string | undefined;
-  let chatModel: ChatModel | undefined;
-  let pilotTaskState: PilotTaskState | undefined;
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const metadata = messages[index]?.metadata as ChatMetadata | undefined;
-    if (!metadata) {
-      continue;
-    }
-
-    if (!agentId && metadata.agentId) {
-      agentId = metadata.agentId;
-    }
-
-    if (!chatModel && metadata.chatModel) {
-      chatModel = metadata.chatModel;
-    }
-
-    if (!pilotTaskState && metadata.pilotTaskState) {
-      pilotTaskState = metadata.pilotTaskState;
-    }
-
-    if (agentId && chatModel && pilotTaskState) {
-      break;
-    }
-  }
-
-  return {
-    agentId,
-    chatModel,
-    pilotTaskState,
-  };
-}
-
-export function resolvePilotTaskMode(input: {
-  userText: string;
-  previousState?: PilotTaskState;
-  actionResults?: PilotActionResult[];
-}) {
-  const text = normalizeText(input.userText);
-
-  if (input.actionResults?.length) {
-    return "continue" as const;
-  }
-
-  if (
-    input.previousState?.lastPhase === "awaiting_user_input" &&
-    input.previousState.targetFieldIds.length
-  ) {
-    return "fill" as const;
-  }
-
-  if (NAVIGATE_TOKENS.some((token) => text.includes(token))) {
-    return "navigate" as const;
-  }
-
-  if (FORM_FILL_TOKENS.some((token) => text.includes(token))) {
-    return "fill" as const;
-  }
-
-  if (EXPLAIN_TOKENS.some((token) => text.includes(token))) {
-    return "explain" as const;
-  }
-
-  if (ANALYZE_TOKENS.some((token) => text.includes(token))) {
-    return "analyze" as const;
-  }
-
-  return input.previousState?.mode === "fill" ? "fill" : "analyze";
-}
-
-export function buildRelevantFormContext(input: {
-  snapshot?: PageSnapshot;
-  userText: string;
-  previousState?: PilotTaskState;
-  mode: PilotTaskMode;
-}) {
-  const selected = selectRelevantForm(input);
-  if (!selected) {
-    return undefined;
-  }
-
-  const queryTokens = getTokens(input.userText);
-  const focusedElementId = input.snapshot?.focusedElement?.elementId;
-  const genericFillRequest =
-    input.mode === "fill" &&
-    (!queryTokens.length ||
-      FORM_FILL_TOKENS.some((token) =>
-        normalizeText(input.userText).includes(token),
-      ));
-
-  const readyFields: PilotFieldCoverage[] = [];
-  const missingFields: PilotFieldCoverage[] = [];
-  const sensitiveFields: PilotFieldCoverage[] = [];
-  const irrelevantFields: PilotFieldCoverage[] = [];
-  const targetFieldIds: string[] = [];
-
-  for (const field of selected.form.fields) {
-    const tokens = getTokens(fieldText(field));
-    const matchesQuery = countSharedTokens(tokens, queryTokens) > 0;
-    const isFocused = focusedElementId === field.elementId;
-    const wasTargeted =
-      input.previousState?.targetFieldIds.includes(field.elementId) ?? false;
-    const relevant =
-      isEditableField(field) &&
-      (genericFillRequest || matchesQuery || isFocused || wasTargeted);
-
-    if (!relevant) {
-      irrelevantFields.push(
-        buildCoverage(
-          field,
-          "irrelevant",
-          "Not clearly part of the current task.",
-        ),
-      );
-      continue;
-    }
-
-    targetFieldIds.push(field.elementId);
-
-    if (isSensitiveField(field)) {
-      sensitiveFields.push(
-        buildCoverage(
-          field,
-          "sensitive",
-          "Sensitive field. Require explicit confirmation before filling.",
-        ),
-      );
-      continue;
-    }
-
-    if (fieldHasValue(field)) {
-      readyFields.push(
-        buildCoverage(
-          field,
-          "ready",
-          "Already has a value on the page or prior state.",
-        ),
-      );
-      continue;
-    }
-
-    if (input.previousState?.collectedValues[field.elementId]) {
-      readyFields.push(
-        buildCoverage(
-          field,
-          "ready",
-          "User already provided a value in the ongoing task state.",
-        ),
-      );
-      continue;
-    }
-
-    missingFields.push(
-      buildCoverage(
-        field,
-        "missing",
-        field.required
-          ? "Required field still needs a value."
-          : "Likely needed for the requested form task.",
-      ),
-    );
-  }
-
-  return {
-    formId: selected.form.formId,
-    label: selected.form.label,
-    reason: selected.reason,
-    targetFieldIds,
-    readyFields,
-    missingFields,
-    sensitiveFields,
-    irrelevantFields,
-    likelySubmitActions: buildLikelySubmitActions(
-      input.snapshot,
-      input.userText,
-    ),
-  } satisfies PilotRelevantFormContext;
-}
 
 export function buildPilotTaskState(input: {
   mode: PilotTaskMode;
@@ -494,15 +52,23 @@ export function buildPilotTaskState(input: {
 
   const relevantForm = input.relevantForm;
   if (input.snapshot && relevantForm) {
-    for (const form of input.snapshot.forms) {
-      if (form.formId !== relevantForm.formId) {
-        continue;
-      }
+    const candidateFields = [
+      ...input.snapshot.forms.flatMap((form) =>
+        relevantForm.formId
+          ? form.formId === relevantForm.formId
+            ? form.fields
+            : []
+          : form.fields,
+      ),
+      ...(input.snapshot.standaloneFields ?? []),
+    ];
 
-      for (const field of form.fields) {
-        if (field.value?.trim()) {
-          collectedValues[field.elementId] = field.value;
-        }
+    for (const field of candidateFields) {
+      if (
+        relevantForm.targetFieldIds.includes(field.elementId) &&
+        field.value?.trim()
+      ) {
+        collectedValues[field.elementId] = field.value;
       }
     }
   }
@@ -594,7 +160,7 @@ function summarizePageSnapshot(snapshot?: PageSnapshot) {
     action: form.action,
     fields: form.fields.slice(0, 12),
   }));
-
+  const standaloneFields = (snapshot.standaloneFields ?? []).slice(0, 12);
   const actionables = snapshot.actionables.slice(0, 20);
 
   return JSON.stringify(
@@ -603,7 +169,10 @@ function summarizePageSnapshot(snapshot?: PageSnapshot) {
       title: snapshot.title,
       selectedText: snapshot.selectedText,
       visibleText: truncateString(snapshot.visibleText || "", 5000),
+      viewport: snapshot.viewport,
+      sensitiveFieldRects: snapshot.sensitiveFieldRects?.length ?? 0,
       forms,
+      standaloneFields,
       actionables,
       focused,
     },
@@ -612,10 +181,32 @@ function summarizePageSnapshot(snapshot?: PageSnapshot) {
   );
 }
 
+function summarizeVisualContextForPrompt(
+  pageVisualContext?: PilotVisualContext,
+) {
+  if (
+    !pageVisualContext ||
+    pageVisualContext.mode !== "dom+vision" ||
+    !pageVisualContext.captures.length
+  ) {
+    return "No live browser screenshot is attached for this turn. Use DOM context only.";
+  }
+
+  return [
+    `Live browser screenshots are attached to the latest user turn (${pageVisualContext.captures
+      .map((capture) => capture.kind)
+      .join(", ")}).`,
+    "Use the screenshot for visual layout, icon-only controls, canvas-like content, clipping, and cross-origin UI that the DOM snapshot may miss.",
+    "Use the DOM snapshot for stable element ids, field values, and action execution grounding.",
+    "If the DOM snapshot and screenshot disagree, prefer the screenshot for what is visibly on screen and the DOM for exact element ids and stored values.",
+  ].join(" ");
+}
+
 export function buildPilotBrokerPrompt(input: {
   tabUrl: string;
   tabTitle?: string;
   snapshot?: PageSnapshot;
+  pageVisualContext?: PilotVisualContext;
   actionResults?: PilotActionResult[];
   relevantForm?: PilotRelevantFormContext;
   taskState?: PilotTaskState;
@@ -663,6 +254,7 @@ export function buildPilotBrokerPrompt(input: {
       ? `Current broker task state:\n${JSON.stringify(input.taskState, null, 2)}`
       : "",
     `Relevant form context:\n${summarizeRelevantFormForPrompt(input.relevantForm)}`,
+    summarizeVisualContextForPrompt(input.pageVisualContext),
     selectedAgent,
     `Current page snapshot:\n${summarizePageSnapshot(input.snapshot)}`,
   ]
@@ -696,7 +288,7 @@ export function buildPilotContinueInstruction(input: {
 }
 
 function getClarificationSignal(text: string) {
-  const normalized = normalizeText(text);
+  const normalized = normalizePilotText(text);
   return (
     normalized.includes("?") ||
     CLARIFICATION_TOKENS.some((token) => normalized.includes(token))
@@ -871,25 +463,4 @@ export function mergePilotFillProposals(input: {
   return [...passthrough, ...merged]
     .sort((left, right) => left.order - right.order)
     .map((entry) => entry.proposal);
-}
-
-export function getLatestUserText(
-  messages: UIMessage[],
-  currentMessage?: UIMessage,
-) {
-  const candidateMessages = currentMessage
-    ? [...messages, currentMessage]
-    : messages;
-
-  for (let index = candidateMessages.length - 1; index >= 0; index -= 1) {
-    const message = candidateMessages[index];
-    if (message?.role !== "user") {
-      continue;
-    }
-    const text = messageText(message);
-    if (text) {
-      return text;
-    }
-  }
-  return "";
 }

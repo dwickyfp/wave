@@ -38,6 +38,16 @@ const snapshot = {
       ],
     },
   ],
+  standaloneFields: [
+    {
+      elementId: "field-description",
+      tagName: "textarea",
+      type: "textarea",
+      label: "Description",
+      name: "description",
+      value: "",
+    },
+  ],
   actionables: [
     {
       elementId: "button-submit",
@@ -66,7 +76,28 @@ describe("pilot browser actions", () => {
 
   it("finds fields by stable element id", () => {
     expect(findFieldByElementId(snapshot, "field-email")?.label).toBe("Email");
+    expect(findFieldByElementId(snapshot, "field-description")?.label).toBe(
+      "Description",
+    );
     expect(findFieldByElementId(snapshot, "missing-field")).toBeNull();
+  });
+
+  it("validates fill proposals that target standalone page fields", () => {
+    const proposal = createPilotActionProposal({
+      kind: "fillFields",
+      label: "Fill description",
+      explanation: "Populate the standalone description field.",
+      fields: [
+        {
+          elementId: "field-description",
+          value: "This field is outside a native form.",
+        },
+      ],
+    });
+
+    expect(() =>
+      validateProposalAgainstSnapshot(proposal, snapshot),
+    ).not.toThrow();
   });
 
   it("validates known proposals and rejects missing elements", () => {

@@ -44105,7 +44105,7 @@ var defaultDownload2 = createDownload();
 function normalizeStoredPanelState(stored) {
   return {
     activeThreadId: stored?.activeThreadId ?? null,
-    sidebarOpen: stored?.sidebarOpen ?? true,
+    sidebarOpen: stored?.sidebarOpen ?? false,
     drafts: stored?.drafts ?? {},
     view: "chat"
   };
@@ -44144,6 +44144,490 @@ function groupThreadsByDate(threads, now = /* @__PURE__ */ new Date()) {
     }
   }
   return groups.filter((group) => group.threads.length > 0);
+}
+
+// src/lib/pilot/page-context.ts
+var SENSITIVE_FIELD_TOKENS = [
+  "password",
+  "passcode",
+  "secret",
+  "card",
+  "credit",
+  "cvv",
+  "cvc",
+  "security code",
+  "iban",
+  "routing",
+  "account number",
+  "ssn"
+];
+var FORM_FILL_TOKENS = [
+  "fill",
+  "form",
+  "field",
+  "complete",
+  "populate",
+  "enter",
+  "input",
+  "set",
+  "type",
+  "choose",
+  "select",
+  "check",
+  "tick",
+  "apply",
+  "registration",
+  "signup",
+  "register",
+  "checkout",
+  "profile"
+];
+var EXPLAIN_TOKENS = [
+  "explain",
+  "meaning",
+  "what is",
+  "what does",
+  "help me understand"
+];
+var ANALYZE_TOKENS = ["analyze", "inspect", "review", "look at", "summarize"];
+var NAVIGATE_TOKENS = [
+  "open",
+  "go to",
+  "navigate",
+  "visit",
+  "search",
+  "find",
+  "play"
+];
+var SUBMIT_ACTION_TOKENS = [
+  "submit",
+  "save",
+  "update",
+  "apply",
+  "continue",
+  "next",
+  "confirm",
+  "send",
+  "finish",
+  "search"
+];
+function normalizePilotText(value) {
+  return value?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
+}
+function getPilotTokens(value) {
+  return normalizePilotText(value).split(/[^a-z0-9]+/i).filter((token) => token.length >= 2);
+}
+function countSharedTokens(a, b) {
+  const other = new Set(b);
+  return a.reduce((count, token) => count + (other.has(token) ? 1 : 0), 0);
+}
+function messageText(message) {
+  if (!message)
+    return "";
+  return message.parts.filter(
+    (part) => part.type === "text" && typeof part.text === "string"
+  ).map((part) => part.text).join("\n").trim();
+}
+function getPageFieldText(field) {
+  return [field.label, field.name, field.placeholder, field.text, field.type].filter(Boolean).join(" ");
+}
+function fieldHasValue(field) {
+  return Boolean(field.value?.trim()) || field.checked === true;
+}
+function isEditableField(field) {
+  return !field.disabled && normalizePilotText(field.type) !== "hidden";
+}
+function isSensitivePilotField(field) {
+  if (!field)
+    return false;
+  const haystack = [
+    field.type,
+    field.label,
+    field.name,
+    field.placeholder,
+    field.text
+  ].map(normalizePilotText).join(" ");
+  return SENSITIVE_FIELD_TOKENS.some((token) => haystack.includes(token));
+}
+function buildCoverage(field, bucket, reason) {
+  return {
+    elementId: field.elementId,
+    label: field.label,
+    name: field.name,
+    bucket,
+    reason
+  };
+}
+function getStandaloneFields(snapshot) {
+  return (snapshot?.standaloneFields ?? []).filter(isEditableField);
+}
+function getSnapshotFields(snapshot) {
+  const allFields = [
+    ...(snapshot?.forms ?? []).flatMap((form) => form.fields),
+    ...getStandaloneFields(snapshot)
+  ];
+  if (snapshot?.focusedElement?.elementId && !allFields.some(
+    (field) => field.elementId === snapshot.focusedElement?.elementId
+  )) {
+    allFields.push(snapshot.focusedElement);
+  }
+  return allFields;
+}
+function findFormByElementId(snapshot, elementId) {
+  if (!snapshot)
+    return null;
+  for (const form of snapshot.forms) {
+    if (form.fields.some((field) => field.elementId === elementId)) {
+      return form;
+    }
+  }
+  return null;
+}
+function scoreFormAgainstText(form, queryTokens, snapshot, previousState) {
+  let score = 0;
+  if (previousState?.targetFormId === form.formId) {
+    score += 240;
+  }
+  if (snapshot?.focusedElement?.elementId && form.fields.some(
+    (field) => field.elementId === snapshot.focusedElement?.elementId
+  )) {
+    score += 160;
+  }
+  const formTokens = getPilotTokens(
+    [form.label, form.action, form.method].join(" ")
+  );
+  score += countSharedTokens(formTokens, queryTokens) * 16;
+  for (const field of form.fields) {
+    const fieldTokens = getPilotTokens(getPageFieldText(field));
+    score += Math.min(countSharedTokens(fieldTokens, queryTokens) * 10, 60);
+  }
+  if (form.fields.some((field) => field.required)) {
+    score += 12;
+  }
+  return score;
+}
+function selectRelevantForm(input) {
+  const forms = input.snapshot?.forms ?? [];
+  if (!forms.length) {
+    const standaloneFields = getStandaloneFields(input.snapshot);
+    if (!standaloneFields.length) {
+      return null;
+    }
+    const previousTargetedStandalone = standaloneFields.some(
+      (field) => input.previousState?.targetFieldIds.includes(field.elementId)
+    );
+    if (previousTargetedStandalone) {
+      return {
+        label: "Current page fields",
+        fields: standaloneFields,
+        reason: "Continuing work on the previously targeted page fields."
+      };
+    }
+    const focusedStandalone = standaloneFields.find(
+      (field) => field.elementId === input.snapshot?.focusedElement?.elementId
+    );
+    if (focusedStandalone) {
+      return {
+        label: "Current page fields",
+        rect: focusedStandalone.rect,
+        fields: standaloneFields,
+        reason: "Using the page fields around the currently focused input."
+      };
+    }
+    const queryTokens2 = getPilotTokens(input.userText);
+    const standaloneScore = standaloneFields.reduce((score, field) => {
+      const fieldTokens = getPilotTokens(getPageFieldText(field));
+      return score + Math.min(countSharedTokens(fieldTokens, queryTokens2) * 10, 60);
+    }, 0);
+    if (standaloneScore <= 0 && input.mode !== "fill" && standaloneFields.length > 1) {
+      return null;
+    }
+    return {
+      label: "Current page fields",
+      fields: standaloneFields,
+      reason: standaloneScore > 0 ? "Closest match based on the user request and visible page inputs." : "Only standalone page fields are available here."
+    };
+  }
+  if (input.previousState?.targetFormId) {
+    const previousMatch = forms.find(
+      (form) => form.formId === input.previousState?.targetFormId
+    );
+    if (previousMatch) {
+      return {
+        formId: previousMatch.formId,
+        label: previousMatch.label,
+        rect: previousMatch.rect,
+        fields: previousMatch.fields,
+        reason: "Continuing work on the previously targeted form."
+      };
+    }
+  }
+  if (input.snapshot?.focusedElement?.elementId) {
+    const focusedForm = findFormByElementId(
+      input.snapshot,
+      input.snapshot.focusedElement.elementId
+    );
+    if (focusedForm) {
+      return {
+        formId: focusedForm.formId,
+        label: focusedForm.label,
+        rect: focusedForm.rect,
+        fields: focusedForm.fields,
+        reason: "Using the form around the currently focused field."
+      };
+    }
+  }
+  const queryTokens = getPilotTokens(input.userText);
+  let bestForm = forms[0];
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (const form of forms) {
+    const score = scoreFormAgainstText(
+      form,
+      queryTokens,
+      input.snapshot,
+      input.previousState
+    );
+    if (score > bestScore) {
+      bestForm = form;
+      bestScore = score;
+    }
+  }
+  if (bestScore <= 0 && forms.length > 1 && input.mode !== "fill") {
+    return null;
+  }
+  return {
+    formId: bestForm.formId,
+    label: bestForm.label,
+    rect: bestForm.rect,
+    fields: bestForm.fields,
+    reason: bestScore > 0 ? "Closest match based on the user request and page focus." : "Single available form on the page."
+  };
+}
+function buildLikelySubmitActions(snapshot, query) {
+  const queryText = normalizePilotText(query);
+  return (snapshot?.actionables ?? []).filter((actionable) => {
+    if (actionable.disabled) {
+      return false;
+    }
+    const haystack = normalizePilotText(
+      [actionable.label, actionable.text].filter(Boolean).join(" ")
+    );
+    return SUBMIT_ACTION_TOKENS.some(
+      (token) => haystack.includes(token) || queryText.includes(token)
+    );
+  }).slice(0, 4).map((actionable) => ({
+    elementId: actionable.elementId,
+    label: actionable.label,
+    text: actionable.text
+  }));
+}
+function getLatestPilotTaskState(messages) {
+  for (let index2 = messages.length - 1; index2 >= 0; index2 -= 1) {
+    const metadata = messages[index2]?.metadata;
+    if (metadata?.pilotTaskState) {
+      return metadata.pilotTaskState;
+    }
+  }
+  return void 0;
+}
+function resolvePilotTaskMode(input) {
+  const text8 = normalizePilotText(input.userText);
+  if (input.actionResults?.length) {
+    return "continue";
+  }
+  if (input.previousState?.lastPhase === "awaiting_user_input" && input.previousState.targetFieldIds.length) {
+    return "fill";
+  }
+  if (NAVIGATE_TOKENS.some((token) => text8.includes(token))) {
+    return "navigate";
+  }
+  if (FORM_FILL_TOKENS.some((token) => text8.includes(token))) {
+    return "fill";
+  }
+  if (EXPLAIN_TOKENS.some((token) => text8.includes(token))) {
+    return "explain";
+  }
+  if (ANALYZE_TOKENS.some((token) => text8.includes(token))) {
+    return "analyze";
+  }
+  return input.previousState?.mode === "fill" ? "fill" : "analyze";
+}
+function buildRelevantFormContext(input) {
+  const selected = selectRelevantForm(input);
+  if (!selected) {
+    return void 0;
+  }
+  const queryTokens = getPilotTokens(input.userText);
+  const focusedElementId = input.snapshot?.focusedElement?.elementId;
+  const genericFillRequest = input.mode === "fill" && (!queryTokens.length || FORM_FILL_TOKENS.some(
+    (token) => normalizePilotText(input.userText).includes(token)
+  ));
+  const readyFields = [];
+  const missingFields = [];
+  const sensitiveFields = [];
+  const irrelevantFields = [];
+  const targetFieldIds = [];
+  for (const field of selected.fields) {
+    const tokens = getPilotTokens(getPageFieldText(field));
+    const matchesQuery = countSharedTokens(tokens, queryTokens) > 0;
+    const isFocused = focusedElementId === field.elementId;
+    const wasTargeted = input.previousState?.targetFieldIds.includes(field.elementId) ?? false;
+    const relevant = isEditableField(field) && (genericFillRequest || matchesQuery || isFocused || wasTargeted);
+    if (!relevant) {
+      irrelevantFields.push(
+        buildCoverage(
+          field,
+          "irrelevant",
+          "Not clearly part of the current task."
+        )
+      );
+      continue;
+    }
+    targetFieldIds.push(field.elementId);
+    if (isSensitivePilotField(field)) {
+      sensitiveFields.push(
+        buildCoverage(
+          field,
+          "sensitive",
+          "Sensitive field. Require explicit confirmation before filling."
+        )
+      );
+      continue;
+    }
+    if (fieldHasValue(field)) {
+      readyFields.push(
+        buildCoverage(
+          field,
+          "ready",
+          "Already has a value on the page or prior state."
+        )
+      );
+      continue;
+    }
+    if (input.previousState?.collectedValues[field.elementId]) {
+      readyFields.push(
+        buildCoverage(
+          field,
+          "ready",
+          "User already provided a value in the ongoing task state."
+        )
+      );
+      continue;
+    }
+    missingFields.push(
+      buildCoverage(
+        field,
+        "missing",
+        field.required ? "Required field still needs a value." : "Likely needed for the requested form task."
+      )
+    );
+  }
+  return {
+    formId: selected.formId,
+    label: selected.label,
+    reason: selected.reason,
+    targetFieldIds,
+    readyFields,
+    missingFields,
+    sensitiveFields,
+    irrelevantFields,
+    likelySubmitActions: buildLikelySubmitActions(
+      input.snapshot,
+      input.userText
+    )
+  };
+}
+function clampRectToViewport(rect, snapshot) {
+  const viewport = snapshot?.viewport;
+  if (!viewport) {
+    return rect;
+  }
+  const x = Math.max(0, Math.min(rect.x, viewport.innerWidth));
+  const y = Math.max(0, Math.min(rect.y, viewport.innerHeight));
+  const right = Math.max(
+    x,
+    Math.min(rect.x + rect.width, viewport.innerWidth)
+  );
+  const bottom = Math.max(
+    y,
+    Math.min(rect.y + rect.height, viewport.innerHeight)
+  );
+  if (right <= x || bottom <= y) {
+    return void 0;
+  }
+  return {
+    x,
+    y,
+    width: right - x,
+    height: bottom - y
+  };
+}
+function expandRect(rect, snapshot, padding = 24) {
+  const expanded = {
+    x: rect.x - padding,
+    y: rect.y - padding,
+    width: rect.width + padding * 2,
+    height: rect.height + padding * 2
+  };
+  return clampRectToViewport(expanded, snapshot);
+}
+function getPilotVisualTargetRect(input) {
+  if (!input.snapshot?.viewport) {
+    return void 0;
+  }
+  const relevantForm = buildRelevantFormContext(input);
+  if (relevantForm?.formId) {
+    const form = input.snapshot.forms.find(
+      (item) => item.formId === relevantForm.formId
+    );
+    if (form?.rect) {
+      return expandRect(form.rect, input.snapshot, 28);
+    }
+  }
+  if (relevantForm?.targetFieldIds.length) {
+    const relevantRects = getSnapshotFields(input.snapshot).filter((field) => relevantForm.targetFieldIds.includes(field.elementId)).map((field) => field.rect).filter((rect) => Boolean(rect));
+    if (relevantRects.length) {
+      const left = Math.min(...relevantRects.map((rect) => rect.x));
+      const top = Math.min(...relevantRects.map((rect) => rect.y));
+      const right = Math.max(
+        ...relevantRects.map((rect) => rect.x + rect.width)
+      );
+      const bottom = Math.max(
+        ...relevantRects.map((rect) => rect.y + rect.height)
+      );
+      return expandRect(
+        {
+          x: left,
+          y: top,
+          width: right - left,
+          height: bottom - top
+        },
+        input.snapshot,
+        28
+      );
+    }
+  }
+  if (input.snapshot.focusedElement?.rect) {
+    return expandRect(input.snapshot.focusedElement.rect, input.snapshot, 56);
+  }
+  if (input.snapshot.forms.length === 1 && input.snapshot.forms[0]?.rect) {
+    return expandRect(input.snapshot.forms[0].rect, input.snapshot, 28);
+  }
+  return void 0;
+}
+function getLatestUserText(messages, currentMessage) {
+  const candidateMessages = currentMessage ? [...messages, currentMessage] : messages;
+  for (let index2 = candidateMessages.length - 1; index2 >= 0; index2 -= 1) {
+    const message = candidateMessages[index2];
+    if (message?.role !== "user") {
+      continue;
+    }
+    const text8 = messageText(message);
+    if (text8) {
+      return text8;
+    }
+  }
+  return "";
 }
 
 // node_modules/.pnpm/devlop@1.1.0/node_modules/devlop/lib/default.js
@@ -56907,9 +57391,234 @@ function getStableStreamItemKey(input) {
   return `${messageId}-${label}-${input.index}`;
 }
 
+// extensions/emma-pilot/src/visual-context.ts
+function findModelOption(modelProviders, selectedChatModel) {
+  if (!selectedChatModel) {
+    return null;
+  }
+  const provider = modelProviders.find(
+    (item) => item.provider === selectedChatModel.provider
+  );
+  return provider?.models.find((model) => model.name === selectedChatModel.model) ?? null;
+}
+function supportsPilotVision(modelProviders, selectedChatModel) {
+  const model = findModelOption(modelProviders, selectedChatModel);
+  return Boolean(model && !model.isImageInputUnsupported);
+}
+function clampRectToViewport2(rect, viewport) {
+  if (!viewport) {
+    return rect;
+  }
+  const x = Math.max(0, Math.min(rect.x, viewport.innerWidth));
+  const y = Math.max(0, Math.min(rect.y, viewport.innerHeight));
+  const right = Math.max(
+    x,
+    Math.min(rect.x + rect.width, viewport.innerWidth)
+  );
+  const bottom = Math.max(
+    y,
+    Math.min(rect.y + rect.height, viewport.innerHeight)
+  );
+  if (right <= x || bottom <= y) {
+    return null;
+  }
+  return {
+    x,
+    y,
+    width: right - x,
+    height: bottom - y
+  };
+}
+function mapRectToImagePixels(input) {
+  const clipped = clampRectToViewport2(input.rect, input.viewport);
+  if (!clipped) {
+    return null;
+  }
+  const scaleX = input.imageWidth / input.viewport.innerWidth;
+  const scaleY = input.imageHeight / input.viewport.innerHeight;
+  return {
+    x: Math.max(0, Math.floor(clipped.x * scaleX)),
+    y: Math.max(0, Math.floor(clipped.y * scaleY)),
+    width: Math.max(1, Math.ceil(clipped.width * scaleX)),
+    height: Math.max(1, Math.ceil(clipped.height * scaleY))
+  };
+}
+function buildImageRedactionRects(input) {
+  const viewport = input.snapshot?.viewport;
+  if (!viewport) {
+    return [];
+  }
+  return (input.snapshot?.sensitiveFieldRects ?? []).map(
+    (region) => mapRectToImagePixels({
+      rect: region.rect,
+      viewport,
+      imageWidth: input.imageWidth,
+      imageHeight: input.imageHeight
+    })
+  ).filter((rect) => Boolean(rect)).map((rect) => {
+    if (!input.clipRect) {
+      return rect;
+    }
+    const overlap = {
+      x: Math.max(rect.x, input.clipRect.x),
+      y: Math.max(rect.y, input.clipRect.y),
+      width: Math.min(rect.x + rect.width, input.clipRect.x + input.clipRect.width) - Math.max(rect.x, input.clipRect.x),
+      height: Math.min(
+        rect.y + rect.height,
+        input.clipRect.y + input.clipRect.height
+      ) - Math.max(rect.y, input.clipRect.y)
+    };
+    if (overlap.width <= 0 || overlap.height <= 0) {
+      return null;
+    }
+    return {
+      x: overlap.x - input.clipRect.x,
+      y: overlap.y - input.clipRect.y,
+      width: overlap.width,
+      height: overlap.height
+    };
+  }).filter((rect) => Boolean(rect));
+}
+function loadImage(dataUrl) {
+  return new Promise((resolve2, reject) => {
+    const image3 = new Image();
+    image3.onload = () => resolve2(image3);
+    image3.onerror = () => reject(new Error("Emma Pilot could not decode the browser capture."));
+    image3.src = dataUrl;
+  });
+}
+function drawCaptureVariant(input) {
+  const sourceRect = input.rect ?? {
+    x: 0,
+    y: 0,
+    width: input.image.width,
+    height: input.image.height
+  };
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceRect.width));
+  canvas.height = Math.max(1, Math.round(sourceRect.height));
+  const context = canvas.getContext("2d");
+  if (!context) {
+    throw new Error("Emma Pilot could not initialize the image canvas.");
+  }
+  context.drawImage(
+    input.image,
+    sourceRect.x,
+    sourceRect.y,
+    sourceRect.width,
+    sourceRect.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+  context.fillStyle = "#0b0f1f";
+  input.redactions.forEach((rect) => {
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  });
+  return {
+    kind: input.kind,
+    mediaType: "image/png",
+    dataUrl: canvas.toDataURL("image/png"),
+    width: canvas.width,
+    height: canvas.height,
+    label: input.label
+  };
+}
+async function buildPilotVisualContextForTurn(input) {
+  if (!input.pageSnapshot?.viewport || !input.captureDataUrl) {
+    return void 0;
+  }
+  const mode = input.modeOverride ?? resolvePilotTaskMode({
+    userText: input.userText,
+    previousState: input.previousTaskState,
+    actionResults: input.actionResultsCount && input.actionResultsCount > 0 ? [
+      {
+        proposalId: "continuation",
+        status: "succeeded",
+        summary: "Browser action executed."
+      }
+    ] : void 0
+  });
+  const image3 = await loadImage(input.captureDataUrl);
+  const relevantForm = buildRelevantFormContext({
+    snapshot: input.pageSnapshot,
+    userText: input.userText,
+    previousState: input.previousTaskState,
+    mode
+  });
+  const viewportCapture = drawCaptureVariant({
+    image: image3,
+    redactions: buildImageRedactionRects({
+      snapshot: input.pageSnapshot,
+      imageWidth: image3.width,
+      imageHeight: image3.height
+    }),
+    kind: "viewport",
+    label: "viewport.png"
+  });
+  const targetRect = getPilotVisualTargetRect({
+    snapshot: input.pageSnapshot,
+    userText: input.userText,
+    previousState: input.previousTaskState,
+    mode
+  });
+  const cropRect = targetRect ? mapRectToImagePixels({
+    rect: targetRect,
+    viewport: input.pageSnapshot.viewport,
+    imageWidth: image3.width,
+    imageHeight: image3.height
+  }) : null;
+  const cropCapture = cropRect && cropRect.width > 48 && cropRect.height > 48 ? drawCaptureVariant({
+    image: image3,
+    rect: cropRect,
+    redactions: buildImageRedactionRects({
+      snapshot: input.pageSnapshot,
+      imageWidth: image3.width,
+      imageHeight: image3.height,
+      clipRect: cropRect
+    }),
+    kind: "target-crop",
+    label: "target-crop.png"
+  }) : null;
+  return {
+    mode: "dom+vision",
+    captures: cropCapture ? [viewportCapture, cropCapture] : [viewportCapture],
+    targetFormId: relevantForm?.formId,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+
+// extensions/emma-pilot/src/pilot-auth.ts
+var PILOT_ACCESS_TOKEN_REFRESH_LEEWAY_MS = 6e4;
+function parsePilotExpiryTimestamp(value) {
+  if (!value) {
+    return null;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+function shouldRefreshPilotAccessToken(auth, now = Date.now(), leewayMs = PILOT_ACCESS_TOKEN_REFRESH_LEEWAY_MS) {
+  if (!auth?.refreshToken) {
+    return false;
+  }
+  const expiryTimestamp = parsePilotExpiryTimestamp(auth.accessTokenExpiresAt);
+  if (expiryTimestamp === null) {
+    return false;
+  }
+  return expiryTimestamp - now <= leewayMs;
+}
+function shouldAttemptPilotAutoConnect(input) {
+  if (input.autoConnectDisabled) {
+    return false;
+  }
+  return !input.auth?.accessToken;
+}
+
 // extensions/emma-pilot/src/sidepanel-app.tsx
 var import_jsx_runtime3 = __toESM(require_jsx_runtime(), 1);
 var AUTH_STORAGE_KEY = "emmaPilotAuth";
+var AUTO_CONNECT_STORAGE_KEY = "emmaPilotAutoConnectDisabled";
 var PANEL_STORAGE_KEY = "emmaPilotPanelStateV2";
 var MODEL_REFRESH_MS = 1e3 * 60 * 5;
 var MAX_AUTO_CONTINUATIONS = 3;
@@ -57008,10 +57717,7 @@ async function consumePilotUIMessageStream(options) {
   for await (const nextMessage of readUIMessageStream({
     stream: chunkStream
   })) {
-    const normalizedMessage = withStableMessageId(
-      nextMessage,
-      streamMessageId
-    );
+    const normalizedMessage = withStableMessageId(nextMessage, streamMessageId);
     streamMessageId = normalizedMessage.id;
     latestMessage = normalizedMessage;
     options.onMessage(normalizedMessage);
@@ -57043,6 +57749,19 @@ async function setStoredAuth(auth) {
   }
   await chrome.storage.local.remove(AUTH_STORAGE_KEY);
 }
+async function getStoredAutoConnectDisabled() {
+  const result = await chrome.storage.local.get(AUTO_CONNECT_STORAGE_KEY);
+  return Boolean(result[AUTO_CONNECT_STORAGE_KEY]);
+}
+async function setStoredAutoConnectDisabled(disabled) {
+  if (disabled) {
+    await chrome.storage.local.set({
+      [AUTO_CONNECT_STORAGE_KEY]: true
+    });
+    return;
+  }
+  await chrome.storage.local.remove(AUTO_CONNECT_STORAGE_KEY);
+}
 function EmmaPilotApp() {
   const [runtimeConfig, setRuntimeConfig] = (0, import_react4.useState)(
     null
@@ -57059,7 +57778,7 @@ function EmmaPilotApp() {
   const [drafts, setDrafts] = (0, import_react4.useState)({});
   const [attachmentsByThread, setAttachmentsByThread] = (0, import_react4.useState)({});
   const [actionResultsByThread, setActionResultsByThread] = (0, import_react4.useState)({});
-  const [sidebarOpen, setSidebarOpen] = (0, import_react4.useState)(true);
+  const [sidebarOpen, setSidebarOpen] = (0, import_react4.useState)(false);
   const [hasAllSitesPermission, setHasAllSitesPermission] = (0, import_react4.useState)(false);
   const [activeTab, setActiveTab] = (0, import_react4.useState)(null);
   const [snapshot, setSnapshot] = (0, import_react4.useState)(null);
@@ -57067,6 +57786,7 @@ function EmmaPilotApp() {
   const [pageError, setPageError] = (0, import_react4.useState)("");
   const [loading, setLoading] = (0, import_react4.useState)(true);
   const [sending, setSending] = (0, import_react4.useState)(false);
+  const [visualMode, setVisualMode] = (0, import_react4.useState)("dom-only");
   const [loadingThreadId, setLoadingThreadId] = (0, import_react4.useState)(null);
   const [activeSelections, setActiveSelections] = (0, import_react4.useState)({
     selectedAgentId: "",
@@ -57078,12 +57798,21 @@ function EmmaPilotApp() {
   const messagesEndRef = (0, import_react4.useRef)(null);
   const initializedRef = (0, import_react4.useRef)(false);
   const initStartedRef = (0, import_react4.useRef)(false);
+  const autoConnectAttemptedRef = (0, import_react4.useRef)(false);
   const snapshotRefreshTimeoutRef = (0, import_react4.useRef)(null);
   const activeDraftKey = activeThreadId ?? NEW_THREAD_KEY;
   const currentDraft = drafts[activeDraftKey] ?? {};
   const currentAttachments = attachmentsByThread[activeDraftKey] ?? [];
   const currentActionResults = actionResultsByThread[activeDraftKey] ?? [];
   const groupedThreads = (0, import_react4.useMemo)(() => groupThreadsByDate(threads), [threads]);
+  const selectedModelSupportsVision = (0, import_react4.useMemo)(
+    () => supportsPilotVision(
+      modelProviders,
+      activeSelections.selectedChatModel ?? null
+    ),
+    [activeSelections.selectedChatModel, modelProviders]
+  );
+  const composerVisionLabel = visualMode === "dom+vision" ? "Emma AI browser copilot \u2022 Live browser view attached" : selectedModelSupportsVision ? "Emma AI browser copilot \u2022 Browser vision ready" : "Emma AI browser copilot \u2022 DOM only";
   const resizeComposerInput = (0, import_react4.useCallback)(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea)
@@ -57166,6 +57895,37 @@ function EmmaPilotApp() {
     },
     []
   );
+  const collectPilotVisualContext = (0, import_react4.useCallback)(
+    async (input) => {
+      if (!input.snapshot || !selectedModelSupportsVision) {
+        setVisualMode("dom-only");
+        return void 0;
+      }
+      try {
+        const response = await callBackground({
+          type: "pilot.collectVisualContext"
+        });
+        if (response.error || !response.captureDataUrl) {
+          setVisualMode("dom-only");
+          return void 0;
+        }
+        const pageVisualContext = await buildPilotVisualContextForTurn({
+          pageSnapshot: input.snapshot,
+          captureDataUrl: response.captureDataUrl,
+          userText: input.userText,
+          previousTaskState: input.previousTaskState,
+          actionResultsCount: input.actionResultsCount,
+          modeOverride: input.modeOverride
+        });
+        setVisualMode(pageVisualContext?.mode ?? "dom-only");
+        return pageVisualContext;
+      } catch {
+        setVisualMode("dom-only");
+        return void 0;
+      }
+    },
+    [selectedModelSupportsVision]
+  );
   const refreshAuthStatus = (0, import_react4.useCallback)(async () => {
     const response = await callBackground({
       type: "pilot.getStatus"
@@ -57212,9 +57972,15 @@ function EmmaPilotApp() {
   const pilotFetchJson = (0, import_react4.useCallback)(
     async (path2, options = {}, allowRefresh = true, context) => {
       const currentRuntimeConfig = context?.runtimeConfig ?? runtimeConfig;
-      const currentAuth = context?.auth ?? auth;
+      let currentAuth = context?.auth ?? auth;
       if (!currentRuntimeConfig || !currentAuth?.accessToken) {
         throw new Error("Emma Pilot session expired.");
+      }
+      if (allowRefresh && shouldRefreshPilotAccessToken(currentAuth) && currentAuth.refreshToken) {
+        currentAuth = await refreshPilotTokens({
+          auth: currentAuth,
+          runtimeConfig: currentRuntimeConfig
+        });
       }
       const headers = new Headers(options.headers || {});
       headers.set("Authorization", `Bearer ${currentAuth.accessToken}`);
@@ -57246,9 +58012,15 @@ function EmmaPilotApp() {
   const pilotFetchResponse = (0, import_react4.useCallback)(
     async (path2, options = {}, allowRefresh = true, context) => {
       const currentRuntimeConfig = context?.runtimeConfig ?? runtimeConfig;
-      const currentAuth = context?.auth ?? auth;
+      let currentAuth = context?.auth ?? auth;
       if (!currentRuntimeConfig || !currentAuth?.accessToken) {
         throw new Error("Emma Pilot session expired.");
+      }
+      if (allowRefresh && shouldRefreshPilotAccessToken(currentAuth) && currentAuth.refreshToken) {
+        currentAuth = await refreshPilotTokens({
+          auth: currentAuth,
+          runtimeConfig: currentRuntimeConfig
+        });
       }
       const headers = new Headers(options.headers || {});
       headers.set("Authorization", `Bearer ${currentAuth.accessToken}`);
@@ -57503,6 +58275,29 @@ function EmmaPilotApp() {
           });
         } else {
           startNewSession();
+          const autoConnectDisabled = await getStoredAutoConnectDisabled();
+          if (cancelled || autoConnectAttemptedRef.current || !shouldAttemptPilotAutoConnect({
+            auth: nextAuth,
+            autoConnectDisabled
+          })) {
+            return;
+          }
+          autoConnectAttemptedRef.current = true;
+          const autoAuthResponse = await callBackground({
+            type: "pilot.tryAutoAuth"
+          });
+          if (!autoAuthResponse.auth || cancelled) {
+            return;
+          }
+          setAuth(autoAuthResponse.auth);
+          await setStoredAutoConnectDisabled(false);
+          await setStoredAuth(autoAuthResponse.auth);
+          await refreshPilotData({
+            initialThreadId: storedPanelState.activeThreadId,
+            authOverride: autoAuthResponse.auth,
+            runtimeConfigOverride: configValue
+          });
+          await refreshSnapshot({ silent: true });
         }
       } catch (error46) {
         if (!cancelled) {
@@ -57574,6 +58369,11 @@ function EmmaPilotApp() {
     resizeComposerInput();
   }, [currentDraft.input, resizeComposerInput]);
   (0, import_react4.useEffect)(() => {
+    if (!selectedModelSupportsVision) {
+      setVisualMode("dom-only");
+    }
+  }, [selectedModelSupportsVision]);
+  (0, import_react4.useEffect)(() => {
     if (!messages.length) {
       return;
     }
@@ -57597,6 +58397,7 @@ function EmmaPilotApp() {
         throw new Error(response.error || "Emma Pilot sign-in failed.");
       }
       setAuth(response.auth);
+      await setStoredAutoConnectDisabled(false);
       await setStoredAuth(response.auth);
       await refreshPilotData({
         authOverride: response.auth,
@@ -57626,6 +58427,7 @@ function EmmaPilotApp() {
       await callBackground({
         type: "pilot.clearAuth"
       });
+      await setStoredAutoConnectDisabled(true);
       await setStoredAuth(null);
       setAuth(null);
       setConfig(null);
@@ -57762,13 +58564,20 @@ function EmmaPilotApp() {
     [activeDraftKey, refreshSnapshot]
   );
   const requestContinuation = (0, import_react4.useCallback)(
-    async (threadId, actionResults) => {
+    async (threadId, actionResults, previousTaskState) => {
       const latestPageState = await refreshSnapshot({ silent: true });
       const nextTab = latestPageState?.tab ?? activeTab;
       const nextSnapshot = latestPageState?.snapshot ?? snapshot;
       if (!nextTab?.url) {
         return null;
       }
+      const pageVisualContext = await collectPilotVisualContext({
+        snapshot: nextSnapshot,
+        userText: getLatestUserText(messages),
+        previousTaskState: previousTaskState ?? getLatestPilotTaskState(messages),
+        actionResultsCount: actionResults.length,
+        modeOverride: "continue"
+      });
       const response = await pilotFetchResponse("/api/pilot/chat/continue", {
         method: "POST",
         headers: {
@@ -57783,6 +58592,7 @@ function EmmaPilotApp() {
             origin: nextTab.url ? new URL(nextTab.url).origin : void 0
           },
           pageSnapshot: nextSnapshot || void 0,
+          pageVisualContext,
           approvedActionIds: actionResults.map((result) => result.proposalId),
           actionResults,
           stream: true
@@ -57793,7 +58603,15 @@ function EmmaPilotApp() {
         onMessage: upsertAssistantMessage
       });
     },
-    [activeTab, pilotFetchResponse, refreshSnapshot, snapshot, upsertAssistantMessage]
+    [
+      activeTab,
+      collectPilotVisualContext,
+      messages,
+      pilotFetchResponse,
+      refreshSnapshot,
+      snapshot,
+      upsertAssistantMessage
+    ]
   );
   const runAgenticContinuation = (0, import_react4.useCallback)(
     async (input) => {
@@ -57819,15 +58637,14 @@ function EmmaPilotApp() {
         }
         latestAssistant = await requestContinuation(
           input.threadId,
-          accumulatedResults
+          accumulatedResults,
+          latestAssistant?.metadata?.pilotTaskState
         );
         if (!latestAssistant) {
           break;
         }
         continuationCount += 1;
-        const extractedNextProposals = extractPilotProposalsFromMessage(
-          latestAssistant
-        );
+        const extractedNextProposals = extractPilotProposalsFromMessage(latestAssistant);
         if (!extractedNextProposals.length) {
           break;
         }
@@ -57901,6 +58718,16 @@ function EmmaPilotApp() {
       if (!nextTab?.url) {
         throw new Error("Emma Pilot could not read the active tab.");
       }
+      const pageVisualContext = await collectPilotVisualContext({
+        snapshot: nextSnapshot,
+        userText: text8,
+        previousTaskState: getLatestPilotTaskState(messages),
+        actionResultsCount: 0,
+        modeOverride: resolvePilotTaskMode({
+          userText: text8,
+          previousState: getLatestPilotTaskState(messages)
+        })
+      });
       const userMessage = {
         id: crypto.randomUUID(),
         role: "user",
@@ -57946,6 +58773,7 @@ function EmmaPilotApp() {
             origin: nextTab.url ? new URL(nextTab.url).origin : void 0
           },
           pageSnapshot: nextSnapshot || void 0,
+          pageVisualContext,
           approvedActionIds: currentActionResults.map(
             (result) => result.proposalId
           ),
@@ -58019,6 +58847,7 @@ function EmmaPilotApp() {
     currentActionResults,
     currentAttachments,
     currentDraft.input,
+    collectPilotVisualContext,
     persistPanelState,
     pilotFetchResponse,
     refreshPilotSidebarData,
@@ -58271,7 +59100,7 @@ function EmmaPilotApp() {
               ]
             }
           ),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "pilot-composer-label", children: "Emma AI browser copilot" })
+          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "pilot-composer-label", children: composerVisionLabel })
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(

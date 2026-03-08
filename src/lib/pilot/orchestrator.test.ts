@@ -76,6 +76,7 @@ const snapshot: PageSnapshot = {
       ],
     },
   ],
+  standaloneFields: [],
   actionables: [
     {
       elementId: "register-submit",

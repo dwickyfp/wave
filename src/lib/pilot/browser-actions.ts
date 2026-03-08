@@ -196,6 +196,13 @@ export function findFieldByElementId(
     return snapshot.focusedElement;
   }
 
+  const standaloneMatch = (snapshot.standaloneFields ?? []).find(
+    (field) => field.elementId === elementId,
+  );
+  if (standaloneMatch) {
+    return standaloneMatch;
+  }
+
   return null;
 }
 

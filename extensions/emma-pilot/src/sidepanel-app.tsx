@@ -40,6 +40,17 @@ import {
   type StoredPanelState,
   type ThreadDraftState,
 } from "./panel-state";
+import type {
+  PageSnapshot as Snapshot,
+  PilotModelProvider,
+  PilotTaskState,
+  PilotVisualContext,
+} from "../../../src/types/pilot";
+import {
+  getLatestPilotTaskState,
+  getLatestUserText,
+  resolvePilotTaskMode,
+} from "../../../src/lib/pilot/page-context";
 import { PilotMarkdown } from "./pilot-markdown";
 import {
   extractPilotProposalsFromMessage,
@@ -48,8 +59,17 @@ import {
   upsertStreamedMessage,
   withStableMessageId,
 } from "./pilot-message-helpers";
+import {
+  buildPilotVisualContextForTurn,
+  supportsPilotVision,
+} from "./visual-context";
+import {
+  shouldAttemptPilotAutoConnect,
+  shouldRefreshPilotAccessToken,
+} from "./pilot-auth";
 
 const AUTH_STORAGE_KEY = "emmaPilotAuth";
+const AUTO_CONNECT_STORAGE_KEY = "emmaPilotAutoConnectDisabled";
 const PANEL_STORAGE_KEY = "emmaPilotPanelStateV2";
 const MODEL_REFRESH_MS = 1000 * 60 * 5;
 const MAX_AUTO_CONTINUATIONS = 3;
@@ -108,19 +128,6 @@ type PilotConfig = {
   defaultChatModel: ChatModel | null;
 };
 
-type PilotModelProvider = {
-  provider: string;
-  hasAPIKey: boolean;
-  models: Array<{
-    name: string;
-    contextLength: number;
-    supportsGeneration: boolean;
-    isToolCallUnsupported: boolean;
-    isImageInputUnsupported: boolean;
-    supportedFileMimeTypes: string[];
-  }>;
-};
-
 type PilotProposal = {
   id: string;
   kind: string;
@@ -143,16 +150,6 @@ type PilotActionResult = {
   status: "succeeded" | "failed" | "skipped";
   summary: string;
   error?: string;
-};
-
-type PilotTaskState = {
-  mode?: string;
-  targetFormId?: string;
-  targetFieldIds?: string[];
-  missingFieldIds?: string[];
-  lastPhase?: string;
-  selectedAgentId?: string;
-  autoContinuationCount?: number;
 };
 
 type PilotMessagePart = UIMessage["parts"][number];
@@ -199,17 +196,6 @@ type TabInfo = {
   tabId?: number;
   url?: string;
   title?: string;
-};
-
-type Snapshot = {
-  url: string;
-  title?: string;
-  generatedAt?: string;
-  selectedText?: string;
-  focusedElement?: {
-    label?: string;
-    name?: string;
-  };
 };
 
 type PilotRequestContext = {
@@ -381,6 +367,22 @@ async function setStoredAuth(auth: PilotAuth | null) {
   await chrome.storage.local.remove(AUTH_STORAGE_KEY);
 }
 
+async function getStoredAutoConnectDisabled() {
+  const result = await chrome.storage.local.get(AUTO_CONNECT_STORAGE_KEY);
+  return Boolean(result[AUTO_CONNECT_STORAGE_KEY]);
+}
+
+async function setStoredAutoConnectDisabled(disabled: boolean) {
+  if (disabled) {
+    await chrome.storage.local.set({
+      [AUTO_CONNECT_STORAGE_KEY]: true,
+    });
+    return;
+  }
+
+  await chrome.storage.local.remove(AUTO_CONNECT_STORAGE_KEY);
+}
+
 export function EmmaPilotApp() {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfig | null>(
     null,
@@ -401,7 +403,7 @@ export function EmmaPilotApp() {
   const [actionResultsByThread, setActionResultsByThread] = useState<
     Record<string, PilotActionResult[]>
   >({});
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [hasAllSitesPermission, setHasAllSitesPermission] = useState(false);
   const [activeTab, setActiveTab] = useState<TabInfo | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -409,6 +411,8 @@ export function EmmaPilotApp() {
   const [pageError, setPageError] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [visualMode, setVisualMode] =
+    useState<PilotVisualContext["mode"]>("dom-only");
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
   const [activeSelections, setActiveSelections] = useState<{
     selectedAgentId: string;
@@ -423,6 +427,7 @@ export function EmmaPilotApp() {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const initializedRef = useRef(false);
   const initStartedRef = useRef(false);
+  const autoConnectAttemptedRef = useRef(false);
   const snapshotRefreshTimeoutRef = useRef<number | null>(null);
 
   const activeDraftKey = activeThreadId ?? NEW_THREAD_KEY;
@@ -431,6 +436,20 @@ export function EmmaPilotApp() {
   const currentActionResults = actionResultsByThread[activeDraftKey] ?? [];
 
   const groupedThreads = useMemo(() => groupThreadsByDate(threads), [threads]);
+  const selectedModelSupportsVision = useMemo(
+    () =>
+      supportsPilotVision(
+        modelProviders,
+        activeSelections.selectedChatModel ?? null,
+      ),
+    [activeSelections.selectedChatModel, modelProviders],
+  );
+  const composerVisionLabel =
+    visualMode === "dom+vision"
+      ? "Emma AI browser copilot • Live browser view attached"
+      : selectedModelSupportsVision
+        ? "Emma AI browser copilot • Browser vision ready"
+        : "Emma AI browser copilot • DOM only";
 
   const resizeComposerInput = useCallback(() => {
     const textarea = composerTextareaRef.current;
@@ -538,6 +557,52 @@ export function EmmaPilotApp() {
     [],
   );
 
+  const collectPilotVisualContext = useCallback(
+    async (input: {
+      snapshot?: Snapshot | null;
+      userText: string;
+      previousTaskState?: PilotTaskState;
+      actionResultsCount?: number;
+      modeOverride?: PilotTaskState["mode"];
+    }) => {
+      if (!input.snapshot || !selectedModelSupportsVision) {
+        setVisualMode("dom-only");
+        return undefined;
+      }
+
+      try {
+        const response = await callBackground<{
+          captureDataUrl?: string;
+          mediaType?: string;
+          error?: string;
+        }>({
+          type: "pilot.collectVisualContext",
+        });
+
+        if (response.error || !response.captureDataUrl) {
+          setVisualMode("dom-only");
+          return undefined;
+        }
+
+        const pageVisualContext = await buildPilotVisualContextForTurn({
+          pageSnapshot: input.snapshot,
+          captureDataUrl: response.captureDataUrl,
+          userText: input.userText,
+          previousTaskState: input.previousTaskState,
+          actionResultsCount: input.actionResultsCount,
+          modeOverride: input.modeOverride,
+        });
+
+        setVisualMode(pageVisualContext?.mode ?? "dom-only");
+        return pageVisualContext;
+      } catch {
+        setVisualMode("dom-only");
+        return undefined;
+      }
+    },
+    [selectedModelSupportsVision],
+  );
+
   const refreshAuthStatus = useCallback(async () => {
     const response = await callBackground<BackgroundStatus>({
       type: "pilot.getStatus",
@@ -596,10 +661,21 @@ export function EmmaPilotApp() {
       context?: PilotRequestContext,
     ): Promise<T> => {
       const currentRuntimeConfig = context?.runtimeConfig ?? runtimeConfig;
-      const currentAuth = context?.auth ?? auth;
+      let currentAuth = context?.auth ?? auth;
 
       if (!currentRuntimeConfig || !currentAuth?.accessToken) {
         throw new Error("Emma Pilot session expired.");
+      }
+
+      if (
+        allowRefresh &&
+        shouldRefreshPilotAccessToken(currentAuth) &&
+        currentAuth.refreshToken
+      ) {
+        currentAuth = await refreshPilotTokens({
+          auth: currentAuth,
+          runtimeConfig: currentRuntimeConfig,
+        });
       }
 
       const headers = new Headers(options.headers || {});
@@ -641,10 +717,21 @@ export function EmmaPilotApp() {
       context?: PilotRequestContext,
     ) => {
       const currentRuntimeConfig = context?.runtimeConfig ?? runtimeConfig;
-      const currentAuth = context?.auth ?? auth;
+      let currentAuth = context?.auth ?? auth;
 
       if (!currentRuntimeConfig || !currentAuth?.accessToken) {
         throw new Error("Emma Pilot session expired.");
+      }
+
+      if (
+        allowRefresh &&
+        shouldRefreshPilotAccessToken(currentAuth) &&
+        currentAuth.refreshToken
+      ) {
+        currentAuth = await refreshPilotTokens({
+          auth: currentAuth,
+          runtimeConfig: currentRuntimeConfig,
+        });
       }
 
       const headers = new Headers(options.headers || {});
@@ -948,6 +1035,40 @@ export function EmmaPilotApp() {
           });
         } else {
           startNewSession();
+
+          const autoConnectDisabled = await getStoredAutoConnectDisabled();
+          if (
+            cancelled ||
+            autoConnectAttemptedRef.current ||
+            !shouldAttemptPilotAutoConnect({
+              auth: nextAuth,
+              autoConnectDisabled,
+            })
+          ) {
+            return;
+          }
+
+          autoConnectAttemptedRef.current = true;
+
+          const autoAuthResponse = await callBackground<{
+            auth?: PilotAuth | null;
+          }>({
+            type: "pilot.tryAutoAuth",
+          });
+
+          if (!autoAuthResponse.auth || cancelled) {
+            return;
+          }
+
+          setAuth(autoAuthResponse.auth);
+          await setStoredAutoConnectDisabled(false);
+          await setStoredAuth(autoAuthResponse.auth);
+          await refreshPilotData({
+            initialThreadId: storedPanelState.activeThreadId,
+            authOverride: autoAuthResponse.auth,
+            runtimeConfigOverride: configValue,
+          });
+          await refreshSnapshot({ silent: true });
         }
       } catch (error) {
         if (!cancelled) {
@@ -1047,6 +1168,12 @@ export function EmmaPilotApp() {
   }, [currentDraft.input, resizeComposerInput]);
 
   useEffect(() => {
+    if (!selectedModelSupportsVision) {
+      setVisualMode("dom-only");
+    }
+  }, [selectedModelSupportsVision]);
+
+  useEffect(() => {
     if (!messages.length) {
       return;
     }
@@ -1079,6 +1206,7 @@ export function EmmaPilotApp() {
       }
 
       setAuth(response.auth);
+      await setStoredAutoConnectDisabled(false);
       await setStoredAuth(response.auth);
       await refreshPilotData({
         authOverride: response.auth,
@@ -1111,6 +1239,7 @@ export function EmmaPilotApp() {
       await callBackground({
         type: "pilot.clearAuth",
       });
+      await setStoredAutoConnectDisabled(true);
       await setStoredAuth(null);
       setAuth(null);
       setConfig(null);
@@ -1272,6 +1401,7 @@ export function EmmaPilotApp() {
     async (
       threadId: string,
       actionResults: PilotActionResult[],
+      previousTaskState?: PilotTaskState,
     ): Promise<PilotMessage | null> => {
       const latestPageState = await refreshSnapshot({ silent: true });
       const nextTab = latestPageState?.tab ?? activeTab;
@@ -1280,6 +1410,15 @@ export function EmmaPilotApp() {
       if (!nextTab?.url) {
         return null;
       }
+
+      const pageVisualContext = await collectPilotVisualContext({
+        snapshot: nextSnapshot,
+        userText: getLatestUserText(messages),
+        previousTaskState:
+          previousTaskState ?? getLatestPilotTaskState(messages),
+        actionResultsCount: actionResults.length,
+        modeOverride: "continue",
+      });
 
       const response = await pilotFetchResponse("/api/pilot/chat/continue", {
         method: "POST",
@@ -1295,6 +1434,7 @@ export function EmmaPilotApp() {
             origin: nextTab.url ? new URL(nextTab.url).origin : undefined,
           },
           pageSnapshot: nextSnapshot || undefined,
+          pageVisualContext,
           approvedActionIds: actionResults.map((result) => result.proposalId),
           actionResults,
           stream: true,
@@ -1308,6 +1448,8 @@ export function EmmaPilotApp() {
     },
     [
       activeTab,
+      collectPilotVisualContext,
+      messages,
       pilotFetchResponse,
       refreshSnapshot,
       snapshot,
@@ -1349,6 +1491,7 @@ export function EmmaPilotApp() {
         latestAssistant = await requestContinuation(
           input.threadId,
           accumulatedResults,
+          latestAssistant?.metadata?.pilotTaskState,
         );
 
         if (!latestAssistant) {
@@ -1446,6 +1589,17 @@ export function EmmaPilotApp() {
         throw new Error("Emma Pilot could not read the active tab.");
       }
 
+      const pageVisualContext = await collectPilotVisualContext({
+        snapshot: nextSnapshot,
+        userText: text,
+        previousTaskState: getLatestPilotTaskState(messages),
+        actionResultsCount: 0,
+        modeOverride: resolvePilotTaskMode({
+          userText: text,
+          previousState: getLatestPilotTaskState(messages),
+        }),
+      });
+
       const userMessage: PilotMessage = {
         id: crypto.randomUUID(),
         role: "user",
@@ -1497,6 +1651,7 @@ export function EmmaPilotApp() {
             origin: nextTab.url ? new URL(nextTab.url).origin : undefined,
           },
           pageSnapshot: nextSnapshot || undefined,
+          pageVisualContext,
           approvedActionIds: currentActionResults.map(
             (result) => result.proposalId,
           ),
@@ -1578,6 +1733,7 @@ export function EmmaPilotApp() {
     currentActionResults,
     currentAttachments,
     currentDraft.input,
+    collectPilotVisualContext,
     persistPanelState,
     pilotFetchResponse,
     refreshPilotSidebarData,
@@ -1851,7 +2007,7 @@ export function EmmaPilotApp() {
                 </div>
               </form>
 
-              <p className="pilot-composer-label">Emma AI browser copilot</p>
+              <p className="pilot-composer-label">{composerVisionLabel}</p>
             </div>
           </main>
 

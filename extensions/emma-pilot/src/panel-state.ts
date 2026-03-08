@@ -33,7 +33,7 @@ export function normalizeStoredPanelState(stored?: StoredPanelState | null): {
 } {
   return {
     activeThreadId: stored?.activeThreadId ?? null,
-    sidebarOpen: stored?.sidebarOpen ?? true,
+    sidebarOpen: stored?.sidebarOpen ?? false,
     drafts: stored?.drafts ?? {},
     view: "chat",
   };

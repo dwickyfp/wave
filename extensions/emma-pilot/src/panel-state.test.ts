@@ -90,4 +90,13 @@ describe("emma pilot panel state", () => {
       view: "chat",
     });
   });
+
+  it("keeps the sidebar closed by default on first open", () => {
+    expect(normalizeStoredPanelState(undefined)).toEqual({
+      activeThreadId: null,
+      sidebarOpen: false,
+      drafts: {},
+      view: "chat",
+    });
+  });
 });

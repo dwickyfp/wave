@@ -21,6 +21,25 @@ export const pageSelectOptionSchema = z.object({
 
 export type PageSelectOption = z.infer<typeof pageSelectOptionSchema>;
 
+export const pilotElementRectSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  width: z.number().nonnegative(),
+  height: z.number().nonnegative(),
+});
+
+export type PilotElementRect = z.infer<typeof pilotElementRectSchema>;
+
+export const pilotViewportMetricsSchema = z.object({
+  innerWidth: z.number().positive(),
+  innerHeight: z.number().positive(),
+  scrollX: z.number(),
+  scrollY: z.number(),
+  devicePixelRatio: z.number().positive(),
+});
+
+export type PilotViewportMetrics = z.infer<typeof pilotViewportMetricsSchema>;
+
 export const pageFieldSchema = z.object({
   elementId: z.string(),
   tagName: z.string(),
@@ -34,6 +53,7 @@ export const pageFieldSchema = z.object({
   disabled: z.boolean().optional(),
   checked: z.boolean().optional(),
   options: z.array(pageSelectOptionSchema).optional(),
+  rect: pilotElementRectSchema.optional(),
 });
 
 export type PageField = z.infer<typeof pageFieldSchema>;
@@ -44,6 +64,7 @@ export const pageFormSchema = z.object({
   action: z.string().optional(),
   method: z.string().optional(),
   fields: z.array(pageFieldSchema),
+  rect: pilotElementRectSchema.optional(),
 });
 
 export type PageForm = z.infer<typeof pageFormSchema>;
@@ -55,9 +76,20 @@ export const pageActionableElementSchema = z.object({
   text: z.string().optional(),
   href: z.string().optional(),
   disabled: z.boolean().optional(),
+  rect: pilotElementRectSchema.optional(),
 });
 
 export type PageActionableElement = z.infer<typeof pageActionableElementSchema>;
+
+export const pilotSensitiveFieldRectSchema = z.object({
+  elementId: z.string(),
+  label: z.string().optional(),
+  rect: pilotElementRectSchema,
+});
+
+export type PilotSensitiveFieldRect = z.infer<
+  typeof pilotSensitiveFieldRectSchema
+>;
 
 export const pageSnapshotSchema = z.object({
   url: z.string().url(),
@@ -66,11 +98,34 @@ export const pageSnapshotSchema = z.object({
   selectedText: z.string().optional(),
   focusedElement: pageFieldSchema.nullable().optional(),
   forms: z.array(pageFormSchema).default([]),
+  standaloneFields: z.array(pageFieldSchema).default([]),
   actionables: z.array(pageActionableElementSchema).default([]),
+  viewport: pilotViewportMetricsSchema.optional(),
+  sensitiveFieldRects: z.array(pilotSensitiveFieldRectSchema).optional(),
   generatedAt: z.string().optional(),
 });
 
 export type PageSnapshot = z.infer<typeof pageSnapshotSchema>;
+
+export const pilotVisualCaptureSchema = z.object({
+  kind: z.enum(["viewport", "target-crop"]),
+  mediaType: z.string(),
+  dataUrl: z.string(),
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  label: z.string().optional(),
+});
+
+export type PilotVisualCapture = z.infer<typeof pilotVisualCaptureSchema>;
+
+export const pilotVisualContextSchema = z.object({
+  mode: z.enum(["dom-only", "dom+vision"]),
+  captures: z.array(pilotVisualCaptureSchema).default([]),
+  targetFormId: z.string().optional(),
+  createdAt: z.string().optional(),
+});
+
+export type PilotVisualContext = z.infer<typeof pilotVisualContextSchema>;
 
 export const pilotActionKindSchema = z.enum([
   "highlightElement",
@@ -214,6 +269,7 @@ export const pilotChatRequestSchema = z.object({
   attachments: z.array(ChatAttachmentSchema).optional(),
   tabContext: pilotTabContextSchema,
   pageSnapshot: pageSnapshotSchema.optional(),
+  pageVisualContext: pilotVisualContextSchema.optional(),
   approvedActionIds: z.array(z.string()).optional(),
   actionResults: z.array(pilotActionResultSchema).optional(),
   chatModel: z
@@ -231,6 +287,7 @@ export const pilotChatContinueRequestSchema = z.object({
   threadId: z.string().uuid(),
   tabContext: pilotTabContextSchema,
   pageSnapshot: pageSnapshotSchema.optional(),
+  pageVisualContext: pilotVisualContextSchema.optional(),
   approvedActionIds: z.array(z.string()).optional(),
   actionResults: z.array(pilotActionResultSchema).optional(),
   stream: z.boolean().optional().default(false),
