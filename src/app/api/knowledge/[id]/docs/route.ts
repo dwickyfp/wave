@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { queryKnowledgeAsDocs } from "lib/knowledge/retriever";
+import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -24,6 +24,8 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   const results = await queryKnowledgeAsDocs(group, query, {
     tokens: tokens ?? 10000,
+    resultMode: "matched-sections",
+    maxDocs: 8,
     userId: session.user.id,
     source: "chat",
   });

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { createOpenAI } from "@ai-sdk/openai";
+import { createAzure } from "@ai-sdk/azure";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createXai } from "@ai-sdk/xai";
@@ -11,7 +12,30 @@ import { createOllama } from "ollama-ai-provider-v2";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { LanguageModel, RerankingModel } from "ai";
 import { ChatModel } from "app-types/chat";
+import type { ProviderSettings } from "app-types/settings";
 import { settingsRepository } from "lib/db/repository";
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+function readSettingString(
+  settings: ProviderSettings | null | undefined,
+  key: string,
+): string | null {
+  const value = settings?.[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function readSettingBoolean(
+  settings: ProviderSettings | null | undefined,
+  key: string,
+): boolean | null {
+  const value = settings?.[key];
+  return typeof value === "boolean" ? value : null;
+}
 
 /**
  * Creates a LanguageModel instance from a provider name + API model name,
@@ -22,6 +46,7 @@ export function createModelFromConfig(
   modelApiName: string,
   apiKey?: string | null,
   baseUrl?: string | null,
+  providerSettings?: ProviderSettings | null,
 ): LanguageModel | null {
   try {
     switch (providerName) {
@@ -38,6 +63,41 @@ export function createModelFromConfig(
         const provider = createOpenAI({
           apiKey: key,
           ...(baseUrl ? { baseURL: baseUrl } : {}),
+        });
+        return provider(modelApiName);
+      }
+
+      case "azure": {
+        const key = apiKey || process.env.AZURE_API_KEY;
+        if (!key) return null;
+
+        const configuredBaseUrl =
+          readSettingString(providerSettings, "baseURL") ||
+          readSettingString(providerSettings, "baseUrl") ||
+          (baseUrl && isHttpUrl(baseUrl) ? baseUrl : null);
+        const configuredResourceName =
+          readSettingString(providerSettings, "resourceName") ||
+          readSettingString(providerSettings, "resource") ||
+          (baseUrl && !isHttpUrl(baseUrl) ? baseUrl : null) ||
+          process.env.AZURE_RESOURCE_NAME ||
+          null;
+        const configuredApiVersion =
+          readSettingString(providerSettings, "apiVersion") || null;
+        const useDeploymentBasedUrls = readSettingBoolean(
+          providerSettings,
+          "useDeploymentBasedUrls",
+        );
+
+        const provider = createAzure({
+          apiKey: key,
+          ...(configuredBaseUrl ? { baseURL: configuredBaseUrl } : {}),
+          ...(!configuredBaseUrl && configuredResourceName
+            ? { resourceName: configuredResourceName }
+            : {}),
+          ...(configuredApiVersion ? { apiVersion: configuredApiVersion } : {}),
+          ...(useDeploymentBasedUrls !== null
+            ? { useDeploymentBasedUrls }
+            : {}),
         });
         return provider(modelApiName);
       }
@@ -173,7 +233,11 @@ export async function getDbRerankingModel(
 
 export type DbModelResult = {
   model: LanguageModel;
+  contextLength: number;
+  inputTokenPricePer1MUsd: number;
+  outputTokenPricePer1MUsd: number;
   supportsTools: boolean;
+  supportsGeneration: boolean;
   supportsImageInput: boolean;
   supportsFileInput: boolean;
 };
@@ -204,12 +268,17 @@ export async function getDbModel(
       modelConfig.apiName,
       providerConfig.apiKey,
       providerConfig.baseUrl,
+      providerConfig.settings,
     );
     if (!model) return null;
 
     return {
       model,
+      contextLength: modelConfig.contextLength,
+      inputTokenPricePer1MUsd: modelConfig.inputTokenPricePer1MUsd,
+      outputTokenPricePer1MUsd: modelConfig.outputTokenPricePer1MUsd,
       supportsTools: modelConfig.supportsTools,
+      supportsGeneration: modelConfig.supportsGeneration,
       supportsImageInput: modelConfig.supportsImageInput,
       supportsFileInput: modelConfig.supportsFileInput,
     };

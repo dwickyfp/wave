@@ -1,6 +1,7 @@
 import { JSONSchema7 } from "json-schema";
 import { tool as createTool } from "ai";
 import { jsonSchemaToZod } from "lib/json-schema-to-zod";
+import { safeOutboundFetch } from "lib/network/safe-outbound-fetch";
 import { safe } from "ts-safe";
 
 export const httpFetchSchema: JSONSchema7 = {
@@ -38,7 +39,7 @@ export const httpFetchSchema: JSONSchema7 = {
 
 export const httpFetchTool = createTool({
   description:
-    "Make HTTP requests to any URL. Can be used to fetch data from APIs, send data to servers, or interact with web services.",
+    "Make HTTP requests to public HTTP(S) URLs. Can be used to fetch data from APIs, send data to servers, or interact with external web services.",
   inputSchema: jsonSchemaToZod(httpFetchSchema),
   execute: async ({ url, method = "GET", headers, body, timeout = 10000 }) => {
     return safe(async () => {
@@ -46,7 +47,7 @@ export const httpFetchTool = createTool({
       const timeoutId = setTimeout(() => controller.abort(), timeout);
 
       try {
-        const response = await fetch(url, {
+        const response = await safeOutboundFetch(url, {
           method,
           headers: headers ? { ...headers } : undefined,
           body:

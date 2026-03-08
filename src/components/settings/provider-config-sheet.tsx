@@ -1,17 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { mutate as swrMutate } from "swr";
 import { toast } from "sonner";
+import { mutate as swrMutate } from "swr";
 
 const CHAT_MODELS_KEY = "/api/chat/models";
+import { LlmModelConfig, LlmProviderConfig } from "app-types/settings";
+import { cn } from "lib/utils";
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "ui/sheet";
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  FileText,
+  Image,
+  Pencil,
+  Plus,
+  Save,
+  Sparkles,
+  Trash2,
+  Tv,
+  Wrench,
+  X,
+} from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,30 +38,18 @@ import {
 import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
-import { Switch } from "ui/switch";
 import { Separator } from "ui/separator";
 import {
-  Eye,
-  EyeOff,
-  Plus,
-  Trash2,
-  Save,
-  Image,
-  FileText,
-  Wrench,
-  Sparkles,
-  Pencil,
-  Check,
-  X,
-  Tv,
-  Brain,
-  ChevronDown,
-  ChevronRight,
-} from "lucide-react";
-import { LlmModelConfig, LlmProviderConfig } from "app-types/settings";
-import { cn } from "lib/utils";
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "ui/sheet";
+import { Switch } from "ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { ModelRegisterDialog } from "./model-register-dialog";
-import { getProviderDef } from "./provider-definitions";
+import { ProviderCustomField, getProviderDef } from "./provider-definitions";
 
 interface ProviderConfigSheetProps {
   provider: LlmProviderConfig | null;
@@ -62,12 +63,14 @@ interface ProviderConfigSheetProps {
 
 type CapabilityKey =
   | "supportsTools"
+  | "supportsGeneration"
   | "supportsImageInput"
   | "supportsImageGeneration"
   | "supportsFileInput";
 
 const CAPABILITY_ICONS: Record<CapabilityKey, React.ReactNode> = {
   supportsTools: <Wrench className="size-3" />,
+  supportsGeneration: <Brain className="size-3" />,
   supportsImageInput: <Image className="size-3" />,
   supportsImageGeneration: <Sparkles className="size-3" />,
   supportsFileInput: <FileText className="size-3" />,
@@ -75,10 +78,39 @@ const CAPABILITY_ICONS: Record<CapabilityKey, React.ReactNode> = {
 
 const CAPABILITY_LABELS: Record<CapabilityKey, string> = {
   supportsTools: "Tools",
+  supportsGeneration: "Generate",
   supportsImageInput: "Image In",
   supportsImageGeneration: "Img Gen",
   supportsFileInput: "Files",
 };
+
+const CAPABILITY_DESCRIPTIONS: Record<
+  CapabilityKey,
+  { enabled: string; disabled: string }
+> = {
+  supportsTools: {
+    enabled: "Disable tool and MCP calls for this model.",
+    disabled: "Enable tool and MCP calls for this model.",
+  },
+  supportsGeneration: {
+    enabled: "Remove this model from skill and agent generation workflows.",
+    disabled: "Allow this model to be used for skill and agent generation.",
+  },
+  supportsImageInput: {
+    enabled: "Stop this model from accepting image inputs.",
+    disabled: "Allow this model to accept image inputs.",
+  },
+  supportsImageGeneration: {
+    enabled: "Stop this model from generating images.",
+    disabled: "Allow this model to generate images.",
+  },
+  supportsFileInput: {
+    enabled: "Stop this model from accepting uploaded files.",
+    disabled: "Allow this model to accept uploaded files.",
+  },
+};
+
+type ProviderSettingValue = string | number | boolean | null;
 
 export function ProviderConfigSheet({
   provider,
@@ -101,6 +133,9 @@ export function ProviderConfigSheet({
   const [showKey, setShowKey] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState(provider?.baseUrl ?? "");
+  const [providerSettings, setProviderSettings] = useState<
+    Record<string, ProviderSettingValue>
+  >(provider?.settings ?? {});
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [models, setModels] = useState<LlmModelConfig[]>(
     provider?.models ?? [],
@@ -133,6 +168,7 @@ export function ProviderConfigSheet({
   useEffect(() => {
     setModels(provider?.models ?? []);
     setBaseUrl(provider?.baseUrl ?? "");
+    setProviderSettings(provider?.settings ?? {});
     setEnabled(provider?.enabled ?? true);
     setApiKey("");
     setShowKey(false);
@@ -140,10 +176,70 @@ export function ProviderConfigSheet({
 
   const needsApiKey = def ? def.needsApiKey : true;
   const needsBaseUrl = def ? def.needsBaseUrl : false;
+  const customFields = def?.customFields ?? [];
+
+  const updateCustomSetting = (key: string, value: ProviderSettingValue) => {
+    setProviderSettings((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const getCustomFieldTextValue = (field: ProviderCustomField): string => {
+    const value = providerSettings[field.key];
+    if (value === null || value === undefined) return "";
+    return String(value);
+  };
+
+  const getCustomFieldBooleanValue = (field: ProviderCustomField): boolean => {
+    const value = providerSettings[field.key];
+    return typeof value === "boolean" ? value : false;
+  };
+
+  const buildSettingsPayload = (): Record<string, ProviderSettingValue> => {
+    const payload: Record<string, ProviderSettingValue> = {};
+    for (const [key, value] of Object.entries(providerSettings)) {
+      if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (trimmed.length > 0) payload[key] = trimmed;
+        continue;
+      }
+      if (
+        typeof value === "number" ||
+        typeof value === "boolean" ||
+        value === null
+      ) {
+        payload[key] = value;
+      }
+    }
+    return payload;
+  };
 
   const handleSaveProvider = async () => {
     setSaving(true);
     try {
+      for (const field of customFields) {
+        if (!field.required) continue;
+        const value = providerSettings[field.key];
+        if (field.type === "boolean") {
+          if (typeof value !== "boolean") {
+            toast.error(`${field.label} is required`);
+            return;
+          }
+          continue;
+        }
+        if (field.type === "number") {
+          if (typeof value !== "number" || Number.isNaN(value)) {
+            toast.error(`${field.label} is required`);
+            return;
+          }
+          continue;
+        }
+        if (typeof value !== "string" || value.trim().length === 0) {
+          toast.error(`${field.label} is required`);
+          return;
+        }
+      }
+
+      const settingsPayload = buildSettingsPayload();
+
       if (isNew) {
         if (!newProviderName.trim()) {
           toast.error("Provider name is required");
@@ -157,6 +253,7 @@ export function ProviderConfigSheet({
             displayName: newDisplayName.trim() || newProviderName.trim(),
             apiKey: apiKey || null,
             baseUrl: baseUrl || null,
+            settings: settingsPayload,
             enabled,
           }),
         });
@@ -172,6 +269,7 @@ export function ProviderConfigSheet({
             displayName: provider!.displayName,
             ...(apiKey ? { apiKey } : {}),
             baseUrl: baseUrl || null,
+            settings: settingsPayload,
             enabled,
           }),
         });
@@ -388,7 +486,7 @@ export function ProviderConfigSheet({
           )}
 
           {/* Base URL */}
-          {(needsBaseUrl || isNew) && (
+          {(needsBaseUrl || (isNew && !isPredefined)) && (
             <div className="space-y-1.5">
               <Label>
                 {def?.baseUrlLabel ?? "Base URL"}{" "}
@@ -405,6 +503,66 @@ export function ProviderConfigSheet({
                 value={baseUrl}
                 onChange={(e) => setBaseUrl(e.target.value)}
               />
+            </div>
+          )}
+
+          {customFields.length > 0 && (
+            <div className="space-y-3">
+              {customFields.map((field) => (
+                <div key={field.key} className="space-y-1.5">
+                  {field.type === "boolean" ? (
+                    <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                      <div>
+                        <Label className="text-sm">{field.label}</Label>
+                        {field.description && (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {field.description}
+                          </p>
+                        )}
+                      </div>
+                      <Switch
+                        checked={getCustomFieldBooleanValue(field)}
+                        onCheckedChange={(checked) =>
+                          updateCustomSetting(field.key, checked)
+                        }
+                      />
+                    </div>
+                  ) : (
+                    <>
+                      <Label>
+                        {field.label}
+                        {field.required && (
+                          <span className="text-destructive ml-1">*</span>
+                        )}
+                      </Label>
+                      <Input
+                        type={field.type === "number" ? "number" : "text"}
+                        placeholder={field.placeholder}
+                        value={getCustomFieldTextValue(field)}
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (field.type === "number") {
+                            if (raw.trim().length === 0) {
+                              updateCustomSetting(field.key, null);
+                              return;
+                            }
+                            const numeric = Number(raw);
+                            if (Number.isNaN(numeric)) return;
+                            updateCustomSetting(field.key, numeric);
+                            return;
+                          }
+                          updateCustomSetting(field.key, raw);
+                        }}
+                      />
+                      {field.description && (
+                        <p className="text-xs text-muted-foreground">
+                          {field.description}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
@@ -586,6 +744,7 @@ interface ModelRowProps {
 
 const CAPS: CapabilityKey[] = [
   "supportsTools",
+  "supportsGeneration",
   "supportsImageInput",
   "supportsImageGeneration",
   "supportsFileInput",
@@ -601,17 +760,49 @@ function ModelRow({
   const [editing, setEditing] = useState(false);
   const [editUiName, setEditUiName] = useState(model.uiName);
   const [editApiName, setEditApiName] = useState(model.apiName);
+  const [editContextLength, setEditContextLength] = useState(
+    String(model.contextLength ?? 0),
+  );
+  const [editInputTokenPricePer1MUsd, setEditInputTokenPricePer1MUsd] =
+    useState(String(model.inputTokenPricePer1MUsd ?? 0));
+  const [editOutputTokenPricePer1MUsd, setEditOutputTokenPricePer1MUsd] =
+    useState(String(model.outputTokenPricePer1MUsd ?? 0));
   const [saving, setSaving] = useState(false);
+
+  const parseNonNegativeNumber = (
+    raw: string,
+    { integer = false }: { integer?: boolean } = {},
+  ) => {
+    const trimmed = raw.trim();
+    const parsed = integer ? parseInt(trimmed, 10) : Number(trimmed);
+    if (!trimmed.length || Number.isNaN(parsed) || parsed < 0) {
+      throw new Error("Numeric model settings must be zero or greater");
+    }
+    return parsed;
+  };
 
   const handleSave = async () => {
     setSaving(true);
     try {
+      const contextLength = parseNonNegativeNumber(editContextLength, {
+        integer: true,
+      });
+      const inputTokenPricePer1MUsd = parseNonNegativeNumber(
+        editInputTokenPricePer1MUsd,
+      );
+      const outputTokenPricePer1MUsd = parseNonNegativeNumber(
+        editOutputTokenPricePer1MUsd,
+      );
+
       const res = await fetch(`/api/settings/models/${model.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           uiName: editUiName.trim(),
           apiName: editApiName.trim(),
+          contextLength,
+          inputTokenPricePer1MUsd,
+          outputTokenPricePer1MUsd,
         }),
       });
       if (!res.ok) throw new Error("Failed to update model");
@@ -629,8 +820,17 @@ function ModelRow({
   const handleCancel = () => {
     setEditUiName(model.uiName);
     setEditApiName(model.apiName);
+    setEditContextLength(String(model.contextLength ?? 0));
+    setEditInputTokenPricePer1MUsd(String(model.inputTokenPricePer1MUsd ?? 0));
+    setEditOutputTokenPricePer1MUsd(
+      String(model.outputTokenPricePer1MUsd ?? 0),
+    );
     setEditing(false);
   };
+
+  const modelEnabledTooltip = model.enabled
+    ? "Disable this model without deleting its configuration."
+    : "Enable this model so users can select it again.";
 
   return (
     <div
@@ -642,25 +842,85 @@ function ModelRow({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           {editing ? (
-            <div className="space-y-1.5">
-              <div className="relative">
-                <Tv className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                <Input
-                  value={editUiName}
-                  onChange={(e) => setEditUiName(e.target.value)}
-                  placeholder="Display name"
-                  className="h-7 text-sm pl-7"
-                />
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label className="text-[11px] font-medium text-muted-foreground">
+                  Display Name
+                </Label>
+                <div className="relative">
+                  <Tv className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                  <Input
+                    value={editUiName}
+                    onChange={(e) => setEditUiName(e.target.value)}
+                    placeholder="Display name"
+                    className="h-8 text-sm pl-7"
+                  />
+                </div>
               </div>
-              <div className="relative">
-                <Brain className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-                <Input
-                  value={editApiName}
-                  onChange={(e) => setEditApiName(e.target.value)}
-                  placeholder="API model name"
-                  className="h-7 text-xs pl-7"
-                />
+              <div className="space-y-1">
+                <Label className="text-[11px] font-medium text-muted-foreground">
+                  API Model Name
+                </Label>
+                <div className="relative">
+                  <Brain className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                  <Input
+                    value={editApiName}
+                    onChange={(e) => setEditApiName(e.target.value)}
+                    placeholder="API model name"
+                    className="h-8 text-xs pl-7"
+                  />
+                </div>
               </div>
+              {model.modelType === "llm" && (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+                      Context Length
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={editContextLength}
+                      onChange={(e) => setEditContextLength(e.target.value)}
+                      placeholder="0"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+                      Input USD / 1M
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={editInputTokenPricePer1MUsd}
+                      onChange={(e) =>
+                        setEditInputTokenPricePer1MUsd(e.target.value)
+                      }
+                      placeholder="0"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="whitespace-nowrap text-[11px] font-medium text-muted-foreground">
+                      Output USD / 1M
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={editOutputTokenPricePer1MUsd}
+                      onChange={(e) =>
+                        setEditOutputTokenPricePer1MUsd(e.target.value)
+                      }
+                      placeholder="0"
+                      className="h-8 text-xs"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -668,53 +928,106 @@ function ModelRow({
               <p className="text-xs text-muted-foreground truncate">
                 {model.apiName}
               </p>
+              {model.modelType === "llm" && (
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                  <span>Ctx {model.contextLength.toLocaleString()}</span>
+                  <span>In ${model.inputTokenPricePer1MUsd}/1M</span>
+                  <span>Out ${model.outputTokenPricePer1MUsd}/1M</span>
+                </div>
+              )}
             </>
           )}
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {editing ? (
             <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={handleSave}
-                disabled={saving}
-              >
-                <Check className="size-3" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={handleCancel}
-              >
-                <X className="size-3" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-foreground"
+                    onClick={handleSave}
+                    disabled={saving}
+                  >
+                    <Check className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">Save model changes</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-foreground"
+                    onClick={handleCancel}
+                  >
+                    <X className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Discard unsaved changes
+                </TooltipContent>
+              </Tooltip>
             </>
           ) : (
             <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={() => setEditing(true)}
-              >
-                <Pencil className="size-3" />
-              </Button>
-              <Switch
-                checked={model.enabled}
-                onCheckedChange={onToggleEnabled}
-                className="scale-75"
-              />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-destructive"
-                onClick={onDelete}
-              >
-                <Trash2 className="size-3" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      setEditUiName(model.uiName);
+                      setEditApiName(model.apiName);
+                      setEditContextLength(String(model.contextLength ?? 0));
+                      setEditInputTokenPricePer1MUsd(
+                        String(model.inputTokenPricePer1MUsd ?? 0),
+                      );
+                      setEditOutputTokenPricePer1MUsd(
+                        String(model.outputTokenPricePer1MUsd ?? 0),
+                      );
+                      setEditing(true);
+                    }}
+                  >
+                    <Pencil className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Edit model names, limits, and pricing
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center">
+                    <Switch
+                      checked={model.enabled}
+                      onCheckedChange={onToggleEnabled}
+                      className="scale-75"
+                    />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  {modelEnabledTooltip}
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-6 text-muted-foreground hover:text-destructive"
+                    onClick={onDelete}
+                  >
+                    <Trash2 className="size-3" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Delete this model configuration
+                </TooltipContent>
+              </Tooltip>
             </>
           )}
         </div>
@@ -724,20 +1037,30 @@ function ModelRow({
       {!editing && model.modelType === "llm" && (
         <div className="flex flex-wrap gap-1">
           {CAPS.map((cap) => (
-            <button
-              key={cap}
-              onClick={() => onToggleCapability(cap)}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors",
-                model[cap]
-                  ? "bg-primary/10 border-primary/30 text-primary"
-                  : "bg-muted border-transparent text-muted-foreground",
-              )}
-              title={`Toggle ${CAPABILITY_LABELS[cap]}`}
-            >
-              {CAPABILITY_ICONS[cap]}
-              {CAPABILITY_LABELS[cap]}
-            </button>
+            <Tooltip key={cap}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={() => onToggleCapability(cap)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors",
+                    model[cap]
+                      ? "bg-primary/10 border-primary/30 text-primary"
+                      : "bg-muted border-transparent text-muted-foreground",
+                  )}
+                >
+                  {CAPABILITY_ICONS[cap]}
+                  {CAPABILITY_LABELS[cap]}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-56 text-xs">
+                {
+                  CAPABILITY_DESCRIPTIONS[cap][
+                    model[cap] ? "enabled" : "disabled"
+                  ]
+                }
+              </TooltipContent>
+            </Tooltip>
           ))}
         </div>
       )}

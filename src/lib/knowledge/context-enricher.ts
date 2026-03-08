@@ -1,29 +1,16 @@
 /**
- * Contextual Enrichment Module
+ * Contextual enrichment for chunk embeddings.
  *
- * Implements Anthropic's "Contextual Retrieval" technique:
- * For each chunk, an LLM generates a short context summary that explains
- * what the chunk discusses and how it relates to the broader document.
- * This context is stored alongside the chunk and prepended before embedding,
- * producing richer, more self-contained vector representations.
- *
- * Research shows this reduces retrieval failure rate by ~35% and by ~49%
- * when combined with hybrid search (BM25 + vector).
+ * Uses local section context instead of the document opening so late-page
+ * chunks stay grounded in the section they came from.
  */
-import { generateText, LanguageModel } from "ai";
+import { LanguageModel, generateText } from "ai";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
 import type { TextChunk } from "./chunker";
 
-// ─── Configuration ─────────────────────────────────────────────────────────────
+const SECTION_EXCERPT_LIMIT = 800;
 
-/** Max chars of the full document to include in the prompt */
-const DOC_CONTEXT_LIMIT = 3000;
-
-/**
- * Small, fast model for context generation. We prefer a cheap/fast model
- * since this runs per-chunk during ingestion.
- */
 const CONTEXT_MODEL_PREFERENCES = [
   { provider: "openai", model: "gpt-4.1-mini" },
   { provider: "google", model: "gemini-2.5-flash-lite" },
@@ -31,19 +18,23 @@ const CONTEXT_MODEL_PREFERENCES = [
   { provider: "openai", model: "gpt-4.1" },
 ] as const;
 
-/** Concurrency for contextual summary generation */
 const CONTEXT_GEN_CONCURRENCY = 5;
-
-// ─── LLM Model Resolution ─────────────────────────────────────────────────────
-
 const CONTEXTX_MODEL_KEY = "contextx-model";
 
-/**
- * Try to resolve the user-configured ContextX model from system settings.
- * Falls back to the hardcoded preference list if no setting is configured.
- */
+export interface EnrichedChunk extends TextChunk {
+  contextSummary: string;
+  embeddingText: string;
+}
+
+export interface ChunkSectionContext {
+  id: string;
+  headingPath: string;
+  content: string;
+  summary: string;
+  parentSectionId?: string | null;
+}
+
 async function getContextModel(): Promise<LanguageModel | null> {
-  // 1. Try the admin-configured ContextX model first
   try {
     const config = await settingsRepository.getSetting(CONTEXTX_MODEL_KEY);
     if (
@@ -63,27 +54,21 @@ async function getContextModel(): Promise<LanguageModel | null> {
           provider,
           modelName,
         );
-        if (modelConfig) {
-          const m = createModelFromConfig(
-            provider,
-            modelConfig.apiName,
-            providerConfig.apiKey,
-            providerConfig.baseUrl,
-          );
-          if (m) {
-            console.log(
-              `[ContextX] Using configured model: ${provider}/${modelName}`,
-            );
-            return m;
-          }
-        }
+        const resolvedModelName = modelConfig?.apiName ?? modelName;
+        const model = createModelFromConfig(
+          provider,
+          resolvedModelName,
+          providerConfig.apiKey,
+          providerConfig.baseUrl,
+          providerConfig.settings,
+        );
+        if (model) return model;
       }
     }
   } catch {
-    // Setting not found or invalid — fall through to preference list
+    // Fall through to hardcoded preferences.
   }
 
-  // 2. Fallback: iterate the hardcoded preference list
   for (const pref of CONTEXT_MODEL_PREFERENCES) {
     try {
       const providerConfig = await settingsRepository.getProviderByName(
@@ -102,45 +87,60 @@ async function getContextModel(): Promise<LanguageModel | null> {
         modelConfig.apiName,
         providerConfig.apiKey,
         providerConfig.baseUrl,
+        providerConfig.settings,
       );
       if (model) return model;
     } catch {
       continue;
     }
   }
+
   return null;
 }
 
-// ─── Context Generation ────────────────────────────────────────────────────────
+function buildSectionContextMap(sections: ChunkSectionContext[]) {
+  const map = new Map(sections.map((section) => [section.id, section]));
 
-/**
- * Generate a contextual summary for a single chunk.
- * The summary situates the chunk within the broader document context.
- */
+  return (chunk: TextChunk) => {
+    const section = chunk.sectionId ? map.get(chunk.sectionId) : undefined;
+    const parent = section?.parentSectionId
+      ? map.get(section.parentSectionId)
+      : undefined;
+
+    return {
+      section,
+      parentSummary: parent?.summary ?? "",
+      sectionPath:
+        section?.headingPath ??
+        chunk.metadata.headingPath ??
+        chunk.metadata.section ??
+        "",
+      sectionExcerpt: section?.content.slice(0, SECTION_EXCERPT_LIMIT) ?? "",
+    };
+  };
+}
+
 async function generateChunkContext(
   model: LanguageModel,
   chunk: TextChunk,
   documentTitle: string,
-  documentExcerpt: string,
+  localContext: {
+    sectionPath: string;
+    parentSummary: string;
+    sectionExcerpt: string;
+  },
 ): Promise<string> {
-  const headingContext = chunk.metadata.headingPath
-    ? `Section: ${chunk.metadata.headingPath}`
-    : chunk.metadata.section
-      ? `Section: ${chunk.metadata.section}`
-      : "";
-
   const prompt = `<document_title>${documentTitle}</document_title>
 
-<document_excerpt>
-${documentExcerpt}
-</document_excerpt>
+${localContext.sectionPath ? `<section_path>${localContext.sectionPath}</section_path>` : ""}
+${localContext.parentSummary ? `<parent_section_summary>${localContext.parentSummary}</parent_section_summary>` : ""}
+${localContext.sectionExcerpt ? `<section_excerpt>\n${localContext.sectionExcerpt}\n</section_excerpt>` : ""}
 
-${headingContext ? `<section_path>${headingContext}</section_path>\n` : ""}
 <chunk>
 ${chunk.content}
 </chunk>
 
-Generate a short (1-3 sentences) context that explains what this chunk discusses and how it relates to the document. This context will be prepended to the chunk for better search retrieval. Be specific and factual. Do NOT repeat the chunk content. Only output the context, nothing else.`;
+Generate a short (1-3 sentences) factual context that explains what this chunk covers and how it fits within the section. Do not repeat the chunk verbatim. Output only the context.`;
 
   try {
     const { text } = await generateText({
@@ -149,32 +149,27 @@ Generate a short (1-3 sentences) context that explains what this chunk discusses
       temperature: 0,
     });
     return text.trim();
-  } catch (err) {
+  } catch (error) {
     console.warn(
-      `[ContextX] Failed to generate context for chunk ${chunk.chunkIndex}:`,
-      err,
+      `[ContextX] Failed to generate section context for chunk ${chunk.chunkIndex}:`,
+      error,
     );
     return "";
   }
 }
 
-// ─── Batch Processing ──────────────────────────────────────────────────────────
-
-/**
- * Process chunks in batches with controlled concurrency.
- */
 async function processInBatches<T, R>(
   items: T[],
   concurrency: number,
   fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
-  let index = 0;
+  let nextIndex = 0;
 
   const workers = Array.from({ length: concurrency }, async () => {
-    while (index < items.length) {
-      const i = index++;
-      results[i] = await fn(items[i]);
+    while (nextIndex < items.length) {
+      const current = nextIndex++;
+      results[current] = await fn(items[current]);
     }
   });
 
@@ -182,101 +177,79 @@ async function processInBatches<T, R>(
   return results;
 }
 
-// ─── Fallback Context (No LLM) ────────────────────────────────────────────────
-
-/**
- * Generate a rule-based context summary when no LLM is available.
- * Uses document title + heading path to create a useful prefix.
- */
 function generateFallbackContext(
-  chunk: TextChunk,
   documentTitle: string,
+  localContext: {
+    sectionPath: string;
+    parentSummary: string;
+  },
 ): string {
   const parts: string[] = [];
 
-  if (documentTitle) {
-    parts.push(`From document: "${documentTitle}".`);
+  if (documentTitle) parts.push(`From document: "${documentTitle}".`);
+  if (localContext.sectionPath) {
+    parts.push(`Section: ${localContext.sectionPath}.`);
+  }
+  if (localContext.parentSummary) {
+    parts.push(localContext.parentSummary);
   }
 
-  if (chunk.metadata.headingPath) {
-    parts.push(`Section: ${chunk.metadata.headingPath}.`);
-  } else if (chunk.metadata.section) {
-    parts.push(`Section: ${chunk.metadata.section}.`);
-  }
-
-  return parts.join(" ");
+  return parts.join(" ").trim();
 }
 
-// ─── Public API ────────────────────────────────────────────────────────────────
-
-export interface EnrichedChunk extends TextChunk {
-  contextSummary: string;
-  /** The text that should be embedded (context + content) */
-  embeddingText: string;
-}
-
-/**
- * Enrich chunks with contextual summaries using Anthropic's
- * Contextual Retrieval technique.
- *
- * If an LLM is available, generates per-chunk context summaries.
- * Falls back to rule-based context (document title + heading path)
- * if no LLM is available.
- *
- * @param chunks - Raw text chunks from the chunker
- * @param documentTitle - Title/filename of the source document
- * @param fullMarkdown - Full document markdown (truncated for prompt)
- * @returns Enriched chunks with contextSummary and embeddingText
- */
 export async function enrichChunksWithContext(
   chunks: TextChunk[],
   documentTitle: string,
-  fullMarkdown: string,
+  sections: ChunkSectionContext[],
 ): Promise<EnrichedChunk[]> {
   if (chunks.length === 0) return [];
 
-  // Prepare document excerpt for LLM prompt
-  const documentExcerpt =
-    fullMarkdown.length > DOC_CONTEXT_LIMIT
-      ? fullMarkdown.slice(0, DOC_CONTEXT_LIMIT) + "\n[... document continues]"
-      : fullMarkdown;
-
-  // Try to get an LLM for context generation
+  const resolveLocalContext = buildSectionContextMap(sections);
   const model = await getContextModel();
 
   if (model) {
     console.log(
-      `[ContextX] Generating contextual summaries for ${chunks.length} chunks using LLM`,
+      `[ContextX] Generating contextual summaries for ${chunks.length} chunks using section-local context`,
     );
 
     const contexts = await processInBatches(
       chunks,
       CONTEXT_GEN_CONCURRENCY,
       (chunk) =>
-        generateChunkContext(model, chunk, documentTitle, documentExcerpt),
+        generateChunkContext(
+          model,
+          chunk,
+          documentTitle,
+          resolveLocalContext(chunk),
+        ),
     );
 
-    return chunks.map((chunk, i) => {
-      const ctx = contexts[i] || generateFallbackContext(chunk, documentTitle);
+    return chunks.map((chunk, index) => {
+      const localContext = resolveLocalContext(chunk);
+      const context =
+        contexts[index] || generateFallbackContext(documentTitle, localContext);
+
       return {
         ...chunk,
-        contextSummary: ctx,
-        embeddingText: ctx ? `${ctx}\n\n${chunk.content}` : chunk.content,
+        contextSummary: context,
+        embeddingText: context
+          ? `${context}\n\n${chunk.content}`
+          : chunk.content,
       };
     });
   }
 
-  // Fallback: rule-based context (no LLM available)
   console.log(
-    `[ContextX] No LLM available for context generation — using rule-based fallback for ${chunks.length} chunks`,
+    `[ContextX] No LLM available for context generation - using section-local fallback for ${chunks.length} chunks`,
   );
 
   return chunks.map((chunk) => {
-    const ctx = generateFallbackContext(chunk, documentTitle);
+    const localContext = resolveLocalContext(chunk);
+    const context = generateFallbackContext(documentTitle, localContext);
     return {
       ...chunk,
-      contextSummary: ctx,
-      embeddingText: ctx ? `${ctx}\n\n${chunk.content}` : chunk.content,
+      contextSummary: context,
+      embeddingText: context ? `${context}\n\n${chunk.content}` : chunk.content,
     };
   });
 }

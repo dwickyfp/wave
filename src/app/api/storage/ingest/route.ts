@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { getSession } from "auth/server";
 import { serverFileStorage } from "lib/file-storage";
 import { parseCsvPreview, formatCsvPreviewText } from "lib/file-ingest/csv";
 import { storageKeyFromUrl } from "lib/file-storage/storage-utils";
+import { isUserOwnedStorageKey } from "lib/file-storage/upload-policy";
 
 type Body = {
   key?: string; // storage key (preferred)
@@ -12,6 +14,11 @@ type Body = {
 };
 
 export async function POST(req: Request) {
+  const session = await getSession();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   let body: Body;
   try {
     body = (await req.json()) as Body;
@@ -25,6 +32,10 @@ export async function POST(req: Request) {
       { error: "Missing 'key' or 'url'" },
       { status: 400 },
     );
+  }
+
+  if (!isUserOwnedStorageKey(key, session.user.id)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   // Infer type from extension when auto

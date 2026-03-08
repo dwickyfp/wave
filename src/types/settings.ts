@@ -4,9 +4,13 @@ import { z } from "zod";
 
 export type ModelType = "llm" | "image_generation" | "embedding" | "reranking";
 
+export type ProviderSettingValue = string | number | boolean | null;
+export type ProviderSettings = Record<string, ProviderSettingValue>;
+
 export type LlmProviderName =
   | "openrouter"
   | "openai"
+  | "azure"
   | "anthropic"
   | "google"
   | "xai"
@@ -22,7 +26,11 @@ export type LlmModelConfig = {
   apiName: string;
   uiName: string;
   enabled: boolean;
+  contextLength: number;
+  inputTokenPricePer1MUsd: number;
+  outputTokenPricePer1MUsd: number;
   supportsTools: boolean;
+  supportsGeneration: boolean;
   supportsImageInput: boolean;
   supportsImageGeneration: boolean;
   supportsFileInput: boolean;
@@ -39,6 +47,7 @@ export type LlmProviderConfig = {
   /** Masked API key — never returns the raw key to the client */
   apiKeyMasked: string | null;
   baseUrl: string | null;
+  settings: ProviderSettings;
   enabled: boolean;
   models: LlmModelConfig[];
   createdAt: Date;
@@ -51,7 +60,7 @@ export type OtherConfig = {
   exaApiKey?: string;
 };
 
-// ─── Minio ────────────────────────────────────────────────────────────────────
+// ─── Minio (legacy – kept for backward compatibility) ─────────────────────────
 
 export type MinioConfig = {
   endpoint: string;
@@ -62,13 +71,37 @@ export type MinioConfig = {
   useSSL: boolean;
 };
 
+// ─── Unified File Storage ─────────────────────────────────────────────────────
+
+export type FileStorageType = "s3" | "vercel-blob" | "none";
+
+export type FileStorageConfig = {
+  type: FileStorageType;
+  s3?: {
+    bucket?: string;
+    region?: string;
+    endpoint?: string;
+    accessKey?: string;
+    secretKey?: string;
+    publicBaseUrl?: string;
+    forcePathStyle?: boolean;
+  };
+  vercelBlob?: {
+    token?: string;
+  };
+};
+
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
 
 export const LlmModelConfigZodSchema = z.object({
   apiName: z.string().min(1, "API name is required"),
   uiName: z.string().min(1, "Display name is required"),
   enabled: z.boolean().default(true),
+  contextLength: z.number().int().min(0).default(0),
+  inputTokenPricePer1MUsd: z.number().min(0).default(0),
+  outputTokenPricePer1MUsd: z.number().min(0).default(0),
   supportsTools: z.boolean().default(true),
+  supportsGeneration: z.boolean().default(false),
   supportsImageInput: z.boolean().default(false),
   supportsImageGeneration: z.boolean().default(false),
   supportsFileInput: z.boolean().default(false),
@@ -85,6 +118,12 @@ export const LlmProviderUpsertZodSchema = z.object({
   displayName: z.string().min(1),
   apiKey: z.string().optional().nullable(),
   baseUrl: z.string().optional().nullable(),
+  settings: z
+    .record(
+      z.string(),
+      z.union([z.string(), z.number(), z.boolean(), z.null()]),
+    )
+    .optional(),
   enabled: z.boolean().default(true),
 });
 
@@ -101,7 +140,28 @@ export const MinioConfigZodSchema = z.object({
   useSSL: z.boolean().default(true),
 });
 
+const s3SubSchema = z.object({
+  bucket: z.string().optional(),
+  region: z.string().optional(),
+  endpoint: z.string().optional(),
+  accessKey: z.string().optional(),
+  secretKey: z.string().optional(),
+  publicBaseUrl: z.string().optional(),
+  forcePathStyle: z.boolean().optional(),
+});
+
+const vercelBlobSubSchema = z.object({
+  token: z.string().optional(),
+});
+
+export const FileStorageConfigZodSchema = z.object({
+  type: z.enum(["s3", "vercel-blob", "none"]).default("none"),
+  s3: s3SubSchema.optional(),
+  vercelBlob: vercelBlobSubSchema.optional(),
+});
+
 export type LlmModelConfigInput = z.infer<typeof LlmModelConfigZodSchema>;
 export type LlmProviderUpsertInput = z.infer<typeof LlmProviderUpsertZodSchema>;
 export type MinioConfigInput = z.infer<typeof MinioConfigZodSchema>;
 export type OtherConfigInput = z.infer<typeof OtherConfigZodSchema>;
+export type FileStorageConfigInput = z.infer<typeof FileStorageConfigZodSchema>;

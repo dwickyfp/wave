@@ -1,6 +1,7 @@
 import { getSession } from "auth/server";
 import { settingsRepository } from "lib/db/repository";
 import { LlmProviderUpsertZodSchema } from "app-types/settings";
+import { validateRequiredProviderSettings } from "lib/settings/provider-custom-fields";
 import { NextResponse } from "next/server";
 
 async function requireAdmin() {
@@ -52,8 +53,25 @@ export async function PUT(
     if (auth.error) return auth.error;
 
     const { id } = await params;
+    const existing = await settingsRepository.getProviderById(id);
+    if (!existing) {
+      return NextResponse.json(
+        { error: "Provider not found" },
+        { status: 404 },
+      );
+    }
+
     const json = await request.json();
     const data = LlmProviderUpsertZodSchema.partial().parse(json);
+    const mergedSettings = data.settings ?? existing.settings;
+    const settingErrors = validateRequiredProviderSettings(
+      existing.name,
+      mergedSettings,
+    );
+    if (settingErrors.length > 0) {
+      return NextResponse.json({ error: settingErrors[0] }, { status: 400 });
+    }
+
     const provider = await settingsRepository.updateProvider(id, data);
     if (!provider) {
       return NextResponse.json(

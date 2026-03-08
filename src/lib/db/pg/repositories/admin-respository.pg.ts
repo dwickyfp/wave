@@ -1,18 +1,11 @@
 import {
   AdminRepository,
-  AdminUsersQuery,
   AdminUsersPaginated,
+  AdminUsersQuery,
   ModelUsageStat,
   UsageMonitoringData,
   UsageMonitoringQuery,
 } from "app-types/admin";
-import { pgDb as db } from "../db.pg";
-import {
-  UserTable,
-  SessionTable,
-  ChatThreadTable,
-  ChatMessageTable,
-} from "../schema.pg";
 import {
   and,
   asc,
@@ -24,12 +17,73 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { pgDb as db } from "../db.pg";
+import {
+  ChatMessageTable,
+  ChatThreadTable,
+  LlmModelConfigTable,
+  LlmProviderConfigTable,
+  SessionTable,
+  UserTable,
+} from "../schema.pg";
 
 // Helper function to get user columns without password
 const getUserColumnsWithoutPassword = () => {
   const { password, ...userColumns } = getTableColumns(UserTable);
   return userColumns;
 };
+
+const messageTotalTokensSql = sql<number>`COALESCE((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric, 0)`;
+const messageInputTokensSql = sql<number>`COALESCE((${ChatMessageTable.metadata}->'usage'->>'inputTokens')::numeric, 0)`;
+const messageOutputTokensSql = sql<number>`COALESCE((${ChatMessageTable.metadata}->'usage'->>'outputTokens')::numeric, 0)`;
+const messageModelNameSql = sql<
+  string | null
+>`${ChatMessageTable.metadata}->'chatModel'->>'model'`;
+const messageProviderNameSql = sql<
+  string | null
+>`${ChatMessageTable.metadata}->'chatModel'->>'provider'`;
+
+// Match the runtime model lookup: prefer an exact uiName match, then apiName.
+const messageLiveCostUsdSql = sql<number>`ROUND(
+  COALESCE(
+    (
+      SELECT
+        (
+          (${messageInputTokensSql} / 1000000.0)
+          * ${LlmModelConfigTable.inputTokenPricePer1MUsd}
+        )
+        + (
+          (${messageOutputTokensSql} / 1000000.0)
+          * ${LlmModelConfigTable.outputTokenPricePer1MUsd}
+        )
+      FROM ${LlmModelConfigTable}
+      INNER JOIN ${LlmProviderConfigTable}
+        ON ${LlmModelConfigTable.providerId} = ${LlmProviderConfigTable.id}
+      WHERE
+        ${LlmProviderConfigTable.name} = ${messageProviderNameSql}
+        AND ${LlmProviderConfigTable.enabled} = true
+        AND ${LlmModelConfigTable.enabled} = true
+        AND (
+          ${LlmModelConfigTable.uiName} = ${messageModelNameSql}
+          OR ${LlmModelConfigTable.apiName} = ${messageModelNameSql}
+        )
+      ORDER BY
+        CASE
+          WHEN ${LlmModelConfigTable.uiName} = ${messageModelNameSql}
+            THEN 0
+          ELSE 1
+        END,
+        ${LlmModelConfigTable.uiName}
+      LIMIT 1
+    ),
+    0
+  ),
+  9
+)`;
+const totalMessageCountSql = sql<number>`COALESCE(COUNT(${ChatMessageTable.id}), 0)`;
+const totalThreadCountSql = sql<number>`COALESCE(COUNT(DISTINCT ${ChatThreadTable.id}), 0)`;
+const totalMessageTokensSql = sql<number>`COALESCE(SUM(${messageTotalTokensSql}), 0)`;
+const totalMessageCostUsdSql = sql<number>`COALESCE(SUM(${messageLiveCostUsdSql}), 0)`;
 
 const pgAdminRepository: AdminRepository = {
   getUsers: async (query?: AdminUsersQuery): Promise<AdminUsersPaginated> => {
@@ -157,9 +211,10 @@ const pgAdminRepository: AdminRepository = {
         email: UserTable.email,
         image: UserTable.image,
         role: UserTable.role,
-        threadCount: sql<number>`COALESCE(COUNT(DISTINCT ${ChatThreadTable.id}), 0)`,
-        messageCount: sql<number>`COALESCE(COUNT(${ChatMessageTable.id}), 0)`,
-        totalTokens: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        threadCount: totalThreadCountSql,
+        messageCount: totalMessageCountSql,
+        totalTokens: totalMessageTokensSql,
+        totalCostUsd: totalMessageCostUsdSql,
         topModel: sql<string | null>`(
           SELECT ${ChatMessageTable.metadata}->'chatModel'->>'model'
           FROM ${ChatMessageTable}
@@ -170,7 +225,7 @@ const pgAdminRepository: AdminRepository = {
             AND ${ChatMessageTable.metadata} IS NOT NULL
             AND ${ChatMessageTable.metadata}->'chatModel'->>'model' IS NOT NULL
           GROUP BY ${ChatMessageTable.metadata}->'chatModel'->>'model'
-          ORDER BY SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric) DESC
+          ORDER BY SUM(${messageTotalTokensSql}) DESC
           LIMIT 1
         )`,
       })
@@ -215,21 +270,27 @@ const pgAdminRepository: AdminRepository = {
       case "messageCount":
         orderByClause =
           sortDirection === "asc"
-            ? sql`COUNT(${ChatMessageTable.id}) ASC`
-            : sql`COUNT(${ChatMessageTable.id}) DESC`;
+            ? sql`${totalMessageCountSql} ASC`
+            : sql`${totalMessageCountSql} DESC`;
+        break;
+      case "totalCostUsd":
+        orderByClause =
+          sortDirection === "asc"
+            ? sql`${totalMessageCostUsdSql} ASC`
+            : sql`${totalMessageCostUsdSql} DESC`;
         break;
       case "threadCount":
         orderByClause =
           sortDirection === "asc"
-            ? sql`COUNT(DISTINCT ${ChatThreadTable.id}) ASC`
-            : sql`COUNT(DISTINCT ${ChatThreadTable.id}) DESC`;
+            ? sql`${totalThreadCountSql} ASC`
+            : sql`${totalThreadCountSql} DESC`;
         break;
       case "totalTokens":
       default:
         orderByClause =
           sortDirection === "asc"
-            ? sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0) ASC`
-            : sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0) DESC`;
+            ? sql`${totalMessageTokensSql} ASC`
+            : sql`${totalMessageTokensSql} DESC`;
         break;
     }
 
@@ -250,9 +311,10 @@ const pgAdminRepository: AdminRepository = {
     // Aggregated totals across all users in the date range
     const [aggregates] = await db
       .select({
-        totalTokensSum: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
-        totalMessagesSum: sql<number>`COALESCE(COUNT(${ChatMessageTable.id}), 0)`,
-        totalThreadsSum: sql<number>`COALESCE(COUNT(DISTINCT ${ChatThreadTable.id}), 0)`,
+        totalTokensSum: totalMessageTokensSql,
+        totalCostSum: totalMessageCostUsdSql,
+        totalMessagesSum: totalMessageCountSql,
+        totalThreadsSum: totalThreadCountSql,
         activeUsersCount: sql<number>`COUNT(DISTINCT ${ChatThreadTable.userId})`,
       })
       .from(ChatThreadTable)
@@ -271,7 +333,7 @@ const pgAdminRepository: AdminRepository = {
     const modelDistributionRaw = await db
       .select({
         model: sql<string>`${ChatMessageTable.metadata}->'chatModel'->>'model'`,
-        totalTokens: sql<number>`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0)`,
+        totalTokens: totalMessageTokensSql,
         messageCount: sql<number>`COUNT(${ChatMessageTable.id})`,
       })
       .from(ChatMessageTable)
@@ -287,9 +349,7 @@ const pgAdminRepository: AdminRepository = {
         ),
       )
       .groupBy(sql`${ChatMessageTable.metadata}->'chatModel'->>'model'`)
-      .orderBy(
-        sql`COALESCE(SUM((${ChatMessageTable.metadata}->'usage'->>'totalTokens')::numeric), 0) DESC`,
-      )
+      .orderBy(sql`${totalMessageTokensSql} DESC`)
       .limit(10);
 
     const modelDistribution: ModelUsageStat[] = modelDistributionRaw
@@ -306,12 +366,14 @@ const pgAdminRepository: AdminRepository = {
         threadCount: Number(u.threadCount || 0),
         messageCount: Number(u.messageCount || 0),
         totalTokens: Number(u.totalTokens || 0),
+        totalCostUsd: Number(u.totalCostUsd || 0),
         topModel: u.topModel ?? null,
       })),
       total: totalResult?.count || 0,
       limit,
       offset,
       totalTokensSum: Number(aggregates?.totalTokensSum || 0),
+      totalCostUsd: Number(aggregates?.totalCostSum || 0),
       totalMessagesSum: Number(aggregates?.totalMessagesSum || 0),
       totalThreadsSum: Number(aggregates?.totalThreadsSum || 0),
       activeUsersCount: Number(aggregates?.activeUsersCount || 0),

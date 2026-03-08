@@ -1,8 +1,25 @@
 "use client";
 
-import { useTransition, useCallback, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { buildUserDetailUrl } from "@/lib/admin/navigation-utils";
+import { AdminUserListItem, AdminUsersPaginated } from "app-types/admin";
 import { format } from "date-fns";
+import { ChevronRight, LoaderCircle, Search, X } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useRouter } from "next/navigation";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+} from "react";
+import useSWR from "swr";
+import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Input } from "ui/input";
+import { SortableHeader } from "ui/sortable-header";
 import {
   Table,
   TableBody,
@@ -11,27 +28,21 @@ import {
   TableHeader,
   TableRow,
 } from "ui/table";
-import { Badge } from "ui/badge";
-import { Input } from "ui/input";
-import { buttonVariants } from "ui/button";
-import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
-import { Search, ChevronRight, X } from "lucide-react";
-
-import { AdminUserListItem } from "app-types/admin";
-import { cn } from "lib/utils";
-import { useDebounce } from "@/hooks/use-debounce";
 import { TablePagination } from "ui/table-pagination";
-import Form from "next/form";
-import Link from "next/link";
-import { SortableHeader } from "ui/sortable-header";
-import { getUserAvatar } from "lib/user/utils";
-import { useTranslations } from "next-intl";
+
 import { UserRoleBadges } from "@/components/user/user-detail/user-role-badges";
 import { UserStatusBadge } from "@/components/user/user-detail/user-status-badge";
-import { buildUserDetailUrl } from "@/lib/admin/navigation-utils";
-
-const DEFAULT_SORT_BY = "createdAt";
-const DEFAULT_SORT_DIRECTION = "desc";
+import {
+  ADMIN_USERS_DEFAULT_SORT_BY,
+  ADMIN_USERS_DEFAULT_SORT_DIRECTION,
+  type AdminUsersSortBy,
+  buildAdminUsersApiUrl,
+  buildAdminUsersPageUrl,
+  buildAdminUsersSearchParams,
+  parseAdminUsersSearchParams,
+} from "lib/admin/users";
+import { getUserAvatar } from "lib/user/utils";
+import { fetcher } from "lib/utils";
 
 interface UsersTableProps {
   users: AdminUserListItem[];
@@ -41,158 +52,323 @@ interface UsersTableProps {
   limit: number;
   query?: string;
   baseUrl?: string;
-  sortBy: string;
+  sortBy: AdminUsersSortBy;
   sortDirection: "asc" | "desc";
 }
 
-export function UsersTable({
-  users,
-  currentUserId,
-  total,
+interface UsersTableState {
+  limit: number;
+  page: number;
+  query?: string;
+  sortBy: AdminUsersSortBy;
+  sortDirection: "asc" | "desc";
+}
+
+function getTableState({
   page,
   limit,
   query,
-  baseUrl = "/admin/users",
-  sortBy = DEFAULT_SORT_BY,
-  sortDirection = DEFAULT_SORT_DIRECTION,
-}: UsersTableProps) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const [_, startTransition] = useTransition();
-  const formRef = useRef<HTMLFormElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const t = useTranslations("Admin.Users");
-  const shouldAutoFocusRef = useRef<boolean>(false);
+  sortBy,
+  sortDirection,
+}: UsersTableProps): UsersTableState {
+  return {
+    limit,
+    page,
+    query,
+    sortBy,
+    sortDirection,
+  };
+}
 
-  const submitForm = useCallback(() => {
-    // Track that we're about to submit and should maintain focus
-    formRef.current?.requestSubmit();
-  }, []);
-
-  const debouncedSetUrlQuery = useDebounce(submitForm, 300);
-
-  const totalPages = Math.ceil(total / limit);
-
-  const buildUrl = useCallback(
-    (
-      params: {
-        page?: number;
-        sortBy?: string;
-        sortDirection?: "asc" | "desc";
-        query?: string;
-      } = {},
-    ) => {
-      const searchParams = new URLSearchParams();
-
-      // Use provided values or fall back to current values
-      const finalPage = params.page ?? page;
-      const finalSortBy = params.sortBy ?? sortBy;
-      const finalSortDirection = params.sortDirection ?? sortDirection;
-      const finalQuery = params.query ?? query;
-
-      // Only add non-default values to keep URLs clean
-      if (finalPage && finalPage !== 1) {
-        searchParams.set("page", finalPage.toString());
-      }
-      if (finalSortBy && finalSortBy !== DEFAULT_SORT_BY) {
-        searchParams.set("sortBy", finalSortBy);
-      }
-      if (finalSortDirection && finalSortDirection !== DEFAULT_SORT_DIRECTION) {
-        searchParams.set("sortDirection", finalSortDirection);
-      }
-      if (finalQuery) {
-        searchParams.set("query", finalQuery);
-      }
-
-      const queryString = searchParams.toString();
-      return queryString ? `${baseUrl}?${queryString}` : baseUrl;
-    },
-    [baseUrl, page, sortBy, sortDirection, query],
+function sameTableState(
+  currentState: UsersTableState,
+  nextState: UsersTableState,
+) {
+  return (
+    currentState.limit === nextState.limit &&
+    currentState.page === nextState.page &&
+    currentState.query === nextState.query &&
+    currentState.sortBy === nextState.sortBy &&
+    currentState.sortDirection === nextState.sortDirection
   );
+}
+
+export function UsersTable(props: UsersTableProps) {
+  const {
+    users,
+    currentUserId,
+    total,
+    page,
+    limit,
+    query,
+    baseUrl = "/admin/users",
+  } = props;
+  const router = useRouter();
+  const t = useTranslations("Admin.Users");
+  const [tableState, setTableState] = useState<UsersTableState>(
+    getTableState(props),
+  );
+  const [queryInput, setQueryInput] = useState(query ?? "");
+
+  const requestUrl = useMemo(
+    () => buildAdminUsersApiUrl(tableState),
+    [tableState],
+  );
+
+  const {
+    data: resolvedData = {
+      users,
+      total,
+      limit,
+      offset: (page - 1) * limit,
+    },
+    error,
+    isValidating,
+  } = useSWR<AdminUsersPaginated>(requestUrl, fetcher, {
+    fallbackData: {
+      users,
+      total,
+      limit,
+      offset: (page - 1) * limit,
+    },
+    keepPreviousData: true,
+    revalidateOnFocus: false,
+  });
+
+  const totalPages = Math.ceil(resolvedData.total / tableState.limit);
+
+  const updateBrowserUrl = useCallback(
+    (nextState: UsersTableState, historyMode: "push" | "replace" = "push") => {
+      const nextUrl = buildAdminUsersPageUrl({
+        ...nextState,
+        baseUrl,
+      });
+      window.history[historyMode === "push" ? "pushState" : "replaceState"](
+        null,
+        "",
+        nextUrl,
+      );
+    },
+    [baseUrl],
+  );
+
+  const commitTableState = useCallback(
+    (nextState: UsersTableState, historyMode: "push" | "replace" = "push") => {
+      if (sameTableState(tableState, nextState)) {
+        return;
+      }
+
+      updateBrowserUrl(nextState, historyMode);
+      startTransition(() => {
+        setTableState(nextState);
+      });
+    },
+    [tableState, updateBrowserUrl],
+  );
+
+  const applySearch = useEffectEvent((nextQueryInput: string) => {
+    const normalizedQuery = nextQueryInput.trim() || undefined;
+
+    if (normalizedQuery === tableState.query) {
+      return;
+    }
+
+    commitTableState(
+      {
+        ...tableState,
+        page: 1,
+        query: normalizedQuery,
+      },
+      "replace",
+    );
+  });
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      applySearch(queryInput);
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [applySearch, queryInput]);
+
+  useEffect(() => {
+    const syncFromUrl = () => {
+      const nextSearchState = parseAdminUsersSearchParams(
+        new URLSearchParams(window.location.search),
+        limit,
+      );
+      const nextState: UsersTableState = {
+        limit: nextSearchState.limit,
+        page: nextSearchState.page,
+        query: nextSearchState.query,
+        sortBy: nextSearchState.sortBy,
+        sortDirection: nextSearchState.sortDirection,
+      };
+
+      setQueryInput(nextSearchState.query ?? "");
+      setTableState((currentState) =>
+        sameTableState(currentState, nextState) ? currentState : nextState,
+      );
+    };
+
+    window.addEventListener("popstate", syncFromUrl);
+    return () => window.removeEventListener("popstate", syncFromUrl);
+  }, [limit]);
+
+  useEffect(() => {
+    if (
+      resolvedData.total === 0 ||
+      totalPages === 0 ||
+      tableState.page <= totalPages
+    ) {
+      return;
+    }
+
+    commitTableState(
+      {
+        ...tableState,
+        page: totalPages,
+      },
+      "replace",
+    );
+  }, [commitTableState, resolvedData.total, tableState, totalPages]);
 
   const handleSort = useCallback(
     (field: string) => {
-      const newSortDirection =
-        sortBy === field && sortDirection === "asc" ? "desc" : "asc";
+      const nextSortBy = field as AdminUsersSortBy;
+      const nextSortDirection =
+        tableState.sortBy === nextSortBy && tableState.sortDirection === "asc"
+          ? "desc"
+          : "asc";
 
-      router.push(
-        buildUrl({
-          sortBy: field,
-          sortDirection: newSortDirection,
-          page: 1,
-        }),
-      );
+      commitTableState({
+        ...tableState,
+        page: 1,
+        sortBy: nextSortBy,
+        sortDirection: nextSortDirection,
+      });
     },
-    [sortBy, sortDirection, router, buildUrl],
+    [commitTableState, tableState],
   );
 
-  const handleRowClick = (userId: string) => {
-    startTransition(() => {
-      // Get current search params as string
-      const currentSearchString = searchParams.toString();
+  const handlePageChange = useCallback(
+    (nextPage: number) => {
+      if (nextPage < 1 || (totalPages > 0 && nextPage > totalPages)) {
+        return;
+      }
+
+      commitTableState({
+        ...tableState,
+        page: nextPage,
+      });
+    },
+    [commitTableState, tableState, totalPages],
+  );
+
+  const handleClear = useCallback(() => {
+    setQueryInput("");
+    commitTableState(
+      {
+        ...tableState,
+        page: 1,
+        query: undefined,
+        sortBy: ADMIN_USERS_DEFAULT_SORT_BY,
+        sortDirection: ADMIN_USERS_DEFAULT_SORT_DIRECTION,
+      },
+      "replace",
+    );
+  }, [commitTableState, tableState]);
+
+  const handleRowClick = useCallback(
+    (userId: string) => {
+      const currentSearchString =
+        buildAdminUsersSearchParams(tableState).toString();
       const url = buildUserDetailUrl(userId, currentSearchString);
-      router.push(url);
-    });
-  };
+
+      startTransition(() => {
+        router.push(url);
+      });
+    },
+    [router, tableState],
+  );
+
+  const isFiltered =
+    !!tableState.query ||
+    tableState.sortBy !== ADMIN_USERS_DEFAULT_SORT_BY ||
+    tableState.sortDirection !== ADMIN_USERS_DEFAULT_SORT_DIRECTION;
 
   return (
     <div className="space-y-4 w-full">
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-sm">
-          <Form action={baseUrl} ref={formRef}>
-            {page !== 1 && <input type="hidden" name="page" value={1} />}
-            {sortBy !== DEFAULT_SORT_BY && (
-              <input type="hidden" name="sortBy" value={sortBy} />
-            )}
-            {sortDirection !== DEFAULT_SORT_DIRECTION && (
-              <input type="hidden" name="sortDirection" value={sortDirection} />
-            )}
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex items-center gap-4">
+          <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
-              ref={inputRef}
-              autoFocus={shouldAutoFocusRef.current}
-              key={query ?? "empty"}
+              value={queryInput}
               placeholder={t("searchPlaceholder")}
-              className="pl-9"
-              name="query"
-              defaultValue={query}
-              onFocus={() => {
-                shouldAutoFocusRef.current = true;
+              className="pl-9 pr-9"
+              onChange={(event) => {
+                setQueryInput(event.target.value);
               }}
-              onChange={() => {
-                debouncedSetUrlQuery();
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") {
+                  return;
+                }
+
+                event.preventDefault();
+                applySearch(queryInput);
               }}
               data-testid="users-search-input"
             />
-          </Form>
+            {queryInput && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="absolute right-1 top-1 h-7 w-7"
+                onClick={handleClear}
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+          {isFiltered && (
+            <Button variant="outline" onClick={handleClear}>
+              <X className="h-4 w-4 mr-1" />
+              {t("clear")}
+            </Button>
+          )}
         </div>
-        {(query ||
-          sortBy !== DEFAULT_SORT_BY ||
-          sortDirection !== DEFAULT_SORT_DIRECTION) && (
-          <Link
-            href={baseUrl}
-            className={cn("shrink-0", buttonVariants({ variant: "outline" }))}
-          >
-            <X className="h-4 w-4 mr-1" />
-            {t("clear")}
-          </Link>
-        )}
         <div
-          className="text-sm text-muted-foreground"
+          className="flex items-center gap-2 text-sm text-muted-foreground"
           data-testid="users-total-count"
         >
-          {t("totalCount", { count: total })}
+          <span>{t("totalCount", { count: resolvedData.total })}</span>
+          {isValidating && (
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+          )}
         </div>
       </div>
 
-      <div className="rounded-lg border bg-card w-full overflow-x-auto">
+      {error instanceof Error && (
+        <p className="text-xs text-destructive">{error.message}</p>
+      )}
+
+      <div
+        className="rounded-lg border bg-card w-full overflow-x-auto relative"
+        aria-busy={isValidating}
+      >
+        {isValidating && (
+          <div className="pointer-events-none absolute inset-0 z-10 bg-background/35 backdrop-blur-[1px]" />
+        )}
+
         <Table data-testid="users-table" className="w-full">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
               <SortableHeader
                 field="name"
-                currentSortBy={sortBy}
-                currentSortDirection={sortDirection}
+                currentSortBy={tableState.sortBy}
+                currentSortDirection={tableState.sortDirection}
                 onSort={handleSort}
                 data-testid="sort-header-name"
               >
@@ -200,8 +376,8 @@ export function UsersTable({
               </SortableHeader>
               <SortableHeader
                 field="role"
-                currentSortBy={sortBy}
-                currentSortDirection={sortDirection}
+                currentSortBy={tableState.sortBy}
+                currentSortDirection={tableState.sortDirection}
                 onSort={handleSort}
                 data-testid="sort-header-role"
               >
@@ -212,8 +388,8 @@ export function UsersTable({
               </TableHead>
               <SortableHeader
                 field="createdAt"
-                currentSortBy={sortBy}
-                currentSortDirection={sortDirection}
+                currentSortBy={tableState.sortBy}
+                currentSortDirection={tableState.sortDirection}
                 onSort={handleSort}
                 data-testid="sort-header-createdAt"
               >
@@ -223,7 +399,7 @@ export function UsersTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {users.length === 0 ? (
+            {resolvedData.users.length === 0 ? (
               <TableRow>
                 <TableCell
                   colSpan={5}
@@ -233,7 +409,7 @@ export function UsersTable({
                 </TableCell>
               </TableRow>
             ) : (
-              users.map((user) => (
+              resolvedData.users.map((user) => (
                 <TableRow
                   key={user.id}
                   className="cursor-pointer hover:bg-muted/50 transition-colors"
@@ -298,9 +474,16 @@ export function UsersTable({
       </div>
 
       <TablePagination
-        currentPage={page}
+        currentPage={tableState.page}
         totalPages={totalPages}
-        buildUrl={buildUrl}
+        buildUrl={(params) =>
+          buildAdminUsersPageUrl({
+            ...tableState,
+            baseUrl,
+            page: params.page,
+          })
+        }
+        onPageChange={handlePageChange}
       />
     </div>
   );

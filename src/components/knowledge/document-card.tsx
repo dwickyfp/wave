@@ -1,23 +1,23 @@
 "use client";
 
 import { KnowledgeDocument } from "app-types/knowledge";
-import { Card } from "ui/card";
-import { Badge } from "ui/badge";
-import { Button } from "ui/button";
+import { format } from "date-fns";
+import { notify } from "lib/notify";
+import { cn } from "lib/utils";
 import {
-  Trash2Icon,
-  FileTextIcon,
-  TableIcon,
   FileIcon,
+  FileTextIcon,
   LinkIcon,
   Loader2Icon,
   RefreshCwIcon,
+  TableIcon,
+  Trash2Icon,
 } from "lucide-react";
-import { format } from "date-fns";
-import { cn } from "lib/utils";
-import { toast } from "sonner";
 import { useState } from "react";
-import { notify } from "lib/notify";
+import { toast } from "sonner";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Card } from "ui/card";
 
 const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   pdf: FileTextIcon,
@@ -61,6 +61,7 @@ export function DocumentCard({
 }: Props) {
   const [deleting, setDeleting] = useState(false);
   const [reembedding, setReembedding] = useState(false);
+  const isInherited = !!doc.isInherited;
   const FileIconComp = FILE_ICONS[doc.fileType] ?? FileIcon;
 
   const handleReEmbed = async () => {
@@ -119,43 +120,45 @@ export function DocumentCard({
           </p>
         </div>
 
-        <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleReEmbed();
-            }}
-            disabled={reembedding || doc.status === "processing"}
-            title="Re-embed document"
-          >
-            {reembedding ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : (
-              <RefreshCwIcon className="size-3.5" />
-            )}
-          </Button>
+        {!isInherited && (
+          <div className="flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleReEmbed();
+              }}
+              disabled={reembedding || doc.status === "processing"}
+              title="Reprocess for new structure and embeddings"
+            >
+              {reembedding ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCwIcon className="size-3.5" />
+              )}
+            </Button>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleDelete();
-            }}
-            disabled={deleting}
-            title="Delete document"
-          >
-            {deleting ? (
-              <Loader2Icon className="size-3.5 animate-spin" />
-            ) : (
-              <Trash2Icon className="size-3.5" />
-            )}
-          </Button>
-        </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete();
+              }}
+              disabled={deleting}
+              title="Delete document"
+            >
+              {deleting ? (
+                <Loader2Icon className="size-3.5 animate-spin" />
+              ) : (
+                <Trash2Icon className="size-3.5" />
+              )}
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between flex-wrap gap-1">
@@ -172,9 +175,14 @@ export function DocumentCard({
             )}
             {doc.status}
           </Badge>
-          {doc.chunkCount > 0 && (
+          {isInherited && (
+            <Badge variant="secondary" className="text-xs px-1.5 py-0">
+              From {doc.sourceGroupName ?? "linked group"}
+            </Badge>
+          )}
+          {doc.tokenCount > 0 && (
             <span className="text-xs text-muted-foreground">
-              {doc.chunkCount} chunks
+              {doc.tokenCount.toLocaleString()} tokens
             </span>
           )}
         </div>
@@ -184,6 +192,15 @@ export function DocumentCard({
           <time>{format(new Date(doc.createdAt), "MMM d")}</time>
         </div>
       </div>
+
+      {doc.status === "processing" && (
+        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+          <div
+            className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
+            style={{ width: `${doc.processingProgress ?? 0}%` }}
+          />
+        </div>
+      )}
     </Card>
   );
 }

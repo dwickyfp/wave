@@ -33,9 +33,14 @@ vi.mock("next/navigation", () => ({
   notFound: vi.fn(),
 }));
 
+vi.mock("lib/user/utils", () => ({
+  getIsUserAdmin: vi.fn(),
+}));
+
 const { auth, getSession } = await import("auth/server");
 const { headers } = await import("next/headers");
 const { notFound } = await import("next/navigation");
+const { getIsUserAdmin } = await import("lib/user/utils");
 import {
   getUserAccounts,
   getUserIdAndCheckAccess,
@@ -119,10 +124,11 @@ describe("User Server", () => {
   });
 
   describe("getUserIdAndCheckAccess - Access Control Logic", () => {
-    it("should use requested user ID when provided", async () => {
+    it("should allow admins to use requested user ID", async () => {
       vi.mocked(getSession).mockResolvedValue({
-        user: { id: "current-user" },
+        user: { id: "current-user", role: "admin" },
       } as any);
+      vi.mocked(getIsUserAdmin).mockReturnValue(true);
 
       const result = await getUserIdAndCheckAccess("target-user");
 
@@ -131,16 +137,31 @@ describe("User Server", () => {
 
     it("should fall back to current user ID when none provided", async () => {
       vi.mocked(getSession).mockResolvedValue({
-        user: { id: "current-user" },
+        user: { id: "current-user", role: "user" },
       } as any);
+      vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
       const result = await getUserIdAndCheckAccess();
 
       expect(result).toBe("current-user");
     });
 
+    it("should reject cross-user access for non-admin users", async () => {
+      vi.mocked(getSession).mockResolvedValue({
+        user: { id: "current-user", role: "user" },
+      } as any);
+      vi.mocked(getIsUserAdmin).mockReturnValue(false);
+
+      await getUserIdAndCheckAccess("target-user");
+
+      expect(notFound).toHaveBeenCalled();
+    });
+
     it("should call notFound for falsy user IDs", async () => {
-      vi.mocked(getSession).mockResolvedValue({ user: { id: "" } } as any);
+      vi.mocked(getSession).mockResolvedValue({
+        user: { id: "", role: "user" },
+      } as any);
+      vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
       await getUserIdAndCheckAccess();
 
@@ -149,8 +170,9 @@ describe("User Server", () => {
 
     it("should handle null/undefined gracefully", async () => {
       vi.mocked(getSession).mockResolvedValue({
-        user: { id: "fallback-user" },
+        user: { id: "fallback-user", role: "user" },
       } as any);
+      vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
       const result1 = await getUserIdAndCheckAccess(null as any);
       const result2 = await getUserIdAndCheckAccess(undefined);
@@ -170,8 +192,9 @@ describe("User Server", () => {
 
     beforeEach(() => {
       vi.mocked(getSession).mockResolvedValue({
-        user: { id: "current-user" },
+        user: { id: "current-user", role: "admin" },
       } as any);
+      vi.mocked(getIsUserAdmin).mockReturnValue(true);
     });
 
     it("should update user with provided fields", async () => {

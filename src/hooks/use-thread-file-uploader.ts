@@ -69,6 +69,7 @@ export function useThreadFileUploader(threadId?: string) {
                     ? {
                         ...f,
                         url: uploaded.url,
+                        storageKey: uploaded.pathname,
                         dataUrl,
                         isUploading: false,
                         progress: 100,

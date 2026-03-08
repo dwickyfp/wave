@@ -1,7 +1,7 @@
-import { knowledgeRepository } from "lib/db/repository";
-import { getSession } from "auth/server";
-import { notFound } from "next/navigation";
 import { KnowledgeDetailPage } from "@/components/knowledge/knowledge-detail-page";
+import { getSession } from "auth/server";
+import { knowledgeRepository, settingsRepository } from "lib/db/repository";
+import { notFound } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -17,13 +17,24 @@ export default async function KnowledgeGroupDetailPage({ params }: Props) {
   const group = await knowledgeRepository.selectGroupById(id, session.user.id);
   if (!group) notFound();
 
-  const documents = await knowledgeRepository.selectDocumentsByGroupId(id);
+  const [documents, contextxConfig] = await Promise.all([
+    knowledgeRepository.selectDocumentsByGroupScope(id),
+    settingsRepository.getSetting("contextx-model"),
+  ]);
+  const sourceGroups = await knowledgeRepository.selectGroupSources(id);
+
+  const contextxModel = contextxConfig as {
+    provider: string;
+    model: string;
+  } | null;
 
   return (
     <KnowledgeDetailPage
       group={group}
       initialDocuments={documents}
+      initialSourceGroups={sourceGroups}
       userId={session.user.id}
+      contextxModel={contextxModel}
     />
   );
 }

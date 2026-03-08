@@ -2,11 +2,7 @@ import { Buffer } from "node:buffer";
 import type { UploadContent } from "./file-storage.interface";
 import logger from "logger";
 import { withTimeout } from "lib/utils";
-
-export const sanitizeFilename = (filename: string) => {
-  const base = filename.split(/[/\\]/).pop() ?? "file";
-  return base.replace(/[^a-zA-Z0-9._-]/g, "_") || "file";
-};
+export { sanitizeFilename, sanitizeStoragePath } from "./path-utils";
 
 /**
  * Infer content type from filename extension.

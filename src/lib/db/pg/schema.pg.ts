@@ -1,20 +1,24 @@
 import { Agent } from "app-types/agent";
-import { UserPreferences } from "app-types/user";
+import type { A2AAgentCard, A2AAgentConfig } from "app-types/a2a-agent";
 import { MCPServerConfig, MCPToolInfo } from "app-types/mcp";
+import type { ProviderSettings } from "app-types/settings";
+import { UserPreferences } from "app-types/user";
 import { sql } from "drizzle-orm";
 import {
-  pgTable,
-  text,
-  timestamp,
-  json,
-  uuid,
+  bigint,
   boolean,
-  unique,
-  varchar,
+  customType,
   index,
   integer,
-  bigint,
-  customType,
+  json,
+  numeric,
+  pgTable,
+  real,
+  text,
+  timestamp,
+  unique,
+  uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 
 // pgvector custom type
@@ -37,46 +41,190 @@ const vector = customType<{ data: number[]; config?: { dimensions?: number } }>(
     },
   },
 );
-import { isNotNull } from "drizzle-orm";
-import { DBWorkflow, DBEdge, DBNode } from "app-types/workflow";
-import { UIMessage } from "ai";
-import { ChatMetadata, ChatMention } from "app-types/chat";
 import { TipTapMentionJsonContent } from "@/types/util";
+import { UIMessage } from "ai";
+import {
+  ChatCompactionSource,
+  ChatCompactionStatus,
+  ChatCompactionSummary,
+  ChatMention,
+  ChatMetadata,
+} from "app-types/chat";
+import { PilotBrowser } from "app-types/pilot";
+import { DBEdge, DBNode, DBWorkflow } from "app-types/workflow";
+import { isNotNull } from "drizzle-orm";
 
-export const ChatThreadTable = pgTable("chat_thread", {
-  id: uuid("id").primaryKey().notNull().defaultRandom(),
-  title: text("title").notNull(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => UserTable.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .default(sql`CURRENT_TIMESTAMP`),
-  // Snowflake Cortex Threads — persisted per chat session so we can pass
-  // thread_id + parent_message_id to agent:run on every subsequent turn.
-  // Only populated when the thread is backed by a Snowflake Cortex agent.
-  snowflakeThreadId: text("snowflake_thread_id"),
-  // The assistant message_id returned by Snowflake for the last successful
-  // turn.  Used as parent_message_id for the next agent:run call.
-  // 0 means "start of thread" (first user turn).
-  // Must be bigint because Snowflake message IDs exceed 32-bit int range.
-  snowflakeParentMessageId: bigint("snowflake_parent_message_id", {
-    mode: "number",
-  }),
-});
+export const ChatThreadTable = pgTable(
+  "chat_thread",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    title: text("title").notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    // Snowflake Cortex Threads — persisted per chat session so we can pass
+    // thread_id + parent_message_id to agent:run on every subsequent turn.
+    // Only populated when the thread is backed by a Snowflake Cortex agent.
+    snowflakeThreadId: text("snowflake_thread_id"),
+    // The assistant message_id returned by Snowflake for the last successful
+    // turn.  Used as parent_message_id for the next agent:run call.
+    // 0 means "start of thread" (first user turn).
+    // Must be bigint because Snowflake message IDs exceed 32-bit int range.
+    snowflakeParentMessageId: bigint("snowflake_parent_message_id", {
+      mode: "number",
+    }),
+    a2aAgentId: uuid("a2a_agent_id").references(() => AgentTable.id, {
+      onDelete: "set null",
+    }),
+    a2aContextId: text("a2a_context_id"),
+    a2aTaskId: text("a2a_task_id"),
+  },
+  (t) => [
+    index("chat_thread_user_id_created_at_idx").on(t.userId, t.createdAt),
+    index("chat_thread_created_at_idx").on(t.createdAt),
+  ],
+);
 
-export const ChatMessageTable = pgTable("chat_message", {
-  id: text("id").primaryKey().notNull(),
-  threadId: uuid("thread_id")
-    .notNull()
-    .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
-  role: text("role").notNull().$type<UIMessage["role"]>(),
-  parts: json("parts").notNull().array().$type<UIMessage["parts"]>(),
-  metadata: json("metadata").$type<ChatMetadata>(),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .default(sql`CURRENT_TIMESTAMP`),
-});
+export const ChatMessageTable = pgTable(
+  "chat_message",
+  {
+    id: text("id").primaryKey().notNull(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
+    role: text("role").notNull().$type<UIMessage["role"]>(),
+    parts: json("parts").notNull().array().$type<UIMessage["parts"]>(),
+    metadata: json("metadata").$type<ChatMetadata>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("chat_message_thread_id_created_at_idx").on(t.threadId, t.createdAt),
+    index("chat_message_created_at_idx").on(t.createdAt),
+  ],
+);
+
+export const PilotExtensionAuthCodeTable = pgTable(
+  "pilot_extension_auth_code",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    extensionId: text("extension_id").notNull(),
+    browser: text("browser").$type<PilotBrowser>().notNull(),
+    browserVersion: text("browser_version"),
+    codeHash: text("code_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.codeHash),
+    index("pilot_extension_auth_code_user_id_idx").on(table.userId),
+    index("pilot_extension_auth_code_extension_id_idx").on(table.extensionId),
+    index("pilot_extension_auth_code_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
+export const PilotExtensionSessionTable = pgTable(
+  "pilot_extension_session",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    extensionId: text("extension_id").notNull(),
+    browser: text("browser").$type<PilotBrowser>().notNull(),
+    browserVersion: text("browser_version"),
+    accessTokenHash: text("access_token_hash").notNull(),
+    refreshTokenHash: text("refresh_token_hash").notNull(),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", {
+      withTimezone: true,
+    }).notNull(),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+      withTimezone: true,
+    }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.accessTokenHash),
+    unique().on(table.refreshTokenHash),
+    index("pilot_extension_session_user_id_idx").on(table.userId),
+    index("pilot_extension_session_extension_id_idx").on(table.extensionId),
+    index("pilot_extension_session_last_used_at_idx").on(table.lastUsedAt),
+  ],
+);
+
+export const ChatThreadCompactionCheckpointTable = pgTable(
+  "chat_thread_compaction_checkpoint",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
+    schemaVersion: integer("schema_version").notNull().default(1),
+    summaryJson: json("summary_json").notNull().$type<ChatCompactionSummary>(),
+    summaryText: text("summary_text").notNull(),
+    compactedMessageCount: integer("compacted_message_count")
+      .notNull()
+      .default(0),
+    sourceTokenCount: integer("source_token_count").notNull().default(0),
+    summaryTokenCount: integer("summary_token_count").notNull().default(0),
+    modelProvider: text("model_provider").notNull(),
+    modelName: text("model_name").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.threadId),
+    index("chat_thread_compaction_checkpoint_thread_id_idx").on(table.threadId),
+  ],
+);
+
+export const ChatThreadCompactionStateTable = pgTable(
+  "chat_thread_compaction_state",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    threadId: uuid("thread_id")
+      .notNull()
+      .references(() => ChatThreadTable.id, { onDelete: "cascade" }),
+    status: text("status").notNull().$type<ChatCompactionStatus>(),
+    source: text("source").notNull().$type<ChatCompactionSource>(),
+    beforeTokens: integer("before_tokens"),
+    afterTokens: integer("after_tokens"),
+    failureCode: text("failure_code"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.threadId),
+    index("chat_thread_compaction_state_thread_id_idx").on(table.threadId),
+  ],
+);
 
 export const AgentTable = pgTable("agent", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -94,10 +242,54 @@ export const AgentTable = pgTable("agent", {
     .default("private"),
   subAgentsEnabled: boolean("sub_agents_enabled").notNull().default(false),
   agentType: varchar("agent_type", {
-    enum: ["standard", "snowflake_cortex"],
+    enum: ["standard", "snowflake_cortex", "a2a_remote"],
   })
     .notNull()
     .default("standard"),
+  mcpEnabled: boolean("mcp_enabled").notNull().default(false),
+  mcpApiKeyHash: text("mcp_api_key_hash"),
+  mcpApiKeyPreview: text("mcp_api_key_preview"),
+  a2aEnabled: boolean("a2a_enabled").notNull().default(false),
+  a2aApiKeyHash: text("a2a_api_key_hash"),
+  a2aApiKeyPreview: text("a2a_api_key_preview"),
+  mcpModelProvider: text("mcp_model_provider"),
+  mcpModelName: text("mcp_model_name"),
+  mcpCodingMode: boolean("mcp_coding_mode").notNull().default(false),
+  mcpAutocompleteModelProvider: text("mcp_autocomplete_model_provider"),
+  mcpAutocompleteModelName: text("mcp_autocomplete_model_name"),
+  mcpPresentationMode: text("mcp_presentation_mode")
+    .$type<"compatibility" | "copilot_native">()
+    .notNull()
+    .default("compatibility"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const A2AAgentConfigTable = pgTable("a2a_agent_config", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  agentId: uuid("agent_id")
+    .notNull()
+    .unique()
+    .references(() => AgentTable.id, { onDelete: "cascade" }),
+  inputUrl: text("input_url").notNull(),
+  agentCardUrl: text("agent_card_url").notNull(),
+  rpcUrl: text("rpc_url").notNull(),
+  authMode: varchar("auth_mode", {
+    enum: ["none", "bearer", "header"],
+  })
+    .$type<A2AAgentConfig["authMode"]>()
+    .notNull()
+    .default("none"),
+  authHeaderName: text("auth_header_name"),
+  authSecret: text("auth_secret"),
+  agentCard: json("agent_card").$type<A2AAgentCard>().notNull(),
+  lastDiscoveredAt: timestamp("last_discovered_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -464,6 +656,7 @@ export type ChatMessageEntity = typeof ChatMessageTable.$inferSelect;
 
 export type AgentEntity = typeof AgentTable.$inferSelect;
 export type SubAgentEntity = typeof SubAgentTable.$inferSelect;
+export type A2AAgentConfigEntity = typeof A2AAgentConfigTable.$inferSelect;
 export type SnowflakeAgentConfigEntity =
   typeof SnowflakeAgentConfigTable.$inferSelect;
 export type UserEntity = typeof UserTable.$inferSelect;
@@ -556,6 +749,7 @@ export const LlmProviderConfigTable = pgTable("llm_provider_config", {
   displayName: text("display_name").notNull(),
   apiKey: text("api_key"),
   baseUrl: text("base_url"),
+  settings: json("settings").$type<ProviderSettings>().notNull().default({}),
   enabled: boolean("enabled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -575,7 +769,23 @@ export const LlmModelConfigTable = pgTable(
     apiName: text("api_name").notNull(),
     uiName: text("ui_name").notNull(),
     enabled: boolean("enabled").notNull().default(true),
+    contextLength: integer("context_length").notNull().default(0),
+    inputTokenPricePer1MUsd: numeric("input_token_price_per_1m_usd", {
+      precision: 12,
+      scale: 6,
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
+    outputTokenPricePer1MUsd: numeric("output_token_price_per_1m_usd", {
+      precision: 12,
+      scale: 6,
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
     supportsTools: boolean("supports_tools").notNull().default(true),
+    supportsGeneration: boolean("supports_generation").notNull().default(false),
     supportsImageInput: boolean("supports_image_input")
       .notNull()
       .default(false),
@@ -599,6 +809,10 @@ export const LlmModelConfigTable = pgTable(
   (t) => [
     unique().on(t.providerId, t.uiName),
     index("llm_model_config_provider_id_idx").on(t.providerId),
+    index("llm_model_config_provider_id_api_name_idx").on(
+      t.providerId,
+      t.apiName,
+    ),
   ],
 );
 
@@ -648,6 +862,9 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
   mcpApiKeyPreview: text("mcp_api_key_preview"),
   chunkSize: integer("chunk_size").notNull().default(512),
   chunkOverlapPercent: integer("chunk_overlap_percent").notNull().default(20),
+  parsingModel: text("parsing_model"),
+  parsingProvider: text("parsing_provider"),
+  retrievalThreshold: real("retrieval_threshold").notNull().default(0.0),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -655,6 +872,27 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const KnowledgeGroupSourceTable = pgTable(
+  "knowledge_group_source",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    sourceGroupId: uuid("source_group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique().on(t.groupId, t.sourceGroupId),
+    index("knowledge_group_source_group_id_idx").on(t.groupId),
+    index("knowledge_group_source_source_group_id_idx").on(t.sourceGroupId),
+  ],
+);
 
 export const KnowledgeDocumentTable = pgTable(
   "knowledge_document",
@@ -667,6 +905,9 @@ export const KnowledgeDocumentTable = pgTable(
       .notNull()
       .references(() => UserTable.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
+    description: text("description"),
+    descriptionManual: boolean("description_manual").notNull().default(false),
+    titleManual: boolean("title_manual").notNull().default(false),
     originalFilename: text("original_filename").notNull(),
     fileType: varchar("file_type", {
       enum: ["pdf", "docx", "xlsx", "csv", "txt", "md", "url", "html"],
@@ -680,9 +921,12 @@ export const KnowledgeDocumentTable = pgTable(
       .notNull()
       .default("pending"),
     errorMessage: text("error_message"),
+    /** Ingestion progress percentage (0–100). Null when not processing. */
+    processingProgress: integer("processing_progress"),
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata"),
+    metadataEmbedding: vector("metadata_embedding"),
     /** Full markdown content of the processed document (Context7-style retrieval) */
     markdownContent: text("markdown_content"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -695,6 +939,38 @@ export const KnowledgeDocumentTable = pgTable(
   (t) => [index("knowledge_document_group_id_idx").on(t.groupId)],
 );
 
+export const KnowledgeSectionTable = pgTable(
+  "knowledge_section",
+  {
+    id: uuid("id").primaryKey().notNull(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    parentSectionId: uuid("parent_section_id"),
+    prevSectionId: uuid("prev_section_id"),
+    nextSectionId: uuid("next_section_id"),
+    heading: text("heading").notNull(),
+    headingPath: text("heading_path").notNull(),
+    level: integer("level").notNull().default(1),
+    partIndex: integer("part_index").notNull().default(0),
+    partCount: integer("part_count").notNull().default(1),
+    content: text("content").notNull(),
+    summary: text("summary").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_section_group_id_idx").on(t.groupId),
+    index("knowledge_section_document_id_idx").on(t.documentId),
+    index("knowledge_section_parent_section_id_idx").on(t.parentSectionId),
+  ],
+);
+
 export const KnowledgeChunkTable = pgTable(
   "knowledge_chunk",
   {
@@ -705,6 +981,9 @@ export const KnowledgeChunkTable = pgTable(
     groupId: uuid("group_id")
       .notNull()
       .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    sectionId: uuid("section_id").references(() => KnowledgeSectionTable.id, {
+      onDelete: "set null",
+    }),
     content: text("content").notNull(),
     contextSummary: text("context_summary"),
     embedding: vector("embedding"),
@@ -712,7 +991,20 @@ export const KnowledgeChunkTable = pgTable(
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata").$type<{
       section?: string;
+      sectionTitle?: string;
       headings?: string[];
+      headingPath?: string;
+      chunkType?:
+        | "code"
+        | "directive"
+        | "api"
+        | "narrative"
+        | "table"
+        | "list"
+        | "other";
+      sourcePath?: string;
+      libraryId?: string;
+      libraryVersion?: string;
       pageNumber?: number;
       sheetName?: string;
     }>(),
@@ -723,6 +1015,7 @@ export const KnowledgeChunkTable = pgTable(
   (t) => [
     index("knowledge_chunk_group_id_idx").on(t.groupId),
     index("knowledge_chunk_document_id_idx").on(t.documentId),
+    index("knowledge_chunk_section_id_idx").on(t.sectionId),
   ],
 );
 
@@ -741,6 +1034,48 @@ export const KnowledgeGroupAgentTable = pgTable(
       .default(sql`CURRENT_TIMESTAMP`),
   },
   (t) => [unique().on(t.agentId, t.groupId)],
+);
+
+export const SkillTable = pgTable("skill", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  title: text("title").notNull(),
+  description: text("description"),
+  instructions: text("instructions").notNull(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => UserTable.id, { onDelete: "cascade" }),
+  visibility: varchar("visibility", {
+    enum: ["public", "private", "readonly"],
+  })
+    .notNull()
+    .default("private"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const SkillAgentTable = pgTable(
+  "skill_agent",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    skillId: uuid("skill_id")
+      .notNull()
+      .references(() => SkillTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique().on(t.agentId, t.skillId),
+    index("skill_agent_agent_id_idx").on(t.agentId),
+    index("skill_agent_skill_id_idx").on(t.skillId),
+  ],
 );
 
 export const KnowledgeUsageLogTable = pgTable(
@@ -770,11 +1105,98 @@ export const KnowledgeUsageLogTable = pgTable(
   ],
 );
 
+export const AgentExternalChatSessionTable = pgTable(
+  "agent_external_chat_session",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    clientFingerprint: text("client_fingerprint").notNull(),
+    firstUserMessageHash: text("first_user_message_hash").notNull(),
+    firstUserPreview: text("first_user_preview").notNull(),
+    lastTranscriptMessageHash: text("last_transcript_message_hash").notNull(),
+    lastMessageCount: integer("last_message_count").notNull().default(0),
+    summaryPreview: text("summary_preview"),
+    turnCount: integer("turn_count").notNull().default(0),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    lastModelProvider: text("last_model_provider"),
+    lastModelName: text("last_model_name"),
+    lastStatus: text("last_status").notNull().default("success"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("agent_external_chat_session_agent_id_idx").on(table.agentId),
+    index("agent_external_chat_session_updated_at_idx").on(table.updatedAt),
+  ],
+);
+
+export const AgentExternalUsageLogTable = pgTable(
+  "agent_external_usage_log",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    sessionId: uuid("session_id").references(
+      () => AgentExternalChatSessionTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    transport: text("transport")
+      .$type<"continue_chat" | "continue_autocomplete">()
+      .notNull(),
+    kind: text("kind").$type<"chat_turn" | "autocomplete_request">().notNull(),
+    modelProvider: text("model_provider"),
+    modelName: text("model_name"),
+    promptTokens: integer("prompt_tokens").notNull().default(0),
+    completionTokens: integer("completion_tokens").notNull().default(0),
+    totalTokens: integer("total_tokens").notNull().default(0),
+    finishReason: text("finish_reason"),
+    status: text("status")
+      .$type<"success" | "error" | "cancelled">()
+      .notNull()
+      .default("success"),
+    requestPreview: text("request_preview"),
+    responsePreview: text("response_preview"),
+    requestMessages: json("request_messages"),
+    responseMessage: json("response_message"),
+    requestMessageCount: integer("request_message_count"),
+    clientFingerprint: text("client_fingerprint"),
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("agent_external_usage_log_agent_id_idx").on(table.agentId),
+    index("agent_external_usage_log_session_id_idx").on(table.sessionId),
+    index("agent_external_usage_log_created_at_idx").on(table.createdAt),
+  ],
+);
+
 export type KnowledgeGroupEntity = typeof KnowledgeGroupTable.$inferSelect;
+export type KnowledgeGroupSourceEntity =
+  typeof KnowledgeGroupSourceTable.$inferSelect;
 export type KnowledgeDocumentEntity =
   typeof KnowledgeDocumentTable.$inferSelect;
+export type KnowledgeSectionEntity = typeof KnowledgeSectionTable.$inferSelect;
 export type KnowledgeChunkEntity = typeof KnowledgeChunkTable.$inferSelect;
 export type KnowledgeGroupAgentEntity =
   typeof KnowledgeGroupAgentTable.$inferSelect;
+export type SkillEntity = typeof SkillTable.$inferSelect;
+export type SkillAgentEntity = typeof SkillAgentTable.$inferSelect;
 export type KnowledgeUsageLogEntity =
   typeof KnowledgeUsageLogTable.$inferSelect;
+export type AgentExternalChatSessionEntity =
+  typeof AgentExternalChatSessionTable.$inferSelect;
+export type AgentExternalUsageLogEntity =
+  typeof AgentExternalUsageLogTable.$inferSelect;

@@ -1,33 +1,36 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import {
-  type MCPServerInfo,
+  StreamableHTTPClientTransport,
+  StreamableHTTPError,
+} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {
   MCPRemoteConfigZodSchema,
-  MCPStdioConfigZodSchema,
   type MCPServerConfig,
+  type MCPServerInfo,
+  MCPStdioConfigZodSchema,
   type MCPToolInfo,
 } from "app-types/mcp";
 
-import { isMaybeRemoteConfig, isMaybeStdioConfig } from "./is-mcp-config";
-import logger from "logger";
 import type { ConsolaInstance } from "consola";
 import { colorize } from "consola/utils";
 import {
+  Locker,
   createDebounce,
   errorToString,
   generateUUID,
   isNull,
-  Locker,
   withTimeout,
 } from "lib/utils";
+import logger from "logger";
+import { isMaybeRemoteConfig, isMaybeStdioConfig } from "./is-mcp-config";
 
-import { safe } from "ts-safe";
-import { BASE_URL, IS_MCP_SERVER_REMOTE_ONLY, IS_VERCEL_ENV } from "lib/const";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
-import { PgOAuthClientProvider } from "./pg-oauth-provider";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { BASE_URL, IS_MCP_SERVER_REMOTE_ONLY, IS_VERCEL_ENV } from "lib/const";
+import { safe } from "ts-safe";
+import { PgOAuthClientProvider } from "./pg-oauth-provider";
 
 type ClientOptions = {
   autoDisconnectSeconds?: number;
@@ -115,11 +118,11 @@ export class MCPClient {
     this.logger.info("OAuth authorization: token exchange completed");
   }
 
-  getInfo(): MCPServerInfo {
+  getInfo(options: { includeConfig?: boolean } = {}): MCPServerInfo {
     return {
       id: this.id,
       name: this.name,
-      config: this.serverConfig,
+      config: options.includeConfig ? this.serverConfig : undefined,
       status: this.status,
       error: this.error,
       toolInfo: this.toolInfo,
@@ -144,13 +147,13 @@ export class MCPClient {
         serverUrl: this.serverConfig.url,
         state: oauthState,
         _clientMetadata: {
-          client_name: `wave-chatbot-${this.name}`,
+          client_name: `emma-chatbot-${this.name}`,
           grant_types: ["authorization_code", "refresh_token"],
           response_types: ["code"],
           token_endpoint_auth_method: "none", // PKCE flow
           scope: "mcp:tools",
           redirect_uris: [`${BASE_URL}/api/mcp/oauth/callback`],
-          software_id: "wave-chatbot",
+          software_id: "emma-chatbot",
           software_version: "1.0.0",
         },
         onRedirectToAuthorization: async (authorizationUrl: URL) => {
@@ -200,7 +203,7 @@ export class MCPClient {
       this.client = undefined;
 
       const client = new Client({
-        name: `wave-chatbot-${this.name}`,
+        name: `emma-chatbot-${this.name}`,
         version: "1.0.0",
       });
 
@@ -265,8 +268,12 @@ export class MCPClient {
           }
 
           if (!isOAuthAuthorizationRequired(streamableHttpError)) {
+            if (!shouldFallbackToSse(url, streamableHttpError)) {
+              throw streamableHttpError;
+            }
+
             this.logger.warn(
-              `Streamable HTTP connection failed, Because ${streamableHttpError.message}, falling back to SSE transport`,
+              `Streamable HTTP connection failed, because ${errorToString(streamableHttpError)}, falling back to SSE transport`,
             );
 
             this.transport = new SSEClientTransport(url, {
@@ -454,4 +461,21 @@ function isUnauthorized(error: any): boolean {
 
 function isOAuthAuthorizationRequired(error: any): boolean {
   return error instanceof OAuthAuthorizationRequiredError;
+}
+
+function shouldFallbackToSse(_url: URL, error: unknown): boolean {
+  if (error instanceof StreamableHTTPError) {
+    // Fallback is useful if server doesn't support streamable POST semantics.
+    return (
+      typeof error.code === "number" && [404, 405, 501].includes(error.code)
+    );
+  }
+
+  const message = errorToString(error).toLowerCase();
+  return (
+    message.includes("failed to fetch") ||
+    message.includes("network") ||
+    message.includes("connection") ||
+    message.includes("timeout")
+  );
 }

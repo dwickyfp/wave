@@ -12,11 +12,10 @@ import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
 import { AgentGenerateSchema } from "app-types/agent";
 import { z } from "zod";
-import { loadAppDefaultTools } from "../../chat/shared.chat";
+import { loadAppDefaultTools, loadMcpTools } from "../../chat/shared.chat";
 import { workflowRepository } from "lib/db/repository";
 import { safe } from "ts-safe";
 import { objectFlow } from "lib/utils";
-import { mcpClientsManager } from "lib/ai/mcp/mcp-manager";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Agent Generate API: `),
@@ -55,7 +54,12 @@ export async function POST(request: Request) {
       })
       .unwrap();
 
-    await safe(mcpClientsManager.tools())
+    await safe(
+      loadMcpTools({
+        userId: session.user.id,
+        includeAllAccessible: true,
+      }),
+    )
       .ifOk((tools) => {
         objectFlow(tools).forEach((mcp) => {
           toolNames.add(mcp._originToolName);
@@ -124,6 +128,15 @@ export async function POST(request: Request) {
             "Model is not configured. Please set it up in Settings → AI Providers.",
         },
         { status: 503 },
+      );
+    }
+    if (!dbModelResult.supportsGeneration) {
+      return Response.json(
+        {
+          message:
+            "Selected model cannot generate agents. Enable Generate Capabilities in Settings → AI Providers.",
+        },
+        { status: 400 },
       );
     }
 

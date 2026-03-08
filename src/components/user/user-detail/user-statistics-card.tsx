@@ -1,20 +1,20 @@
-import { Card, CardContent, CardHeader, CardTitle } from "ui/card";
-import { MessageCircle, Zap, TrendingUp, Cpu } from "lucide-react";
-import { useProfileTranslations } from "@/hooks/use-profile-translations";
 import { PieChart } from "@/components/tool-invocation/pie-chart";
+import { useProfileTranslations } from "@/hooks/use-profile-translations";
+import { Cpu, MessageCircle, TrendingUp, Zap } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle } from "ui/card";
 
 import { ModelProviderIcon } from "ui/model-provider-icon";
+import {
+  type UserModelStat,
+  getTopModelPieData,
+  sortUserModelStats,
+} from "./user-statistics-card.utils";
 
 interface UserStatisticsCardProps {
   stats: {
     threadCount: number;
     messageCount: number;
-    modelStats: Array<{
-      model: string;
-      messageCount: number;
-      totalTokens: number;
-      provider: string;
-    }>;
+    modelStats: UserModelStat[];
     totalTokens: number;
     period: string;
   };
@@ -24,13 +24,10 @@ interface UserStatisticsCardProps {
 export function UserStatisticsCard({ stats, view }: UserStatisticsCardProps) {
   const { t, tCommon } = useProfileTranslations(view);
   const hasActivity = stats.totalTokens > 0;
-
-  // Prepare pie chart data for model usage (TOP 3 only)
-  const top3Models = stats.modelStats.slice(0, 3);
-  const modelPieData = top3Models.map((model) => ({
-    label: model.model,
-    value: model.totalTokens,
-  }));
+  const sortedModelStats = sortUserModelStats(stats.modelStats);
+  const modelPieData = getTopModelPieData(sortedModelStats);
+  const hasModelPieData = modelPieData.length > 0;
+  const topModelChartColors = ["#ff7a59", "#38d9c8", "#ffd166"];
 
   return (
     <Card
@@ -108,7 +105,7 @@ export function UserStatisticsCard({ stats, view }: UserStatisticsCardProps) {
                       className="text-xl font-bold"
                       data-testid="stat-models-used"
                     >
-                      {stats.modelStats.length}
+                      {sortedModelStats.length}
                     </p>
                   </div>
                 </div>
@@ -139,7 +136,7 @@ export function UserStatisticsCard({ stats, view }: UserStatisticsCardProps) {
             </div>
 
             {/* Top Models by Token Usage */}
-            {stats.modelStats.length > 0 && (
+            {sortedModelStats.length > 0 && (
               <div
                 className="rounded-lg border bg-muted/30 p-4 space-y-4"
                 data-testid="top-models-section"
@@ -152,27 +149,49 @@ export function UserStatisticsCard({ stats, view }: UserStatisticsCardProps) {
                 <div className="grid gap-6 lg:grid-cols-2">
                   {/* Pie Chart - TOP 3 Models */}
                   <div className="min-h-[300px]">
-                    <PieChart
-                      title="Top 3 Models Usage"
-                      data={modelPieData}
-                      unit="tokens"
-                      prefix=""
-                      jsonView={false}
-                      description="Token usage by top 3 models"
-                    />
+                    {hasModelPieData ? (
+                      <PieChart
+                        title="Top 3 Models Usage"
+                        data={modelPieData}
+                        unit="tokens"
+                        prefix=""
+                        jsonView={false}
+                        description="Token usage by top 3 models"
+                        colors={topModelChartColors}
+                      />
+                    ) : (
+                      <div className="flex h-full min-h-[300px] items-center justify-center rounded-xl border border-dashed border-border/60 bg-background/40 px-6 text-center">
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium">
+                            {tCommon("topModelsByTokenUsage")}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {tCommon("notAvailable")}
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Model List - Vertical Layout with Scroll */}
                   <div className="space-y-2 max-h-[420px] overflow-y-auto ">
                     <div className="pr-2 space-y-2">
-                      {stats.modelStats.map((modelStat, index) => (
+                      {sortedModelStats.map((modelStat, index) => (
                         <div
                           key={modelStat.model}
                           className={`flex items-center justify-between p-3 rounded-lg border hover:bg-background/70 transition-colors ${
-                            index < 3
+                            index < topModelChartColors.length
                               ? "bg-primary/5 border-primary/20"
                               : "bg-background/50"
                           }`}
+                          style={
+                            index < topModelChartColors.length
+                              ? {
+                                  backgroundColor: `${topModelChartColors[index]}12`,
+                                  borderColor: `${topModelChartColors[index]}4d`,
+                                }
+                              : undefined
+                          }
                         >
                           <div className="flex items-center gap-3 min-w-0 flex-1">
                             <div className="flex items-center gap-2">
@@ -233,14 +252,14 @@ export function UserStatisticsCard({ stats, view }: UserStatisticsCardProps) {
                   {tCommon("topModel")}
                 </p>
                 <p className="text-lg font-semibold flex items-center justify-center gap-1">
-                  {stats.modelStats[0] && (
+                  {sortedModelStats[0] && (
                     <ModelProviderIcon
-                      provider={stats.modelStats[0].provider}
+                      provider={sortedModelStats[0].provider}
                       className="h-3 w-3 mr-1"
                     />
                   )}
                   <span className="truncate">
-                    {stats.modelStats[0]?.model || tCommon("notAvailable")}
+                    {sortedModelStats[0]?.model || tCommon("notAvailable")}
                   </span>
                 </p>
               </div>
@@ -252,16 +271,16 @@ export function UserStatisticsCard({ stats, view }: UserStatisticsCardProps) {
                 <p className="text-sm text-primary/80">
                   {tCommon("tokensAcross", {
                     tokens: stats.totalTokens.toLocaleString(),
-                    count: stats.modelStats.length,
+                    count: sortedModelStats.length,
                     period: stats.period.toLowerCase(),
                   })}
-                  {stats.modelStats[0] && (
+                  {sortedModelStats[0] && (
                     <>
                       {" "}
                       {tCommon("mostActive", {
-                        model: stats.modelStats[0].model,
+                        model: sortedModelStats[0].model,
                         tokens:
-                          stats.modelStats[0].totalTokens.toLocaleString(),
+                          sortedModelStats[0].totalTokens.toLocaleString(),
                       })}
                     </>
                   )}

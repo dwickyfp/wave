@@ -1,4 +1,7 @@
 import z from "zod";
+import { AgentCreateSchema } from "./agent";
+
+const AgentIconSchema = AgentCreateSchema.shape.icon;
 
 export const SnowflakeAgentConfigCreateSchema = z.object({
   accountLocator: z
@@ -57,6 +60,7 @@ export type SnowflakeAgentConfigSafe = Omit<
 export const SnowflakeAgentCreateSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(8000).optional(),
+  icon: AgentIconSchema,
   visibility: z
     .enum(["public", "private", "readonly"])
     .optional()

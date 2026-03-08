@@ -55,7 +55,7 @@ export function buildThreadsApiUrl(config: SnowflakeAgentConfig): string {
  */
 export async function createSnowflakeThread(
   config: SnowflakeAgentConfig,
-  originApplication = "wave",
+  originApplication = "emma",
 ): Promise<string> {
   const token = generateSnowflakeJwt(
     config.accountLocator,

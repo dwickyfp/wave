@@ -56,7 +56,10 @@ export async function POST(request: NextRequest) {
 
     const enabledMentions = agent ? agent.instructions.mentions : mentions;
 
-    const allowedMcpTools = await loadMcpTools({ mentions: enabledMentions });
+    const allowedMcpTools = await loadMcpTools({
+      mentions: enabledMentions,
+      userId: session.user.id,
+    });
 
     const toolNames = Object.keys(allowedMcpTools ?? {});
 

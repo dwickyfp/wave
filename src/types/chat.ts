@@ -1,15 +1,118 @@
 import type { LanguageModelUsage, UIMessage } from "ai";
 import { z } from "zod";
+import type {
+  PilotActionProposal,
+  PilotTaskState,
+  PilotVisualContext,
+} from "./pilot";
 import { AllowedMCPServerZodSchema } from "./mcp";
 import { UserPreferences } from "./user";
 import { tag } from "lib/tag";
 
+export type ChatUsage = LanguageModelUsage & {
+  inputCostUsd?: number;
+  outputCostUsd?: number;
+  totalCostUsd?: number;
+  inputTokenPricePer1MUsd?: number;
+  outputTokenPricePer1MUsd?: number;
+};
+
+export type ChatCompactionItem = {
+  source: string;
+  text: string;
+};
+
+export type ChatCompactionSummary = {
+  conversationGoal: string;
+  userPreferences: ChatCompactionItem[];
+  constraints: ChatCompactionItem[];
+  establishedFacts: ChatCompactionItem[];
+  decisions: ChatCompactionItem[];
+  toolResults: ChatCompactionItem[];
+  artifacts: ChatCompactionItem[];
+  openQuestions: ChatCompactionItem[];
+  nextActions: ChatCompactionItem[];
+};
+
+export type ChatThreadCompactionCheckpoint = {
+  id: string;
+  threadId: string;
+  schemaVersion: number;
+  summaryJson: ChatCompactionSummary;
+  summaryText: string;
+  compactedMessageCount: number;
+  sourceTokenCount: number;
+  summaryTokenCount: number;
+  modelProvider: string;
+  modelName: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ChatCompactionSource = "background" | "pre-send";
+
+export type ChatCompactionStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed";
+
+export type ChatContextPressureBreakdown = {
+  systemPromptTokens?: number;
+  checkpointTokens?: number;
+  historyTokens?: number;
+  knowledgeTokens?: number;
+  attachmentPreviewTokens?: number;
+  currentTurnTokens?: number;
+  loopTokens?: number;
+  toolTokens?: number;
+  mentionsTokens?: number;
+  uploadedFilesTokens?: number;
+  extraContextTokens?: number;
+  draftTokens?: number;
+  totalTokens: number;
+  contextLength?: number;
+};
+
+export type ChatThreadCompactionState = {
+  id: string;
+  threadId: string;
+  status: ChatCompactionStatus;
+  source: ChatCompactionSource;
+  beforeTokens?: number | null;
+  afterTokens?: number | null;
+  failureCode?: string | null;
+  startedAt?: Date | null;
+  finishedAt?: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type ChatCompactionMetadata = {
+  performed?: boolean;
+  beforeTokens?: number;
+  afterTokens?: number;
+  compactedMessageCount?: number;
+  checkpointUpdated?: boolean;
+  failureCode?: string;
+  breakdown?: ChatContextPressureBreakdown;
+};
+
 export type ChatMetadata = {
-  usage?: LanguageModelUsage;
+  usage?: ChatUsage;
   chatModel?: ChatModel;
   toolChoice?: "auto" | "none" | "manual";
   toolCount?: number;
   agentId?: string;
+  source?: "chat" | "emma_pilot";
+  tabUrl?: string;
+  tabTitle?: string;
+  lastApprovedActionSummary?: string;
+  pilotProposals?: PilotActionProposal[];
+  pilotTaskState?: PilotTaskState;
+  pilotVisualMode?: PilotVisualContext["mode"];
+  pilotVisualCaptureCount?: number;
+  compaction?: ChatCompactionMetadata;
 };
 
 export type ChatFeedbackType = "like" | "dislike";
@@ -50,6 +153,19 @@ export type ChatThread = {
    * 0 = start of thread; subsequent turns use the last assistant message_id.
    */
   snowflakeParentMessageId?: number | null;
+  /** Last A2A agent used for the thread, so continuity resets on agent switch. */
+  a2aAgentId?: string | null;
+  /** A2A context ID used to continue the same remote conversation. */
+  a2aContextId?: string | null;
+  /** Optional A2A task ID returned by the remote agent. */
+  a2aTaskId?: string | null;
+};
+
+export type ChatThreadDetails = ChatThread & {
+  messages: ChatMessage[];
+  userPreferences?: UserPreferences;
+  compactionCheckpoint?: ChatThreadCompactionCheckpoint | null;
+  compactionState?: ChatThreadCompactionState | null;
 };
 
 export type ChatMessage = {
@@ -155,15 +271,19 @@ export type ChatRepository = {
 
   deleteChatMessage(id: string): Promise<void>;
 
-  selectThreadDetails(id: string): Promise<
-    | (ChatThread & {
-        messages: ChatMessage[];
-        userPreferences?: UserPreferences;
-      })
-    | null
-  >;
+  selectThreadDetails(id: string): Promise<ChatThreadDetails | null>;
 
   selectMessagesByThreadId(threadId: string): Promise<ChatMessage[]>;
+
+  selectCompactionCheckpoint(
+    threadId: string,
+  ): Promise<ChatThreadCompactionCheckpoint | null>;
+
+  selectCompactionState(
+    threadId: string,
+  ): Promise<ChatThreadCompactionState | null>;
+
+  selectLatestThreadChatModel(threadId: string): Promise<ChatModel | null>;
 
   selectThreadsByUserId(userId: string): Promise<
     (ChatThread & {
@@ -185,7 +305,30 @@ export type ChatRepository = {
   insertMessage(message: Omit<ChatMessage, "createdAt">): Promise<ChatMessage>;
   upsertMessage(message: Omit<ChatMessage, "createdAt">): Promise<ChatMessage>;
 
+  upsertCompactionCheckpoint(
+    checkpoint: PartialBy<
+      Omit<ChatThreadCompactionCheckpoint, "createdAt" | "updatedAt">,
+      "id"
+    >,
+  ): Promise<ChatThreadCompactionCheckpoint>;
+
+  upsertCompactionState(
+    state: PartialBy<
+      Omit<ChatThreadCompactionState, "createdAt" | "updatedAt">,
+      "id"
+    >,
+  ): Promise<ChatThreadCompactionState>;
+
+  deleteCompactionCheckpoint(threadId: string): Promise<void>;
+
+  copyCompactionCheckpoint(
+    sourceThreadId: string,
+    targetThreadId: string,
+  ): Promise<ChatThreadCompactionCheckpoint | null>;
+
   deleteMessagesByChatIdAfterTimestamp(messageId: string): Promise<void>;
+
+  selectThreadIdByMessageId(messageId: string): Promise<string | null>;
 
   deleteAllThreads(userId: string): Promise<void>;
 

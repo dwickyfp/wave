@@ -28,10 +28,25 @@ export const GET = async () => {
       }))
       .filter((p) => p.models.length > 0);
 
-    return Response.json({ embeddingProviders, rerankingProviders });
+    const chatProviders = dbProviders
+      .map((p) => ({
+        provider: p.name,
+        displayName: p.displayName,
+        hasAPIKey: !!p.apiKeyMasked,
+        models: p.models
+          .filter((m) => m.enabled && m.modelType === "llm")
+          .map((m) => ({ uiName: m.uiName, apiName: m.apiName })),
+      }))
+      .filter((p) => p.models.length > 0);
+
+    return Response.json({
+      embeddingProviders,
+      rerankingProviders,
+      chatProviders,
+    });
   } catch {
     return Response.json(
-      { embeddingProviders: [], rerankingProviders: [] },
+      { embeddingProviders: [], rerankingProviders: [], chatProviders: [] },
       { status: 200 },
     );
   }

@@ -4,6 +4,7 @@ import {
   agentRepository,
   subAgentRepository,
   snowflakeAgentRepository,
+  a2aAgentRepository,
 } from "lib/db/repository";
 import { getSession } from "auth/server";
 import { NextResponse } from "next/server";
@@ -33,6 +34,7 @@ export async function GET(
 
   // For snowflake agents, include the full config (raw private key for backup)
   let snowflakeConfig: Record<string, unknown> | null = null;
+  let a2aConfig: Record<string, unknown> | null = null;
   if (agent.agentType === "snowflake_cortex") {
     const cfg =
       await snowflakeAgentRepository.selectSnowflakeConfigByAgentId(id);
@@ -46,6 +48,20 @@ export async function GET(
         ...rest
       } = cfg as any;
       snowflakeConfig = rest;
+    }
+  }
+
+  if (agent.agentType === "a2a_remote") {
+    const cfg = await a2aAgentRepository.selectA2AConfigByAgentId(id);
+    if (cfg) {
+      const {
+        id: _id,
+        agentId: _agentId,
+        createdAt: _c,
+        updatedAt: _u,
+        ...rest
+      } = cfg as any;
+      a2aConfig = rest;
     }
   }
 
@@ -64,6 +80,7 @@ export async function GET(
         sa,
     ),
     ...(snowflakeConfig ? { snowflakeConfig } : {}),
+    ...(a2aConfig ? { a2aConfig } : {}),
   };
 
   const safeName = agent.name.replace(/[^a-z0-9]/gi, "-").toLowerCase();

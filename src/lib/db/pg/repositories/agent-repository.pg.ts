@@ -4,6 +4,43 @@ import { AgentTable, BookmarkTable, UserTable } from "../schema.pg";
 import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 import { generateUUID } from "lib/utils";
 
+function toAgentRecord(result: any): Agent {
+  return {
+    ...result,
+    description: result.description ?? undefined,
+    icon: result.icon ?? undefined,
+    instructions: result.instructions ?? {},
+    mcpApiKeyHash: result.mcpApiKeyHash ?? null,
+    mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
+    mcpModelProvider: result.mcpModelProvider ?? null,
+    mcpModelName: result.mcpModelName ?? null,
+    mcpCodingMode: result.mcpCodingMode ?? false,
+    mcpAutocompleteModelProvider: result.mcpAutocompleteModelProvider ?? null,
+    mcpAutocompleteModelName: result.mcpAutocompleteModelName ?? null,
+    mcpPresentationMode: result.mcpPresentationMode ?? "compatibility",
+    a2aApiKeyHash: result.a2aApiKeyHash ?? null,
+    a2aApiKeyPreview: result.a2aApiKeyPreview ?? null,
+    a2aEnabled: result.a2aEnabled ?? false,
+    isBookmarked: result.isBookmarked ?? false,
+    userName: result.userName ?? undefined,
+    userAvatar: result.userAvatar ?? undefined,
+  };
+}
+
+function toAgentSummaryRecord(result: any): AgentSummary {
+  return {
+    ...result,
+    description: result.description ?? undefined,
+    icon: result.icon ?? undefined,
+    a2aApiKeyHash: result.a2aApiKeyHash ?? null,
+    a2aApiKeyPreview: result.a2aApiKeyPreview ?? null,
+    a2aEnabled: result.a2aEnabled ?? false,
+    userName: result.userName ?? undefined,
+    userAvatar: result.userAvatar ?? undefined,
+    isBookmarked: result.isBookmarked ?? false,
+  };
+}
+
 export const pgAgentRepository: AgentRepository = {
   async insertAgent(agent) {
     const [result] = await db
@@ -23,12 +60,7 @@ export const pgAgentRepository: AgentRepository = {
       })
       .returning();
 
-    return {
-      ...result,
-      description: result.description ?? undefined,
-      icon: result.icon ?? undefined,
-      instructions: result.instructions ?? {},
-    };
+    return toAgentRecord(result);
   },
 
   async selectAgentById(id, userId): Promise<Agent | null> {
@@ -43,6 +75,18 @@ export const pgAgentRepository: AgentRepository = {
         visibility: AgentTable.visibility,
         subAgentsEnabled: AgentTable.subAgentsEnabled,
         agentType: AgentTable.agentType,
+        mcpEnabled: AgentTable.mcpEnabled,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
+        a2aEnabled: AgentTable.a2aEnabled,
+        a2aApiKeyHash: AgentTable.a2aApiKeyHash,
+        a2aApiKeyPreview: AgentTable.a2aApiKeyPreview,
+        mcpModelProvider: AgentTable.mcpModelProvider,
+        mcpModelName: AgentTable.mcpModelName,
+        mcpCodingMode: AgentTable.mcpCodingMode,
+        mcpAutocompleteModelProvider: AgentTable.mcpAutocompleteModelProvider,
+        mcpAutocompleteModelName: AgentTable.mcpAutocompleteModelName,
+        mcpPresentationMode: AgentTable.mcpPresentationMode,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         isBookmarked: sql<boolean>`${BookmarkTable.id} IS NOT NULL`,
@@ -69,13 +113,42 @@ export const pgAgentRepository: AgentRepository = {
 
     if (!result) return null;
 
-    return {
-      ...result,
-      description: result.description ?? undefined,
-      icon: result.icon ?? undefined,
-      instructions: result.instructions ?? {},
-      isBookmarked: result.isBookmarked ?? false,
-    };
+    return toAgentRecord(result);
+  },
+
+  async selectAgentByIdForMcp(id): Promise<Agent | null> {
+    const [result] = await db
+      .select({
+        id: AgentTable.id,
+        name: AgentTable.name,
+        description: AgentTable.description,
+        icon: AgentTable.icon,
+        userId: AgentTable.userId,
+        instructions: AgentTable.instructions,
+        visibility: AgentTable.visibility,
+        subAgentsEnabled: AgentTable.subAgentsEnabled,
+        agentType: AgentTable.agentType,
+        mcpEnabled: AgentTable.mcpEnabled,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
+        a2aEnabled: AgentTable.a2aEnabled,
+        a2aApiKeyHash: AgentTable.a2aApiKeyHash,
+        a2aApiKeyPreview: AgentTable.a2aApiKeyPreview,
+        mcpModelProvider: AgentTable.mcpModelProvider,
+        mcpModelName: AgentTable.mcpModelName,
+        mcpCodingMode: AgentTable.mcpCodingMode,
+        mcpAutocompleteModelProvider: AgentTable.mcpAutocompleteModelProvider,
+        mcpAutocompleteModelName: AgentTable.mcpAutocompleteModelName,
+        mcpPresentationMode: AgentTable.mcpPresentationMode,
+        createdAt: AgentTable.createdAt,
+        updatedAt: AgentTable.updatedAt,
+      })
+      .from(AgentTable)
+      .where(eq(AgentTable.id, id));
+
+    if (!result) return null;
+
+    return toAgentRecord(result);
   },
 
   async selectAgentsByUserId(userId) {
@@ -88,6 +161,19 @@ export const pgAgentRepository: AgentRepository = {
         userId: AgentTable.userId,
         instructions: AgentTable.instructions,
         visibility: AgentTable.visibility,
+        agentType: AgentTable.agentType,
+        mcpEnabled: AgentTable.mcpEnabled,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpApiKeyPreview: AgentTable.mcpApiKeyPreview,
+        a2aEnabled: AgentTable.a2aEnabled,
+        a2aApiKeyHash: AgentTable.a2aApiKeyHash,
+        a2aApiKeyPreview: AgentTable.a2aApiKeyPreview,
+        mcpModelProvider: AgentTable.mcpModelProvider,
+        mcpModelName: AgentTable.mcpModelName,
+        mcpCodingMode: AgentTable.mcpCodingMode,
+        mcpAutocompleteModelProvider: AgentTable.mcpAutocompleteModelProvider,
+        mcpAutocompleteModelName: AgentTable.mcpAutocompleteModelName,
+        mcpPresentationMode: AgentTable.mcpPresentationMode,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         userName: UserTable.name,
@@ -101,13 +187,8 @@ export const pgAgentRepository: AgentRepository = {
 
     // Map database nulls to undefined and set defaults for owned agents
     return results.map((result) => ({
-      ...result,
-      description: result.description ?? undefined,
-      icon: result.icon ?? undefined,
-      instructions: result.instructions ?? {},
-      userName: result.userName ?? undefined,
-      userAvatar: result.userAvatar ?? undefined,
-      isBookmarked: false, // Always false for owned agents
+      ...toAgentRecord(result),
+      isBookmarked: false,
     }));
   },
 
@@ -130,12 +211,7 @@ export const pgAgentRepository: AgentRepository = {
       )
       .returning();
 
-    return {
-      ...result,
-      description: result.description ?? undefined,
-      icon: result.icon ?? undefined,
-      instructions: result.instructions ?? {},
-    };
+    return toAgentRecord(result);
   },
 
   async deleteAgent(id, userId) {
@@ -206,6 +282,9 @@ export const pgAgentRepository: AgentRepository = {
         // Exclude instructions from list queries for performance
         visibility: AgentTable.visibility,
         agentType: AgentTable.agentType,
+        a2aEnabled: AgentTable.a2aEnabled,
+        a2aApiKeyHash: AgentTable.a2aApiKeyHash,
+        a2aApiKeyPreview: AgentTable.a2aApiKeyPreview,
         createdAt: AgentTable.createdAt,
         updatedAt: AgentTable.updatedAt,
         userName: UserTable.name,
@@ -231,13 +310,7 @@ export const pgAgentRepository: AgentRepository = {
       .limit(limit);
 
     // Map database nulls to undefined
-    return results.map((result) => ({
-      ...result,
-      description: result.description ?? undefined,
-      icon: result.icon ?? undefined,
-      userName: result.userName ?? undefined,
-      userAvatar: result.userAvatar ?? undefined,
-    }));
+    return results.map((result) => toAgentSummaryRecord(result));
   },
 
   async checkAccess(agentId, userId, destructive = false) {
@@ -254,5 +327,137 @@ export const pgAgentRepository: AgentRepository = {
     if (userId == agent.userId) return true;
     if (agent.visibility === "public" && !destructive) return true;
     return false;
+  },
+
+  async setMcpApiKey(id, userId, keyHash, keyPreview) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpApiKeyHash: keyHash,
+        mcpApiKeyPreview: keyPreview,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpEnabled(id, userId, enabled) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpEnabled: enabled,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpModel(id, userId, modelProvider, modelName) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpModelProvider: modelProvider,
+        mcpModelName: modelName,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpCodingMode(id, userId, enabled) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpCodingMode: enabled,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpAutocompleteModel(id, userId, modelProvider, modelName) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpAutocompleteModelProvider: modelProvider,
+        mcpAutocompleteModelName: modelName,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setMcpPresentationMode(id, userId, presentationMode) {
+    await db
+      .update(AgentTable)
+      .set({
+        mcpPresentationMode: presentationMode,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setA2aApiKey(id, userId, keyHash, keyPreview) {
+    await db
+      .update(AgentTable)
+      .set({
+        a2aApiKeyHash: keyHash,
+        a2aApiKeyPreview: keyPreview,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setA2aEnabled(id, userId, enabled) {
+    await db
+      .update(AgentTable)
+      .set({
+        a2aEnabled: enabled,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async getAgentByMcpKey(agentId) {
+    const [row] = await db
+      .select({
+        id: AgentTable.id,
+        userId: AgentTable.userId,
+        agentType: AgentTable.agentType,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        mcpEnabled: AgentTable.mcpEnabled,
+      })
+      .from(AgentTable)
+      .where(eq(AgentTable.id, agentId));
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      userId: row.userId,
+      agentType: row.agentType,
+      mcpApiKeyHash: row.mcpApiKeyHash ?? null,
+      mcpEnabled: row.mcpEnabled,
+    };
+  },
+
+  async getAgentByA2aKey(agentId) {
+    const [row] = await db
+      .select({
+        id: AgentTable.id,
+        userId: AgentTable.userId,
+        agentType: AgentTable.agentType,
+        mcpApiKeyHash: AgentTable.mcpApiKeyHash,
+        a2aApiKeyHash: AgentTable.a2aApiKeyHash,
+        a2aEnabled: AgentTable.a2aEnabled,
+      })
+      .from(AgentTable)
+      .where(eq(AgentTable.id, agentId));
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      userId: row.userId,
+      agentType: row.agentType,
+      mcpApiKeyHash: row.mcpApiKeyHash ?? null,
+      a2aApiKeyHash: row.a2aApiKeyHash ?? null,
+      a2aEnabled: row.a2aEnabled,
+    };
   },
 };

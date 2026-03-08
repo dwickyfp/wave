@@ -5,18 +5,15 @@ import useSWR, { mutate as swrMutate } from "swr";
 import { fetcher } from "lib/utils";
 import { Button } from "ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "ui/select";
 import { BookOpen, Check, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { LlmProviderConfig } from "app-types/settings";
+import {
+  ModelSelector,
+  NONE_VALUE,
+  parseModelValue,
+  makeModelValue,
+} from "@/components/knowledge/knowledge-model-selector";
 
 const CONTEXTX_MODEL_KEY = "/api/settings/contextx-model";
 const PROVIDERS_KEY = "/api/settings/providers";
@@ -39,33 +36,36 @@ export function ContextXModelButton() {
     fetcher,
   );
 
-  const [selectedProvider, setSelectedProvider] = useState("");
-  const [selectedModel, setSelectedModel] = useState("");
+  const [selectedValue, setSelectedValue] = useState(NONE_VALUE);
 
   // Sync with fetched config
   useEffect(() => {
     if (config) {
-      setSelectedProvider(config.provider);
-      setSelectedModel(config.model);
+      setSelectedValue(makeModelValue(config.provider, config.model));
+    } else {
+      setSelectedValue(NONE_VALUE);
     }
   }, [config]);
 
-  // Get models for the selected provider (only LLM type)
-  const providerModels =
-    providers
-      ?.find((p) => p.name === selectedProvider)
-      ?.models.filter((m) => m.modelType === "llm" && m.enabled) ?? [];
-
-  // Enabled providers with at least one LLM model
-  const enabledProviders =
-    providers?.filter(
+  // Adapt LlmProviderConfig[] → ModelSelectorProvider[]
+  const chatProviders = (providers ?? [])
+    .filter(
       (p) =>
         p.enabled && p.models.some((m) => m.modelType === "llm" && m.enabled),
-    ) ?? [];
+    )
+    .map((p) => ({
+      provider: p.name,
+      displayName: p.displayName,
+      hasAPIKey: !!p.apiKeyMasked,
+      models: p.models
+        .filter((m) => m.modelType === "llm" && m.enabled)
+        .map((m) => ({ uiName: m.uiName, apiName: m.apiName })),
+    }));
 
   async function handleSave() {
-    if (!selectedProvider || !selectedModel) {
-      toast.error("Please select a provider and model");
+    const parsed = parseModelValue(selectedValue);
+    if (!parsed) {
+      toast.error("Please select a model");
       return;
     }
 
@@ -75,8 +75,8 @@ export function ContextXModelButton() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          provider: selectedProvider,
-          model: selectedModel,
+          provider: parsed.provider,
+          model: parsed.apiName,
         }),
       });
       if (!res.ok) throw new Error("Failed to save");
@@ -99,8 +99,7 @@ export function ContextXModelButton() {
         body: "null",
       });
       if (!res.ok) throw new Error("Failed to clear");
-      setSelectedProvider("");
-      setSelectedModel("");
+      setSelectedValue(NONE_VALUE);
       toast.success("ContextX model cleared");
       swrMutate(CONTEXTX_MODEL_KEY);
       setOpen(false);
@@ -111,9 +110,7 @@ export function ContextXModelButton() {
     }
   }
 
-  const currentLabel = config
-    ? `${config.provider}/${config.model}`
-    : "Not configured";
+  const parsed = parseModelValue(selectedValue);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -139,65 +136,21 @@ export function ContextXModelButton() {
             </p>
           </div>
 
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Provider</label>
-              <Select
-                value={selectedProvider}
-                onValueChange={(v) => {
-                  setSelectedProvider(v);
-                  setSelectedModel(""); // Reset model when provider changes
-                }}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder="Select provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectLabel>Enabled Providers</SelectLabel>
-                    {enabledProviders.map((p) => (
-                      <SelectItem key={p.name} value={p.name}>
-                        {p.displayName}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium">Model</label>
-              <Select
-                value={selectedModel}
-                onValueChange={setSelectedModel}
-                disabled={!selectedProvider}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue
-                    placeholder={
-                      selectedProvider
-                        ? "Select model"
-                        : "Choose provider first"
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectLabel>LLM Models</SelectLabel>
-                    {providerModels.map((m) => (
-                      <SelectItem key={m.uiName} value={m.uiName}>
-                        {m.uiName}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+          <ModelSelector
+            value={selectedValue}
+            onValueChange={setSelectedValue}
+            providers={chatProviders}
+            placeholder="Select model"
+            allowNone
+            noneLabel="Not configured"
+          />
 
           {config && (
             <p className="text-xs text-muted-foreground">
-              Current: <span className="font-mono">{currentLabel}</span>
+              Current:{" "}
+              <span className="font-mono">
+                {config.provider}/{config.model}
+              </span>
             </p>
           )}
 
@@ -206,7 +159,7 @@ export function ContextXModelButton() {
               size="sm"
               className="flex-1 gap-1.5"
               onClick={handleSave}
-              disabled={saving || !selectedProvider || !selectedModel}
+              disabled={saving || !parsed || selectedValue === NONE_VALUE}
             >
               {saving ? (
                 <Loader2 className="size-3 animate-spin" />

@@ -29,6 +29,9 @@ export interface KnowledgeGroup {
   embeddingProvider: string;
   rerankingModel?: string | null;
   rerankingProvider?: string | null;
+  parsingModel?: string | null;
+  parsingProvider?: string | null;
+  retrievalThreshold: number;
   mcpEnabled: boolean;
   mcpApiKeyHash?: string | null;
   mcpApiKeyPreview?: string | null;
@@ -36,6 +39,17 @@ export interface KnowledgeGroup {
   chunkOverlapPercent: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface KnowledgeGroupSource {
+  groupId: string;
+  sourceGroupId: string;
+  sourceGroupName: string;
+  sourceGroupDescription?: string;
+  sourceGroupVisibility: KnowledgeVisibility;
+  sourceGroupUserId: string;
+  sourceGroupUserName?: string;
+  createdAt: Date;
 }
 
 export interface KnowledgeSummary {
@@ -49,6 +63,9 @@ export interface KnowledgeSummary {
   embeddingProvider: string;
   rerankingModel?: string | null;
   rerankingProvider?: string | null;
+  parsingModel?: string | null;
+  parsingProvider?: string | null;
+  retrievalThreshold: number;
   mcpEnabled: boolean;
   documentCount: number;
   chunkCount: number;
@@ -63,37 +80,82 @@ export interface KnowledgeDocument {
   groupId: string;
   userId: string;
   name: string;
+  description?: string | null;
+  descriptionManual?: boolean;
+  titleManual?: boolean;
   originalFilename: string;
   fileType: DocumentFileType;
   fileSize?: number | null;
   storagePath?: string | null;
   sourceUrl?: string | null;
   status: DocumentStatus;
+  /** Ingestion progress percentage 0–100. Null when not processing. */
+  processingProgress?: number | null;
   errorMessage?: string | null;
   chunkCount: number;
   tokenCount: number;
   metadata?: Record<string, unknown> | null;
   /** Full markdown content of the processed document */
   markdownContent?: string | null;
+  /** True when this doc is inherited from a linked source group */
+  isInherited?: boolean;
+  /** Source group metadata (set only for inherited docs) */
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  sourceGroupVisibility?: KnowledgeVisibility | null;
+  sourceGroupUserName?: string | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface KnowledgeSection {
+  id: string;
+  documentId: string;
+  groupId: string;
+  parentSectionId?: string | null;
+  prevSectionId?: string | null;
+  nextSectionId?: string | null;
+  heading: string;
+  headingPath: string;
+  level: number;
+  partIndex: number;
+  partCount: number;
+  content: string;
+  summary: string;
+  tokenCount: number;
+  createdAt: Date;
 }
 
 export interface KnowledgeChunk {
   id: string;
   documentId: string;
   groupId: string;
+  sectionId?: string | null;
   content: string;
   contextSummary?: string | null;
   chunkIndex: number;
   tokenCount: number;
   metadata?: {
     section?: string;
+    sectionTitle?: string;
     headings?: string[];
     headingPath?: string;
+    chunkType?:
+      | "code"
+      | "directive"
+      | "api"
+      | "narrative"
+      | "table"
+      | "list"
+      | "other";
+    sourcePath?: string;
+    libraryId?: string;
+    libraryVersion?: string;
     hasStructuredContent?: boolean;
     pageNumber?: number;
     sheetName?: string;
+    sourceGroupId?: string;
+    sourceGroupName?: string;
   } | null;
   createdAt: Date;
 }
@@ -142,8 +204,12 @@ export const createKnowledgeGroupSchema = z.object({
   embeddingProvider: z.string().default("openai"),
   rerankingModel: z.string().optional().nullable(),
   rerankingProvider: z.string().optional().nullable(),
+  parsingModel: z.string().optional().nullable(),
+  parsingProvider: z.string().optional().nullable(),
+  retrievalThreshold: z.number().min(0).max(1).default(0.0),
   chunkSize: z.number().int().min(128).max(2048).default(512),
   chunkOverlapPercent: z.number().int().min(0).max(50).default(20),
+  sourceGroupIds: z.array(z.string().uuid()).max(50).optional(),
 });
 
 export const updateKnowledgeGroupSchema = createKnowledgeGroupSchema.partial();
@@ -163,6 +229,7 @@ export interface KnowledgeRepository {
     data: CreateKnowledgeGroupInput & { userId: string },
   ): Promise<KnowledgeGroup>;
   selectGroupById(id: string, userId: string): Promise<KnowledgeGroup | null>;
+  selectGroupByIdForMcp(id: string): Promise<KnowledgeGroup | null>;
   selectGroups(
     userId: string,
     filters?: ("mine" | "shared")[],
@@ -173,6 +240,14 @@ export interface KnowledgeRepository {
     data: UpdateKnowledgeGroupInput,
   ): Promise<KnowledgeGroup>;
   deleteGroup(id: string, userId: string): Promise<void>;
+  setGroupSources(
+    groupId: string,
+    userId: string,
+    sourceGroupIds: string[],
+  ): Promise<void>;
+  selectGroupSources(groupId: string): Promise<KnowledgeGroupSource[]>;
+  selectRetrievalScopes(groupId: string): Promise<KnowledgeGroup[]>;
+  pruneInvalidGroupSources(groupId: string): Promise<void>;
   setMcpApiKey(
     id: string,
     userId: string,
@@ -201,6 +276,7 @@ export interface KnowledgeRepository {
     > & { status?: DocumentStatus },
   ): Promise<KnowledgeDocument>;
   selectDocumentsByGroupId(groupId: string): Promise<KnowledgeDocument[]>;
+  selectDocumentsByGroupScope(groupId: string): Promise<KnowledgeDocument[]>;
   selectDocumentById(id: string): Promise<KnowledgeDocument | null>;
   updateDocumentStatus(
     id: string,
@@ -210,18 +286,79 @@ export interface KnowledgeRepository {
       chunkCount?: number;
       tokenCount?: number;
       markdownContent?: string;
+      processingProgress?: number | null;
+    },
+  ): Promise<void>;
+  updateDocumentMetadata(
+    id: string,
+    userId: string,
+    data: {
+      title?: string;
+      description?: string | null;
+      metadataEmbedding?: number[] | null;
+      metadata?: Record<string, unknown> | null;
+    },
+  ): Promise<KnowledgeDocument | null>;
+  updateDocumentAutoMetadata(
+    id: string,
+    data: {
+      title?: string;
+      description?: string | null;
+      metadataEmbedding?: number[] | null;
+      metadata?: Record<string, unknown> | null;
     },
   ): Promise<void>;
   deleteDocument(id: string): Promise<void>;
 
   // Document markdown (Context7-style full-doc retrieval)
-  getDocumentMarkdown(
-    documentId: string,
-  ): Promise<{ name: string; markdown: string } | null>;
+  getDocumentMarkdown(documentId: string): Promise<{
+    name: string;
+    description?: string | null;
+    markdown: string;
+  } | null>;
   getGroupDocumentsMarkdown(
     groupId: string,
     topic?: string,
   ): Promise<Array<{ documentId: string; name: string; markdown: string }>>;
+  getDocumentMetadataByIds(
+    groupId: string,
+    ids: string[],
+  ): Promise<
+    Array<{
+      documentId: string;
+      name: string;
+      description?: string | null;
+      updatedAt: Date;
+    }>
+  >;
+  getDocumentMetadataByIdsAcrossGroups(ids: string[]): Promise<
+    Array<{
+      documentId: string;
+      groupId: string;
+      name: string;
+      description?: string | null;
+      metadata?: Record<string, unknown> | null;
+      updatedAt: Date;
+    }>
+  >;
+  searchDocumentMetadata(
+    groupId: string,
+    query: string,
+    limit: number,
+  ): Promise<Array<{ documentId: string; score: number }>>;
+  vectorSearchDocumentMetadata(
+    groupId: string,
+    embedding: number[],
+    limit: number,
+  ): Promise<Array<{ documentId: string; score: number }>>;
+
+  // Sections
+  insertSections(
+    sections: Array<Omit<KnowledgeSection, "createdAt">>,
+  ): Promise<void>;
+  deleteSectionsByDocumentId(documentId: string): Promise<void>;
+  getSectionsByIds(ids: string[]): Promise<KnowledgeSection[]>;
+  getRelatedSections(sectionIds: string[]): Promise<KnowledgeSection[]>;
 
   // Chunks
   insertChunks(
@@ -264,6 +401,7 @@ export interface KnowledgeRepository {
     source: UsageSource;
     chunksRetrieved: number;
     latencyMs?: number;
+    metadata?: Record<string, unknown> | null;
   }): Promise<void>;
   getUsageStats(groupId: string, days?: number): Promise<KnowledgeUsageStats>;
 }

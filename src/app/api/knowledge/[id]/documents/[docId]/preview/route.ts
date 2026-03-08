@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
   params: Promise<{ id: string; docId: string }>;
@@ -43,8 +43,27 @@ export async function GET(_req: NextRequest, { params }: Params) {
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
-  if (!doc || doc.groupId !== groupId)
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  let sourceMeta: {
+    id: string;
+    name: string;
+    visibility: "public" | "private" | "readonly";
+    userName?: string;
+  } | null = null;
+  if (doc.groupId !== groupId) {
+    const sources = await knowledgeRepository.selectGroupSources(groupId);
+    const source = sources.find((s) => s.sourceGroupId === doc.groupId);
+    if (!source) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+    sourceMeta = {
+      id: source.sourceGroupId,
+      name: source.sourceGroupName,
+      visibility: source.sourceGroupVisibility,
+      userName: source.sourceGroupUserName,
+    };
+  }
 
   const mimeType = FILE_MIME_TYPES[doc.fileType] ?? "application/octet-stream";
   const isText =
@@ -60,6 +79,14 @@ export async function GET(_req: NextRequest, { params }: Params) {
       doc: {
         id: doc.id,
         name: doc.name,
+        description: doc.description ?? null,
+        descriptionManual: doc.descriptionManual ?? false,
+        titleManual: doc.titleManual ?? false,
+        isInherited: !!sourceMeta,
+        sourceGroupId: sourceMeta?.id ?? null,
+        sourceGroupName: sourceMeta?.name ?? null,
+        sourceGroupVisibility: sourceMeta?.visibility ?? null,
+        sourceGroupUserName: sourceMeta?.userName ?? null,
         originalFilename: doc.originalFilename,
         fileType: doc.fileType,
         fileSize: doc.fileSize,
@@ -68,6 +95,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
       sourceUrl: doc.sourceUrl ?? null,
       previewUrl: null,
       content: null,
+      markdownContent: doc.markdownContent ?? null,
       isUrlOnly: true,
     });
   }
@@ -101,6 +129,14 @@ export async function GET(_req: NextRequest, { params }: Params) {
       doc: {
         id: doc.id,
         name: doc.name,
+        description: doc.description ?? null,
+        descriptionManual: doc.descriptionManual ?? false,
+        titleManual: doc.titleManual ?? false,
+        isInherited: !!sourceMeta,
+        sourceGroupId: sourceMeta?.id ?? null,
+        sourceGroupName: sourceMeta?.name ?? null,
+        sourceGroupVisibility: sourceMeta?.visibility ?? null,
+        sourceGroupUserName: sourceMeta?.userName ?? null,
         originalFilename: doc.originalFilename,
         fileType: doc.fileType,
         fileSize: doc.fileSize,
@@ -108,6 +144,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
       },
       previewUrl,
       content,
+      markdownContent: doc.markdownContent ?? null,
       isUrlOnly: false,
     });
   } catch {

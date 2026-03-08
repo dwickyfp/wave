@@ -1,18 +1,23 @@
 "use client";
 
-import { useState } from "react";
-import { KnowledgeDocument } from "app-types/knowledge";
-import { DocumentCard } from "./document-card";
-import { DocumentUploadZone } from "./document-upload-zone";
-import { DocumentPreviewSheet } from "./document-preview-sheet";
 import { useKnowledgeDocuments } from "@/hooks/queries/use-knowledge";
+import { KnowledgeDocument } from "app-types/knowledge";
+import { useState } from "react";
+import { DocumentCard } from "./document-card";
+import { DocumentPreviewSheet } from "./document-preview-sheet";
+import { DocumentUploadZone } from "./document-upload-zone";
 
 interface Props {
   groupId: string;
   initialDocuments: KnowledgeDocument[];
+  uploadDisabledMessage?: string;
 }
 
-export function KnowledgeDocumentsTab({ groupId, initialDocuments }: Props) {
+export function KnowledgeDocumentsTab({
+  groupId,
+  initialDocuments,
+  uploadDisabledMessage,
+}: Props) {
   const { data: docs, mutate } = useKnowledgeDocuments(groupId);
   const [previewDoc, setPreviewDoc] = useState<KnowledgeDocument | null>(null);
 
@@ -32,10 +37,27 @@ export function KnowledgeDocumentsTab({ groupId, initialDocuments }: Props) {
     setTimeout(() => mutate(), 400);
   };
 
+  const handleDocumentUpdated = (updated: KnowledgeDocument) => {
+    mutate(
+      (current) =>
+        (current ?? documents).map((d) =>
+          d.id === updated.id ? { ...d, ...updated } : d,
+        ),
+      false,
+    );
+    if (previewDoc?.id === updated.id) {
+      setPreviewDoc((prev) => (prev ? { ...prev, ...updated } : prev));
+    }
+  };
+
   return (
     <>
       <div className="flex flex-col gap-4">
-        <DocumentUploadZone groupId={groupId} onUploaded={handleUploaded} />
+        <DocumentUploadZone
+          groupId={groupId}
+          onUploaded={handleUploaded}
+          disabledMessage={uploadDisabledMessage}
+        />
 
         {documents.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-center text-muted-foreground text-sm">
@@ -62,6 +84,7 @@ export function KnowledgeDocumentsTab({ groupId, initialDocuments }: Props) {
         groupId={groupId}
         open={previewDoc !== null}
         onClose={() => setPreviewDoc(null)}
+        onDocumentUpdated={handleDocumentUpdated}
       />
     </>
   );

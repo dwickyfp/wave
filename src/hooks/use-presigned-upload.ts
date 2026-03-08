@@ -5,10 +5,16 @@ import { upload as uploadToVercelBlob } from "@vercel/blob/client";
 import useSWR from "swr";
 import { toast } from "sonner";
 import { getStorageInfoAction } from "@/app/api/storage/actions";
+import { authClient } from "auth/client";
+import {
+  assertAllowedUserUpload,
+  resolveUserScopedUploadPath,
+  StorageUploadPolicyError,
+} from "@/lib/file-storage/upload-policy";
 
 // Types
 interface StorageInfo {
-  type: "local" | "vercel-blob" | "s3";
+  type: "local" | "vercel-blob" | "s3" | "none";
   supportsDirectUpload: boolean;
 }
 
@@ -28,7 +34,7 @@ interface UploadResult {
 function useStorageInfo() {
   const { data, isLoading } = useSWR<StorageInfo>(
     "storage-info",
-    getStorageInfoAction,
+    () => getStorageInfoAction(),
     {
       revalidateOnFocus: false,
       revalidateOnReconnect: false,
@@ -71,6 +77,8 @@ export function useFileUpload() {
     supportsDirectUpload,
     isLoading: isLoadingStorageInfo,
   } = useStorageInfo();
+  const { data: session, isPending: isLoadingSession } =
+    authClient.useSession();
   const [isUploading, setIsUploading] = useState(false);
 
   const upload = useCallback(
@@ -87,8 +95,32 @@ export function useFileUpload() {
       const contentType =
         uploadOptions.contentType || file.type || "application/octet-stream";
 
+      if (!session?.user?.id) {
+        toast.error("You must be signed in to upload files.");
+        return;
+      }
+
+      try {
+        assertAllowedUserUpload({
+          contentType,
+          size: file.size,
+        });
+      } catch (error) {
+        const message =
+          error instanceof StorageUploadPolicyError
+            ? error.message
+            : "Upload rejected";
+        toast.error(message);
+        return;
+      }
+
+      const scopedPathname = resolveUserScopedUploadPath(
+        session.user.id,
+        filename,
+      );
+
       // Wait for storage info to load
-      if (isLoadingStorageInfo || !storageType) {
+      if (isLoadingStorageInfo || isLoadingSession || !storageType) {
         toast.error("Storage is still loading. Please try again.");
         return;
       }
@@ -97,7 +129,7 @@ export function useFileUpload() {
       try {
         // Vercel Blob direct upload
         if (storageType === "vercel-blob") {
-          const blob = await uploadToVercelBlob(filename, file, {
+          const blob = await uploadToVercelBlob(scopedPathname, file, {
             access: "public",
             handleUploadUrl: "/api/storage/upload-url",
             contentType,
@@ -117,7 +149,7 @@ export function useFileUpload() {
           const uploadUrlResponse = await fetch("/api/storage/upload-url", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ filename, contentType }),
+            body: JSON.stringify({ filename: scopedPathname, contentType }),
           });
 
           if (!uploadUrlResponse.ok) {
@@ -199,7 +231,13 @@ export function useFileUpload() {
         setIsUploading(false);
       }
     },
-    [storageType, supportsDirectUpload, isLoadingStorageInfo],
+    [
+      storageType,
+      supportsDirectUpload,
+      isLoadingStorageInfo,
+      isLoadingSession,
+      session?.user?.id,
+    ],
   );
 
   return {

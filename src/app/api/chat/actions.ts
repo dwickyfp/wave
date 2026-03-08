@@ -34,14 +34,14 @@ import { JSONSchema7 } from "json-schema";
 import { ObjectJsonSchema7 } from "app-types/util";
 import { jsonSchemaToZod } from "lib/json-schema-to-zod";
 import { Agent } from "app-types/agent";
+import {
+  requireAuthenticatedChatUserId,
+  requireMessageAccess,
+  requireThreadAccess,
+} from "lib/chat/access";
 
 export async function getUserId() {
-  const session = await getSession();
-  const userId = session?.user?.id;
-  if (!userId) {
-    throw new Error("User not found");
-  }
-  return userId;
+  return requireAuthenticatedChatUserId();
 }
 
 export async function generateTitleFromUserMessageAction({
@@ -68,7 +68,7 @@ export async function selectThreadWithMessagesAction(threadId: string) {
   if (!session) {
     throw new Error("Unauthorized");
   }
-  const thread = await chatRepository.selectThread(threadId);
+  const thread = await chatRepository.selectThreadDetails(threadId);
 
   if (!thread) {
     logger.error("Thread not found", threadId);
@@ -77,15 +77,21 @@ export async function selectThreadWithMessagesAction(threadId: string) {
   if (thread.userId !== session?.user.id) {
     return null;
   }
-  const messages = await chatRepository.selectMessagesByThreadId(threadId);
-  return { ...thread, messages: messages ?? [] };
+  return {
+    ...thread,
+    messages: thread.messages ?? [],
+    compactionCheckpoint: thread.compactionCheckpoint ?? null,
+    compactionState: thread.compactionState ?? null,
+  };
 }
 
 export async function deleteMessageAction(messageId: string) {
+  await requireMessageAccess(messageId);
   await chatRepository.deleteChatMessage(messageId);
 }
 
 export async function deleteThreadAction(threadId: string) {
+  await requireThreadAccess(threadId);
   await chatRepository.deleteThread(threadId);
 }
 
@@ -93,6 +99,7 @@ export async function deleteMessagesByChatIdAfterTimestampAction(
   messageId: string,
 ) {
   "use server";
+  await requireMessageAccess(messageId);
   await chatRepository.deleteMessagesByChatIdAfterTimestamp(messageId);
 }
 
@@ -100,8 +107,8 @@ export async function updateThreadAction(
   id: string,
   thread: Partial<Omit<ChatThread, "createdAt" | "updatedAt" | "userId">>,
 ) {
-  const userId = await getUserId();
-  await chatRepository.updateThread(id, { ...thread, userId });
+  await requireThreadAccess(id);
+  await chatRepository.updateThread(id, thread);
 }
 
 export async function deleteThreadsAction() {
@@ -272,6 +279,11 @@ export async function forkThreadAction(
       })),
     );
     lastMessageAt = now + messages.length - 1;
+  }
+
+  const checkpoint = await chatRepository.selectCompactionCheckpoint(threadId);
+  if (checkpoint && messages.length >= checkpoint.compactedMessageCount) {
+    await chatRepository.copyCompactionCheckpoint(threadId, newThreadId);
   }
 
   return {

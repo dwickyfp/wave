@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { getSession } from "auth/server";
-import { serverFileStorage, storageDriver } from "lib/file-storage";
+import { serverFileStorage, getStorageDriver } from "lib/file-storage";
+import { getContentTypeFromFilename } from "lib/file-storage/storage-utils";
+import {
+  assertAllowedUserUpload,
+  resolveUserScopedUploadPath,
+  StorageUploadPolicyError,
+} from "lib/file-storage/upload-policy";
 import { checkStorageAction } from "../actions";
 
 export async function POST(request: Request) {
@@ -13,6 +19,7 @@ export async function POST(request: Request) {
   // Check storage configuration first
   const storageCheck = await checkStorageAction();
   if (!storageCheck.isValid) {
+    const storageDriver = await getStorageDriver();
     return NextResponse.json(
       {
         error: storageCheck.error,
@@ -34,14 +41,20 @@ export async function POST(request: Request) {
       );
     }
 
-    // Read file content
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const contentType =
+      file.type ||
+      getContentTypeFromFilename(file.name) ||
+      "application/octet-stream";
+
+    assertAllowedUserUpload({
+      contentType,
+      size: file.size,
+    });
 
     // Upload to storage (works with any storage backend)
-    const result = await serverFileStorage.upload(buffer, {
-      filename: file.name,
-      contentType: file.type || "application/octet-stream",
+    const result = await serverFileStorage.upload(file.stream(), {
+      filename: resolveUserScopedUploadPath(session.user.id, file.name),
+      contentType,
     });
 
     return NextResponse.json({
@@ -51,6 +64,12 @@ export async function POST(request: Request) {
       metadata: result.metadata,
     });
   } catch (error) {
+    if (error instanceof StorageUploadPolicyError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    }
     console.error("Failed to upload file", error);
     return NextResponse.json(
       { error: "Failed to upload file" },

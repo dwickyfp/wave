@@ -1,7 +1,8 @@
 import {
+  ModelMessage,
   Tool,
+  consumeStream,
   UIMessage,
-  convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   smoothStream,
@@ -12,50 +13,65 @@ import {
 import { getDbModel } from "lib/ai/provider-factory";
 
 import {
+  ChatContextPressureBreakdown,
   ChatMention,
   ChatMetadata,
+  ChatThreadCompactionCheckpoint,
+  ChatUsage,
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
 import {
-  buildKnowledgeContextSystemPrompt,
-  buildMcpServerCustomizationsSystemPrompt,
-  buildParallelSubAgentSystemPrompt,
-  buildToolCallUnsupportedModelSystemPrompt,
-  buildUserSystemPrompt,
-} from "lib/ai/prompts";
-import {
   agentRepository,
+  a2aAgentRepository,
   chatRepository,
   knowledgeRepository,
   settingsRepository,
   snowflakeAgentRepository,
-  subAgentRepository,
 } from "lib/db/repository";
 import globalLogger from "logger";
 
-import { errorIf, safe } from "ts-safe";
+import { safe } from "ts-safe";
 
-import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
 import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
-import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
+import {
+  buildWaveAgentSystemPrompt,
+  loadWaveAgentBoundTools,
+} from "lib/ai/agent/runtime";
 import { ImageToolName } from "lib/ai/tools";
 import { createDbImageTool } from "lib/ai/tools/image";
-import {
-  createKnowledgeDocsTool,
-  knowledgeDocsToolName,
-} from "lib/ai/tools/knowledge-tool";
 import {
   queryKnowledgeAsDocs,
   formatDocsAsText,
 } from "lib/knowledge/retriever";
-import { serverFileStorage } from "lib/file-storage";
+import {
+  allocateSequentialKnowledgeTokens,
+  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
+  estimateKnowledgePromptTokens,
+} from "lib/knowledge/token-budget";
 import {
   type SnowflakeCortexMessage,
   callSnowflakeCortexStream,
   createSnowflakeThread,
 } from "lib/snowflake/client";
+import { streamA2AAgentResponse } from "lib/a2a/client";
 import { generateUUID } from "lib/utils";
+import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
+import { shouldSendToolDefinitionsToProvider } from "lib/ai/provider-compatibility";
+import {
+  buildCompactionAssembly,
+  buildChatStreamSeedMessages,
+  collectUsedToolNamesFromModelMessages,
+  CONTEXT_COMPACTION_HARD_ERROR_MESSAGE,
+  CONTEXT_COMPACTION_HARD_RATIO,
+  CONTEXT_COMPACTION_TARGET_RATIO,
+  CONTEXT_COMPACTION_TRIGGER_RATIO,
+  extractAttachmentPreviewText,
+  generateCompactionCheckpoint,
+  stripAttachmentPreviewParts,
+  stripAttachmentPreviewPartsFromMessages,
+} from "lib/ai/chat-compaction";
+import { updateThreadCompactionState } from "lib/ai/chat-compaction-background";
 import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
@@ -66,16 +82,51 @@ import {
   extractInProgressToolPart,
   filterMcpServerCustomizations,
   handleError,
-  loadAppDefaultTools,
-  loadMcpTools,
-  loadWorkFlowTools,
   manualToolExecuteByLastMessage,
-  mergeSystemPrompt,
 } from "./shared.chat";
+import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
+import {
+  applyChatAttachmentsToMessage,
+  ensureUserChatThread,
+} from "lib/chat/chat-session";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
 });
+
+const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
+  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
+  2500,
+  1200,
+  0,
+];
+
+function buildCompactionFailureMessage(input: {
+  failureCode?: string;
+  breakdown: ChatContextPressureBreakdown;
+}) {
+  const segments = [
+    { label: "history", value: input.breakdown?.historyTokens },
+    { label: "knowledge", value: input.breakdown?.knowledgeTokens },
+    { label: "tools", value: input.breakdown?.toolTokens },
+    { label: "current", value: input.breakdown?.currentTurnTokens },
+    { label: "files", value: input.breakdown?.attachmentPreviewTokens },
+  ]
+    .filter((segment) => (segment.value ?? 0) > 0)
+    .map((segment) => `${segment.label} ${segment.value}`);
+
+  if (segments.length === 0 && !input.failureCode) {
+    return CONTEXT_COMPACTION_HARD_ERROR_MESSAGE;
+  }
+
+  return [
+    CONTEXT_COMPACTION_HARD_ERROR_MESSAGE,
+    input.failureCode ? `code: ${input.failureCode}` : "",
+    segments.length ? `breakdown: ${segments.join(", ")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 
 export async function POST(request: Request) {
   try {
@@ -108,21 +159,25 @@ export async function POST(request: Request) {
       );
     }
     const model = dbModelResult.model;
+    const attachUsageCost = (usage: ChatUsage): ChatUsage => ({
+      ...usage,
+      ...buildUsageCostSnapshot(usage, {
+        inputTokenPricePer1MUsd: dbModelResult.inputTokenPricePer1MUsd,
+        outputTokenPricePer1MUsd: dbModelResult.outputTokenPricePer1MUsd,
+      }),
+    });
 
-    let thread = await chatRepository.selectThreadDetails(id);
-
-    if (!thread) {
-      logger.info(`create chat thread: ${id}`);
-      const newThread = await chatRepository.insertThread({
-        id,
-        title: "",
+    let thread;
+    try {
+      thread = await ensureUserChatThread({
+        threadId: id,
         userId: session.user.id,
       });
-      thread = await chatRepository.selectThreadDetails(newThread.id);
-    }
-
-    if (thread!.userId !== session.user.id) {
-      return new Response("Forbidden", { status: 403 });
+    } catch (error) {
+      if ((error as Error).message === "Forbidden") {
+        return new Response("Forbidden", { status: 403 });
+      }
+      throw error;
     }
 
     const messages: UIMessage[] = (thread?.messages ?? []).map((m) => {
@@ -137,70 +192,13 @@ export async function POST(request: Request) {
     if (messages.at(-1)?.id == message.id) {
       messages.pop();
     }
-    const ingestionPreviewParts = await buildCsvIngestionPreviewParts(
+    await applyChatAttachmentsToMessage({
+      message,
       attachments,
-      (key) => serverFileStorage.download(key),
-    );
-    if (ingestionPreviewParts.length) {
-      const baseParts = [...message.parts];
-      let insertionIndex = -1;
-      for (let i = baseParts.length - 1; i >= 0; i -= 1) {
-        if (baseParts[i]?.type === "text") {
-          insertionIndex = i;
-          break;
-        }
-      }
-      if (insertionIndex !== -1) {
-        baseParts.splice(insertionIndex, 0, ...ingestionPreviewParts);
-        message.parts = baseParts;
-      } else {
-        message.parts = [...baseParts, ...ingestionPreviewParts];
-      }
-    }
+      userId: session.user.id,
+    });
 
-    if (attachments.length) {
-      const firstTextIndex = message.parts.findIndex(
-        (part: any) => part?.type === "text",
-      );
-      const attachmentParts: any[] = [];
-
-      attachments.forEach((attachment) => {
-        const exists = message.parts.some(
-          (part: any) =>
-            part?.type === attachment.type && part?.url === attachment.url,
-        );
-        if (exists) return;
-
-        if (attachment.type === "file") {
-          attachmentParts.push({
-            type: "file",
-            url: attachment.url,
-            mediaType: attachment.mediaType,
-            filename: attachment.filename,
-          });
-        } else if (attachment.type === "source-url") {
-          attachmentParts.push({
-            type: "source-url",
-            url: attachment.url,
-            mediaType: attachment.mediaType,
-            title: attachment.filename,
-          });
-        }
-      });
-
-      if (attachmentParts.length) {
-        if (firstTextIndex >= 0) {
-          message.parts = [
-            ...message.parts.slice(0, firstTextIndex),
-            ...attachmentParts,
-            ...message.parts.slice(firstTextIndex),
-          ];
-        } else {
-          message.parts = [...message.parts, ...attachmentParts];
-        }
-      }
-    }
-
+    const persistedMessages = [...messages];
     messages.push(message);
 
     const supportToolCall = dbModelResult.supportsTools;
@@ -383,18 +381,20 @@ export async function POST(request: Request) {
                   messageMetadata: {
                     ...sfMetadata,
                     usage: {
-                      inputTokens: event.inputTokens,
-                      outputTokens: event.outputTokens,
-                      totalTokens: event.inputTokens + event.outputTokens,
-                      inputTokenDetails: {
-                        noCacheTokens: undefined,
-                        cacheReadTokens: undefined,
-                        cacheWriteTokens: undefined,
-                      },
-                      outputTokenDetails: {
-                        textTokens: undefined,
-                        reasoningTokens: undefined,
-                      },
+                      ...attachUsageCost({
+                        inputTokens: event.inputTokens,
+                        outputTokens: event.outputTokens,
+                        totalTokens: event.inputTokens + event.outputTokens,
+                        inputTokenDetails: {
+                          noCacheTokens: undefined,
+                          cacheReadTokens: undefined,
+                          cacheWriteTokens: undefined,
+                        },
+                        outputTokenDetails: {
+                          textTokens: undefined,
+                          reasoningTokens: undefined,
+                        },
+                      }),
                     },
                     // Always show Snowflake as provider with the actual
                     // model name returned by the Cortex API
@@ -426,10 +426,14 @@ export async function POST(request: Request) {
           }
         },
         generateId: generateUUID,
-        onFinish: async ({ responseMessage }) => {
+        onFinish: async ({ responseMessage, isAborted }) => {
+          const finalResponseMessage = isAborted
+            ? appendAbortedResponseNotice(responseMessage)
+            : responseMessage;
+
           // Populate metadata from the captured Snowflake usage/model info
           if (sfCapture.usage) {
-            sfMetadata.usage = {
+            sfMetadata.usage = attachUsageCost({
               inputTokens: sfCapture.usage.input,
               outputTokens: sfCapture.usage.output,
               totalTokens: sfCapture.usage.input + sfCapture.usage.output,
@@ -442,7 +446,7 @@ export async function POST(request: Request) {
                 textTokens: undefined,
                 reasoningTokens: undefined,
               },
-            };
+            });
             sfMetadata.chatModel = {
               provider: "snowflake",
               model: sfCapture.usage.model || "Snowflake Cortex",
@@ -461,11 +465,11 @@ export async function POST(request: Request) {
             );
           }
 
-          if (responseMessage.id === message.id) {
+          if (finalResponseMessage.id === message.id) {
             await chatRepository.upsertMessage({
               threadId: thread!.id,
-              ...responseMessage,
-              parts: responseMessage.parts.map(convertToSavePart),
+              ...finalResponseMessage,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
               metadata: sfMetadata,
             });
           } else {
@@ -477,9 +481,9 @@ export async function POST(request: Request) {
             });
             await chatRepository.upsertMessage({
               threadId: thread!.id,
-              role: responseMessage.role,
-              id: responseMessage.id,
-              parts: responseMessage.parts.map(convertToSavePart),
+              role: finalResponseMessage.role,
+              id: finalResponseMessage.id,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
               metadata: sfMetadata,
             });
           }
@@ -488,20 +492,173 @@ export async function POST(request: Request) {
         originalMessages: messages,
       });
 
-      return createUIMessageStreamResponse({ stream: sfStream });
+      return createUIMessageStreamResponse({
+        stream: sfStream,
+        consumeSseStream: consumeStream,
+      });
     }
     // ── end Snowflake intercept ────────────────────────────────────────────
+
+    if ((agent as any)?.agentType === "a2a_remote") {
+      const a2aConfig = await a2aAgentRepository.selectA2AConfigByAgentId(
+        agent!.id,
+      );
+
+      if (!a2aConfig) {
+        return Response.json(
+          { message: "A2A configuration not found for this agent" },
+          { status: 404 },
+        );
+      }
+
+      const userText = message.parts
+        .filter((part: any) => part.type === "text")
+        .map((part: any) => part.text as string)
+        .join(" ")
+        .trim();
+
+      if (!userText) {
+        return Response.json(
+          {
+            message:
+              "A2A remote agents currently support text-only messages in this UI.",
+          },
+          { status: 400 },
+        );
+      }
+
+      const currentA2AState =
+        thread?.a2aAgentId === agent!.id
+          ? {
+              contextId: thread?.a2aContextId ?? undefined,
+              taskId: thread?.a2aTaskId ?? undefined,
+            }
+          : {
+              contextId: undefined,
+              taskId: undefined,
+            };
+
+      const a2aMetadata: ChatMetadata = {
+        agentId: agent!.id,
+        toolChoice: "none",
+        toolCount: 0,
+        chatModel: {
+          provider: "a2a",
+          model: a2aConfig.agentCard.name || agent!.name,
+        },
+      };
+
+      const a2aCapture = {
+        contextId: currentA2AState.contextId ?? null,
+        taskId: currentA2AState.taskId ?? null,
+      };
+
+      const a2aStream = createUIMessageStream({
+        execute: async ({ writer: dataStream }) => {
+          const textId = generateUUID();
+          let textOpen = false;
+
+          for await (const event of streamA2AAgentResponse({
+            config: a2aConfig,
+            text: userText,
+            contextId: currentA2AState.contextId,
+            taskId: currentA2AState.taskId,
+          })) {
+            if (event.contextId) {
+              a2aCapture.contextId = event.contextId;
+            }
+            if (event.taskId) {
+              a2aCapture.taskId = event.taskId;
+            }
+
+            if (!event.text) continue;
+
+            if (!textOpen) {
+              dataStream.write({ type: "text-start", id: textId });
+              textOpen = true;
+            }
+
+            dataStream.write({
+              type: "text-delta",
+              delta: event.text,
+              id: textId,
+            });
+          }
+
+          if (textOpen) {
+            dataStream.write({ type: "text-end", id: textId });
+          } else {
+            dataStream.write({ type: "text-start", id: textId });
+            dataStream.write({ type: "text-end", id: textId });
+          }
+
+          dataStream.write({
+            type: "message-metadata",
+            messageMetadata: a2aMetadata,
+          });
+        },
+        generateId: generateUUID,
+        onFinish: async ({ responseMessage, isAborted }) => {
+          const finalResponseMessage = isAborted
+            ? appendAbortedResponseNotice(responseMessage)
+            : responseMessage;
+
+          if (!isAborted) {
+            await chatRepository.updateThread(thread!.id, {
+              a2aAgentId: agent!.id,
+              a2aContextId: a2aCapture.contextId ?? null,
+              a2aTaskId: a2aCapture.taskId ?? null,
+            });
+          }
+
+          if (finalResponseMessage.id === message.id) {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              ...finalResponseMessage,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
+              metadata: a2aMetadata,
+            });
+          } else {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: message.role,
+              parts: message.parts.map(convertToSavePart),
+              id: message.id,
+            });
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: finalResponseMessage.role,
+              id: finalResponseMessage.id,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
+              metadata: a2aMetadata,
+            });
+          }
+        },
+        onError: handleError,
+        originalMessages: messages,
+      });
+
+      return createUIMessageStreamResponse({
+        stream: a2aStream,
+        consumeSseStream: consumeStream,
+      });
+    }
 
     if (agent?.instructions?.mentions) {
       mentions.push(...agent.instructions.mentions);
     }
 
     // ── Knowledge mention RAG context ────────────────────────────────────────
-    const knowledgeMentionIds = mentions
-      .filter((m) => m.type === "knowledge")
-      .map(
-        (m) => (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
-      );
+    const knowledgeMentionIds = Array.from(
+      new Set(
+        mentions
+          .filter((m) => m.type === "knowledge")
+          .map(
+            (m) =>
+              (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
+          ),
+      ),
+    );
 
     const userQueryText = message.parts
       .filter((p: any) => p.type === "text")
@@ -509,29 +666,17 @@ export async function POST(request: Request) {
       .join(" ")
       .trim();
 
-    const knowledgeContexts: string[] = [];
-    if (knowledgeMentionIds.length && userQueryText) {
-      for (const groupId of knowledgeMentionIds) {
-        const group = await knowledgeRepository
-          .selectGroupById(groupId, session.user.id)
-          .catch(() => null);
-        if (!group) continue;
-        const docs = await queryKnowledgeAsDocs(group, userQueryText, {
-          userId: session.user.id,
-          source: "chat",
-        }).catch((err) => {
-          logger.warn(
-            `[Knowledge RAG] retrieval failed for group ${groupId}: ${err}`,
-          );
-          return null;
-        });
-        if (docs) {
-          knowledgeContexts.push(
-            formatDocsAsText(group.name, docs, userQueryText),
-          );
-        }
-      }
-    }
+    const knowledgeMentionGroups = (
+      await Promise.all(
+        knowledgeMentionIds.map((groupId) =>
+          knowledgeRepository
+            .selectGroupById(groupId, session.user.id)
+            .catch(() => null),
+        ),
+      )
+    ).filter((group) => group !== null) as NonNullable<
+      Awaited<ReturnType<typeof knowledgeRepository.selectGroupById>>
+    >[];
     // ── end knowledge context ─────────────────────────────────────────────────
 
     const useImageTool = Boolean(imageTool?.provider && imageTool?.model);
@@ -550,86 +695,18 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
-        const MCP_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(() =>
-            loadMcpTools({
-              mentions,
-              allowedMcpServers,
-            }),
-          )
-          .orElse({});
-
-        const WORKFLOW_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(() =>
-            loadWorkFlowTools({
-              mentions,
-              dataStream,
-            }),
-          )
-          .orElse({});
-
-        const APP_DEFAULT_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(() =>
-            loadAppDefaultTools({
-              mentions,
-              allowedAppDefaultToolkit,
-            }),
-          )
-          .orElse({});
-
-        const agentWithSubAgents =
-          agent?.subAgentsEnabled && agent.id
-            ? {
-                ...agent,
-                subAgents: await subAgentRepository.selectSubAgentsByAgentId(
-                  agent.id,
-                ),
-              }
-            : agent;
-
-        const SUBAGENT_TOOLS = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(
-            errorIf(
-              () =>
-                !agentWithSubAgents?.subAgentsEnabled &&
-                "Subagents not enabled",
-            ),
-          )
-          .map(() =>
-            loadSubAgentTools(
-              agentWithSubAgents!,
-              dataStream,
-              request.signal,
-              chatModel!,
-            ),
-          )
-          .orElse({});
-
-        // Knowledge tools for agents with attached knowledge groups
-        const KNOWLEDGE_TOOLS: Record<string, Tool> = await safe()
-          .map(errorIf(() => !isToolCallAllowed && "Not allowed"))
-          .map(errorIf(() => !agent?.id && "No agent"))
-          .map(async () => {
-            const groups = await knowledgeRepository.getGroupsByAgentId(
-              agent!.id,
-            );
-            const tools: Record<string, Tool> = {};
-            for (const group of groups) {
-              tools[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(
-                group,
-                {
-                  userId: session.user.id,
-                  source: "agent",
-                },
-              );
-            }
-            return tools;
-          })
-          .orElse({});
+        const toolset = await loadWaveAgentBoundTools({
+          agent,
+          userId: session.user.id,
+          mentions,
+          allowedMcpServers,
+          allowedAppDefaultToolkit,
+          dataStream,
+          abortSignal: request.signal,
+          chatModel: chatModel!,
+          source: "agent",
+          isToolCallAllowed,
+        });
 
         const inProgressToolParts = extractInProgressToolPart(message);
         if (inProgressToolParts.length) {
@@ -637,7 +714,11 @@ export async function POST(request: Request) {
             inProgressToolParts.map(async (part) => {
               const output = await manualToolExecuteByLastMessage(
                 part,
-                { ...MCP_TOOLS, ...WORKFLOW_TOOLS, ...APP_DEFAULT_TOOLS },
+                {
+                  ...toolset.mcpTools,
+                  ...toolset.workflowTools,
+                  ...toolset.appDefaultTools,
+                },
                 request.signal,
               );
               part.output = output;
@@ -655,22 +736,107 @@ export async function POST(request: Request) {
 
         const mcpServerCustomizations = await safe()
           .map(() => {
-            if (Object.keys(MCP_TOOLS ?? {}).length === 0)
+            if (Object.keys(toolset.mcpTools ?? {}).length === 0)
               throw new Error("No tools found");
             return rememberMcpServerCustomizationsAction(session.user.id);
           })
-          .map((v) => filterMcpServerCustomizations(MCP_TOOLS!, v))
+          .map((v) => filterMcpServerCustomizations(toolset.mcpTools as any, v))
           .orElse({});
+        const buildKnowledgeContextsForBudget = (() => {
+          const cache = new Map<number, Promise<string[]>>();
 
-        const systemPrompt = mergeSystemPrompt(
-          buildUserSystemPrompt(session.user, userPreferences, agent),
-          buildMcpServerCustomizationsSystemPrompt(mcpServerCustomizations),
-          buildParallelSubAgentSystemPrompt(
-            agentWithSubAgents?.subAgents ?? [],
-          ),
-          !supportToolCall && buildToolCallUnsupportedModelSystemPrompt,
-          buildKnowledgeContextSystemPrompt(knowledgeContexts),
+          return async (totalBudget: number) => {
+            if (
+              !knowledgeMentionGroups.length ||
+              !userQueryText ||
+              totalBudget < 1
+            ) {
+              return [];
+            }
+
+            if (!cache.has(totalBudget)) {
+              cache.set(
+                totalBudget,
+                (async () => {
+                  const contexts: string[] = [];
+                  let remainingKnowledgeBudget = totalBudget;
+
+                  for (const [
+                    index,
+                    group,
+                  ] of knowledgeMentionGroups.entries()) {
+                    if (remainingKnowledgeBudget < 200) break;
+
+                    const allocatedTokens = allocateSequentialKnowledgeTokens(
+                      remainingKnowledgeBudget,
+                      knowledgeMentionGroups.length - index,
+                    );
+
+                    const docs = await queryKnowledgeAsDocs(
+                      group,
+                      userQueryText,
+                      {
+                        userId: session.user.id,
+                        source: "chat",
+                        tokens: allocatedTokens,
+                        resultMode: "section-first",
+                      },
+                    ).catch((err) => {
+                      logger.warn(
+                        `[Knowledge RAG] retrieval failed for group ${group.id}: ${err}`,
+                      );
+                      return null;
+                    });
+
+                    if (docs && docs.length > 0) {
+                      const formatted = formatDocsAsText(
+                        group.name,
+                        docs,
+                        userQueryText,
+                      );
+                      contexts.push(formatted);
+                      remainingKnowledgeBudget = Math.max(
+                        0,
+                        remainingKnowledgeBudget -
+                          estimateKnowledgePromptTokens(formatted),
+                      );
+                    }
+                  }
+
+                  return contexts;
+                })(),
+              );
+            }
+
+            return await cache.get(totalBudget)!;
+          };
+        })();
+
+        const buildSystemPromptForKnowledgeBudget = async (
+          knowledgeBudget: number,
+        ) => {
+          const knowledgeContexts =
+            await buildKnowledgeContextsForBudget(knowledgeBudget);
+
+          return {
+            knowledgeContexts,
+            systemPrompt: buildWaveAgentSystemPrompt({
+              user: session.user,
+              userPreferences,
+              agent,
+              subAgents: toolset.subAgents,
+              attachedSkills: toolset.attachedSkills,
+              knowledgeContexts,
+              mcpServerCustomizations,
+              toolCallUnsupported: !supportToolCall,
+            }),
+          };
+        };
+
+        const initialPromptContext = await buildSystemPromptForKnowledgeBudget(
+          CHAT_KNOWLEDGE_CONTEXT_TOKENS,
         );
+        const systemPrompt = initialPromptContext.systemPrompt;
 
         const IMAGE_TOOL: Record<string, Tool> = await (async (): Promise<
           Record<string, Tool>
@@ -698,25 +864,43 @@ export async function POST(request: Request) {
             return {};
           }
         })();
-        const vercelAITooles = safe({
-          ...MCP_TOOLS,
-          ...WORKFLOW_TOOLS,
-          ...SUBAGENT_TOOLS,
-          ...KNOWLEDGE_TOOLS,
-        })
-          .map((t) => {
-            const bindingTools =
-              toolChoice === "manual" ||
-              (message.metadata as ChatMetadata)?.toolChoice === "manual"
-                ? excludeToolExecution(t)
-                : t;
-            return {
-              ...bindingTools,
-              ...APP_DEFAULT_TOOLS, // APP_DEFAULT_TOOLS Not Supported Manual
-              ...IMAGE_TOOL,
-            };
+
+        const buildVercelAITools = (options?: {
+          includeAppDefaultTools?: boolean;
+          excludedMcpToolKeys?: Set<string>;
+        }) => {
+          const filteredMcpTools = Object.fromEntries(
+            Object.entries(toolset.mcpTools ?? {}).filter(
+              ([toolName]) => !options?.excludedMcpToolKeys?.has(toolName),
+            ),
+          );
+
+          return safe({
+            ...filteredMcpTools,
+            ...toolset.workflowTools,
+            ...toolset.subagentTools,
+            ...toolset.knowledgeTools,
+            ...toolset.skillTools,
           })
-          .unwrap();
+            .map((t) => {
+              const bindingTools =
+                toolChoice === "manual" ||
+                (message.metadata as ChatMetadata)?.toolChoice === "manual"
+                  ? excludeToolExecution(t)
+                  : t;
+
+              return {
+                ...bindingTools,
+                ...(options?.includeAppDefaultTools === false
+                  ? {}
+                  : toolset.appDefaultTools),
+                ...IMAGE_TOOL,
+              };
+            })
+            .unwrap();
+        };
+
+        const vercelAITooles = buildVercelAITools();
         metadata.toolCount = Object.keys(vercelAITooles).length;
 
         const allowedMcpTools = Object.values(allowedMcpServers ?? {})
@@ -736,48 +920,400 @@ export async function POST(request: Request) {
           );
         } else {
           logger.info(
-            `binding tool count APP_DEFAULT: ${Object.keys(APP_DEFAULT_TOOLS ?? {}).length}, MCP: ${Object.keys(MCP_TOOLS ?? {}).length}, Workflow: ${Object.keys(WORKFLOW_TOOLS ?? {}).length}`,
+            `binding tool count APP_DEFAULT: ${Object.keys(toolset.appDefaultTools ?? {}).length}, MCP: ${Object.keys(toolset.mcpTools ?? {}).length}, Workflow: ${Object.keys(toolset.workflowTools ?? {}).length}`,
           );
         }
         logger.info(`model: ${chatModel?.provider}/${chatModel?.model}`);
+        const sendToolDefinitions = shouldSendToolDefinitionsToProvider({
+          provider: chatModel?.provider,
+          tools: vercelAITooles,
+        });
+        const strippedPersistedMessages =
+          stripAttachmentPreviewPartsFromMessages(persistedMessages);
+        const strippedCurrentMessage = stripAttachmentPreviewParts(message);
+        const attachmentPreviewText = extractAttachmentPreviewText([
+          ...persistedMessages,
+          message,
+        ]);
+        const buildToolStages = (currentLoopMessages: ModelMessage[]) => {
+          const hasExplicitMcpMentions = mentions.some(
+            (mention) =>
+              mention.type === "mcpTool" || mention.type === "mcpServer",
+          );
+          const usedToolNames =
+            collectUsedToolNamesFromModelMessages(currentLoopMessages);
+          const stages = [
+            {
+              reason: "full",
+              tools: vercelAITooles,
+              activeToolNames: Object.keys(vercelAITooles),
+            },
+          ];
 
-        // Strip base64 image data from image tool results in the conversation
-        // history. The client stores the full base64 for display purposes, but
-        // sending it back to the LLM on every subsequent request would exceed
-        // the token limit (1MB image ≈ 1M tokens).
-        const modelMessages = (await convertToModelMessages(messages)).map(
-          (msg) => {
-            if (msg.role !== "tool") return msg;
-            return {
-              ...msg,
-              content: msg.content.map((part) => {
-                if (part.type !== "tool-result") return part;
-                if (part.toolName !== ImageToolName) return part;
-                const output = part.output;
-                if (output.type !== "json") return part;
-                const val = output.value as Record<string, unknown>;
-                return {
-                  ...part,
-                  output: {
-                    type: "text" as const,
-                    value: (val?.guide as string) ?? "Image generated.",
-                  },
-                };
-              }),
-            };
-          },
-        );
+          if (Object.keys(toolset.appDefaultTools ?? {}).length > 0) {
+            const toolsWithoutAppDefault = buildVercelAITools({
+              includeAppDefaultTools: false,
+            });
+            stages.push({
+              reason: "without_app_default_tools",
+              tools: toolsWithoutAppDefault,
+              activeToolNames: Object.keys(toolsWithoutAppDefault),
+            });
+          }
+
+          if (
+            !hasExplicitMcpMentions &&
+            Object.keys(toolset.mcpTools ?? {}).length
+          ) {
+            const excludedMcpToolKeys = new Set(
+              Object.keys(toolset.mcpTools ?? {}).filter(
+                (toolName) => !usedToolNames.has(toolName),
+              ),
+            );
+            if (excludedMcpToolKeys.size > 0) {
+              const toolsWithoutOptionalMcp = buildVercelAITools({
+                includeAppDefaultTools: false,
+                excludedMcpToolKeys,
+              });
+              stages.push({
+                reason: "without_optional_mcp_tools",
+                tools: toolsWithoutOptionalMcp,
+                activeToolNames: Object.keys(toolsWithoutOptionalMcp),
+              });
+            }
+          }
+
+          return stages.filter(
+            (stage, index, allStages) =>
+              index ===
+              allStages.findIndex(
+                (other) =>
+                  other.activeToolNames.join(",") ===
+                  stage.activeToolNames.join(","),
+              ),
+          );
+        };
+        const seedMessages = await buildChatStreamSeedMessages(message);
+        const seedMessageCount = seedMessages.length;
+        const compactionRuntime: {
+          checkpoint: ChatThreadCompactionCheckpoint | null;
+          currentLoopMessages: ModelMessage[];
+        } = {
+          checkpoint: thread?.compactionCheckpoint ?? null,
+          currentLoopMessages: [],
+        };
 
         const result = streamText({
           model,
           system: systemPrompt,
-          messages: modelMessages,
+          messages: seedMessages,
           experimental_transform: smoothStream({ chunking: "word" }),
           maxRetries: 2,
-          tools: vercelAITooles,
           stopWhen: stepCountIs(useImageTool ? 1 : 10),
-          toolChoice: "auto",
           abortSignal: request.signal,
+          experimental_context: compactionRuntime,
+          prepareStep: async ({ messages: stepMessages, stepNumber }) => {
+            if (stepNumber > 0) {
+              compactionRuntime.currentLoopMessages =
+                stepMessages.slice(seedMessageCount);
+            }
+
+            const contextLength = dbModelResult.contextLength;
+            let activeKnowledgeBudget = CHAT_KNOWLEDGE_CONTEXT_TOKENS;
+            let stripAttachmentPreviews = false;
+            const toolStages = buildToolStages(
+              compactionRuntime.currentLoopMessages,
+            );
+            let activeToolStage = toolStages[0] ?? {
+              reason: "full",
+              tools: vercelAITooles,
+              activeToolNames: Object.keys(vercelAITooles),
+            };
+
+            const buildAssemblyForCurrentState = async () => {
+              const promptContext = await buildSystemPromptForKnowledgeBudget(
+                activeKnowledgeBudget,
+              );
+              const assembly = await buildCompactionAssembly({
+                persistedMessages: stripAttachmentPreviews
+                  ? strippedPersistedMessages
+                  : persistedMessages,
+                currentMessage: stripAttachmentPreviews
+                  ? strippedCurrentMessage
+                  : message,
+                currentLoopMessages: compactionRuntime.currentLoopMessages,
+                checkpoint: compactionRuntime.checkpoint,
+                contextLength,
+                systemPrompt: promptContext.systemPrompt,
+                provider: chatModel?.provider,
+                tools: activeToolStage.tools,
+                dynamicTailEnabled: Boolean(
+                  compactionRuntime.checkpoint?.summaryText,
+                ),
+                knowledgeContexts: promptContext.knowledgeContexts,
+                attachmentPreviewText: stripAttachmentPreviews
+                  ? ""
+                  : attachmentPreviewText,
+              });
+
+              return {
+                assembly,
+              };
+            };
+
+            let { assembly } = await buildAssemblyForCurrentState();
+
+            if (assembly.removedToolParts > 0) {
+              logger.info(
+                `provider compatibility pruned ${assembly.removedToolParts} stale tool parts across ${assembly.removedMessages} messages for ${chatModel?.provider}/${chatModel?.model}`,
+              );
+            }
+
+            const beforeTokens = assembly.totalTokens;
+            let afterTokens = beforeTokens;
+            let checkpointUpdated = false;
+            let generationFailureCode: string | undefined;
+            let sheddingFailureCode: string | undefined;
+            const shouldEvaluateCompaction =
+              contextLength > 0 &&
+              beforeTokens / contextLength >= CONTEXT_COMPACTION_TRIGGER_RATIO;
+            const compactionStartedAt = new Date();
+
+            if (shouldEvaluateCompaction) {
+              await updateThreadCompactionState({
+                threadId: thread!.id,
+                source: "pre-send",
+                status: "running",
+                beforeTokens,
+                afterTokens: null,
+                failureCode: null,
+                startedAt: compactionStartedAt,
+                finishedAt: null,
+              });
+              dataStream.write({
+                type: "data-compaction-status",
+                data: {
+                  active: true,
+                  usedTokens: beforeTokens,
+                  totalTokens: contextLength,
+                  thresholdPercent: Math.round(
+                    CONTEXT_COMPACTION_TRIGGER_RATIO * 100,
+                  ),
+                },
+                transient: true,
+              });
+
+              try {
+                if (assembly.compactableMessages.length > 0) {
+                  let lastError: unknown = null;
+                  for (let attempt = 0; attempt < 2; attempt += 1) {
+                    try {
+                      const checkpoint = await generateCompactionCheckpoint({
+                        model,
+                        chatModel,
+                        checkpoint: compactionRuntime.checkpoint,
+                        compactableMessages: assembly.compactableMessages,
+                        summaryBudgetTokens: assembly.summaryBudgetTokens,
+                        contextLength,
+                        abortSignal: request.signal,
+                      });
+
+                      compactionRuntime.checkpoint =
+                        await chatRepository.upsertCompactionCheckpoint({
+                          threadId: thread!.id,
+                          ...checkpoint,
+                        });
+                      checkpointUpdated = true;
+
+                      ({ assembly } = await buildAssemblyForCurrentState());
+                      afterTokens = assembly.totalTokens;
+
+                      dataStream.write({
+                        type: "data-compaction-checkpoint",
+                        data: {
+                          summaryText: compactionRuntime.checkpoint.summaryText,
+                          compactedMessageCount:
+                            compactionRuntime.checkpoint.compactedMessageCount,
+                          summaryTokenCount:
+                            compactionRuntime.checkpoint.summaryTokenCount,
+                          usedTokensAfterCompaction: afterTokens,
+                        },
+                        transient: true,
+                      });
+
+                      lastError = null;
+                      break;
+                    } catch (error) {
+                      lastError = error;
+                    }
+                  }
+
+                  if (lastError) {
+                    generationFailureCode = "generation_failed";
+                    logger.warn(
+                      `context compaction failed for thread ${thread!.id}: ${lastError}`,
+                    );
+                  }
+                } else {
+                  generationFailureCode = "no_compactable_history";
+                }
+
+                if (
+                  contextLength > 0 &&
+                  afterTokens / contextLength >= CONTEXT_COMPACTION_HARD_RATIO
+                ) {
+                  for (const knowledgeBudget of KNOWLEDGE_CONTEXT_BUDGET_STAGES) {
+                    if (knowledgeBudget === activeKnowledgeBudget) continue;
+                    activeKnowledgeBudget = knowledgeBudget;
+                    ({ assembly } = await buildAssemblyForCurrentState());
+                    afterTokens = assembly.totalTokens;
+                    sheddingFailureCode = `knowledge_budget_${knowledgeBudget}`;
+                    if (
+                      afterTokens / contextLength <
+                      CONTEXT_COMPACTION_HARD_RATIO
+                    ) {
+                      break;
+                    }
+                  }
+                }
+
+                if (
+                  contextLength > 0 &&
+                  afterTokens / contextLength >=
+                    CONTEXT_COMPACTION_HARD_RATIO &&
+                  attachmentPreviewText.trim()
+                ) {
+                  stripAttachmentPreviews = true;
+                  ({ assembly } = await buildAssemblyForCurrentState());
+                  afterTokens = assembly.totalTokens;
+                  sheddingFailureCode = "attachment_preview_removed";
+                }
+
+                if (
+                  contextLength > 0 &&
+                  afterTokens / contextLength >= CONTEXT_COMPACTION_HARD_RATIO
+                ) {
+                  for (const toolStage of toolStages.slice(1)) {
+                    activeToolStage = toolStage;
+                    ({ assembly } = await buildAssemblyForCurrentState());
+                    afterTokens = assembly.totalTokens;
+                    sheddingFailureCode = toolStage.reason;
+                    if (
+                      afterTokens / contextLength <
+                      CONTEXT_COMPACTION_HARD_RATIO
+                    ) {
+                      break;
+                    }
+                  }
+                }
+              } finally {
+                dataStream.write({
+                  type: "data-compaction-status",
+                  data: { active: false },
+                  transient: true,
+                });
+              }
+            }
+
+            if (
+              contextLength > 0 &&
+              afterTokens / contextLength >= CONTEXT_COMPACTION_HARD_RATIO
+            ) {
+              const hardFailureCode =
+                generationFailureCode && sheddingFailureCode
+                  ? `${generationFailureCode}:${sheddingFailureCode}`
+                  : (generationFailureCode ??
+                    sheddingFailureCode ??
+                    `prompt_still_above_${Math.round(
+                      CONTEXT_COMPACTION_HARD_RATIO * 100,
+                    )}_percent`);
+              await updateThreadCompactionState({
+                threadId: thread!.id,
+                source: "pre-send",
+                status: "failed",
+                beforeTokens,
+                afterTokens,
+                failureCode: hardFailureCode,
+                startedAt: compactionStartedAt,
+                finishedAt: new Date(),
+              });
+              metadata.compaction = {
+                performed: checkpointUpdated,
+                beforeTokens,
+                afterTokens,
+                compactedMessageCount:
+                  compactionRuntime.checkpoint?.compactedMessageCount,
+                checkpointUpdated,
+                failureCode: hardFailureCode,
+                breakdown: assembly.breakdown,
+              };
+              throw new Error(
+                buildCompactionFailureMessage({
+                  failureCode: hardFailureCode,
+                  breakdown: assembly.breakdown,
+                }),
+              );
+            }
+
+            if (
+              shouldEvaluateCompaction ||
+              checkpointUpdated ||
+              generationFailureCode ||
+              sheddingFailureCode ||
+              afterTokens / Math.max(contextLength, 1) >
+                CONTEXT_COMPACTION_TARGET_RATIO
+            ) {
+              if (shouldEvaluateCompaction) {
+                const finalFailureCode =
+                  generationFailureCode && sheddingFailureCode
+                    ? `${generationFailureCode}:${sheddingFailureCode}`
+                    : (generationFailureCode ?? sheddingFailureCode ?? null);
+                await updateThreadCompactionState({
+                  threadId: thread!.id,
+                  source: "pre-send",
+                  status: finalFailureCode ? "failed" : "completed",
+                  beforeTokens,
+                  afterTokens,
+                  failureCode: finalFailureCode,
+                  startedAt: compactionStartedAt,
+                  finishedAt: new Date(),
+                });
+              }
+              metadata.compaction = {
+                performed: checkpointUpdated,
+                beforeTokens,
+                afterTokens,
+                compactedMessageCount:
+                  compactionRuntime.checkpoint?.compactedMessageCount,
+                checkpointUpdated,
+                failureCode:
+                  generationFailureCode && sheddingFailureCode
+                    ? `${generationFailureCode}:${sheddingFailureCode}`
+                    : (generationFailureCode ?? sheddingFailureCode),
+                breakdown: assembly.breakdown,
+              };
+            }
+
+            return {
+              system: assembly.systemPrompt,
+              messages: assembly.messages,
+              experimental_context: compactionRuntime,
+              ...(sendToolDefinitions
+                ? {
+                    activeTools: activeToolStage.activeToolNames,
+                    toolChoice: activeToolStage.activeToolNames.length
+                      ? ("auto" as const)
+                      : ("none" as const),
+                  }
+                : {}),
+            };
+          },
+          ...(sendToolDefinitions
+            ? {
+                tools: vercelAITooles,
+                toolChoice: "auto" as const,
+              }
+            : {}),
           // Disable reasoning/thinking when generating images — it adds no
           // value for a simple tool call decision and pollutes the UI.
           ...(useImageTool && {
@@ -796,7 +1332,7 @@ export async function POST(request: Request) {
           result.toUIMessageStream({
             messageMetadata: ({ part }) => {
               if (part.type == "finish") {
-                metadata.usage = part.totalUsage;
+                metadata.usage = attachUsageCost(part.totalUsage as ChatUsage);
                 return metadata;
               }
             },
@@ -805,12 +1341,16 @@ export async function POST(request: Request) {
       },
 
       generateId: generateUUID,
-      onFinish: async ({ responseMessage }) => {
-        if (responseMessage.id == message.id) {
+      onFinish: async ({ responseMessage, isAborted }) => {
+        const finalResponseMessage = isAborted
+          ? appendAbortedResponseNotice(responseMessage)
+          : responseMessage;
+
+        if (finalResponseMessage.id == message.id) {
           await chatRepository.upsertMessage({
             threadId: thread!.id,
-            ...responseMessage,
-            parts: responseMessage.parts.map(convertToSavePart),
+            ...finalResponseMessage,
+            parts: finalResponseMessage.parts.map(convertToSavePart),
             metadata,
           });
         } else {
@@ -822,9 +1362,9 @@ export async function POST(request: Request) {
           });
           await chatRepository.upsertMessage({
             threadId: thread!.id,
-            role: responseMessage.role,
-            id: responseMessage.id,
-            parts: responseMessage.parts.map(convertToSavePart),
+            role: finalResponseMessage.role,
+            id: finalResponseMessage.id,
+            parts: finalResponseMessage.parts.map(convertToSavePart),
             metadata,
           });
         }
@@ -841,6 +1381,7 @@ export async function POST(request: Request) {
 
     return createUIMessageStreamResponse({
       stream,
+      consumeSseStream: consumeStream,
     });
   } catch (error: any) {
     logger.error(error);

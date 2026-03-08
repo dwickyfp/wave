@@ -1,0 +1,12 @@
+{
+  "version": "1.26.0",
+  "generatedAt": "2026-03-08T16:49:25.248Z",
+  "chrome": {
+    "packagePath": "/Users/dwickyferiansyahputra/Public/Research/chat-enterprise/better-chatbot/public/emma-pilot/releases/chrome.zip",
+    "downloadUrl": "/emma-pilot/releases/chrome.zip"
+  },
+  "edge": {
+    "packagePath": "/Users/dwickyferiansyahputra/Public/Research/chat-enterprise/better-chatbot/public/emma-pilot/releases/edge.zip",
+    "downloadUrl": "/emma-pilot/releases/edge.zip"
+  }
+}

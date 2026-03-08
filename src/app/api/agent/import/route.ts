@@ -4,6 +4,7 @@ import {
   agentRepository,
   subAgentRepository,
   snowflakeAgentRepository,
+  a2aAgentRepository,
   mcpRepository,
   workflowRepository,
 } from "lib/db/repository";
@@ -13,6 +14,7 @@ import { z } from "zod";
 import { SubAgentCreateSchema } from "app-types/subagent";
 import { ChatMentionSchema, type ChatMention } from "app-types/chat";
 import { SnowflakeAgentConfigCreateSchema } from "app-types/snowflake-agent";
+import { A2AAgentConfigCreateSchema } from "app-types/a2a-agent";
 import { serverCache } from "lib/cache";
 import { CacheKeys } from "lib/cache/cache-keys";
 
@@ -20,7 +22,9 @@ import { CacheKeys } from "lib/cache/cache-keys";
 
 const AgentImportSchema = z.object({
   version: z.number().optional(),
-  agentType: z.enum(["standard", "snowflake_cortex"]).default("standard"),
+  agentType: z
+    .enum(["standard", "snowflake_cortex", "a2a_remote"])
+    .default("standard"),
   name: z.string().min(1).max(100),
   description: z.string().max(8000).optional(),
   icon: z
@@ -44,6 +48,7 @@ const AgentImportSchema = z.object({
     .optional(),
   subAgents: z.array(SubAgentCreateSchema).optional().default([]),
   snowflakeConfig: SnowflakeAgentConfigCreateSchema.optional(),
+  a2aConfig: A2AAgentConfigCreateSchema.optional(),
 });
 
 // ─── Tool Existence Check ─────────────────────────────────────────────────────
@@ -146,12 +151,30 @@ export async function POST(request: Request) {
       createdSubAgents.push(created);
     }
 
+    if (data.agentType === "snowflake_cortex" && !data.snowflakeConfig) {
+      return Response.json(
+        { error: "Snowflake config is required for snowflake agents" },
+        { status: 400 },
+      );
+    }
+
+    if (data.agentType === "a2a_remote" && !data.a2aConfig) {
+      return Response.json(
+        { error: "A2A config is required for A2A agents" },
+        { status: 400 },
+      );
+    }
+
     // Create Snowflake config for snowflake_cortex agents
     if (data.agentType === "snowflake_cortex" && data.snowflakeConfig) {
       await snowflakeAgentRepository.insertSnowflakeConfig(
         agent.id,
         data.snowflakeConfig,
       );
+    }
+
+    if (data.agentType === "a2a_remote" && data.a2aConfig) {
+      await a2aAgentRepository.insertA2AConfig(agent.id, data.a2aConfig);
     }
 
     serverCache.delete(CacheKeys.agentInstructions(agent.id));

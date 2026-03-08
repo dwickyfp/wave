@@ -7,6 +7,7 @@ import {
   ChevronDown,
   MessageCircleDashed,
   PanelLeft,
+  Puzzle,
 } from "lucide-react";
 import { Button } from "ui/button";
 import { Separator } from "ui/separator";
@@ -96,6 +97,28 @@ export function AppHeader() {
       <div className="flex-1" />
       {showActionButtons && (
         <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size={"icon"}
+                variant={"ghost"}
+                className="bg-secondary/40"
+                onClick={() => {
+                  appStoreMutate((state) => ({
+                    openEmmaPilotManager: !state.openEmmaPilotManager,
+                  }));
+                }}
+              >
+                <Puzzle className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent align="end" side="bottom">
+              <div className="text-xs flex items-center gap-2">
+                {t("Layout.emmaPilot")}
+              </div>
+            </TooltipContent>
+          </Tooltip>
+
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

@@ -58,6 +58,7 @@ interface CapabilitySwitch {
   key: keyof Pick<
     LlmModelConfigInput,
     | "supportsTools"
+    | "supportsGeneration"
     | "supportsImageInput"
     | "supportsImageGeneration"
     | "supportsFileInput"
@@ -72,6 +73,12 @@ const CAPABILITY_SWITCHES: CapabilitySwitch[] = [
     key: "supportsTools",
     label: "Tool / Function Calling",
     description: "Can call external tools and MCP servers",
+    visibleFor: ["llm"],
+  },
+  {
+    key: "supportsGeneration",
+    label: "Generate Capabilities",
+    description: "Can be used for generating agents, subagents, and skills",
     visibleFor: ["llm"],
   },
   {
@@ -98,32 +105,52 @@ const DEFAULT_CAPABILITIES: Record<
   ModelType,
   Pick<
     LlmModelConfigInput,
+    | "contextLength"
+    | "inputTokenPricePer1MUsd"
+    | "outputTokenPricePer1MUsd"
     | "supportsTools"
+    | "supportsGeneration"
     | "supportsImageInput"
     | "supportsImageGeneration"
     | "supportsFileInput"
   >
 > = {
   llm: {
+    contextLength: 0,
+    inputTokenPricePer1MUsd: 0,
+    outputTokenPricePer1MUsd: 0,
     supportsTools: true,
+    supportsGeneration: false,
     supportsImageInput: false,
     supportsImageGeneration: false,
     supportsFileInput: false,
   },
   image_generation: {
+    contextLength: 0,
+    inputTokenPricePer1MUsd: 0,
+    outputTokenPricePer1MUsd: 0,
     supportsTools: false,
+    supportsGeneration: false,
     supportsImageInput: true,
     supportsImageGeneration: false,
     supportsFileInput: false,
   },
   embedding: {
+    contextLength: 0,
+    inputTokenPricePer1MUsd: 0,
+    outputTokenPricePer1MUsd: 0,
     supportsTools: false,
+    supportsGeneration: false,
     supportsImageInput: false,
     supportsImageGeneration: false,
     supportsFileInput: false,
   },
   reranking: {
+    contextLength: 0,
+    inputTokenPricePer1MUsd: 0,
+    outputTokenPricePer1MUsd: 0,
     supportsTools: false,
+    supportsGeneration: false,
     supportsImageInput: false,
     supportsImageGeneration: false,
     supportsFileInput: false,
@@ -155,6 +182,27 @@ export function ModelRegisterDialog({
     }));
   };
 
+  const handleNumberChange = (
+    key:
+      | "contextLength"
+      | "inputTokenPricePer1MUsd"
+      | "outputTokenPricePer1MUsd",
+    raw: string,
+  ) => {
+    const value = raw.trim();
+    if (!value.length) {
+      setForm((f) => ({ ...f, [key]: 0 }));
+      return;
+    }
+
+    const parsed =
+      key === "contextLength" ? parseInt(value, 10) : Number(value);
+
+    if (Number.isNaN(parsed) || parsed < 0) return;
+
+    setForm((f) => ({ ...f, [key]: parsed }));
+  };
+
   const visibleSwitches = CAPABILITY_SWITCHES.filter((s) =>
     s.visibleFor.includes(form.modelType as ModelType),
   );
@@ -162,6 +210,14 @@ export function ModelRegisterDialog({
   const handleSubmit = async () => {
     if (!form.apiName.trim() || !form.uiName.trim()) {
       toast.error("API name and display name are required");
+      return;
+    }
+    if (
+      form.contextLength < 0 ||
+      form.inputTokenPricePer1MUsd < 0 ||
+      form.outputTokenPricePer1MUsd < 0
+    ) {
+      toast.error("Numeric model settings cannot be negative");
       return;
     }
     setSaving(true);
@@ -250,6 +306,68 @@ export function ModelRegisterDialog({
               Name shown in the model selector.
             </p>
           </div>
+
+          {form.modelType === "llm" && (
+            <>
+              <div className="space-y-1.5">
+                <Label htmlFor="contextLength">Context Length</Label>
+                <Input
+                  id="contextLength"
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={form.contextLength}
+                  onChange={(e) =>
+                    handleNumberChange("contextLength", e.target.value)
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Maximum supported context window for this model. Use 0 if
+                  unknown.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="inputTokenPricePer1MUsd">
+                    Input Price / 1M Tokens (USD)
+                  </Label>
+                  <Input
+                    id="inputTokenPricePer1MUsd"
+                    type="number"
+                    min="0"
+                    step="0.000001"
+                    value={form.inputTokenPricePer1MUsd}
+                    onChange={(e) =>
+                      handleNumberChange(
+                        "inputTokenPricePer1MUsd",
+                        e.target.value,
+                      )
+                    }
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="outputTokenPricePer1MUsd">
+                    Output Price / 1M Tokens (USD)
+                  </Label>
+                  <Input
+                    id="outputTokenPricePer1MUsd"
+                    type="number"
+                    min="0"
+                    step="0.000001"
+                    value={form.outputTokenPricePer1MUsd}
+                    onChange={(e) =>
+                      handleNumberChange(
+                        "outputTokenPricePer1MUsd",
+                        e.target.value,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+            </>
+          )}
 
           {/* Capabilities (only for LLM or Image Generation) */}
           {visibleSwitches.length > 0 && (

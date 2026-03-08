@@ -1,4 +1,4 @@
-# Wave Chatbot – Copilot Instructions
+# Emma Chatbot – Copilot Instructions
 
 ## Architecture Overview
 

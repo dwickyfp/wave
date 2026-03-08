@@ -1,185 +1,51 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { mutateKnowledge } from "@/hooks/queries/use-knowledge";
+import { useKnowledge } from "@/hooks/queries/use-knowledge";
+import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
+import { BrainCircuitIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { toast } from "sonner";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Checkbox } from "ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "ui/dialog";
-import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
 import { Textarea } from "ui/textarea";
 import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-} from "ui/command";
-import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
-import { ModelProviderIcon } from "ui/model-provider-icon";
-import { CheckIcon, ChevronDown, BrainCircuitIcon } from "lucide-react";
-import { cn } from "lib/utils";
-import { toast } from "sonner";
-import { mutateKnowledge } from "@/hooks/queries/use-knowledge";
-import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
-import { useRouter } from "next/navigation";
+  ModelSelector,
+  NONE_VALUE,
+  makeModelValue,
+  parseModelValue,
+} from "./knowledge-model-selector";
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-const NONE_VALUE = "__none__";
-
-function parseModelValue(
-  val: string,
-): { provider: string; apiName: string } | null {
-  if (!val || val === NONE_VALUE) return null;
-  const idx = val.indexOf("::");
-  if (idx === -1) return null;
-  return { provider: val.slice(0, idx), apiName: val.slice(idx + 2) };
-}
-
-function makeModelValue(provider: string, apiName: string) {
-  return `${provider}::${apiName}`;
-}
-
-interface ModelSelectorProps {
-  value: string;
-  onValueChange: (v: string) => void;
-  providers: {
-    provider: string;
-    displayName: string;
-    hasAPIKey: boolean;
-    models: { uiName: string; apiName: string }[];
-  }[];
-  placeholder: string;
-  allowNone?: boolean;
-  noneLabel?: string;
-}
-
-function ModelSelector({
-  value,
-  onValueChange,
-  providers,
-  placeholder,
-  allowNone,
-  noneLabel = "None",
-}: ModelSelectorProps) {
-  const [open, setOpen] = useState(false);
-  const parsed = parseModelValue(value);
-
-  const displayLabel = parsed
-    ? parsed.apiName
-    : value === NONE_VALUE
-      ? noneLabel
-      : placeholder;
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          className="w-full justify-between h-9 px-3 font-normal text-sm"
-        >
-          <div className="flex items-center gap-2 min-w-0">
-            {parsed?.provider ? (
-              <ModelProviderIcon
-                provider={parsed.provider}
-                className="size-3.5 shrink-0"
-              />
-            ) : null}
-            <span className="truncate text-left">{displayLabel}</span>
-          </div>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="p-0 w-[280px]" align="start">
-        <Command className="rounded-lg shadow-md h-72">
-          <CommandInput placeholder="Search model..." />
-          <CommandList className="p-1">
-            <CommandEmpty>No models found.</CommandEmpty>
-            {allowNone && (
-              <>
-                <CommandItem
-                  value={NONE_VALUE}
-                  onSelect={() => {
-                    onValueChange(NONE_VALUE);
-                    setOpen(false);
-                  }}
-                  className="cursor-pointer"
-                >
-                  <span className="text-muted-foreground">{noneLabel}</span>
-                  {value === NONE_VALUE && (
-                    <CheckIcon className="ml-auto size-3.5" />
-                  )}
-                </CommandItem>
-                <CommandSeparator />
-              </>
-            )}
-            {providers.map((p, i) => (
-              <Fragment key={p.provider}>
-                <CommandGroup
-                  heading={
-                    <div className="flex items-center gap-1.5">
-                      <ModelProviderIcon
-                        provider={p.provider}
-                        className="size-3"
-                      />
-                      <span>{p.displayName}</span>
-                    </div>
-                  }
-                  className={cn("pb-2", !p.hasAPIKey && "opacity-50")}
-                >
-                  {p.models.map((m) => {
-                    const v = makeModelValue(p.provider, m.apiName);
-                    return (
-                      <CommandItem
-                        key={v}
-                        value={`${p.provider} ${m.uiName} ${m.apiName}`}
-                        disabled={!p.hasAPIKey}
-                        onSelect={() => {
-                          onValueChange(v);
-                          setOpen(false);
-                        }}
-                        className="cursor-pointer"
-                      >
-                        <span className="truncate">{m.uiName}</span>
-                        {value === v && (
-                          <CheckIcon className="ml-auto size-3.5 shrink-0" />
-                        )}
-                      </CommandItem>
-                    );
-                  })}
-                </CommandGroup>
-                {i < providers.length - 1 && <CommandSeparator />}
-              </Fragment>
-            ))}
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const { data: modelsData } = useKnowledgeModels();
+  const { data: existingGroups } = useKnowledge("mine,shared");
 
   const [form, setForm] = useState({
     name: "",
     description: "",
     embeddingValue: "",
     rerankingValue: NONE_VALUE,
+    retrievalThreshold: 0,
+    sourceGroupIds: [] as string[],
   });
 
   // Resolve effective embedding value: prefer form state, else first available model
@@ -219,6 +85,8 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
           embeddingModel: embedding.apiName,
           rerankingProvider: reranking?.provider ?? null,
           rerankingModel: reranking?.apiName ?? null,
+          retrievalThreshold: form.retrievalThreshold,
+          sourceGroupIds: form.sourceGroupIds,
         }),
       });
 
@@ -232,6 +100,8 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
         description: "",
         embeddingValue: "",
         rerankingValue: NONE_VALUE,
+        retrievalThreshold: 0,
+        sourceGroupIds: [],
       });
       toast.success(`"${group.name}" created`);
       router.push(`/knowledge/${group.id}`);
@@ -241,6 +111,13 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
       setLoading(false);
     }
   };
+
+  const availableSourceGroups = (existingGroups ?? []).map((group) => ({
+    id: group.id,
+    name: group.name,
+    description: group.description,
+    visibility: group.visibility,
+  }));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -286,6 +163,80 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
             />
           </div>
 
+          {/* Source Groups */}
+          <div className="flex flex-col gap-2 rounded-lg border p-3 bg-muted/30">
+            <div className="flex items-center justify-between">
+              <Label className="text-xs text-muted-foreground">
+                Linked Source Groups{" "}
+                <span className="font-normal">(optional)</span>
+              </Label>
+              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                {form.sourceGroupIds.length} linked
+              </Badge>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Create a composite group that can read docs from linked groups.
+              Linked docs are read-only.
+            </p>
+            {availableSourceGroups.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No groups available to link yet.
+              </p>
+            ) : (
+              <div className="max-h-36 overflow-y-auto rounded-md border bg-background/40">
+                <div className="divide-y">
+                  {availableSourceGroups.map((candidate) => {
+                    const checked = form.sourceGroupIds.includes(candidate.id);
+                    return (
+                      <label
+                        key={candidate.id}
+                        className="flex items-start gap-2 px-2.5 py-2 cursor-pointer hover:bg-accent/40"
+                      >
+                        <Checkbox
+                          checked={checked}
+                          onCheckedChange={(value) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              sourceGroupIds: value
+                                ? Array.from(
+                                    new Set([
+                                      ...prev.sourceGroupIds,
+                                      candidate.id,
+                                    ]),
+                                  )
+                                : prev.sourceGroupIds.filter(
+                                    (id) => id !== candidate.id,
+                                  ),
+                            }))
+                          }
+                          className="mt-0.5"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-medium truncate">
+                              {candidate.name}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {candidate.visibility}
+                            </Badge>
+                          </div>
+                          {candidate.description && (
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {candidate.description}
+                            </p>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* AI Models */}
           <div className="flex flex-col gap-3 rounded-lg border p-3 bg-muted/30">
             <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -322,6 +273,35 @@ export function KnowledgeCreateDialog({ open, onOpenChange }: Props) {
                   allowNone
                   noneLabel="No reranker"
                 />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <Label className="text-xs text-muted-foreground">
+                  Retrieval Threshold{" "}
+                  <span className="font-normal">(0 = off)</span>
+                </Label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={form.retrievalThreshold}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        retrievalThreshold: Number(e.target.value),
+                      }))
+                    }
+                    className="flex-1 h-1.5 accent-primary"
+                  />
+                  <span className="text-xs font-mono w-8 text-right">
+                    {form.retrievalThreshold.toFixed(2)}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Minimum relevance score to return a result
+                </p>
               </div>
             </div>
           </div>

@@ -32,6 +32,7 @@ export async function POST(request: Request): Promise<Response> {
     const agent = await agentRepository.insertAgent({
       name: data.name,
       description: data.description,
+      icon: data.icon,
       userId: session.user.id,
       instructions: {
         role: "Snowflake Intelligence",

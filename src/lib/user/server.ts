@@ -4,6 +4,7 @@ import { BasicUserWithLastLogin, UserPreferences } from "app-types/user";
 import { auth, getSession } from "auth/server";
 import { Session } from "better-auth";
 import { userRepository, settingsRepository } from "lib/db/repository";
+import { getIsUserAdmin } from "lib/user/utils";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
@@ -73,6 +74,12 @@ export async function getUserIdAndCheckAccess(
   if (!userId) {
     notFound();
   }
+
+  const isOwnUser = userId === currentUserId;
+  if (!isOwnUser && !getIsUserAdmin(session.user)) {
+    notFound();
+  }
+
   return userId;
 }
 

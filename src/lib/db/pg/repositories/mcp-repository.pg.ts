@@ -6,6 +6,34 @@ import type { MCPRepository } from "app-types/mcp";
 
 export const pgMcpRepository: MCPRepository = {
   async save(server) {
+    const now = new Date();
+
+    if (server.id) {
+      const [existing] = await db
+        .select()
+        .from(McpServerTable)
+        .where(eq(McpServerTable.id, server.id));
+
+      if (existing) {
+        if (existing.userId !== server.userId) {
+          throw new Error("Unauthorized");
+        }
+
+        const [updated] = await db
+          .update(McpServerTable)
+          .set({
+            name: server.name,
+            config: server.config,
+            visibility: server.visibility ?? existing.visibility,
+            updatedAt: now,
+          })
+          .where(eq(McpServerTable.id, server.id))
+          .returning();
+
+        return updated;
+      }
+    }
+
     const [result] = await db
       .insert(McpServerTable)
       .values({
@@ -15,15 +43,8 @@ export const pgMcpRepository: MCPRepository = {
         userId: server.userId,
         visibility: server.visibility ?? "private",
         enabled: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [McpServerTable.id],
-        set: {
-          config: server.config,
-          updatedAt: new Date(),
-        },
+        createdAt: now,
+        updatedAt: now,
       })
       .returning();
 

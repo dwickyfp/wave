@@ -15,6 +15,8 @@ export const GET = async () => {
           .filter((m) => !m.modelType || m.modelType === "llm")
           .map((m) => ({
             name: m.uiName,
+            contextLength: m.contextLength,
+            supportsGeneration: m.supportsGeneration,
             isToolCallUnsupported: !m.supportsTools,
             isImageInputUnsupported: !m.supportsImageInput,
             supportedFileMimeTypes: m.supportsFileInput

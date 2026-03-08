@@ -1,23 +1,27 @@
 import {
-  KnowledgeRepository,
-  KnowledgeGroup,
-  KnowledgeSummary,
-  KnowledgeDocument,
   KnowledgeChunk,
+  KnowledgeDocument,
+  KnowledgeGroup,
+  KnowledgeGroupSource,
+  KnowledgeRepository,
+  KnowledgeSection,
+  KnowledgeSummary,
   KnowledgeUsageStats,
   UsageSource,
 } from "app-types/knowledge";
+import { and, count, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { generateUUID } from "lib/utils";
 import { pgDb as db } from "../db.pg";
 import {
-  KnowledgeGroupTable,
-  KnowledgeDocumentTable,
   KnowledgeChunkTable,
+  KnowledgeDocumentTable,
   KnowledgeGroupAgentTable,
+  KnowledgeGroupSourceTable,
+  KnowledgeSectionTable,
+  KnowledgeGroupTable,
   KnowledgeUsageLogTable,
   UserTable,
 } from "../schema.pg";
-import { and, desc, eq, ne, or, sql, count } from "drizzle-orm";
-import { generateUUID } from "lib/utils";
 
 function mapGroup(
   row: typeof KnowledgeGroupTable.$inferSelect,
@@ -28,6 +32,9 @@ function mapGroup(
     icon: row.icon ?? undefined,
     rerankingModel: row.rerankingModel ?? null,
     rerankingProvider: row.rerankingProvider ?? null,
+    parsingModel: row.parsingModel ?? null,
+    parsingProvider: row.parsingProvider ?? null,
+    retrievalThreshold: row.retrievalThreshold ?? 0.0,
     mcpApiKeyHash: row.mcpApiKeyHash ?? null,
     mcpApiKeyPreview: row.mcpApiKeyPreview ?? null,
   };
@@ -38,13 +45,59 @@ function mapDocument(
 ): KnowledgeDocument {
   return {
     ...row,
+    description: row.description ?? null,
+    descriptionManual: row.descriptionManual ?? false,
+    titleManual: row.titleManual ?? false,
     fileSize: row.fileSize ?? null,
     storagePath: row.storagePath ?? null,
     sourceUrl: row.sourceUrl ?? null,
     errorMessage: row.errorMessage ?? null,
+    processingProgress: row.processingProgress ?? null,
     metadata: (row.metadata as Record<string, unknown>) ?? null,
     markdownContent: row.markdownContent ?? null,
   };
+}
+
+function mapSection(
+  row: typeof KnowledgeSectionTable.$inferSelect,
+): KnowledgeSection {
+  return {
+    ...row,
+    parentSectionId: row.parentSectionId ?? null,
+    prevSectionId: row.prevSectionId ?? null,
+    nextSectionId: row.nextSectionId ?? null,
+  };
+}
+
+function mapGroupSource(row: {
+  groupId: string;
+  sourceGroupId: string;
+  sourceGroupName: string;
+  sourceGroupDescription: string | null;
+  sourceGroupVisibility: "public" | "private" | "readonly";
+  sourceGroupUserId: string;
+  sourceGroupUserName: string | null;
+  createdAt: Date;
+}): KnowledgeGroupSource {
+  return {
+    groupId: row.groupId,
+    sourceGroupId: row.sourceGroupId,
+    sourceGroupName: row.sourceGroupName,
+    sourceGroupDescription: row.sourceGroupDescription ?? undefined,
+    sourceGroupVisibility: row.sourceGroupVisibility,
+    sourceGroupUserId: row.sourceGroupUserId,
+    sourceGroupUserName: row.sourceGroupUserName ?? undefined,
+    createdAt: row.createdAt,
+  };
+}
+
+function toPgVectorLiteral(embedding: number[] | null): string | null {
+  if (embedding === null) return null;
+  if (embedding.length === 0) return null;
+  // Defensive cleanup for provider anomalies (NaN/Infinity) without changing
+  // vector dimensionality.
+  const safe = embedding.map((n) => (Number.isFinite(n) ? n : 0));
+  return `[${safe.join(",")}]`;
 }
 
 export const pgKnowledgeRepository: KnowledgeRepository = {
@@ -88,6 +141,15 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           ),
         ),
       );
+    if (!row) return null;
+    return mapGroup(row);
+  },
+
+  async selectGroupByIdForMcp(id) {
+    const [row] = await db
+      .select()
+      .from(KnowledgeGroupTable)
+      .where(eq(KnowledgeGroupTable.id, id));
     if (!row) return null;
     return mapGroup(row);
   },
@@ -148,6 +210,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         embeddingProvider: KnowledgeGroupTable.embeddingProvider,
         rerankingModel: KnowledgeGroupTable.rerankingModel,
         rerankingProvider: KnowledgeGroupTable.rerankingProvider,
+        parsingModel: KnowledgeGroupTable.parsingModel,
+        parsingProvider: KnowledgeGroupTable.parsingProvider,
+        retrievalThreshold: KnowledgeGroupTable.retrievalThreshold,
         mcpEnabled: KnowledgeGroupTable.mcpEnabled,
         chunkSize: KnowledgeGroupTable.chunkSize,
         chunkOverlapPercent: KnowledgeGroupTable.chunkOverlapPercent,
@@ -174,6 +239,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       icon: r.icon ?? undefined,
       rerankingModel: r.rerankingModel ?? null,
       rerankingProvider: r.rerankingProvider ?? null,
+      parsingModel: r.parsingModel ?? null,
+      parsingProvider: r.parsingProvider ?? null,
+      retrievalThreshold: r.retrievalThreshold ?? 0.0,
       userName: r.userName ?? undefined,
       userAvatar: r.userAvatar ?? null,
       documentCount: Number(r.documentCount),
@@ -182,9 +250,10 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async updateGroup(id, userId, data) {
+    const { sourceGroupIds: _ignored, ...groupData } = data as any;
     const [row] = await db
       .update(KnowledgeGroupTable)
-      .set({ ...data, updatedAt: new Date() })
+      .set({ ...groupData, updatedAt: new Date() })
       .where(
         and(
           eq(KnowledgeGroupTable.id, id),
@@ -192,6 +261,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         ),
       )
       .returning();
+
+    if (data.visibility === "private") {
+      await db.execute(
+        sql`
+          DELETE FROM knowledge_group_source rel
+          USING knowledge_group parent
+          WHERE rel.source_group_id = ${id}
+            AND rel.group_id = parent.id
+            AND parent.user_id <> ${userId}::uuid
+        `,
+      );
+    }
+
     return mapGroup(row);
   },
 
@@ -204,6 +286,182 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           eq(KnowledgeGroupTable.userId, userId),
         ),
       );
+  },
+
+  async setGroupSources(groupId, userId, sourceGroupIds) {
+    const [parent] = await db
+      .select({ id: KnowledgeGroupTable.id })
+      .from(KnowledgeGroupTable)
+      .where(
+        and(
+          eq(KnowledgeGroupTable.id, groupId),
+          eq(KnowledgeGroupTable.userId, userId),
+        ),
+      );
+    if (!parent) {
+      throw new Error("Not found or unauthorized");
+    }
+
+    const uniqueSourceIds = Array.from(
+      new Set(
+        sourceGroupIds
+          .filter(Boolean)
+          .map((id) => id.trim())
+          .filter((id) => id.length > 0 && id !== groupId),
+      ),
+    );
+
+    const allowedSourceIds =
+      uniqueSourceIds.length > 0
+        ? (
+            await db
+              .select({ id: KnowledgeGroupTable.id })
+              .from(KnowledgeGroupTable)
+              .where(
+                and(
+                  inArray(KnowledgeGroupTable.id, uniqueSourceIds),
+                  ne(KnowledgeGroupTable.id, groupId),
+                  or(
+                    eq(KnowledgeGroupTable.userId, userId),
+                    eq(KnowledgeGroupTable.visibility, "public"),
+                    eq(KnowledgeGroupTable.visibility, "readonly"),
+                  ),
+                ),
+              )
+          ).map((r) => r.id)
+        : [];
+
+    await db.transaction(async (tx) => {
+      const existing = await tx
+        .select({
+          sourceGroupId: KnowledgeGroupSourceTable.sourceGroupId,
+        })
+        .from(KnowledgeGroupSourceTable)
+        .where(eq(KnowledgeGroupSourceTable.groupId, groupId));
+
+      const existingIds = new Set(existing.map((r) => r.sourceGroupId));
+      const allowedSet = new Set(allowedSourceIds);
+
+      const toDelete = existing
+        .map((r) => r.sourceGroupId)
+        .filter((id) => !allowedSet.has(id));
+      if (toDelete.length > 0) {
+        await tx
+          .delete(KnowledgeGroupSourceTable)
+          .where(
+            and(
+              eq(KnowledgeGroupSourceTable.groupId, groupId),
+              inArray(KnowledgeGroupSourceTable.sourceGroupId, toDelete),
+            ),
+          );
+      }
+
+      const toInsert = allowedSourceIds.filter((id) => !existingIds.has(id));
+      if (toInsert.length > 0) {
+        await tx
+          .insert(KnowledgeGroupSourceTable)
+          .values(
+            toInsert.map((sourceGroupId) => ({
+              id: generateUUID(),
+              groupId,
+              sourceGroupId,
+              createdAt: new Date(),
+            })),
+          )
+          .onConflictDoNothing();
+      }
+    });
+
+    await pgKnowledgeRepository.pruneInvalidGroupSources(groupId);
+  },
+
+  async selectGroupSources(groupId) {
+    await pgKnowledgeRepository.pruneInvalidGroupSources(groupId);
+
+    const rows = await db.execute<{
+      group_id: string;
+      source_group_id: string;
+      source_group_name: string;
+      source_group_description: string | null;
+      source_group_visibility: "public" | "private" | "readonly";
+      source_group_user_id: string;
+      source_group_user_name: string | null;
+      created_at: Date;
+    }>(
+      sql`
+        SELECT
+          rel.group_id,
+          src.id AS source_group_id,
+          src.name AS source_group_name,
+          src.description AS source_group_description,
+          src.visibility AS source_group_visibility,
+          src.user_id AS source_group_user_id,
+          u.name AS source_group_user_name,
+          rel.created_at
+        FROM knowledge_group_source rel
+        JOIN knowledge_group parent ON parent.id = rel.group_id
+        JOIN knowledge_group src ON src.id = rel.source_group_id
+        LEFT JOIN "user" u ON u.id = src.user_id
+        WHERE rel.group_id = ${groupId}
+          AND rel.group_id <> rel.source_group_id
+          AND (
+            src.user_id = parent.user_id
+            OR src.visibility IN ('public', 'readonly')
+          )
+        ORDER BY rel.created_at ASC
+      `,
+    );
+
+    return rows.rows.map((r) =>
+      mapGroupSource({
+        groupId: r.group_id,
+        sourceGroupId: r.source_group_id,
+        sourceGroupName: r.source_group_name,
+        sourceGroupDescription: r.source_group_description,
+        sourceGroupVisibility: r.source_group_visibility,
+        sourceGroupUserId: r.source_group_user_id,
+        sourceGroupUserName: r.source_group_user_name,
+        createdAt: r.created_at,
+      }),
+    );
+  },
+
+  async selectRetrievalScopes(groupId) {
+    const [groupRow] = await db
+      .select()
+      .from(KnowledgeGroupTable)
+      .where(eq(KnowledgeGroupTable.id, groupId));
+    if (!groupRow) return [];
+
+    const sources = await pgKnowledgeRepository.selectGroupSources(groupId);
+    if (sources.length === 0) return [mapGroup(groupRow)];
+
+    const sourceIds = sources.map((s) => s.sourceGroupId);
+    const sourceRows = await db
+      .select()
+      .from(KnowledgeGroupTable)
+      .where(inArray(KnowledgeGroupTable.id, sourceIds));
+
+    return [mapGroup(groupRow), ...sourceRows.map(mapGroup)];
+  },
+
+  async pruneInvalidGroupSources(groupId) {
+    await db.execute(
+      sql`
+        DELETE FROM knowledge_group_source rel
+        USING knowledge_group parent, knowledge_group src
+        WHERE rel.group_id = ${groupId}
+          AND rel.group_id = parent.id
+          AND rel.source_group_id = src.id
+          AND (
+            rel.group_id = rel.source_group_id
+            OR (
+              src.user_id <> parent.user_id
+              AND src.visibility = 'private'
+            )
+          )
+      `,
+    );
   },
 
   async setMcpApiKey(id, userId, keyHash, keyPreview) {
@@ -261,6 +519,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         groupId: data.groupId,
         userId: data.userId,
         name: data.name,
+        description: data.description ?? null,
         originalFilename: data.originalFilename,
         fileType: data.fileType,
         fileSize: data.fileSize ?? null,
@@ -286,6 +545,44 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     return rows.map(mapDocument);
   },
 
+  async selectDocumentsByGroupScope(groupId) {
+    const sources = await pgKnowledgeRepository.selectGroupSources(groupId);
+    const sourceByGroupId = new Map(
+      sources.map((source) => [source.sourceGroupId, source]),
+    );
+    const scopeGroupIds = [groupId, ...sourceByGroupId.keys()];
+
+    const rows = await db
+      .select()
+      .from(KnowledgeDocumentTable)
+      .where(inArray(KnowledgeDocumentTable.groupId, scopeGroupIds))
+      .orderBy(desc(KnowledgeDocumentTable.createdAt));
+
+    return rows.map((row) => {
+      const mapped = mapDocument(row);
+      if (row.groupId === groupId) {
+        return {
+          ...mapped,
+          isInherited: false,
+          sourceGroupId: null,
+          sourceGroupName: null,
+          sourceGroupVisibility: null,
+          sourceGroupUserName: null,
+        };
+      }
+
+      const source = sourceByGroupId.get(row.groupId);
+      return {
+        ...mapped,
+        isInherited: true,
+        sourceGroupId: row.groupId,
+        sourceGroupName: source?.sourceGroupName ?? "Unknown source group",
+        sourceGroupVisibility: source?.sourceGroupVisibility ?? null,
+        sourceGroupUserName: source?.sourceGroupUserName ?? null,
+      };
+    });
+  },
+
   async selectDocumentById(id) {
     const [row] = await db
       .select()
@@ -301,6 +598,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       .set({
         status,
         errorMessage: extra?.errorMessage ?? null,
+        // Reset progress when not processing; update it when provided
+        processingProgress:
+          status === "processing" ? (extra?.processingProgress ?? 0) : null,
         ...(extra?.chunkCount !== undefined
           ? { chunkCount: extra.chunkCount }
           : {}),
@@ -312,6 +612,80 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           : {}),
         updatedAt: new Date(),
       })
+      .where(eq(KnowledgeDocumentTable.id, id));
+  },
+
+  async updateDocumentMetadata(id, userId, data) {
+    const setData: Record<string, unknown> = {
+      updatedAt: new Date(),
+    };
+
+    if (data.title !== undefined) {
+      setData.name = data.title;
+      setData.titleManual = true;
+    }
+    if (data.description !== undefined) {
+      setData.description = data.description;
+      setData.descriptionManual = true;
+    }
+    if (data.metadataEmbedding !== undefined) {
+      const embeddingLiteral = toPgVectorLiteral(data.metadataEmbedding);
+      setData.metadataEmbedding =
+        embeddingLiteral === null ? null : sql`${embeddingLiteral}::vector`;
+    }
+    if (data.metadata !== undefined) {
+      setData.metadata = data.metadata ?? null;
+    }
+
+    const [row] = await db
+      .update(KnowledgeDocumentTable)
+      .set(setData as any)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.id, id),
+          sql`EXISTS (
+            SELECT 1
+            FROM knowledge_group kg
+            WHERE kg.id = ${KnowledgeDocumentTable.groupId}
+              AND kg.user_id = ${userId}::uuid
+          )`,
+        ),
+      )
+      .returning();
+
+    return row ? mapDocument(row) : null;
+  },
+
+  async updateDocumentAutoMetadata(id, data) {
+    const setData: Record<string, unknown> = {
+      updatedAt: new Date(),
+    };
+
+    if (data.title !== undefined) {
+      setData.name = sql`CASE WHEN ${KnowledgeDocumentTable.titleManual} THEN ${KnowledgeDocumentTable.name} ELSE ${data.title} END`;
+    }
+    if (data.description !== undefined) {
+      setData.description = sql`CASE WHEN ${KnowledgeDocumentTable.descriptionManual} THEN ${KnowledgeDocumentTable.description} ELSE ${data.description} END`;
+    }
+    if (data.metadataEmbedding !== undefined) {
+      const embeddingLiteral = toPgVectorLiteral(data.metadataEmbedding);
+      const embeddingExpr =
+        embeddingLiteral === null
+          ? sql`NULL::vector`
+          : sql`${embeddingLiteral}::vector`;
+      setData.metadataEmbedding = sql`CASE
+        WHEN ${KnowledgeDocumentTable.titleManual} AND ${KnowledgeDocumentTable.descriptionManual}
+        THEN ${KnowledgeDocumentTable.metadataEmbedding}
+        ELSE ${embeddingExpr}
+      END`;
+    }
+    if (data.metadata !== undefined) {
+      setData.metadata = data.metadata ?? null;
+    }
+
+    await db
+      .update(KnowledgeDocumentTable)
+      .set(setData as any)
       .where(eq(KnowledgeDocumentTable.id, id));
   },
 
@@ -327,12 +701,17 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     const [row] = await db
       .select({
         name: KnowledgeDocumentTable.name,
+        description: KnowledgeDocumentTable.description,
         markdownContent: KnowledgeDocumentTable.markdownContent,
       })
       .from(KnowledgeDocumentTable)
       .where(eq(KnowledgeDocumentTable.id, documentId));
     if (!row || !row.markdownContent) return null;
-    return { name: row.name, markdown: row.markdownContent };
+    return {
+      name: row.name,
+      description: row.description ?? null,
+      markdown: row.markdownContent,
+    };
   },
 
   async getGroupDocumentsMarkdown(groupId, topic) {
@@ -388,6 +767,247 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     return results;
   },
 
+  async getDocumentMetadataByIds(groupId, ids) {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select({
+        documentId: KnowledgeDocumentTable.id,
+        name: KnowledgeDocumentTable.name,
+        description: KnowledgeDocumentTable.description,
+        updatedAt: KnowledgeDocumentTable.updatedAt,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.groupId, groupId),
+          inArray(KnowledgeDocumentTable.id, ids),
+          eq(KnowledgeDocumentTable.status, "ready"),
+        ),
+      );
+
+    return rows.map((r) => ({
+      documentId: r.documentId,
+      name: r.name,
+      description: r.description ?? null,
+      updatedAt: r.updatedAt,
+    }));
+  },
+
+  async getDocumentMetadataByIdsAcrossGroups(ids) {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select({
+        documentId: KnowledgeDocumentTable.id,
+        groupId: KnowledgeDocumentTable.groupId,
+        name: KnowledgeDocumentTable.name,
+        description: KnowledgeDocumentTable.description,
+        metadata: KnowledgeDocumentTable.metadata,
+        updatedAt: KnowledgeDocumentTable.updatedAt,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          inArray(KnowledgeDocumentTable.id, ids),
+          eq(KnowledgeDocumentTable.status, "ready"),
+        ),
+      );
+
+    return rows.map((r) => ({
+      documentId: r.documentId,
+      groupId: r.groupId,
+      name: r.name,
+      description: r.description ?? null,
+      metadata: (r.metadata as Record<string, unknown>) ?? null,
+      updatedAt: r.updatedAt,
+    }));
+  },
+
+  async searchDocumentMetadata(groupId, query, limit) {
+    const rows = await db.execute<{ document_id: string; score: number }>(
+      sql`
+        WITH q AS (
+          SELECT
+            websearch_to_tsquery('simple', ${query}) AS simple_q,
+            websearch_to_tsquery('english', ${query}) AS english_q,
+            phraseto_tsquery('simple', ${query}) AS phrase_q,
+            '%' || ${query} || '%' AS ilike_q
+        )
+        SELECT
+          kd.id AS document_id,
+          (
+            GREATEST(
+              ts_rank_cd(
+                to_tsvector(
+                  'simple',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
+                  coalesce(kd.source_url, '')
+                ),
+                (SELECT simple_q FROM q)
+              ),
+              ts_rank_cd(
+                to_tsvector(
+                  'english',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
+                  coalesce(kd.source_url, '')
+                ),
+                (SELECT english_q FROM q)
+              )
+            )
+            + 0.25 * ts_rank_cd(
+              to_tsvector(
+                'simple',
+                coalesce(kd.name, '') || ' ' || coalesce(kd.description, '')
+              ),
+              (SELECT phrase_q FROM q)
+            )
+            + CASE
+                WHEN (coalesce(kd.name, '') || ' ' || coalesce(kd.description, ''))
+                  ILIKE (SELECT ilike_q FROM q) THEN 0.15
+                ELSE 0
+              END
+          ) AS score
+        FROM knowledge_document kd
+        WHERE kd.group_id = ${groupId}
+          AND kd.status = 'ready'
+          AND (
+            to_tsvector(
+              'simple',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
+              coalesce(kd.source_url, '')
+            ) @@ (SELECT simple_q FROM q)
+            OR to_tsvector(
+              'english',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
+              coalesce(kd.source_url, '')
+            ) @@ (SELECT english_q FROM q)
+            OR (coalesce(kd.name, '') || ' ' || coalesce(kd.description, ''))
+              ILIKE (SELECT ilike_q FROM q)
+          )
+        ORDER BY score DESC, kd.updated_at DESC
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((r) => ({
+      documentId: r.document_id,
+      score: Number(r.score),
+    }));
+  },
+
+  async vectorSearchDocumentMetadata(groupId, embedding, limit) {
+    const embeddingStr = `[${embedding.join(",")}]`;
+    const rows = await db.execute<{ document_id: string; score: number }>(
+      sql`
+        SELECT
+          kd.id AS document_id,
+          1 - (kd.metadata_embedding <=> ${embeddingStr}::vector) AS score
+        FROM knowledge_document kd
+        WHERE kd.group_id = ${groupId}
+          AND kd.status = 'ready'
+          AND kd.metadata_embedding IS NOT NULL
+        ORDER BY kd.metadata_embedding <=> ${embeddingStr}::vector
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((r) => ({
+      documentId: r.document_id,
+      score: Number(r.score),
+    }));
+  },
+
+  // ─── Sections ───────────────────────────────────────────────────────────────
+
+  async insertSections(sections) {
+    if (sections.length === 0) return;
+    const BATCH = 100;
+    for (let i = 0; i < sections.length; i += BATCH) {
+      const batch = sections.slice(i, i + BATCH);
+      await db.insert(KnowledgeSectionTable).values(
+        batch.map((section) => ({
+          id: section.id,
+          documentId: section.documentId,
+          groupId: section.groupId,
+          parentSectionId: section.parentSectionId ?? null,
+          prevSectionId: section.prevSectionId ?? null,
+          nextSectionId: section.nextSectionId ?? null,
+          heading: section.heading,
+          headingPath: section.headingPath,
+          level: section.level,
+          partIndex: section.partIndex,
+          partCount: section.partCount,
+          content: section.content,
+          summary: section.summary,
+          tokenCount: section.tokenCount,
+          createdAt: new Date(),
+        })),
+      );
+    }
+  },
+
+  async deleteSectionsByDocumentId(documentId) {
+    await db
+      .delete(KnowledgeSectionTable)
+      .where(eq(KnowledgeSectionTable.documentId, documentId));
+  },
+
+  async getSectionsByIds(ids) {
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select()
+      .from(KnowledgeSectionTable)
+      .where(inArray(KnowledgeSectionTable.id, ids));
+
+    return rows.map(mapSection);
+  },
+
+  async getRelatedSections(sectionIds) {
+    if (sectionIds.length === 0) return [];
+
+    const relationRows = await db
+      .select({
+        parentSectionId: KnowledgeSectionTable.parentSectionId,
+        prevSectionId: KnowledgeSectionTable.prevSectionId,
+        nextSectionId: KnowledgeSectionTable.nextSectionId,
+      })
+      .from(KnowledgeSectionTable)
+      .where(inArray(KnowledgeSectionTable.id, sectionIds));
+
+    const relatedIds = Array.from(
+      new Set(
+        relationRows
+          .flatMap((row) => [
+            row.parentSectionId,
+            row.prevSectionId,
+            row.nextSectionId,
+          ])
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    );
+
+    if (relatedIds.length === 0) return [];
+
+    const rows = await db
+      .select()
+      .from(KnowledgeSectionTable)
+      .where(inArray(KnowledgeSectionTable.id, relatedIds));
+
+    return rows.map(mapSection);
+  },
+
   // ─── Chunks ─────────────────────────────────────────────────────────────────
 
   async insertChunks(chunks) {
@@ -400,6 +1020,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           id: generateUUID(),
           documentId: c.documentId,
           groupId: c.groupId,
+          sectionId: c.sectionId ?? null,
           content: c.content,
           contextSummary: c.contextSummary ?? null,
           embedding: (c as any).embedding ?? null,
@@ -432,6 +1053,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       id: string;
       document_id: string;
       group_id: string;
+      section_id: string | null;
       content: string;
       context_summary: string | null;
       chunk_index: number;
@@ -443,7 +1065,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }>(
       sql`
         SELECT
-          kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
+          kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name,
           1 - (kc.embedding <=> ${embeddingStr}::vector) AS score
@@ -451,6 +1073,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
           AND kc.embedding IS NOT NULL
+          AND kd.status = 'ready'
         ORDER BY kc.embedding <=> ${embeddingStr}::vector
         LIMIT ${limit}
       `,
@@ -461,6 +1084,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         id: r.id,
         documentId: r.document_id,
         groupId: r.group_id,
+        sectionId: r.section_id,
         content: r.content,
         contextSummary: r.context_summary,
         chunkIndex: r.chunk_index,
@@ -479,6 +1103,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       id: string;
       document_id: string;
       group_id: string;
+      section_id: string | null;
       content: string;
       context_summary: string | null;
       chunk_index: number;
@@ -489,20 +1114,115 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       score: number;
     }>(
       sql`
+        WITH q AS (
+          SELECT
+            websearch_to_tsquery('simple', ${query}) AS simple_q,
+            websearch_to_tsquery('english', ${query}) AS english_q,
+            phraseto_tsquery('simple', ${query}) AS phrase_q,
+            '%' || ${query} || '%' AS ilike_q
+        )
         SELECT
-          kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
+          kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name,
-          ts_rank(
-            to_tsvector('english', coalesce(kc.context_summary, '') || ' ' || kc.content),
-            plainto_tsquery('english', ${query})
+          (
+            -- BM25-like rank with Porter stemming (english) + literal token mode (simple)
+            GREATEST(
+              ts_rank_cd(
+                to_tsvector(
+                  'english',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kc.context_summary, '') || ' ' ||
+                  coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                  coalesce(kc.metadata->>'section', '')
+                ),
+                (SELECT english_q FROM q)
+              ),
+              ts_rank_cd(
+                to_tsvector(
+                  'simple',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kc.context_summary, '') || ' ' ||
+                  coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                  coalesce(kc.metadata->>'section', '')
+                ),
+                (SELECT simple_q FROM q)
+              )
+            )
+            -- Prefer exact heading matches for entity-like queries ("PT DJARUM")
+            + 0.35 * ts_rank_cd(
+              to_tsvector(
+                'simple',
+                coalesce(kd.name, '') || ' ' ||
+                coalesce(kd.description, '') || ' ' ||
+                coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                coalesce(kc.metadata->>'section', '')
+              ),
+              (SELECT simple_q FROM q)
+            )
+            -- Phrase bonus for exact sequence matches
+            + 0.25 * ts_rank_cd(
+              to_tsvector(
+                'simple',
+                coalesce(kd.name, '') || ' ' ||
+                coalesce(kd.description, '') || ' ' ||
+                coalesce(kc.context_summary, '') || ' ' ||
+                coalesce(kc.content, '') || ' ' ||
+                coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                coalesce(kc.metadata->>'section', '')
+              ),
+              (SELECT phrase_q FROM q)
+            )
+            -- Last-resort literal substring boost
+            + CASE
+                WHEN (
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kc.context_summary, '') || ' ' ||
+                  coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                  coalesce(kc.metadata->>'section', '')
+                ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
+                ELSE 0
+              END
           ) AS score
         FROM knowledge_chunk kc
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
-          AND to_tsvector('english', coalesce(kc.context_summary, '') || ' ' || kc.content)
-              @@ plainto_tsquery('english', ${query})
-        ORDER BY score DESC
+          AND kd.status = 'ready'
+          AND (
+            to_tsvector(
+              'english',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kc.context_summary, '') || ' ' ||
+              coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+              coalesce(kc.metadata->>'section', '')
+            ) @@ (SELECT english_q FROM q)
+            OR to_tsvector(
+              'simple',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kc.context_summary, '') || ' ' ||
+              coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+              coalesce(kc.metadata->>'section', '')
+            ) @@ (SELECT simple_q FROM q)
+            OR (
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kc.context_summary, '') || ' ' ||
+              coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+              coalesce(kc.metadata->>'section', '')
+            ) ILIKE (SELECT ilike_q FROM q)
+          )
+        ORDER BY score DESC, kc.created_at DESC
         LIMIT ${limit}
       `,
     );
@@ -512,6 +1232,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         id: r.id,
         documentId: r.document_id,
         groupId: r.group_id,
+        sectionId: r.section_id,
         content: r.content,
         contextSummary: r.context_summary,
         chunkIndex: r.chunk_index,
@@ -539,6 +1260,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       id: string;
       document_id: string;
       group_id: string;
+      section_id: string | null;
       content: string;
       context_summary: string | null;
       chunk_index: number;
@@ -549,7 +1271,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }>(
       sql`
         SELECT
-          kc.id, kc.document_id, kc.group_id, kc.content, kc.context_summary,
+          kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
           kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
           kd.name AS document_name
         FROM knowledge_chunk kc
@@ -564,6 +1286,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         id: r.id,
         documentId: r.document_id,
         groupId: r.group_id,
+        sectionId: r.section_id,
         content: r.content,
         contextSummary: r.context_summary,
         chunkIndex: r.chunk_index,
@@ -628,6 +1351,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         embeddingProvider: KnowledgeGroupTable.embeddingProvider,
         rerankingModel: KnowledgeGroupTable.rerankingModel,
         rerankingProvider: KnowledgeGroupTable.rerankingProvider,
+        parsingModel: KnowledgeGroupTable.parsingModel,
+        parsingProvider: KnowledgeGroupTable.parsingProvider,
+        retrievalThreshold: KnowledgeGroupTable.retrievalThreshold,
         mcpEnabled: KnowledgeGroupTable.mcpEnabled,
         chunkSize: KnowledgeGroupTable.chunkSize,
         chunkOverlapPercent: KnowledgeGroupTable.chunkOverlapPercent,
@@ -654,6 +1380,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       icon: r.icon ?? undefined,
       rerankingModel: r.rerankingModel ?? null,
       rerankingProvider: r.rerankingProvider ?? null,
+      parsingModel: r.parsingModel ?? null,
+      parsingProvider: r.parsingProvider ?? null,
+      retrievalThreshold: r.retrievalThreshold ?? 0.0,
       userName: r.userName ?? undefined,
       userAvatar: r.userAvatar ?? null,
       documentCount: Number(r.documentCount),
@@ -680,6 +1409,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       source: data.source,
       chunksRetrieved: data.chunksRetrieved,
       latencyMs: data.latencyMs ?? null,
+      metadata: data.metadata ?? null,
       createdAt: new Date(),
     });
   },

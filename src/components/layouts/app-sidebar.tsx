@@ -7,6 +7,7 @@ import { AppSidebarMenus } from "./app-sidebar-menus";
 import { AppSidebarAgents } from "./app-sidebar-agents";
 import { AppSidebarThreads } from "./app-sidebar-threads";
 import { SidebarHeaderShared } from "./sidebar-header";
+import { EmmaBrand } from "@/components/brand/emma-brand";
 
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
 import { AppSidebarUser } from "./app-sidebar-user";
@@ -39,7 +40,9 @@ export function AppSidebar({
       className="border-r border-sidebar-border/80"
     >
       <SidebarHeaderShared
-        title="wave-chatbot"
+        title={
+          <EmmaBrand aiClassName="from-cyan-300 via-sky-200 to-emerald-200" />
+        }
         href="/"
         enableShortcuts={true}
         onLinkClick={() => {

@@ -115,6 +115,8 @@ export function GenerateSubAgentDialog({
             <div className="flex justify-end items-center gap-2">
               <SelectModel
                 showProvider
+                requiredCapability="supportsGeneration"
+                emptyMessage="No generate-capable models configured in Settings → AI Providers."
                 onSelect={(model) => setGenerateModel(model)}
               />
               <Button

@@ -2,7 +2,12 @@
 
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
-import { UploadCloudIcon, LinkIcon, Loader2Icon } from "lucide-react";
+import {
+  UploadCloudIcon,
+  LinkIcon,
+  Loader2Icon,
+  AlertCircleIcon,
+} from "lucide-react";
 import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { cn } from "lib/utils";
@@ -26,12 +31,19 @@ const ACCEPTED_TYPES = {
 interface Props {
   groupId: string;
   onUploaded: () => void;
+  disabledMessage?: string;
 }
 
-export function DocumentUploadZone({ groupId, onUploaded }: Props) {
+export function DocumentUploadZone({
+  groupId,
+  onUploaded,
+  disabledMessage,
+}: Props) {
   const [uploading, setUploading] = useState(false);
   const [urlMode, setUrlMode] = useState(false);
   const [url, setUrl] = useState("");
+
+  const isDisabled = !!disabledMessage;
 
   const uploadFile = async (file: File) => {
     const form = new FormData();
@@ -73,7 +85,7 @@ export function DocumentUploadZone({ groupId, onUploaded }: Props) {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: ACCEPTED_TYPES,
-    disabled: uploading,
+    disabled: uploading || isDisabled,
     multiple: true,
   });
 
@@ -97,6 +109,22 @@ export function DocumentUploadZone({ groupId, onUploaded }: Props) {
       setUploading(false);
     }
   };
+
+  if (isDisabled) {
+    return (
+      <div className="border-2 border-dashed rounded-lg p-6 flex flex-col items-center gap-2 text-center opacity-60 cursor-not-allowed border-border bg-muted/30">
+        <AlertCircleIcon className="size-8 text-muted-foreground" />
+        <div>
+          <p className="text-sm font-medium text-muted-foreground">
+            Upload disabled
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {disabledMessage}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (urlMode) {
     return (

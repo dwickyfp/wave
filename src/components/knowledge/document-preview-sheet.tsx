@@ -1,27 +1,33 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { KnowledgeDocument } from "app-types/knowledge";
+import { cn } from "lib/utils";
+import {
+  DownloadIcon,
+  ExternalLinkIcon,
+  FileIcon,
+  FileTextIcon,
+  LinkIcon,
+  Loader2Icon,
+  SaveIcon,
+  TableIcon,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Input } from "ui/input";
+import { Label } from "ui/label";
+import { ScrollArea } from "ui/scroll-area";
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
-  SheetDescription,
 } from "ui/sheet";
-import { Badge } from "ui/badge";
-import { Button } from "ui/button";
-import { ScrollArea } from "ui/scroll-area";
-import {
-  FileTextIcon,
-  TableIcon,
-  FileIcon,
-  LinkIcon,
-  DownloadIcon,
-  Loader2Icon,
-  ExternalLinkIcon,
-} from "lucide-react";
-import { KnowledgeDocument } from "app-types/knowledge";
-import { cn } from "lib/utils";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
+import { Textarea } from "ui/textarea";
 
 const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   pdf: FileTextIcon,
@@ -45,6 +51,14 @@ interface PreviewData {
   doc: {
     id: string;
     name: string;
+    description?: string | null;
+    descriptionManual?: boolean;
+    titleManual?: boolean;
+    isInherited?: boolean;
+    sourceGroupId?: string | null;
+    sourceGroupName?: string | null;
+    sourceGroupVisibility?: "public" | "private" | "readonly" | null;
+    sourceGroupUserName?: string | null;
     originalFilename: string;
     fileType: string;
     fileSize?: number | null;
@@ -53,6 +67,7 @@ interface PreviewData {
   previewUrl: string | null;
   sourceUrl: string | null;
   content: string | null;
+  markdownContent: string | null;
   isUrlOnly: boolean;
 }
 
@@ -61,12 +76,22 @@ interface Props {
   groupId: string;
   open: boolean;
   onClose: () => void;
+  onDocumentUpdated?: (doc: KnowledgeDocument) => void;
 }
 
-export function DocumentPreviewSheet({ doc, groupId, open, onClose }: Props) {
+export function DocumentPreviewSheet({
+  doc,
+  groupId,
+  open,
+  onClose,
+  onDocumentUpdated,
+}: Props) {
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [savingConfig, setSavingConfig] = useState(false);
 
   useEffect(() => {
     if (!open || !doc) {
@@ -88,90 +113,233 @@ export function DocumentPreviewSheet({ doc, groupId, open, onClose }: Props) {
       .finally(() => setLoading(false));
   }, [open, doc, groupId]);
 
-  const FileIconComp = FILE_ICONS[doc?.fileType ?? ""] ?? FileIcon;
-  const downloadUrl = previewData?.previewUrl ?? previewData?.sourceUrl;
+  useEffect(() => {
+    if (!previewData?.doc) return;
+    setTitle(previewData.doc.name ?? "");
+    setDescription(previewData.doc.description ?? "");
+  }, [
+    previewData?.doc?.id,
+    previewData?.doc?.name,
+    previewData?.doc?.description,
+  ]);
 
+  const currentTitle = previewData?.doc?.name ?? "";
+  const currentDescription = previewData?.doc?.description ?? "";
+  const isInherited = !!previewData?.doc?.isInherited;
+  const hasConfigChanges =
+    !isInherited &&
+    (title.trim() !== currentTitle ||
+      description.trim() !== currentDescription);
+
+  const handleSaveConfiguration = async () => {
+    if (!doc || !previewData?.doc) return;
+    if (previewData.doc.isInherited) {
+      toast.error("Inherited documents are read-only");
+      return;
+    }
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      toast.error("Title is required");
+      return;
+    }
+
+    setSavingConfig(true);
+    try {
+      const trimmedDescription = description.trim();
+      const res = await fetch(`/api/knowledge/${groupId}/documents/${doc.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: trimmedTitle,
+          description: trimmedDescription ? trimmedDescription : null,
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to update document");
+      const updated = (await res.json()) as KnowledgeDocument;
+
+      setPreviewData((prev) =>
+        prev
+          ? {
+              ...prev,
+              doc: {
+                ...prev.doc,
+                name: updated.name,
+                description: updated.description ?? null,
+                titleManual: updated.titleManual ?? true,
+                descriptionManual: updated.descriptionManual ?? true,
+              },
+            }
+          : prev,
+      );
+      onDocumentUpdated?.(updated);
+      toast.success("Document metadata updated");
+    } catch {
+      toast.error("Failed to update document metadata");
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
+  const FileIconComp = FILE_ICONS[doc?.fileType ?? ""] ?? FileIcon;
   return (
     <Sheet open={open} onOpenChange={(v) => !v && onClose()}>
       <SheetContent
         side="right"
         className="w-full sm:max-w-2xl flex flex-col p-0 gap-0"
       >
-        {/* Header */}
-        <SheetHeader className="px-6 py-4 border-b shrink-0">
-          <div className="flex items-start gap-3">
-            <div className="shrink-0 p-2 rounded-md bg-primary/10 mt-0.5">
-              <FileIconComp className="size-5 text-primary" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <SheetTitle className="text-base font-semibold leading-snug truncate">
-                {doc?.name}
-              </SheetTitle>
-              <SheetDescription className="text-xs text-muted-foreground truncate mt-0.5">
-                {doc?.originalFilename}
-              </SheetDescription>
-              <div className="flex items-center gap-2 mt-2 flex-wrap">
-                {doc?.fileType && (
-                  <Badge variant="outline" className="text-xs px-1.5 py-0">
-                    {doc.fileType.toUpperCase()}
-                  </Badge>
-                )}
-                {doc?.fileSize && (
-                  <span className="text-xs text-muted-foreground">
-                    {formatBytes(doc.fileSize)}
-                  </span>
-                )}
+        <Tabs
+          defaultValue="configuration"
+          className="flex flex-col flex-1 min-h-0"
+        >
+          {/* Header */}
+          <SheetHeader className="px-6 py-4 border-b shrink-0">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 p-2 rounded-md bg-primary/10 mt-0.5">
+                <FileIconComp className="size-5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <SheetTitle className="text-base font-semibold leading-snug truncate">
+                  {doc?.name}
+                </SheetTitle>
+                <SheetDescription className="text-xs text-muted-foreground truncate mt-0.5">
+                  {doc?.originalFilename}
+                </SheetDescription>
+                <div className="flex items-center gap-2 mt-2 flex-wrap">
+                  {doc?.fileType && (
+                    <Badge variant="outline" className="text-xs px-1.5 py-0">
+                      {doc.fileType.toUpperCase()}
+                    </Badge>
+                  )}
+                  {doc?.fileSize && (
+                    <span className="text-xs text-muted-foreground">
+                      {formatBytes(doc.fileSize)}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
+
+            <TabsList className="h-8 self-start mt-1">
+              <TabsTrigger value="configuration" className="text-xs h-7">
+                Configuration
+              </TabsTrigger>
+              <TabsTrigger value="original" className="text-xs h-7">
+                Real Docs
+              </TabsTrigger>
+              <TabsTrigger
+                value="markdown"
+                className="text-xs h-7"
+                disabled={!previewData?.markdownContent}
+              >
+                Result Markdown
+              </TabsTrigger>
+            </TabsList>
+          </SheetHeader>
+
+          {/* Content */}
+          <div className="flex-1 min-h-0 relative">
+            {loading && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/60 z-10">
+                <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+              </div>
+            )}
+
+            {error && (
+              <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                <p className="text-sm text-muted-foreground">{error}</p>
+              </div>
+            )}
+
+            {!loading && !error && previewData && (
+              <>
+                <TabsContent value="configuration" className="h-full mt-0">
+                  <ScrollArea className="h-full">
+                    <div className="p-6 flex flex-col gap-4">
+                      {isInherited && (
+                        <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700">
+                          Read-only document from{" "}
+                          <span className="font-medium">
+                            {previewData.doc.sourceGroupName ??
+                              "a linked source group"}
+                          </span>
+                          .
+                        </div>
+                      )}
+                      <div className="flex flex-col gap-1.5">
+                        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                          Title
+                        </Label>
+                        <Input
+                          value={title}
+                          onChange={(e) => setTitle(e.target.value)}
+                          placeholder="Document title"
+                          className="h-9 text-sm"
+                          disabled={isInherited}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Used for metadata retrieval and document ranking.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                          Description
+                        </Label>
+                        <Textarea
+                          value={description}
+                          onChange={(e) => setDescription(e.target.value)}
+                          placeholder="Short summary of this document"
+                          className="min-h-[140px] resize-y text-sm"
+                          disabled={isInherited}
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Improves semantic and keyword retrieval from title +
+                          description.
+                        </p>
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-2">
+                        <Button
+                          size="sm"
+                          className="gap-1.5"
+                          onClick={handleSaveConfiguration}
+                          disabled={savingConfig || !hasConfigChanges}
+                        >
+                          <SaveIcon
+                            className={cn(
+                              "size-3.5",
+                              savingConfig && "animate-pulse",
+                            )}
+                          />
+                          Save
+                        </Button>
+                      </div>
+                    </div>
+                  </ScrollArea>
+                </TabsContent>
+                <TabsContent value="original" className="h-full mt-0">
+                  <PreviewContent data={previewData} />
+                </TabsContent>
+                <TabsContent value="markdown" className="h-full mt-0">
+                  {previewData.markdownContent ? (
+                    <ScrollArea className="h-full">
+                      <pre className="p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
+                        {previewData.markdownContent}
+                      </pre>
+                    </ScrollArea>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full p-8 text-center">
+                      <p className="text-sm text-muted-foreground">
+                        No markdown content yet. The document will be processed
+                        after ingestion.
+                      </p>
+                    </div>
+                  )}
+                </TabsContent>
+              </>
+            )}
           </div>
-
-          {/* Actions */}
-          {downloadUrl && (
-            <div className="flex items-center gap-2 pt-1">
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
-                className="h-7 text-xs gap-1.5"
-              >
-                <a href={downloadUrl} target="_blank" rel="noreferrer">
-                  <ExternalLinkIcon className="size-3.5" />
-                  Open
-                </a>
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                asChild
-                className="h-7 text-xs gap-1.5"
-              >
-                <a href={downloadUrl} download={doc?.originalFilename}>
-                  <DownloadIcon className="size-3.5" />
-                  Download
-                </a>
-              </Button>
-            </div>
-          )}
-        </SheetHeader>
-
-        {/* Content */}
-        <div className="flex-1 min-h-0 relative">
-          {loading && (
-            <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-              <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
-            </div>
-          )}
-
-          {error && (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-              <p className="text-sm text-muted-foreground">{error}</p>
-            </div>
-          )}
-
-          {!loading && !error && previewData && (
-            <PreviewContent data={previewData} />
-          )}
-        </div>
+        </Tabs>
       </SheetContent>
     </Sheet>
   );

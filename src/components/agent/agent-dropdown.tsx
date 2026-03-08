@@ -54,7 +54,9 @@ export function AgentDropdown({ agent, children, side, align }: Props) {
                     href={
                       agent.agentType === "snowflake_cortex"
                         ? `/agent/snowflake/${agent.id}`
-                        : `/agent/${agent.id}`
+                        : agent.agentType === "a2a_remote"
+                          ? `/agent/a2a/${agent.id}`
+                          : `/agent/${agent.id}`
                     }
                     className="flex items-center gap-2 w-full px-2 py-1 rounded"
                   >

@@ -1,52 +1,459 @@
 "use client";
 
-import { useState } from "react";
-import { KnowledgeGroup, KnowledgeDocument } from "app-types/knowledge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
-import { KnowledgeDocumentsTab } from "./knowledge-documents-tab";
-import { KnowledgeUsageTab } from "./knowledge-usage-tab";
-import { KnowledgePlaygroundTab } from "./knowledge-playground-tab";
-import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
-import { Badge } from "ui/badge";
-import { Button } from "ui/button";
-import { Switch } from "ui/switch";
-import { Label } from "ui/label";
+import { mutateKnowledge, useKnowledge } from "@/hooks/queries/use-knowledge";
+import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
+import {
+  KnowledgeDocument,
+  KnowledgeGroup,
+  KnowledgeGroupSource,
+  KnowledgeVisibility,
+} from "app-types/knowledge";
+import { format } from "date-fns";
+import { notify } from "lib/notify";
+import { cn } from "lib/utils";
 import {
   BrainIcon,
-  ChevronLeftIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   ChevronUpIcon,
   CopyIcon,
   KeyIcon,
+  Link2Icon,
+  Loader2Icon,
+  PlusIcon,
   RefreshCwIcon,
+  SaveIcon,
   ServerIcon,
+  SlidersHorizontalIcon,
+  Trash2Icon,
 } from "lucide-react";
 import Link from "next/link";
-import { format } from "date-fns";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { cn } from "lib/utils";
+import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
+import { Badge } from "ui/badge";
+import { Button } from "ui/button";
+import { Label } from "ui/label";
+import { Switch } from "ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
+import { KnowledgeDocumentsTab } from "./knowledge-documents-tab";
+import {
+  ModelSelector,
+  NONE_VALUE,
+  makeModelValue,
+  parseModelValue,
+} from "./knowledge-model-selector";
+import { KnowledgePlaygroundTab } from "./knowledge-playground-tab";
+import { KnowledgeUsageTab } from "./knowledge-usage-tab";
 
 interface Props {
   group: KnowledgeGroup;
   initialDocuments: KnowledgeDocument[];
+  initialSourceGroups: KnowledgeGroupSource[];
   userId: string;
+  contextxModel: { provider: string; model: string } | null;
 }
+
+type McpToolParam = {
+  name: string;
+  required?: boolean;
+  description: string;
+};
+
+type McpToolDoc = {
+  name: string;
+  label?: string;
+  description: string;
+  params: McpToolParam[];
+  kind?: "primary" | "legacy" | "utility";
+};
+
+type StoredMcpApiKey = {
+  key: string;
+  preview?: string;
+  createdAt?: number;
+};
+
+type SourceGroupOption = {
+  id: string;
+  name: string;
+  description?: string;
+  ownerLabel: "Mine" | "Shared";
+  visibility: KnowledgeVisibility;
+};
+
+const MCP_TOOL_DOCS: McpToolDoc[] = [
+  {
+    name: "resolve-library-id",
+    kind: "primary",
+    description:
+      "Resolves a human-friendly source/topic name into a ContextX source ID (parameter name kept as libraryName for compatibility).",
+    params: [
+      {
+        name: "query",
+        required: true,
+        description:
+          "User question/task. Used to rank the most relevant source ID for intent.",
+      },
+      {
+        name: "libraryName",
+        required: true,
+        description:
+          'Source/topic name to resolve (example: "employee handbook", "sales playbook", "next.js", "mongodb").',
+      },
+      {
+        name: "topK",
+        required: false,
+        description:
+          "How many candidate source IDs to return before selection (default: 5).",
+      },
+    ],
+  },
+  {
+    name: "query-docs",
+    kind: "primary",
+    description:
+      "Retrieves the most relevant sections for one resolved source ID (works for technical and non-technical knowledge).",
+    params: [
+      {
+        name: "libraryId",
+        required: true,
+        description:
+          'Resolved source ID from resolve-library-id (example: "/company/employee-handbook", "/vercel/next.js").',
+      },
+      {
+        name: "query",
+        required: true,
+        description:
+          "Question/task to retrieve relevant sections for (policy, SOP, guide, API, FAQ, etc.).",
+      },
+      {
+        name: "version",
+        required: false,
+        description:
+          "Optional variant/version filter (example: policy revision, product release, 14, 5.2.1).",
+      },
+      {
+        name: "tokens",
+        required: false,
+        description:
+          "Token budget for returned content (default: 10000). Lower values force tighter excerpts.",
+      },
+      {
+        name: "maxDocs",
+        required: false,
+        description:
+          "Maximum documents/sections returned for this query (default: 8).",
+      },
+    ],
+  },
+  {
+    name: "get_docs",
+    label: "get_docs (legacy)",
+    kind: "legacy",
+    description:
+      "Legacy broad retrieval across the whole knowledge base. Useful when source ID is unknown.",
+    params: [
+      {
+        name: "query",
+        required: true,
+        description: "Search query.",
+      },
+      {
+        name: "tokens",
+        required: false,
+        description: "Token budget for response (default: 10000).",
+      },
+    ],
+  },
+  {
+    name: "list_documents",
+    kind: "utility",
+    description:
+      "Lists all documents available in this knowledge group (inventory view).",
+    params: [],
+  },
+];
 
 export function KnowledgeDetailPage({
   group,
   initialDocuments,
+  initialSourceGroups,
   userId,
+  contextxModel,
 }: Props) {
+  const router = useRouter();
   const isOwner = group.userId === userId;
+  const { data: modelsData } = useKnowledgeModels();
+  const { data: allGroupsData } = useKnowledge("mine,shared");
+
+  const initialEmbeddingValue = makeModelValue(
+    group.embeddingProvider,
+    group.embeddingModel,
+  );
+  const initialRerankingValue =
+    group.rerankingProvider && group.rerankingModel
+      ? makeModelValue(group.rerankingProvider, group.rerankingModel)
+      : NONE_VALUE;
+
+  // ── Settings section state ───────────────────────────────────────────────
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [threshold, setThreshold] = useState(group.retrievalThreshold ?? 0);
+  const [embeddingValue, setEmbeddingValue] = useState(initialEmbeddingValue);
+  const [rerankingValue, setRerankingValue] = useState(initialRerankingValue);
+  const [savedThreshold, setSavedThreshold] = useState(
+    group.retrievalThreshold ?? 0,
+  );
+  const [savedEmbeddingValue, setSavedEmbeddingValue] = useState(
+    initialEmbeddingValue,
+  );
+  const [savedRerankingValue, setSavedRerankingValue] = useState(
+    initialRerankingValue,
+  );
+  const [sourceGroupIds, setSourceGroupIds] = useState<string[]>(
+    initialSourceGroups.map((s) => s.sourceGroupId),
+  );
+  const [sourceGroupMutation, setSourceGroupMutation] = useState<{
+    sourceGroupId: string | null;
+    action: "add" | "remove" | null;
+  }>({
+    sourceGroupId: null,
+    action: null,
+  });
+  const [deletingGroup, setDeletingGroup] = useState(false);
+
+  const sourceMutationInFlight = sourceGroupMutation.action !== null;
+
+  const initialSourceGroupOptions: SourceGroupOption[] =
+    initialSourceGroups.map((source) => ({
+      id: source.sourceGroupId,
+      name: source.sourceGroupName,
+      description: source.sourceGroupDescription,
+      ownerLabel: source.sourceGroupUserId === userId ? "Mine" : "Shared",
+      visibility: source.sourceGroupVisibility,
+    }));
+
+  const savedEmbedding = parseModelValue(savedEmbeddingValue) ?? {
+    provider: group.embeddingProvider,
+    apiName: group.embeddingModel,
+  };
+  const savedReranking = parseModelValue(savedRerankingValue);
+  const availableSourceGroups: SourceGroupOption[] = (allGroupsData ?? [])
+    .filter((candidate) => candidate.id !== group.id)
+    .map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      description: candidate.description,
+      ownerLabel: candidate.userId === userId ? "Mine" : "Shared",
+      visibility: candidate.visibility,
+    }));
+  const sourceGroupById = new Map<string, SourceGroupOption>(
+    initialSourceGroupOptions.map((source) => [source.id, source]),
+  );
+  for (const source of availableSourceGroups) {
+    sourceGroupById.set(source.id, source);
+  }
+
+  const linkedSourceGroups: SourceGroupOption[] = sourceGroupIds.map(
+    (sourceGroupId) =>
+      sourceGroupById.get(sourceGroupId) ?? {
+        id: sourceGroupId,
+        name: sourceGroupId,
+        description: undefined,
+        ownerLabel: "Shared",
+        visibility: "readonly" as const,
+      },
+  );
+  const linkableSourceGroups = Array.from(sourceGroupById.values())
+    .filter((source) => !sourceGroupIds.includes(source.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const hasSettingsChanges =
+    threshold !== savedThreshold ||
+    embeddingValue !== savedEmbeddingValue ||
+    rerankingValue !== savedRerankingValue;
+
+  const handleSaveSettings = async () => {
+    const embedding = parseModelValue(embeddingValue);
+    if (!embedding) {
+      toast.error("Please select an embedding model");
+      return;
+    }
+
+    const reranking = parseModelValue(rerankingValue);
+    const embeddingChanged = embeddingValue !== savedEmbeddingValue;
+
+    setSavingSettings(true);
+    try {
+      const res = await fetch(`/api/knowledge/${group.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          retrievalThreshold: threshold,
+          embeddingProvider: embedding.provider,
+          embeddingModel: embedding.apiName,
+          rerankingProvider: reranking?.provider ?? null,
+          rerankingModel: reranking?.apiName ?? null,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      setSavedThreshold(threshold);
+      setSavedEmbeddingValue(embeddingValue);
+      setSavedRerankingValue(rerankingValue);
+      void mutateKnowledge();
+      toast.success(
+        embeddingChanged
+          ? "Settings saved. Re-embed documents to apply new embeddings."
+          : "Settings saved",
+      );
+    } catch {
+      toast.error("Failed to save settings");
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  const applySourceGroups = async (
+    nextSourceGroupIds: string[],
+    sourceGroupId: string,
+    action: "add" | "remove",
+  ) => {
+    if (sourceMutationInFlight) return;
+
+    const previousSourceGroupIds = sourceGroupIds;
+    setSourceGroupIds(nextSourceGroupIds);
+    setSourceGroupMutation({ sourceGroupId, action });
+
+    try {
+      const res = await fetch(`/api/knowledge/${group.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceGroupIds: nextSourceGroupIds,
+        }),
+      });
+      if (!res.ok) throw new Error();
+      void mutateKnowledge();
+      toast.success(
+        action === "add" ? "Source group linked" : "Source group removed",
+      );
+    } catch {
+      setSourceGroupIds(previousSourceGroupIds);
+      toast.error(
+        action === "add"
+          ? "Failed to link source group"
+          : "Failed to remove source group",
+      );
+    } finally {
+      setSourceGroupMutation({ sourceGroupId: null, action: null });
+    }
+  };
+
+  const handleAddSourceGroup = async (sourceGroupId: string) => {
+    if (sourceGroupIds.includes(sourceGroupId)) return;
+    await applySourceGroups(
+      [...sourceGroupIds, sourceGroupId],
+      sourceGroupId,
+      "add",
+    );
+  };
+
+  const handleRemoveSourceGroup = async (sourceGroupId: string) => {
+    if (!sourceGroupIds.includes(sourceGroupId)) return;
+    await applySourceGroups(
+      sourceGroupIds.filter((id) => id !== sourceGroupId),
+      sourceGroupId,
+      "remove",
+    );
+  };
+
+  const handleDeleteGroup = async () => {
+    if (deletingGroup) return;
+
+    const typedName = await notify.prompt({
+      title: "Delete Knowledge Group",
+      description: (
+        <span>
+          Type <strong>{group.name}</strong> to permanently delete this
+          knowledge group. This action cannot be undone.
+        </span>
+      ),
+    });
+    const normalizedTypedName = typedName.trim();
+
+    if (!normalizedTypedName) return;
+    if (normalizedTypedName !== group.name) {
+      toast.error("Name does not match. Group was not deleted.");
+      return;
+    }
+
+    setDeletingGroup(true);
+    try {
+      const res = await fetch(`/api/knowledge/${group.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error();
+      await mutateKnowledge();
+      toast.success("Knowledge group deleted");
+      router.push("/knowledge");
+    } catch {
+      toast.error("Failed to delete knowledge group");
+    } finally {
+      setDeletingGroup(false);
+    }
+  };
+
+  // ── MCP section state ────────────────────────────────────────────────────
   const [mcpOpen, setMcpOpen] = useState(false);
   const [mcpEnabled, setMcpEnabled] = useState(group.mcpEnabled);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [keyPreview, setKeyPreview] = useState(group.mcpApiKeyPreview);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [togglingMcp, setTogglingMcp] = useState(false);
+  const mcpLocalStorageKey = `contextx:mcp-api-key:${group.id}`;
 
   const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
   const mcpUrl = `${baseUrl}/api/mcp/knowledge/${group.id}`;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const removeStored = () => {
+      localStorage.removeItem(mcpLocalStorageKey);
+    };
+
+    try {
+      const raw = localStorage.getItem(mcpLocalStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as StoredMcpApiKey;
+      if (!parsed?.key) {
+        removeStored();
+        return;
+      }
+
+      const storedPreview = parsed.preview || parsed.key.slice(-4);
+      const serverPreview = group.mcpApiKeyPreview || null;
+
+      // If server no longer has key preview (e.g. revoked), drop local copy.
+      if (!serverPreview) {
+        removeStored();
+        return;
+      }
+
+      // If server preview changed (new key generated elsewhere), invalidate stale local key.
+      if (storedPreview !== serverPreview) {
+        removeStored();
+        return;
+      }
+
+      setApiKey(parsed.key);
+      setKeyPreview(serverPreview);
+    } catch {
+      removeStored();
+    }
+  }, [group.mcpApiKeyPreview, mcpLocalStorageKey]);
 
   const handleGenerateKey = async () => {
     setGeneratingKey(true);
@@ -56,10 +463,29 @@ export function KnowledgeDetailPage({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "generate" }),
       });
+      if (!res.ok) {
+        throw new Error("Failed to generate API key");
+      }
       const data = await res.json();
       setApiKey(data.key);
       setKeyPreview(data.preview);
-      toast.success("API key generated — copy it now, it won't be shown again");
+      if (data?.key) {
+        try {
+          localStorage.setItem(
+            mcpLocalStorageKey,
+            JSON.stringify({
+              key: data.key,
+              preview: data.preview,
+              createdAt: Date.now(),
+            } satisfies StoredMcpApiKey),
+          );
+        } catch {
+          toast.warning(
+            "API key generated, but could not persist it in this browser",
+          );
+        }
+      }
+      toast.success("API key generated and saved in this browser");
     } catch {
       toast.error("Failed to generate API key");
     } finally {
@@ -93,7 +519,7 @@ export function KnowledgeDetailPage({
     {
       type: "http",
       url: mcpUrl,
-      headers: { Authorization: `Bearer ${apiKey ?? "YOUR_API_KEY"}` },
+      headers: { CONTEXTX_API_KEY: apiKey ?? "YOUR_API_KEY" },
     },
     null,
     2,
@@ -139,11 +565,11 @@ export function KnowledgeDetailPage({
             )}
             <div className="flex items-center gap-2 flex-wrap mt-1">
               <Badge variant="secondary" className="text-xs">
-                {group.embeddingProvider}/{group.embeddingModel}
+                {savedEmbedding.provider}/{savedEmbedding.apiName}
               </Badge>
-              {group.rerankingModel && (
+              {savedReranking && (
                 <Badge variant="secondary" className="text-xs">
-                  rerank: {group.rerankingModel}
+                  rerank: {savedReranking.provider}/{savedReranking.apiName}
                 </Badge>
               )}
               <Badge variant="outline" className="text-xs">
@@ -156,6 +582,280 @@ export function KnowledgeDetailPage({
           </div>
         </div>
       </div>
+
+      {/* Settings Section (owner only) */}
+      {isOwner && (
+        <div className="border rounded-xl overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-accent/50 transition-colors"
+            onClick={() => setSettingsOpen((o) => !o)}
+          >
+            <div className="flex items-center gap-2">
+              <SlidersHorizontalIcon className="size-4 text-primary" />
+              <span className="text-sm font-medium">Settings</span>
+              {contextxModel && (
+                <Badge variant="secondary" className="text-xs px-1.5 py-0">
+                  LLM: {contextxModel.model}
+                </Badge>
+              )}
+              {savedThreshold > 0 && (
+                <Badge variant="secondary" className="text-xs px-1.5 py-0">
+                  threshold: {savedThreshold.toFixed(2)}
+                </Badge>
+              )}
+            </div>
+            {settingsOpen ? (
+              <ChevronUpIcon className="size-4" />
+            ) : (
+              <ChevronDownIcon className="size-4" />
+            )}
+          </button>
+
+          {settingsOpen && (
+            <div className="px-4 pb-4 flex flex-col gap-4 border-t">
+              {/* Parsing LLM — global setting (read-only) */}
+              <div className="flex flex-col gap-1.5 pt-3">
+                <Label className="text-sm font-medium">Parsing LLM</Label>
+                {contextxModel ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-mono bg-secondary/50 border rounded px-2 py-1">
+                      {contextxModel.provider}/{contextxModel.model}
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-xs text-amber-600">
+                    No ContextX model configured. Set one in Settings → ContextX
+                    Model to enable document parsing.
+                  </p>
+                )}
+              </div>
+
+              {/* Retrieval Models */}
+              <div className="flex flex-col gap-3 rounded-lg border p-3 bg-muted/30">
+                <div className="flex flex-col gap-1.5">
+                  <Label className="text-sm font-medium">Embedding Model</Label>
+                  <ModelSelector
+                    value={embeddingValue}
+                    onValueChange={setEmbeddingValue}
+                    providers={modelsData?.embeddingProviders ?? []}
+                    placeholder="Select embedding model"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Used when documents are chunked and when semantic retrieval
+                    runs.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <Label className="text-sm font-medium">Reranking Model</Label>
+                  <ModelSelector
+                    value={rerankingValue}
+                    onValueChange={setRerankingValue}
+                    providers={modelsData?.rerankingProviders ?? []}
+                    placeholder="Select reranking model"
+                    allowNone
+                    noneLabel="No reranker"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Optional second-pass ranking after hybrid search.
+                  </p>
+                </div>
+              </div>
+
+              {/* Retrieval Threshold */}
+              <div className="flex flex-col gap-2">
+                <Label className="text-sm font-medium">
+                  Retrieval Threshold
+                </Label>
+                <p className="text-xs text-muted-foreground">
+                  Minimum relevance score (0–1) for a result to be returned. Set
+                  to 0 to disable filtering.
+                </p>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={threshold}
+                    onChange={(e) => setThreshold(Number(e.target.value))}
+                    className="flex-1 h-1.5 accent-primary"
+                  />
+                  <span className="text-sm font-mono w-10 text-right">
+                    {threshold.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              <Button
+                size="sm"
+                className="self-end gap-1.5"
+                onClick={handleSaveSettings}
+                disabled={savingSettings || !hasSettingsChanges}
+              >
+                {savingSettings ? (
+                  <RefreshCwIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <SaveIcon className="size-3.5" />
+                )}
+                Save Settings
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Linked Group Chain */}
+      {isOwner && (
+        <div className="border rounded-xl p-4 flex flex-col gap-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Link2Icon className="size-4 text-primary" />
+              <div>
+                <h2 className="text-sm font-medium">Linked Group Chain</h2>
+                <p className="text-xs text-muted-foreground">
+                  Linked groups are read-only in this group. Retrieval uses each
+                  source group&apos;s own embedding, reranking model, and
+                  threshold.
+                </p>
+              </div>
+            </div>
+            <Badge variant="outline" className="text-xs px-1.5 py-0">
+              {sourceGroupIds.length} linked
+            </Badge>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
+              <Label className="text-sm font-medium">Current Links</Label>
+              {linkedSourceGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No linked source groups yet.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {linkedSourceGroups.map((source) => {
+                    const removing =
+                      sourceGroupMutation.action === "remove" &&
+                      sourceGroupMutation.sourceGroupId === source.id;
+                    return (
+                      <div
+                        key={source.id}
+                        className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-sm truncate">
+                              {source.name}
+                            </span>
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.ownerLabel}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.visibility}
+                            </Badge>
+                          </div>
+                          {source.description && (
+                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                              {source.description}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          disabled={sourceMutationInFlight}
+                          onClick={() => handleRemoveSourceGroup(source.id)}
+                        >
+                          {removing ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <>
+                              <Trash2Icon className="size-3.5 mr-1" />
+                              Remove
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
+              <Label className="text-sm font-medium">Add Source Group</Label>
+              {linkableSourceGroups.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No additional groups available to link.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {linkableSourceGroups.map((source) => {
+                    const adding =
+                      sourceGroupMutation.action === "add" &&
+                      sourceGroupMutation.sourceGroupId === source.id;
+                    return (
+                      <div
+                        key={source.id}
+                        className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-sm truncate">
+                              {source.name}
+                            </span>
+                            <Badge
+                              variant="secondary"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.ownerLabel}
+                            </Badge>
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1 py-0"
+                            >
+                              {source.visibility}
+                            </Badge>
+                          </div>
+                          {source.description && (
+                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                              {source.description}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          disabled={sourceMutationInFlight}
+                          onClick={() => handleAddSourceGroup(source.id)}
+                        >
+                          {adding ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <>
+                              <PlusIcon className="size-3.5 mr-1" />
+                              Add
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MCP Section (owner only) */}
       {isOwner && (
@@ -240,8 +940,8 @@ export function KnowledgeDetailPage({
                 </div>
                 {apiKey && (
                   <p className="text-xs text-amber-600">
-                    Save this key now — it won't be shown again after you leave
-                    this page.
+                    This key is saved in this browser for this knowledge group.
+                    Clear browser/site data will remove it.
                   </p>
                 )}
               </div>
@@ -281,8 +981,219 @@ export function KnowledgeDetailPage({
                   </Button>
                 </div>
               </div>
+
+              {/* Available tools */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Available Tools</Label>
+                  <div className="flex items-center gap-1">
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] px-1.5 py-0 bg-blue-500/10 text-blue-600 border-blue-500/30"
+                    >
+                      Primary
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] px-1.5 py-0 bg-amber-500/10 text-amber-600 border-amber-500/30"
+                    >
+                      Legacy
+                    </Badge>
+                    <Badge
+                      variant="outline"
+                      className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                    >
+                      Utility
+                    </Badge>
+                  </div>
+                </div>
+                <div className="rounded-lg border bg-secondary/20 p-3 space-y-3">
+                  <div className="rounded-md border bg-background/40 p-2.5">
+                    <p className="text-xs text-muted-foreground">
+                      Recommended flow (source-first retrieval):
+                      <span className="font-mono rounded bg-secondary px-1.5 py-0.5 mx-1 text-foreground">
+                        resolve-library-id
+                      </span>
+                      →
+                      <span className="font-mono rounded bg-secondary px-1.5 py-0.5 mx-1 text-foreground">
+                        query-docs
+                      </span>
+                    </p>
+                  </div>
+
+                  {MCP_TOOL_DOCS.map((tool) => {
+                    const requiredParams = tool.params.filter(
+                      (p) => p.required,
+                    );
+                    const optionalParams = tool.params.filter(
+                      (p) => !p.required,
+                    );
+                    const orderedParams = [
+                      ...requiredParams,
+                      ...optionalParams,
+                    ];
+
+                    return (
+                      <div
+                        key={tool.name}
+                        className="rounded-md border bg-background/40 p-3 space-y-2.5"
+                      >
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-mono text-xs rounded bg-secondary px-2 py-1">
+                            {tool.label ?? tool.name}
+                          </span>
+
+                          {tool.kind === "primary" && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 py-0 bg-blue-500/10 text-blue-600 border-blue-500/30"
+                            >
+                              Primary
+                            </Badge>
+                          )}
+                          {tool.kind === "legacy" && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 py-0 bg-amber-500/10 text-amber-600 border-amber-500/30"
+                            >
+                              Legacy
+                            </Badge>
+                          )}
+                          {tool.kind === "utility" && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                            >
+                              Utility
+                            </Badge>
+                          )}
+
+                          {tool.params.length > 0 && (
+                            <>
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] px-1.5 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+                              >
+                                {requiredParams.length} required
+                              </Badge>
+                              <Badge
+                                variant="outline"
+                                className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                              >
+                                {optionalParams.length} optional
+                              </Badge>
+                            </>
+                          )}
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            Function
+                          </p>
+                          <p className="text-xs text-foreground/90">
+                            {tool.description}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                            Parameters
+                          </p>
+                          {orderedParams.length > 0 ? (
+                            <div className="overflow-x-auto rounded-md border bg-background/30">
+                              <table className="w-full text-xs">
+                                <thead className="bg-secondary/40 text-muted-foreground">
+                                  <tr>
+                                    <th className="text-left font-medium px-2.5 py-2 w-[160px]">
+                                      Name
+                                    </th>
+                                    <th className="text-left font-medium px-2.5 py-2 w-[90px]">
+                                      Required
+                                    </th>
+                                    <th className="text-left font-medium px-2.5 py-2">
+                                      Description
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {orderedParams.map((param) => (
+                                    <tr
+                                      key={`${tool.name}:${param.name}`}
+                                      className="border-t border-border/60 align-top"
+                                    >
+                                      <td className="px-2.5 py-2">
+                                        <span className="font-mono rounded bg-secondary px-1.5 py-0.5">
+                                          {param.name}
+                                        </span>
+                                      </td>
+                                      <td className="px-2.5 py-2">
+                                        {param.required ? (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] px-1.5 py-0 bg-emerald-500/10 text-emerald-600 border-emerald-500/30"
+                                          >
+                                            Yes
+                                          </Badge>
+                                        ) : (
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[10px] px-1.5 py-0 bg-zinc-500/10 text-zinc-400 border-zinc-500/30"
+                                          >
+                                            No
+                                          </Badge>
+                                        )}
+                                      </td>
+                                      <td className="px-2.5 py-2 text-muted-foreground">
+                                        {param.description}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              No parameters.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Danger Zone */}
+      {isOwner && (
+        <div className="border border-destructive/30 rounded-xl p-4 flex flex-col gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-medium text-destructive">
+                Danger Zone
+              </h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                Deleting this knowledge group permanently removes all local
+                documents and chunks in this group.
+              </p>
+            </div>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deletingGroup}
+              onClick={handleDeleteGroup}
+            >
+              {deletingGroup ? (
+                <Loader2Icon className="size-3.5 animate-spin mr-1" />
+              ) : (
+                <Trash2Icon className="size-3.5 mr-1" />
+              )}
+              Delete Group
+            </Button>
+          </div>
         </div>
       )}
 
@@ -298,6 +1209,13 @@ export function KnowledgeDetailPage({
           <KnowledgeDocumentsTab
             groupId={group.id}
             initialDocuments={initialDocuments}
+            uploadDisabledMessage={
+              !isOwner
+                ? "Only the group owner can upload documents to this group."
+                : !contextxModel
+                  ? "Configure a ContextX Model in Settings before uploading documents."
+                  : undefined
+            }
           />
         </TabsContent>
 

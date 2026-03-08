@@ -13,7 +13,7 @@ import {
 import { Button } from "ui/button";
 import { toast } from "sonner";
 import { ProviderConfigTab } from "./provider-config-tab";
-import { MinioSettingsTab } from "./minio-settings-tab";
+import { StorageSettingsTab } from "./storage-settings-tab";
 import { OtherConfigsTab } from "./other-configs-tab";
 import { ContextXModelButton } from "./contextx-model-button";
 
@@ -129,7 +129,7 @@ export function SettingsContent() {
       </TabsContent>
 
       <TabsContent value="storage">
-        <MinioSettingsTab />
+        <StorageSettingsTab />
       </TabsContent>
 
       <TabsContent value="other">

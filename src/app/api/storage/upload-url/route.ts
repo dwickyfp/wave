@@ -1,13 +1,21 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
 import { getSession } from "auth/server";
-import { serverFileStorage, storageDriver } from "lib/file-storage";
+import { getFileStorage, getStorageDriver } from "lib/file-storage";
+import {
+  assertAllowedUserUpload,
+  assertUserScopedUploadPath,
+  MAX_USER_UPLOAD_BYTES,
+  resolveUserScopedUploadPath,
+  StorageUploadPolicyError,
+  USER_UPLOAD_ALLOWED_CONTENT_TYPES,
+} from "lib/file-storage/upload-policy";
 import globalLogger from "lib/logger";
 import { colorize } from "consola/utils";
 import { checkStorageAction } from "../actions";
 
 const logger = globalLogger.withDefaults({
-  message: colorize("blackBright", `[${storageDriver} Upload URL API]`),
+  message: colorize("blackBright", "[Storage Upload URL API]"),
 });
 
 // Constants
@@ -55,9 +63,11 @@ async function handleVercelBlobUpload(
   const jsonResponse = await handleUpload({
     body,
     request,
-    onBeforeGenerateToken: async () => {
+    onBeforeGenerateToken: async (pathname) => {
+      assertUserScopedUploadPath(userId, pathname);
       return {
-        allowedContentTypes: undefined, // Allow all file types
+        allowedContentTypes: [...USER_UPLOAD_ALLOWED_CONTENT_TYPES],
+        maximumSizeInBytes: MAX_USER_UPLOAD_BYTES,
         addRandomSuffix: true, // Prevent filename collisions
         tokenPayload: JSON.stringify({
           userId,
@@ -90,13 +100,15 @@ async function handleVercelBlobUpload(
  * Returns presigned URL if supported, otherwise returns fallback response.
  */
 async function handleGenericUpload(request: GenericUploadRequest) {
+  const storage = await getFileStorage();
+
   // Check if storage backend supports direct upload
-  if (typeof serverFileStorage.createUploadUrl !== "function") {
+  if (typeof storage.createUploadUrl !== "function") {
     logger.info("Storage doesn't support createUploadUrl, using fallback");
     return NextResponse.json(createFallbackResponse());
   }
 
-  const uploadUrl = await serverFileStorage.createUploadUrl({
+  const uploadUrl = await storage.createUploadUrl({
     filename: request.filename || "file",
     contentType: request.contentType || "application/octet-stream",
     expiresInSeconds: DEFAULT_UPLOAD_EXPIRES_SECONDS,
@@ -108,7 +120,7 @@ async function handleGenericUpload(request: GenericUploadRequest) {
   }
 
   // Provide a public source URL for clients to reference after successful PUT
-  const sourceUrl = await serverFileStorage.getSourceUrl(uploadUrl.key);
+  const sourceUrl = await storage.getSourceUrl(uploadUrl.key);
 
   return NextResponse.json({
     directUploadSupported: true,
@@ -140,6 +152,7 @@ export async function POST(request: Request) {
       solution: storageCheck.solution,
     });
 
+    const storageDriver = await getStorageDriver();
     return NextResponse.json(
       {
         error: storageCheck.error,
@@ -164,8 +177,30 @@ export async function POST(request: Request) {
       return await handleVercelBlobUpload(body, request, session.user.id);
     }
 
-    return await handleGenericUpload(body as GenericUploadRequest);
+    const genericRequest = body as GenericUploadRequest;
+    const contentType =
+      genericRequest.contentType || "application/octet-stream";
+
+    assertAllowedUserUpload({
+      contentType,
+      size: 0,
+    });
+
+    return await handleGenericUpload({
+      ...genericRequest,
+      filename: resolveUserScopedUploadPath(
+        session.user.id,
+        genericRequest.filename || "file",
+      ),
+      contentType,
+    });
   } catch (error) {
+    if (error instanceof StorageUploadPolicyError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
+    }
     logger.error("Upload URL generation failed", error);
     return NextResponse.json(
       { error: "Failed to create upload URL" },

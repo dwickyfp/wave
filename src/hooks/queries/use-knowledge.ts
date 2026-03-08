@@ -22,11 +22,15 @@ export function useKnowledge(filters = "mine,shared") {
 }
 
 export function useKnowledgeDocuments(groupId: string) {
-  return useSWR<KnowledgeDocument[]>(
+  const swr = useSWR<KnowledgeDocument[]>(
     groupId ? `/api/knowledge/${groupId}/documents` : null,
     fetcher,
-    { refreshInterval: 5000 }, // Poll every 5s to catch processing updates
+    {
+      // Poll faster (2s) while any document is processing for real-time progress
+      refreshInterval: 2000,
+    },
   );
+  return swr;
 }
 
 export function useKnowledgeUsage(groupId: string, days = 7) {

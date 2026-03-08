@@ -7,11 +7,10 @@ import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
 import { SubAgentGenerateSchema } from "app-types/subagent";
 import { z } from "zod";
-import { loadAppDefaultTools } from "@/app/api/chat/shared.chat";
+import { loadAppDefaultTools, loadMcpTools } from "@/app/api/chat/shared.chat";
 import { workflowRepository, agentRepository } from "lib/db/repository";
 import { safe } from "ts-safe";
 import { objectFlow } from "lib/utils";
-import { mcpClientsManager } from "lib/ai/mcp/mcp-manager";
 import { canEditAgent } from "lib/auth/permissions";
 
 const logger = globalLogger.withDefaults({
@@ -62,7 +61,12 @@ export async function POST(
       })
       .unwrap();
 
-    await safe(mcpClientsManager.tools())
+    await safe(
+      loadMcpTools({
+        userId: session.user.id,
+        includeAllAccessible: true,
+      }),
+    )
       .ifOk((tools) => {
         objectFlow(tools).forEach((mcp) => {
           toolNames.add(mcp._originToolName);
@@ -105,6 +109,15 @@ export async function POST(
             "Model is not configured. Please set it up in Settings → AI Providers.",
         },
         { status: 503 },
+      );
+    }
+    if (!dbModelResult.supportsGeneration) {
+      return Response.json(
+        {
+          message:
+            "Selected model cannot generate subagents. Enable Generate Capabilities in Settings → AI Providers.",
+        },
+        { status: 400 },
       );
     }
 

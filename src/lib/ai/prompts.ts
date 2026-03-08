@@ -6,6 +6,7 @@ import { createMCPToolId } from "./mcp/mcp-tool-id";
 import { format } from "date-fns";
 import { Agent } from "app-types/agent";
 import { SubAgent } from "app-types/subagent";
+import { SkillSummary } from "app-types/skill";
 
 export const CREATE_THREAD_TITLE_PROMPT = `
 You are a chat title generation expert.
@@ -148,7 +149,7 @@ export const buildUserSystemPrompt = (
   agent?: Agent,
 ) => {
   const assistantName =
-    agent?.name || userPreferences?.botName || "wave-chatbot";
+    agent?.name || userPreferences?.botName || "emma-chatbot";
   const currentTime = format(new Date(), "EEEE, MMMM d, yyyy 'at' h:mm:ss a");
 
   let prompt = `You are ${assistantName}`;
@@ -440,4 +441,52 @@ IMPORTANT — Use the retrieved context above as your primary source of truth:
 5. If no relevant content was retrieved (score near 0 or "No relevant content found"),
    acknowledge the limitation and answer from general knowledge if possible.
 </rag_instructions>`.trim();
+}
+
+export function buildAgentSkillsSystemPrompt(
+  skills: Pick<SkillSummary, "title" | "description">[],
+): string {
+  if (!skills.length) return "";
+
+  const skillList = skills
+    .map(
+      (skill) =>
+        `- ${skill.title}${skill.description ? `: ${skill.description}` : ""}`,
+    )
+    .join("\n");
+
+  return `
+<agent_skills>
+You have access to reusable skills attached to this agent.
+Available skills:
+${skillList}
+
+When a skill is relevant, call the \`load_skill\` tool with the exact skill title
+to load its full instructions on demand before executing that workflow.
+Do not assume hidden skill instructions without loading them first.
+</agent_skills>`.trim();
+}
+
+export function buildSkillGenerationPrompt(patternHints: string): string {
+  return `
+You are an expert skill author.
+
+Your task:
+1. Read the user's request.
+2. Produce one reusable skill definition with:
+   - title: concise, action-oriented name
+   - description: 1-2 sentences explaining purpose and triggers
+   - instructions: markdown body in SKILL.md style
+
+Output rules for "instructions":
+- Use markdown with clear sections and step-by-step guidance.
+- Include practical constraints, checks, and failure handling.
+- Keep it directly executable by an AI agent.
+- Do not include YAML frontmatter in instructions (title/description are separate fields).
+
+Local pattern hints from this repository's sample skills:
+${patternHints || "- Keep instructions structured with heading-based sections and explicit workflows."}
+
+Generate all fields in the same language as the user's request.
+`.trim();
 }
