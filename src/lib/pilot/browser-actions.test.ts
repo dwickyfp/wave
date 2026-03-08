@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyPilotUserApprovalGrant,
   createPilotActionProposal,
   findFieldByElementId,
   isSensitiveField,
@@ -130,6 +131,45 @@ describe("pilot browser actions", () => {
     expect(safeFill.requiresApproval).toBe(false);
     expect(criticalClick.requiresApproval).toBe(true);
     expect(sensitiveFill.requiresApproval).toBe(true);
+  });
+
+  it("bypasses approval for safe search-like click actions", () => {
+    const searchClick = createPilotActionProposal({
+      kind: "clickElement",
+      label: "Search",
+      explanation:
+        "Click the search button to search the current query and navigate to the results page.",
+      elementId: "button-submit",
+    });
+
+    expect(searchClick.requiresApproval).toBe(false);
+  });
+
+  it("still requires approval for update-like click actions", () => {
+    const updateClick = createPilotActionProposal({
+      kind: "clickElement",
+      label: "Save changes",
+      explanation: "Click the save button to update the account profile data.",
+      elementId: "button-submit",
+    });
+
+    expect(updateClick.requiresApproval).toBe(true);
+  });
+
+  it("treats explicit user destructive intent as approval", () => {
+    const deleteClick = createPilotActionProposal({
+      kind: "clickElement",
+      label: "Delete record",
+      explanation: "Click the delete button to remove this record.",
+      elementId: "button-submit",
+    });
+
+    expect(
+      applyPilotUserApprovalGrant(
+        deleteClick,
+        "delete this record now from the page",
+      ).requiresApproval,
+    ).toBe(false);
   });
 
   it("summarizes executed action results", () => {

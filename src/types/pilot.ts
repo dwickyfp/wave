@@ -233,6 +233,7 @@ export const pilotChatContinueRequestSchema = z.object({
   pageSnapshot: pageSnapshotSchema.optional(),
   approvedActionIds: z.array(z.string()).optional(),
   actionResults: z.array(pilotActionResultSchema).optional(),
+  stream: z.boolean().optional().default(false),
 });
 
 export type PilotChatContinueRequest = z.infer<

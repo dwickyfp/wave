@@ -22,29 +22,147 @@ const SENSITIVE_FIELD_TOKENS = [
   "ssn",
 ];
 
-const CRITICAL_ACTION_TOKENS = [
-  "save",
-  "submit",
+const ALWAYS_APPROVAL_ACTION_TOKENS = [
   "delete",
   "remove",
-  "update",
-  "confirm",
-  "apply",
+  "erase",
+  "destroy",
+  "purge",
+  "revoke",
+  "disconnect",
+  "uninstall",
+  "wipe",
+  "reset",
+  "clear data",
   "purchase",
   "pay",
   "checkout",
   "place order",
   "book",
+];
+
+const MUTATING_ACTION_TOKENS = [
+  "save",
+  "submit",
+  "update",
+  "confirm",
+  "apply",
   "send",
+  "create",
+  "publish",
+  "post",
+];
+
+const MUTATING_CONTEXT_TOKENS = [
+  "profile",
+  "account",
+  "settings",
+  "preferences",
+  "changes",
+  "data",
+  "record",
+  "details",
+  "address",
+  "payment",
+  "checkout",
+  "order",
+  "cart",
+  "comment",
+  "post",
+  "reply",
+  "profile",
+  "registration",
+  "signup",
+  "form",
+];
+
+const SAFE_CLICK_TOKENS = [
+  "search",
+  "query",
+  "result",
+  "results",
+  "find",
+  "open",
+  "play",
+  "watch",
+  "view",
+  "show",
+  "expand",
+  "collapse",
+  "next page",
+  "previous page",
+  "tab",
+  "menu",
+  "filter",
+  "sort",
+  "navigate",
+  "go to",
 ];
 
 function normalizeText(value?: string | null) {
   return value?.replace(/\s+/g, " ").trim().toLowerCase() ?? "";
 }
 
-function hasCriticalActionText(...values: Array<string | null | undefined>) {
+function hasDangerousActionText(...values: Array<string | null | undefined>) {
   const haystack = values.map(normalizeText).join(" ");
-  return CRITICAL_ACTION_TOKENS.some((token) => haystack.includes(token));
+  return ALWAYS_APPROVAL_ACTION_TOKENS.some((token) =>
+    haystack.includes(token),
+  );
+}
+
+function hasMutatingActionText(...values: Array<string | null | undefined>) {
+  const haystack = values.map(normalizeText).join(" ");
+  return MUTATING_ACTION_TOKENS.some((token) => haystack.includes(token));
+}
+
+function hasMutatingContextText(...values: Array<string | null | undefined>) {
+  const haystack = values.map(normalizeText).join(" ");
+  return MUTATING_CONTEXT_TOKENS.some((token) => haystack.includes(token));
+}
+
+function hasSafeClickText(...values: Array<string | null | undefined>) {
+  const haystack = values.map(normalizeText).join(" ");
+  return SAFE_CLICK_TOKENS.some((token) => haystack.includes(token));
+}
+
+function requiresApprovalForClick(...values: Array<string | null | undefined>) {
+  if (hasDangerousActionText(...values)) {
+    return true;
+  }
+
+  if (hasSafeClickText(...values) && !hasMutatingContextText(...values)) {
+    return false;
+  }
+
+  if (hasMutatingActionText(...values) && hasMutatingContextText(...values)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isExplicitUserActionGrant(
+  proposal: PilotActionProposal,
+  userText?: string | null,
+) {
+  const normalizedUserText = normalizeText(userText);
+  if (!normalizedUserText) {
+    return false;
+  }
+
+  const proposalText = normalizeText(
+    [proposal.label, proposal.explanation, proposal.kind].join(" "),
+  );
+
+  const userExplicitTokens = [
+    ...ALWAYS_APPROVAL_ACTION_TOKENS,
+    ...MUTATING_ACTION_TOKENS,
+  ];
+
+  return userExplicitTokens.some(
+    (token) =>
+      normalizedUserText.includes(token) && proposalText.includes(token),
+  );
 }
 
 export function isSensitiveField(field?: Partial<PageField> | null) {
@@ -97,7 +215,7 @@ export function createPilotActionProposal(input: {
     input.requiresApproval ??
     input.isSensitive ??
     (input.kind === "clickElement" &&
-      hasCriticalActionText(input.label, input.explanation));
+      requiresApprovalForClick(input.label, input.explanation));
 
   return {
     id: generateUUID(),
@@ -112,6 +230,24 @@ export function createPilotActionProposal(input: {
     requiresApproval,
     isSensitive: input.isSensitive ?? false,
     createdAt: new Date().toISOString(),
+  };
+}
+
+export function applyPilotUserApprovalGrant(
+  proposal: PilotActionProposal,
+  userText?: string | null,
+) {
+  if (!proposal.requiresApproval) {
+    return proposal;
+  }
+
+  if (!isExplicitUserActionGrant(proposal, userText)) {
+    return proposal;
+  }
+
+  return {
+    ...proposal,
+    requiresApproval: false,
   };
 }
 

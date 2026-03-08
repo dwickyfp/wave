@@ -22,7 +22,15 @@ import {
   useRef,
   useState,
 } from "react";
-import type { UIMessage } from "ai";
+import {
+  getToolName,
+  isToolUIPart,
+  parseJsonEventStream,
+  readUIMessageStream,
+  type ToolUIPart,
+  type UIMessage,
+} from "ai";
+import { z } from "zod";
 import {
   groupThreadsByDate,
   normalizeStoredPanelState,
@@ -32,6 +40,14 @@ import {
   type StoredPanelState,
   type ThreadDraftState,
 } from "./panel-state";
+import { PilotMarkdown } from "./pilot-markdown";
+import {
+  extractPilotProposalsFromMessage,
+  getStableStreamItemKey,
+  getToolStateLabel,
+  upsertStreamedMessage,
+  withStableMessageId,
+} from "./pilot-message-helpers";
 
 const AUTH_STORAGE_KEY = "emmaPilotAuth";
 const PANEL_STORAGE_KEY = "emmaPilotPanelStateV2";
@@ -39,6 +55,7 @@ const MODEL_REFRESH_MS = 1000 * 60 * 5;
 const MAX_AUTO_CONTINUATIONS = 3;
 const NEW_THREAD_KEY = "__new__";
 let runtimeConfigPromise: Promise<RuntimeConfig> | null = null;
+const uiMessageChunkStreamSchema = z.any();
 
 type ViewMode = "chat" | "settings";
 
@@ -287,6 +304,50 @@ async function callBackground<T>(message: Record<string, unknown>): Promise<T> {
   });
 }
 
+async function consumePilotUIMessageStream(options: {
+  response: Response;
+  onMessage: (message: PilotMessage) => void;
+}) {
+  if (!options.response.ok) {
+    const payload = await options.response.json().catch(() => ({}));
+    throw new Error(payload.error || payload.message || "Request failed.");
+  }
+
+  if (!options.response.body) {
+    throw new Error("Emma Pilot response stream is empty.");
+  }
+
+  const chunkStream = parseJsonEventStream({
+    stream: options.response.body,
+    schema: uiMessageChunkStreamSchema,
+  }).pipeThrough(
+    new TransformStream<
+      { success: boolean; value?: unknown; error?: Error },
+      any
+    >({
+      transform(chunk, controller) {
+        if (!chunk.success) {
+          throw chunk.error;
+        }
+        controller.enqueue(chunk.value);
+      },
+    }),
+  );
+
+  let latestMessage: PilotMessage | null = null;
+  let streamMessageId = crypto.randomUUID();
+  for await (const nextMessage of readUIMessageStream<PilotMessage>({
+    stream: chunkStream,
+  })) {
+    const normalizedMessage = withStableMessageId(nextMessage, streamMessageId);
+    streamMessageId = normalizedMessage.id;
+    latestMessage = normalizedMessage;
+    options.onMessage(normalizedMessage);
+  }
+
+  return latestMessage;
+}
+
 async function getStoredPanelState() {
   const result = await chrome.storage.local.get(PANEL_STORAGE_KEY);
   return normalizeStoredPanelState(
@@ -403,6 +464,10 @@ export function EmmaPilotApp() {
     ],
     [],
   );
+
+  const upsertAssistantMessage = useCallback((nextMessage: PilotMessage) => {
+    setMessages((current) => upsertStreamedMessage(current, nextMessage));
+  }, []);
 
   const persistPanelState = useCallback(
     async (
@@ -568,6 +633,46 @@ export function EmmaPilotApp() {
     [auth, refreshPilotTokens, runtimeConfig],
   );
 
+  const pilotFetchResponse = useCallback(
+    async (
+      path: string,
+      options: RequestInit = {},
+      allowRefresh = true,
+      context?: PilotRequestContext,
+    ) => {
+      const currentRuntimeConfig = context?.runtimeConfig ?? runtimeConfig;
+      const currentAuth = context?.auth ?? auth;
+
+      if (!currentRuntimeConfig || !currentAuth?.accessToken) {
+        throw new Error("Emma Pilot session expired.");
+      }
+
+      const headers = new Headers(options.headers || {});
+      headers.set("Authorization", `Bearer ${currentAuth.accessToken}`);
+      const response = await fetch(
+        `${currentRuntimeConfig.backendOrigin}${path}`,
+        {
+          ...options,
+          headers,
+        },
+      );
+
+      if (response.status === 401 && allowRefresh && currentAuth.refreshToken) {
+        const refreshedAuth = await refreshPilotTokens({
+          auth: currentAuth,
+          runtimeConfig: currentRuntimeConfig,
+        });
+        return await pilotFetchResponse(path, options, false, {
+          auth: refreshedAuth,
+          runtimeConfig: currentRuntimeConfig,
+        });
+      }
+
+      return response;
+    },
+    [auth, refreshPilotTokens, runtimeConfig],
+  );
+
   const loadModels = useCallback(
     async (context?: PilotRequestContext) => {
       const currentAuth = context?.auth ?? auth;
@@ -656,7 +761,14 @@ export function EmmaPilotApp() {
         });
 
         setActiveThreadId(detail.id);
-        setMessages(detail.messages);
+        setMessages(
+          detail.messages.map((message, index) =>
+            withStableMessageId(
+              message,
+              `${detail.id || "pilot-thread"}-message-${index}`,
+            ),
+          ),
+        );
         setActiveSelections({
           selectedAgentId: preferences.selectedAgentId,
           selectedChatModel: preferences.selectedChatModel,
@@ -785,6 +897,14 @@ export function EmmaPilotApp() {
       runtimeConfig,
     ],
   );
+
+  const refreshPilotSidebarData = useCallback(async () => {
+    if (!auth) {
+      return;
+    }
+
+    await Promise.all([loadConfig(), loadThreads(), loadModels()]);
+  }, [auth, loadConfig, loadModels, loadThreads]);
 
   useEffect(() => {
     if (initStartedRef.current) {
@@ -927,8 +1047,12 @@ export function EmmaPilotApp() {
   }, [currentDraft.input, resizeComposerInput]);
 
   useEffect(() => {
-    scrollMessagesToBottom(messages.length > 0 ? "smooth" : "auto");
-  }, [messages.length, scrollMessagesToBottom]);
+    if (!messages.length) {
+      return;
+    }
+
+    scrollMessagesToBottom(sending ? "auto" : "smooth");
+  }, [messages, scrollMessagesToBottom, sending]);
 
   const handleSidebarToggle = useCallback(() => {
     setSidebarOpen((current) => {
@@ -1157,10 +1281,7 @@ export function EmmaPilotApp() {
         return null;
       }
 
-      const response = await pilotFetchJson<{
-        threadId: string;
-        assistantMessage: PilotMessage;
-      }>("/api/pilot/chat/continue", {
+      const response = await pilotFetchResponse("/api/pilot/chat/continue", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1176,12 +1297,22 @@ export function EmmaPilotApp() {
           pageSnapshot: nextSnapshot || undefined,
           approvedActionIds: actionResults.map((result) => result.proposalId),
           actionResults,
+          stream: true,
         }),
       });
 
-      return response.assistantMessage;
+      return await consumePilotUIMessageStream({
+        response,
+        onMessage: upsertAssistantMessage,
+      });
     },
-    [activeTab, pilotFetchJson, refreshSnapshot, snapshot],
+    [
+      activeTab,
+      pilotFetchResponse,
+      refreshSnapshot,
+      snapshot,
+      upsertAssistantMessage,
+    ],
   );
 
   const runAgenticContinuation = useCallback(
@@ -1195,8 +1326,8 @@ export function EmmaPilotApp() {
       let continuationCount = 0;
 
       while (continuationCount <= MAX_AUTO_CONTINUATIONS) {
-        const automaticProposals = (
-          latestAssistant?.metadata?.pilotProposals ?? []
+        const automaticProposals = extractPilotProposalsFromMessage(
+          latestAssistant,
         ).filter((proposal) => !proposal.requiresApproval);
 
         if (!automaticProposals.length) {
@@ -1224,15 +1355,17 @@ export function EmmaPilotApp() {
           break;
         }
 
-        setMessages((current) => [...current, latestAssistant as PilotMessage]);
         continuationCount += 1;
 
-        const nextProposals = latestAssistant.metadata?.pilotProposals ?? [];
-        if (!nextProposals.length) {
+        const extractedNextProposals =
+          extractPilotProposalsFromMessage(latestAssistant);
+        if (!extractedNextProposals.length) {
           break;
         }
 
-        if (nextProposals.some((proposal) => proposal.requiresApproval)) {
+        if (
+          extractedNextProposals.some((proposal) => proposal.requiresApproval)
+        ) {
           break;
         }
       }
@@ -1263,9 +1396,7 @@ export function EmmaPilotApp() {
           threadId: activeThreadId,
           seedActionResults: nextResults,
         });
-        await refreshPilotData({
-          initialThreadId: activeThreadId,
-        });
+        await refreshPilotSidebarData();
       } catch (error) {
         setStatusMessage(
           (error as Error).message ||
@@ -1279,7 +1410,7 @@ export function EmmaPilotApp() {
       activeThreadId,
       currentActionResults,
       mergeActionResults,
-      refreshPilotData,
+      refreshPilotSidebarData,
       runAgenticContinuation,
       runProposalExecution,
     ],
@@ -1304,6 +1435,7 @@ export function EmmaPilotApp() {
     window.requestAnimationFrame(() => resizeComposerInput());
     setSending(true);
     setStatusMessage("");
+    let assistantStreamed = false;
 
     try {
       const latestPageState = await refreshSnapshot({ silent: true });
@@ -1332,16 +1464,15 @@ export function EmmaPilotApp() {
       );
       const seedActionResults = [...currentActionResults];
 
-      const response = await pilotFetchJson<{
-        threadId: string;
-        assistantMessage: PilotMessage;
-      }>("/api/pilot/chat", {
+      const nextThreadId = activeThreadId || crypto.randomUUID();
+
+      const response = await pilotFetchResponse("/api/pilot/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          threadId: activeThreadId || undefined,
+          threadId: nextThreadId,
           message: userMessage,
           mentions: selectedAgent
             ? [
@@ -1371,13 +1502,10 @@ export function EmmaPilotApp() {
           ),
           actionResults: currentActionResults,
           chatModel: activeSelections.selectedChatModel || undefined,
+          stream: true,
         }),
       });
 
-      const nextThreadId = response.threadId;
-      const assistantMessage = response.assistantMessage;
-
-      setMessages([...currentMessages, assistantMessage]);
       setActiveThreadId(nextThreadId);
       setDrafts((current) => {
         const currentDraftState = current[activeDraftKey] ?? {};
@@ -1412,15 +1540,21 @@ export function EmmaPilotApp() {
         [nextThreadId]: seedActionResults,
       }));
 
+      const assistantMessage = await consumePilotUIMessageStream({
+        response,
+        onMessage: (message) => {
+          assistantStreamed = true;
+          upsertAssistantMessage(message);
+        },
+      });
+
       await runAgenticContinuation({
         threadId: nextThreadId,
         assistantMessage,
         seedActionResults,
       });
 
-      await refreshPilotData({
-        initialThreadId: nextThreadId,
-      });
+      await refreshPilotSidebarData();
     } catch (error) {
       setDraftForKey(activeDraftKey, {
         input: originalInput,
@@ -1428,7 +1562,9 @@ export function EmmaPilotApp() {
       setStatusMessage(
         (error as Error).message || "Emma Pilot request failed.",
       );
-      setMessages(previousMessages);
+      if (!assistantStreamed) {
+        setMessages(previousMessages);
+      }
     } finally {
       setSending(false);
     }
@@ -1443,8 +1579,8 @@ export function EmmaPilotApp() {
     currentAttachments,
     currentDraft.input,
     persistPanelState,
-    pilotFetchJson,
-    refreshPilotData,
+    pilotFetchResponse,
+    refreshPilotSidebarData,
     refreshSnapshot,
     resizeComposerInput,
     runAgenticContinuation,
@@ -1453,6 +1589,7 @@ export function EmmaPilotApp() {
     activeDraftKey,
     messages,
     setDraftForKey,
+    upsertAssistantMessage,
   ]);
 
   const handleOpenEmma = useCallback(() => {
@@ -1557,9 +1694,15 @@ export function EmmaPilotApp() {
               ) : (
                 messages.map((message, index) => (
                   <MessageCard
-                    key={message.id}
+                    key={getStableStreamItemKey({
+                      messageId: message.id,
+                      preferredKey: message.id,
+                      fallbackLabel: message.role,
+                      index,
+                    })}
                     message={message}
                     isActive={index === messages.length - 1}
+                    isStreaming={sending && index === messages.length - 1}
                     actionResults={currentActionResults}
                     onApproveProposal={handleApproveProposal}
                   />
@@ -2027,13 +2170,219 @@ function DownloadCard(props: {
   );
 }
 
+function renderToolPreview(value: unknown) {
+  if (value == null) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function ReasoningCard(props: {
+  text: string;
+  isStreaming: boolean;
+}) {
+  const [expanded, setExpanded] = useState(props.isStreaming);
+
+  useEffect(() => {
+    if (props.isStreaming) {
+      setExpanded(true);
+    }
+  }, [props.isStreaming]);
+
+  return (
+    <div className="pilot-process-card">
+      <button
+        className="pilot-process-toggle"
+        onClick={() => setExpanded((current) => !current)}
+        type="button"
+      >
+        <span className="pilot-process-title">Thinking</span>
+        <span className="pilot-badge">
+          {props.isStreaming ? "Live" : "Reasoning"}
+        </span>
+      </button>
+      {expanded ? (
+        <div className="pilot-process-body">
+          <div className="pilot-markdown">
+            <PilotMarkdown>{props.text}</PilotMarkdown>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ProposalCard(props: {
+  proposal: PilotProposal;
+  result?: PilotActionResult;
+  onApproveProposal: (proposal: PilotProposal) => void;
+}) {
+  return (
+    <div className="pilot-proposal-card">
+      <div className="pilot-proposal-header">
+        <span className="pilot-proposal-title">{props.proposal.label}</span>
+        <span
+          className={clsx(
+            "pilot-badge",
+            props.result?.status === "succeeded" && "is-success",
+          )}
+        >
+          {props.result
+            ? props.result.status
+            : props.proposal.requiresApproval
+              ? props.proposal.isSensitive
+                ? "Sensitive"
+                : "Approval"
+              : "Auto"}
+        </span>
+      </div>
+      <div className="pilot-proposal-text pilot-markdown">
+        <PilotMarkdown>{props.proposal.explanation}</PilotMarkdown>
+      </div>
+      <div className="pilot-proposal-footer">
+        <span className="pilot-settings-muted">
+          {props.result?.summary ||
+            props.proposal.url ||
+            props.proposal.elementId ||
+            props.proposal.kind}
+        </span>
+        {props.proposal.requiresApproval ? (
+          <button
+            className="pilot-secondary-button"
+            onClick={() => props.onApproveProposal(props.proposal)}
+            disabled={Boolean(props.result)}
+            type="button"
+          >
+            {props.result ? "Recorded" : "Approve"}
+          </button>
+        ) : (
+          <span className="pilot-settings-muted">
+            {props.result
+              ? "Executed automatically"
+              : "Executing automatically"}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ToolPartCard(props: {
+  part: any;
+  actionResults: PilotActionResult[];
+  onApproveProposal: (proposal: PilotProposal) => void;
+  messageId?: string;
+  itemIndex?: number;
+}) {
+  const toolName = getToolName(props.part);
+  const proposal =
+    toolName.startsWith("pilot_propose_") &&
+    props.part.state === "output-available" &&
+    props.part.output &&
+    typeof props.part.output === "object"
+      ? (props.part.output as PilotProposal)
+      : null;
+
+  if (proposal) {
+    return (
+      <ProposalCard
+        proposal={proposal}
+        result={props.actionResults.find(
+          (item) => item.proposalId === proposal.id,
+        )}
+        onApproveProposal={props.onApproveProposal}
+      />
+    );
+  }
+
+  const outputMessage =
+    props.part.state === "output-available" &&
+    props.part.output &&
+    typeof props.part.output === "object" &&
+    "parts" in props.part.output
+      ? (props.part.output as UIMessage)
+      : null;
+  const nestedText = outputMessage
+    ? outputMessage.parts
+        .filter(isTextPilotPart)
+        .map((part) => part.text)
+        .join("\n")
+        .trim()
+    : "";
+  const nestedToolParts = outputMessage
+    ? outputMessage.parts.filter((part): part is ToolUIPart =>
+        isToolUIPart(part),
+      )
+    : [];
+
+  return (
+    <div className="pilot-process-card">
+      <div className="pilot-process-toggle">
+        <span className="pilot-process-title">{toolName}</span>
+        <span className="pilot-badge">{getToolStateLabel(props.part)}</span>
+      </div>
+
+      <div className="pilot-process-body">
+        {"input" in props.part && props.part.input ? (
+          <pre className="pilot-tool-json">
+            {renderToolPreview(props.part.input)}
+          </pre>
+        ) : null}
+
+        {nestedToolParts.length ? (
+          <div className="pilot-tool-steps">
+            {nestedToolParts.map((part, index) => (
+              <div
+                key={getStableStreamItemKey({
+                  messageId: outputMessage?.id,
+                  preferredKey: part.toolCallId,
+                  fallbackLabel: getToolName(part),
+                  index,
+                })}
+                className="pilot-tool-step"
+              >
+                {getToolName(part)}
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {nestedText ? (
+          <div className="pilot-markdown">
+            <PilotMarkdown>{nestedText}</PilotMarkdown>
+          </div>
+        ) : null}
+
+        {!nestedText && "output" in props.part && props.part.output ? (
+          <pre className="pilot-tool-json">
+            {renderToolPreview(props.part.output)}
+          </pre>
+        ) : null}
+
+        {props.part.state === "output-error" ? (
+          <p className="pilot-message-text is-muted">Tool execution failed.</p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function MessageCard(props: {
   message: PilotMessage;
   isActive: boolean;
+  isStreaming: boolean;
   actionResults: PilotActionResult[];
   onApproveProposal: (proposal: PilotProposal) => void;
 }) {
-  const textParts = props.message.parts.filter((part) => isTextPilotPart(part));
   const fileParts = props.message.parts.filter((part) => isFilePilotPart(part));
   const sourceParts = props.message.parts.filter(
     (part) => part.type === "source-url",
@@ -2042,7 +2391,11 @@ function MessageCard(props: {
     url: string;
     title?: string;
   }>;
-  const proposals = props.message.metadata?.pilotProposals ?? [];
+  const streamedProposals = extractPilotProposalsFromMessage(props.message);
+  const legacyProposals =
+    streamedProposals.length === 0
+      ? (props.message.metadata?.pilotProposals ?? [])
+      : [];
 
   return (
     <article
@@ -2055,21 +2408,59 @@ function MessageCard(props: {
         <span>{props.message.role === "user" ? "You" : "Emma Pilot"}</span>
       </div>
 
-      {textParts.length ? (
-        textParts.map((part, index) => (
-          <p
-            key={`${props.message.id}-text-${index}`}
-            className="pilot-message-text"
-          >
-            {part.text}
-          </p>
-        ))
-      ) : (
+      {props.message.parts.map((part, index) => {
+        if (isTextPilotPart(part)) {
+          return (
+            <div
+              key={`${props.message.id}-text-${index}`}
+              className="pilot-markdown pilot-message-text"
+            >
+              <PilotMarkdown>{part.text}</PilotMarkdown>
+            </div>
+          );
+        }
+
+        if (part.type === "reasoning") {
+          return (
+            <ReasoningCard
+              key={`${props.message.id}-reasoning-${index}`}
+              text={part.text}
+              isStreaming={props.isStreaming && props.isActive}
+            />
+          );
+        }
+
+        if (isToolUIPart(part)) {
+          return (
+            <ToolPartCard
+              key={getStableStreamItemKey({
+                messageId: props.message.id,
+                preferredKey: part.toolCallId,
+                fallbackLabel: getToolName(part),
+                index,
+              })}
+              part={part}
+              actionResults={props.actionResults}
+              onApproveProposal={props.onApproveProposal}
+              messageId={props.message.id}
+              itemIndex={index}
+            />
+          );
+        }
+
+        if (part.type === "step-start") {
+          return null;
+        }
+
+        return null;
+      })}
+
+      {props.message.parts.length === 0 ? (
         <p className="pilot-message-text is-muted">
           This message contains content that Emma Pilot does not render inline
           yet.
         </p>
-      )}
+      ) : null}
 
       {fileParts.length || sourceParts.length ? (
         <div className="pilot-message-assets">
@@ -2098,58 +2489,25 @@ function MessageCard(props: {
         </div>
       ) : null}
 
-      {proposals.length ? (
+      {legacyProposals.length ? (
         <div className="pilot-proposal-list">
-          {proposals.map((proposal) => {
+          {legacyProposals.map((proposal, proposalIndex) => {
             const result = props.actionResults.find(
               (item) => item.proposalId === proposal.id,
             );
 
             return (
-              <div key={proposal.id} className="pilot-proposal-card">
-                <div className="pilot-proposal-header">
-                  <span className="pilot-proposal-title">{proposal.label}</span>
-                  <span
-                    className={clsx(
-                      "pilot-badge",
-                      result?.status === "succeeded" && "is-success",
-                    )}
-                  >
-                    {result
-                      ? result.status
-                      : proposal.requiresApproval
-                        ? proposal.isSensitive
-                          ? "Sensitive"
-                          : "Approval"
-                        : "Auto"}
-                  </span>
-                </div>
-                <p className="pilot-proposal-text">{proposal.explanation}</p>
-                <div className="pilot-proposal-footer">
-                  <span className="pilot-settings-muted">
-                    {result?.summary ||
-                      proposal.url ||
-                      proposal.elementId ||
-                      proposal.kind}
-                  </span>
-                  {proposal.requiresApproval ? (
-                    <button
-                      className="pilot-secondary-button"
-                      onClick={() => props.onApproveProposal(proposal)}
-                      disabled={Boolean(result)}
-                      type="button"
-                    >
-                      {result ? "Recorded" : "Approve"}
-                    </button>
-                  ) : (
-                    <span className="pilot-settings-muted">
-                      {result
-                        ? "Executed automatically"
-                        : "Executing automatically"}
-                    </span>
-                  )}
-                </div>
-              </div>
+              <ProposalCard
+                key={getStableStreamItemKey({
+                  messageId: props.message.id,
+                  preferredKey: proposal.id,
+                  fallbackLabel: proposal.kind || proposal.label,
+                  index: proposalIndex,
+                })}
+                proposal={proposal}
+                result={result}
+                onApproveProposal={props.onApproveProposal}
+              />
             );
           })}
         </div>

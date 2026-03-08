@@ -405,21 +405,82 @@ h2 {
 }
 
 .pilot-message-card {
-  border-radius: 18px;
-  padding: 14px;
+  align-self: stretch;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   background: transparent;
-  border-color: var(--pilot-card-border);
   box-shadow: none;
 }
 
 .pilot-message-card.is-user {
-  background: transparent;
-  border-color: var(--pilot-card-user-border);
+  align-self: flex-end;
+  width: min(100%, 520px);
+  padding: 14px;
+  border: 1px solid var(--pilot-card-user-border);
+  border-radius: 18px;
+  background: var(--pilot-card-user-bg);
+}
+
+.pilot-message-card.is-assistant {
+  padding: 0;
 }
 
 .pilot-message-text {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.pilot-markdown {
+  color: var(--pilot-text);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.pilot-markdown > :first-child {
+  margin-top: 0;
+}
+
+.pilot-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.pilot-markdown p,
+.pilot-markdown ul,
+.pilot-markdown ol,
+.pilot-markdown pre,
+.pilot-markdown blockquote {
+  margin: 0 0 12px;
+}
+
+.pilot-markdown ul,
+.pilot-markdown ol {
+  padding-left: 20px;
+}
+
+.pilot-markdown a {
+  color: var(--pilot-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pilot-markdown code {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(138, 153, 214, 0.12);
+  font-size: 12px;
+}
+
+.pilot-markdown pre {
+  overflow: auto;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(6, 10, 26, 0.92);
+}
+
+.pilot-markdown pre code {
+  padding: 0;
+  background: transparent;
 }
 
 .pilot-message-text.is-muted {
@@ -450,6 +511,66 @@ h2 {
   border-radius: 16px;
   border: 1px solid var(--pilot-proposal-border);
   background: var(--pilot-proposal-bg);
+}
+
+.pilot-process-card {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--pilot-proposal-border);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.pilot-process-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.pilot-process-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pilot-process-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.pilot-tool-json {
+  margin: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(7, 12, 29, 0.88);
+  color: rgba(237, 241, 255, 0.9);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.pilot-tool-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pilot-tool-step {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--pilot-proposal-border);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  color: var(--pilot-text-soft);
 }
 
 .pilot-proposal-header,

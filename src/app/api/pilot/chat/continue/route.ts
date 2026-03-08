@@ -2,12 +2,20 @@ import { NextResponse } from "next/server";
 import { pilotChatContinueRequestSchema } from "app-types/pilot";
 import { z } from "zod";
 import { requirePilotExtensionSession } from "lib/pilot/auth";
-import { continuePilotChat } from "lib/pilot/chat";
+import { continuePilotChat, streamPilotContinuationChat } from "lib/pilot/chat";
 
 export async function POST(request: Request) {
   try {
     const pilotSession = await requirePilotExtensionSession(request.headers);
     const body = pilotChatContinueRequestSchema.parse(await request.json());
+
+    if (body.stream) {
+      return await streamPilotContinuationChat({
+        userId: pilotSession.userId,
+        request: body,
+        abortSignal: request.signal,
+      });
+    }
 
     const result = await continuePilotChat({
       userId: pilotSession.userId,

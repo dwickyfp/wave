@@ -1,12 +1,22 @@
 import {
   convertToModelMessages,
   generateText,
+  getToolName,
+  isToolUIPart,
+  smoothStream,
   stepCountIs,
+  streamText,
   tool,
+  type ToolUIPart,
   type UIMessage,
 } from "ai";
 import type { Agent } from "app-types/agent";
-import type { ChatMention, ChatMetadata, ChatModel } from "app-types/chat";
+import type {
+  ChatMention,
+  ChatMetadata,
+  ChatModel,
+  ChatUsage,
+} from "app-types/chat";
 import type {
   PageSnapshot,
   PilotActionProposal,
@@ -36,6 +46,7 @@ import {
 } from "lib/db/repository";
 import { generateUUID, truncateString } from "lib/utils";
 import {
+  applyPilotUserApprovalGrant,
   createPilotActionProposal,
   findFieldByElementId,
   isSensitiveField,
@@ -248,6 +259,19 @@ function collectPilotProposals(steps: Array<{ toolResults?: any[] }>) {
   );
 }
 
+function normalizePilotProposals(input: {
+  proposals: PilotActionProposal[];
+  snapshot?: PageSnapshot;
+  relevantForm?: ReturnType<typeof buildRelevantFormContext>;
+  userText?: string;
+}) {
+  return mergePilotFillProposals({
+    proposals: input.proposals,
+    snapshot: input.snapshot,
+    relevantForm: input.relevantForm,
+  }).map((proposal) => applyPilotUserApprovalGrant(proposal, input.userText));
+}
+
 async function resolvePilotAgent(
   userId: string,
   mentions: ChatMention[],
@@ -316,6 +340,78 @@ function finalizePilotTaskState(input: {
   return input.taskState;
 }
 
+function extractPilotProposalsFromMessage(
+  message: UIMessage,
+  snapshot?: PageSnapshot,
+  relevantForm?: ReturnType<typeof buildRelevantFormContext>,
+  userText?: string,
+) {
+  const proposals = message.parts
+    .filter((part): part is ToolUIPart => isToolUIPart(part))
+    .filter((part) => getToolName(part).startsWith("pilot_propose_"))
+    .flatMap((part) => {
+      if (part.state !== "output-available") {
+        return [];
+      }
+
+      const output = part.output;
+      if (!output || typeof output !== "object") {
+        return [];
+      }
+
+      return [output as PilotActionProposal];
+    });
+
+  return normalizePilotProposals({
+    proposals,
+    snapshot,
+    relevantForm,
+    userText,
+  });
+}
+
+function extractAssistantTextFromMessage(message: UIMessage) {
+  return message.parts
+    .filter(
+      (
+        part,
+      ): part is Extract<
+        UIMessage["parts"][number],
+        { type: "text"; text: string }
+      > => part.type === "text" && typeof part.text === "string",
+    )
+    .map((part) => part.text)
+    .join("\n")
+    .trim();
+}
+
+function buildPilotResponseMetadata(input: {
+  resolvedModel: ChatModel;
+  selectedAgent: Agent | null;
+  tabContext:
+    | PilotChatRequest["tabContext"]
+    | PilotChatContinueRequest["tabContext"];
+  actionResults?: PilotActionResult[];
+  proposals: PilotActionProposal[];
+  taskState: PilotTaskState;
+  toolCount: number;
+  usage?: ChatUsage;
+}) {
+  return {
+    source: "emma_pilot",
+    chatModel: input.resolvedModel,
+    toolChoice: "auto",
+    toolCount: input.toolCount,
+    agentId: input.selectedAgent?.id,
+    usage: input.usage,
+    tabUrl: input.tabContext.url,
+    tabTitle: input.tabContext.title,
+    lastApprovedActionSummary: summarizeActionResults(input.actionResults),
+    pilotProposals: input.proposals,
+    pilotTaskState: input.taskState,
+  } satisfies ChatMetadata;
+}
+
 async function executePilotModelTurn(input: {
   userId: string;
   messages: UIMessage[];
@@ -323,7 +419,7 @@ async function executePilotModelTurn(input: {
   selectedAgent: Agent | null;
   mentions: ChatMention[];
   resolvedModel: ChatModel;
-  user: Awaited<ReturnType<typeof userRepository.getUserById>>;
+  user: NonNullable<Awaited<ReturnType<typeof userRepository.getUserById>>>;
   userPreferences: Awaited<ReturnType<typeof userRepository.getPreferences>>;
   pageSnapshot?: PageSnapshot;
   tabContext:
@@ -429,10 +525,11 @@ async function executePilotModelTurn(input: {
   };
 
   let result = await runTurn();
-  let proposals = mergePilotFillProposals({
+  let proposals = normalizePilotProposals({
     proposals: collectPilotProposals(result.steps),
     snapshot: input.pageSnapshot,
     relevantForm,
+    userText: input.taskUserText,
   });
   let text = buildPilotAssistantText({
     text: result.text,
@@ -457,10 +554,11 @@ async function executePilotModelTurn(input: {
       ].join("\n"),
     );
 
-    proposals = mergePilotFillProposals({
+    proposals = normalizePilotProposals({
       proposals: collectPilotProposals(result.steps),
       snapshot: input.pageSnapshot,
       relevantForm,
+      userText: input.taskUserText,
     });
     text = buildPilotAssistantText({
       text: result.text,
@@ -508,6 +606,232 @@ async function executePilotModelTurn(input: {
     proposals,
     metadata,
   };
+}
+
+async function streamPilotModelTurn(input: {
+  threadId: string;
+  originalMessages: UIMessage[];
+  modelMessages: UIMessage[];
+  taskUserText: string;
+  selectedAgent: Agent | null;
+  mentions: ChatMention[];
+  resolvedModel: ChatModel;
+  user: NonNullable<Awaited<ReturnType<typeof userRepository.getUserById>>>;
+  userPreferences: Awaited<ReturnType<typeof userRepository.getPreferences>>;
+  pageSnapshot?: PageSnapshot;
+  tabContext:
+    | PilotChatRequest["tabContext"]
+    | PilotChatContinueRequest["tabContext"];
+  actionResults?: PilotActionResult[];
+  previousTaskState?: PilotTaskState;
+  abortSignal?: AbortSignal;
+  modeOverride?: PilotTaskState["mode"];
+  extraPrompt?: string;
+}) {
+  const mode =
+    input.modeOverride ??
+    resolvePilotTaskMode({
+      userText: input.taskUserText,
+      previousState: input.previousTaskState,
+      actionResults: input.actionResults,
+    });
+
+  const relevantForm = buildRelevantFormContext({
+    snapshot: input.pageSnapshot,
+    userText: input.taskUserText,
+    previousState: input.previousTaskState,
+    mode,
+  });
+
+  const baseTaskState = buildPilotTaskState({
+    mode,
+    previousState: input.previousTaskState,
+    relevantForm,
+    selectedAgent: input.selectedAgent,
+    snapshot: input.pageSnapshot,
+    actionResults: input.actionResults,
+  });
+
+  const toolset = await loadWaveAgentBoundTools({
+    agent: input.selectedAgent,
+    userId: input.user.id,
+    mentions: input.mentions,
+    allowedAppDefaultToolkit: [
+      AppDefaultToolkit.Code,
+      AppDefaultToolkit.Http,
+      AppDefaultToolkit.WebSearch,
+      AppDefaultToolkit.Visualization,
+    ],
+    dataStream: createNoopDataStream(),
+    abortSignal: input.abortSignal ?? new AbortController().signal,
+    chatModel: input.resolvedModel,
+    source: "agent",
+    isToolCallAllowed: true,
+  });
+
+  const uiMessages = await convertToModelMessages(input.modelMessages);
+  const system = buildWaveAgentSystemPrompt({
+    user: input.user ?? undefined,
+    userPreferences: input.userPreferences ?? undefined,
+    agent: null,
+    subAgents: toolset.subAgents,
+    attachedSkills: toolset.attachedSkills,
+    extraPrompts: [
+      buildPilotBrokerPrompt({
+        tabUrl: input.tabContext.url,
+        tabTitle: input.tabContext.title,
+        snapshot: input.pageSnapshot,
+        actionResults: input.actionResults,
+        relevantForm,
+        taskState: baseTaskState,
+        mode,
+        selectedAgent: input.selectedAgent,
+      }),
+      input.extraPrompt,
+    ],
+  });
+
+  const dbModelResult = await getDbModel(input.resolvedModel);
+  if (!dbModelResult) {
+    throw new Error(
+      `Model "${input.resolvedModel.model}" is not configured. Please set it up in Settings → AI Providers.`,
+    );
+  }
+
+  let streamedText = "";
+  const streamedToolNames = new Set<string>();
+  let streamedProposals: PilotActionProposal[] = [];
+  let streamedUsage: ChatUsage | undefined;
+
+  const result = streamText({
+    model: dbModelResult.model,
+    system,
+    messages: uiMessages,
+    tools: {
+      ...toolset.mcpTools,
+      ...toolset.workflowTools,
+      ...toolset.subagentTools,
+      ...toolset.knowledgeTools,
+      ...toolset.skillTools,
+      ...toolset.appDefaultTools,
+      ...buildPilotProposalTools(input.pageSnapshot),
+    },
+    experimental_transform: smoothStream({ chunking: "word" }),
+    stopWhen: stepCountIs(12),
+    abortSignal: input.abortSignal,
+    onChunk: async ({ chunk }) => {
+      if (chunk.type === "text-delta") {
+        streamedText += chunk.text;
+        return;
+      }
+
+      if (chunk.type === "tool-call") {
+        streamedToolNames.add(chunk.toolName);
+      }
+    },
+    onStepFinish: async (event) => {
+      for (const toolCall of event.toolCalls ?? []) {
+        streamedToolNames.add(toolCall.toolName);
+      }
+
+      streamedProposals = normalizePilotProposals({
+        proposals: [
+          ...streamedProposals,
+          ...collectPilotProposals([event as { toolResults?: any[] }]),
+        ],
+        snapshot: input.pageSnapshot,
+        relevantForm,
+        userText: input.taskUserText,
+      });
+    },
+  });
+
+  return result.toUIMessageStreamResponse({
+    originalMessages: input.originalMessages,
+    generateMessageId: generateUUID,
+    messageMetadata: ({ part }) => {
+      if (part.type === "finish" && part.totalUsage) {
+        streamedUsage = {
+          ...part.totalUsage,
+          ...buildUsageCostSnapshot(part.totalUsage, {
+            inputTokenPricePer1MUsd: dbModelResult.inputTokenPricePer1MUsd,
+            outputTokenPricePer1MUsd: dbModelResult.outputTokenPricePer1MUsd,
+          }),
+        };
+
+        const finalText = buildPilotAssistantText({
+          text: streamedText,
+          proposals: streamedProposals,
+        });
+        const finalTaskState = finalizePilotTaskState({
+          taskState: baseTaskState,
+          proposals: streamedProposals,
+          text: finalText,
+        });
+
+        return buildPilotResponseMetadata({
+          resolvedModel: input.resolvedModel,
+          selectedAgent: input.selectedAgent,
+          tabContext: input.tabContext,
+          actionResults: input.actionResults,
+          proposals: streamedProposals,
+          taskState: finalTaskState,
+          toolCount: streamedToolNames.size,
+          usage: streamedUsage,
+        });
+      }
+
+      if (part.type === "start") {
+        return buildPilotResponseMetadata({
+          resolvedModel: input.resolvedModel,
+          selectedAgent: input.selectedAgent,
+          tabContext: input.tabContext,
+          actionResults: input.actionResults,
+          proposals: [],
+          taskState: baseTaskState,
+          toolCount: 0,
+        });
+      }
+
+      return undefined;
+    },
+    onFinish: async ({ responseMessage }) => {
+      const finalProposals = extractPilotProposalsFromMessage(
+        responseMessage,
+        input.pageSnapshot,
+        relevantForm,
+        input.taskUserText,
+      );
+      const finalText = buildPilotAssistantText({
+        text: extractAssistantTextFromMessage(responseMessage) || streamedText,
+        proposals: finalProposals,
+      });
+      const finalTaskState = finalizePilotTaskState({
+        taskState: baseTaskState,
+        proposals: finalProposals,
+        text: finalText,
+      });
+      const finalMetadata = buildPilotResponseMetadata({
+        resolvedModel: input.resolvedModel,
+        selectedAgent: input.selectedAgent,
+        tabContext: input.tabContext,
+        actionResults: input.actionResults,
+        proposals: finalProposals,
+        taskState: finalTaskState,
+        toolCount: streamedToolNames.size,
+        usage: streamedUsage,
+      });
+
+      await chatRepository.upsertMessage({
+        threadId: input.threadId,
+        role: responseMessage.role,
+        id: responseMessage.id,
+        parts: responseMessage.parts.map(convertToSavePart),
+        metadata: finalMetadata,
+      });
+    },
+    onError: (error) => (error as Error).message || "Pilot stream failed.",
+  });
 }
 
 export async function runPilotChat(input: {
@@ -637,6 +961,119 @@ export async function runPilotChat(input: {
   };
 }
 
+export async function streamPilotChat(input: {
+  userId: string;
+  request: PilotChatRequest;
+  abortSignal?: AbortSignal;
+}) {
+  const threadId = input.request.threadId ?? generateUUID();
+  const thread = await ensureUserChatThread({
+    threadId,
+    userId: input.userId,
+  });
+
+  const messages: UIMessage[] = [...(thread.messages ?? [])].map((message) => ({
+    id: message.id,
+    role: message.role,
+    parts: message.parts,
+    metadata: message.metadata,
+  }));
+
+  const currentMessage = input.request.message as UIMessage;
+  if (messages.at(-1)?.id === currentMessage.id) {
+    messages.pop();
+  }
+
+  await applyChatAttachmentsToMessage({
+    message: currentMessage,
+    attachments: input.request.attachments ?? [],
+    userId: input.userId,
+  });
+
+  const currentMessageMetadata = currentMessage.metadata as
+    | ChatMetadata
+    | undefined;
+  const messagesWithCurrent = [...messages, currentMessage];
+  const latestSelections = getLatestPilotSelections(messagesWithCurrent);
+  const mentions = [...(input.request.mentions ?? [])];
+  const selectedAgent = await resolvePilotAgent(
+    input.userId,
+    mentions,
+    currentMessageMetadata?.agentId ??
+      latestSelections.agentId ??
+      latestSelections.pilotTaskState?.selectedAgentId,
+  );
+
+  if (selectedAgent?.instructions?.mentions?.length) {
+    mentions.push(...selectedAgent.instructions.mentions);
+  }
+
+  const resolvedModel =
+    input.request.chatModel ??
+    currentMessageMetadata?.chatModel ??
+    latestSelections.chatModel ??
+    (await resolveDefaultPilotChatModel());
+
+  if (!resolvedModel) {
+    throw new Error(
+      "No tool-capable chat model is configured. Configure one in Settings > AI Providers.",
+    );
+  }
+
+  const user = await userRepository.getUserById(input.userId);
+  if (!user) {
+    throw new Error("Emma Pilot user not found.");
+  }
+  const userPreferences = await userRepository.getPreferences(input.userId);
+
+  const userMetadata: ChatMetadata = {
+    source: "emma_pilot",
+    chatModel: resolvedModel,
+    agentId: selectedAgent?.id,
+    tabUrl: input.request.tabContext.url,
+    tabTitle: input.request.tabContext.title,
+    lastApprovedActionSummary: summarizeActionResults(
+      input.request.actionResults,
+    ),
+  };
+
+  await chatRepository.upsertMessage({
+    threadId,
+    role: currentMessage.role,
+    id: currentMessage.id,
+    parts: currentMessage.parts.map(convertToSavePart),
+    metadata: userMetadata,
+  });
+
+  if (!thread.title.trim()) {
+    const firstTextPart = currentMessage.parts.find(
+      (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
+        part.type === "text" && "text" in part,
+    );
+    const firstUserText = firstTextPart?.text ?? "Emma Pilot";
+    await chatRepository.updateThread(threadId, {
+      title: truncateString(firstUserText, 80),
+    });
+  }
+
+  return await streamPilotModelTurn({
+    threadId,
+    originalMessages: messagesWithCurrent,
+    modelMessages: messagesWithCurrent,
+    taskUserText: getLatestUserText(messagesWithCurrent),
+    selectedAgent,
+    mentions,
+    resolvedModel,
+    user,
+    userPreferences,
+    pageSnapshot: input.request.pageSnapshot,
+    tabContext: input.request.tabContext,
+    actionResults: input.request.actionResults,
+    previousTaskState: getLatestPilotTaskState(messages),
+    abortSignal: input.abortSignal,
+  });
+}
+
 export async function continuePilotChat(input: {
   userId: string;
   request: PilotChatContinueRequest;
@@ -726,4 +1163,81 @@ export async function continuePilotChat(input: {
     proposals: turnResult.proposals,
     chatModel: resolvedModel,
   };
+}
+
+export async function streamPilotContinuationChat(input: {
+  userId: string;
+  request: PilotChatContinueRequest;
+  abortSignal?: AbortSignal;
+}) {
+  const thread = await ensureUserChatThread({
+    threadId: input.request.threadId,
+    userId: input.userId,
+  });
+
+  const messages: UIMessage[] = [...(thread.messages ?? [])].map((message) => ({
+    id: message.id,
+    role: message.role,
+    parts: message.parts,
+    metadata: message.metadata,
+  }));
+
+  const latestSelections = getLatestPilotSelections(messages);
+  const selectedAgent = await resolvePilotAgent(
+    input.userId,
+    [],
+    latestSelections.agentId ??
+      latestSelections.pilotTaskState?.selectedAgentId,
+  );
+  const resolvedModel =
+    latestSelections.chatModel ?? (await resolveDefaultPilotChatModel());
+
+  if (!resolvedModel) {
+    throw new Error(
+      "No tool-capable chat model is configured. Configure one in Settings > AI Providers.",
+    );
+  }
+
+  const previousTaskState = getLatestPilotTaskState(messages);
+  const taskUserText = getLatestUserText(messages);
+  const syntheticMessage: UIMessage = {
+    id: generateUUID(),
+    role: "user",
+    parts: [
+      {
+        type: "text",
+        text: buildPilotContinueInstruction({
+          taskState: previousTaskState,
+          relevantForm: previousTaskState?.relevantForm,
+          actionResults: input.request.actionResults,
+        }),
+      },
+    ],
+  };
+
+  const user = await userRepository.getUserById(input.userId);
+  if (!user) {
+    throw new Error("Emma Pilot user not found.");
+  }
+  const userPreferences = await userRepository.getPreferences(input.userId);
+
+  return await streamPilotModelTurn({
+    threadId: input.request.threadId,
+    originalMessages: messages,
+    modelMessages: [...messages, syntheticMessage],
+    taskUserText,
+    selectedAgent,
+    mentions: [],
+    resolvedModel,
+    user,
+    userPreferences,
+    pageSnapshot: input.request.pageSnapshot,
+    tabContext: input.request.tabContext,
+    actionResults: input.request.actionResults,
+    previousTaskState,
+    abortSignal: input.abortSignal,
+    modeOverride: "continue",
+    extraPrompt:
+      "This is an automatic continuation turn after browser execution. Continue the task without waiting for a new user message unless you need clarification or approval.",
+  });
 }

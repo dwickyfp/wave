@@ -1,13 +1,21 @@
 import { NextResponse } from "next/server";
 import { pilotChatRequestSchema } from "app-types/pilot";
 import { requirePilotExtensionSession } from "lib/pilot/auth";
-import { runPilotChat } from "lib/pilot/chat";
+import { runPilotChat, streamPilotChat } from "lib/pilot/chat";
 import { z } from "zod";
 
 export async function POST(request: Request) {
   try {
     const pilotSession = await requirePilotExtensionSession(request.headers);
     const body = pilotChatRequestSchema.parse(await request.json());
+
+    if (body.stream) {
+      return await streamPilotChat({
+        userId: pilotSession.userId,
+        request: body,
+        abortSignal: request.signal,
+      });
+    }
 
     const result = await runPilotChat({
       userId: pilotSession.userId,
