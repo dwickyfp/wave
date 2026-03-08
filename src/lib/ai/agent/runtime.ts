@@ -221,3 +221,8 @@ export function buildWaveAgentSystemPrompt(options: {
     ...(options.extraPrompts ?? []),
   );
 }
+
+export const loadEmmaAgentContinueCapabilities =
+  loadWaveAgentContinueCapabilities;
+export const loadEmmaAgentBoundTools = loadWaveAgentBoundTools;
+export const buildEmmaAgentSystemPrompt = buildWaveAgentSystemPrompt;

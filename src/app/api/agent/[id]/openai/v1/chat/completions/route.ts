@@ -13,7 +13,7 @@ import {
   resolveExternalAgentModelSelection,
   summarizeExternalPreview,
   streamContinueManagedTools,
-  streamWaveManagedAgentRun,
+  streamEmmaManagedAgentRun,
 } from "lib/ai/agent/external-access";
 import { agentAnalyticsRepository } from "lib/db/repository";
 import { z } from "zod";
@@ -100,7 +100,7 @@ async function startAgentRun(options: {
         request: options.request,
         abortSignal: options.abortSignal,
       })
-    : await streamWaveManagedAgentRun({
+    : await streamEmmaManagedAgentRun({
         agent,
         messages: convertOpenAiMessagesToModelMessages(
           options.request.messages,
