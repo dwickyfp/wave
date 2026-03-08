@@ -1978,7 +1978,7 @@ export function EmmaPilotApp() {
                         event.currentTarget.form?.requestSubmit();
                       }
                     }}
-                    placeholder="Ask Emma Pilot anything about this page"
+                    placeholder="Ask Emma Pilot anything"
                     rows={1}
                     disabled={!auth || sending}
                   />
