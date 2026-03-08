@@ -4,9 +4,9 @@ import type { A2AAgentCard, A2AAgentConfig } from "app-types/a2a-agent";
 
 vi.mock("server-only", () => ({}));
 
-let buildPublishedA2AAgentCard: typeof import(
-  "./server",
-)["buildPublishedA2AAgentCard"];
+type ServerModule = typeof import("./server");
+
+let buildPublishedA2AAgentCard: ServerModule["buildPublishedA2AAgentCard"];
 
 function createAgent(overrides: Partial<Agent> = {}): Agent {
   return {
