@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PageSnapshot } from "app-types/pilot";
 import { createPilotActionProposal } from "./browser-actions";
 import {
+  buildPilotBrokerPrompt,
   buildPilotTaskState,
   buildRelevantFormContext,
   mergePilotFillProposals,
@@ -285,5 +286,19 @@ describe("pilot orchestrator helpers", () => {
         ],
       }),
     ).toBe("continue");
+  });
+
+  it("includes protected-action guardrails in the broker prompt", () => {
+    const prompt = buildPilotBrokerPrompt({
+      tabUrl: snapshot.url,
+      tabTitle: snapshot.title,
+      snapshot,
+      mode: "fill",
+    });
+
+    expect(prompt).toContain("delete, save, update, and commit");
+    expect(prompt).toContain(
+      "Do not propose them unless the user explicitly asked",
+    );
   });
 });

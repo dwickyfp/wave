@@ -223,7 +223,7 @@ export function buildPilotBrokerPrompt(input: {
           ? `Agent role: ${input.selectedAgent.instructions.role}`
           : "",
         input.selectedAgent.instructions.systemPrompt
-          ? `Use the selected agent's tools, skills, subagents, and knowledge when deeper reasoning helps. Do not hand off browser control; all pilot_propose_* tool calls must still come from Emma Pilot broker.`
+          ? `Use the selected agent's tools, skills, subagents, and knowledge when deeper reasoning helps. Do not hand off browser control; all pilot_propose_* tool calls must still come from Emma Pilot.`
           : "Use the selected agent only for reasoning support when helpful. Keep browser control in the broker.",
       ]
         .filter(Boolean)
@@ -231,9 +231,11 @@ export function buildPilotBrokerPrompt(input: {
     : "No user-selected Emma agent is available for delegation in this turn.";
 
   return [
-    "You are Emma Pilot broker, the built-in browser-task orchestrator on top of the Emma agent platform.",
+    "You are Emma Pilot, the built-in browser-task orchestrator on top of the Emma agent platform.",
     "Your primary job is to stay grounded in the active browser tab, analyze the current page state, decide the next best browser-aware step, and keep the workflow moving until you need user input or an approval boundary.",
     "Treat the browser tab as the main task context. Do not drift into a generic standalone chatbot response when the page already provides the working context.",
+    "Guardrail: treat delete, save, update, and commit actions as protected actions. Do not propose them unless the user explicitly asked for that action in the current request or continuation context.",
+    "If delete, save, update, or commit appears to be the next step but the user did not explicitly request it, stop and ask for confirmation instead of proposing the browser action.",
     "Classify every turn as one of: explain, analyze, fill, navigate, continue-after-action.",
     "Relevant-form-first: when the user asks to fill or work with a form, identify the closest relevant form and inspect the whole form before proposing actions.",
     "Do not stop after one field if the task clearly targets a multi-field form.",
@@ -270,6 +272,7 @@ export function buildPilotContinueInstruction(input: {
   return [
     "Continue the current Emma Pilot browser task using the latest action results and page snapshot.",
     "Do not repeat completed actions.",
+    "Delete, save, update, and commit remain protected actions unless the user explicitly asked for them.",
     input.actionResults?.length
       ? `Latest browser action results: ${JSON.stringify(input.actionResults)}`
       : "",

@@ -209,12 +209,19 @@ a {
 }
 
 .pilot-header {
-  justify-content: flex-end;
+  justify-content: space-between;
   padding: 2px 0 4px;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+}
+
+.pilot-header-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .pilot-header-actions {
@@ -236,6 +243,11 @@ a {
   background: transparent;
   color: var(--pilot-text);
   transform: none;
+}
+
+.pilot-secure-badge {
+  gap: 5px;
+  padding: 4px 10px;
 }
 
 h1,
@@ -402,9 +414,37 @@ h2 {
   overflow: auto;
   padding-right: 4px;
   padding-bottom: 8px;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+}
+
+.pilot-messages::-webkit-scrollbar {
+  width: 8px;
+}
+
+.pilot-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pilot-messages::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background: transparent;
+}
+
+.pilot-messages.is-scrolling {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(138, 153, 214, 0.42) transparent;
+}
+
+.pilot-messages.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgba(138, 153, 214, 0.42);
 }
 
 .pilot-message-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   align-self: stretch;
   border: 0;
   border-radius: 0;
@@ -499,7 +539,7 @@ h2 {
 
 .pilot-message-assets,
 .pilot-proposal-list {
-  margin-top: 12px;
+  margin-top: 0;
 }
 
 .pilot-proposal-list {
@@ -514,7 +554,7 @@ h2 {
 }
 
 .pilot-process-card {
-  margin-top: 10px;
+  margin-top: 0;
   padding: 12px;
   border-radius: 16px;
   border: 1px solid var(--pilot-proposal-border);
@@ -726,11 +766,13 @@ h2 {
 }
 
 .pilot-composer-label {
-  margin: 0 4px;
+  width: 100%;
+  margin: 0;
   color: var(--pilot-text-soft);
   font-size: 10px;
   font-style: italic;
   letter-spacing: 0.01em;
+  text-align: center;
 }
 
 .pilot-send-button {

@@ -13,6 +13,7 @@ import {
   Send,
   Settings,
   Shield,
+  ShieldCheck,
 } from "lucide-react";
 import {
   Fragment,
@@ -56,6 +57,7 @@ import {
   extractPilotProposalsFromMessage,
   getStableStreamItemKey,
   getToolStateLabel,
+  shouldHidePilotToolPart,
   upsertStreamedMessage,
   withStableMessageId,
 } from "./pilot-message-helpers";
@@ -67,6 +69,10 @@ import {
   shouldAttemptPilotAutoConnect,
   shouldRefreshPilotAccessToken,
 } from "./pilot-auth";
+import {
+  PILOT_SCROLLBAR_IDLE_MS,
+  shouldKeepPilotScrollbarVisible,
+} from "./scroll-visibility";
 
 const AUTH_STORAGE_KEY = "emmaPilotAuth";
 const AUTO_CONNECT_STORAGE_KEY = "emmaPilotAutoConnectDisabled";
@@ -407,12 +413,13 @@ export function EmmaPilotApp() {
   const [hasAllSitesPermission, setHasAllSitesPermission] = useState(false);
   const [activeTab, setActiveTab] = useState<TabInfo | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [statusMessage, setStatusMessage] = useState("");
-  const [pageError, setPageError] = useState("");
+  const [_statusMessage, setStatusMessage] = useState("");
+  const [_pageError, setPageError] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [visualMode, setVisualMode] =
+  const [_visualMode, setVisualMode] =
     useState<PilotVisualContext["mode"]>("dom-only");
+  const [isMessagesScrolling, setIsMessagesScrolling] = useState(false);
   const [loadingThreadId, setLoadingThreadId] = useState<string | null>(null);
   const [activeSelections, setActiveSelections] = useState<{
     selectedAgentId: string;
@@ -429,6 +436,7 @@ export function EmmaPilotApp() {
   const initStartedRef = useRef(false);
   const autoConnectAttemptedRef = useRef(false);
   const snapshotRefreshTimeoutRef = useRef<number | null>(null);
+  const messagesScrollTimeoutRef = useRef<number | null>(null);
 
   const activeDraftKey = activeThreadId ?? NEW_THREAD_KEY;
   const currentDraft = drafts[activeDraftKey] ?? {};
@@ -444,12 +452,7 @@ export function EmmaPilotApp() {
       ),
     [activeSelections.selectedChatModel, modelProviders],
   );
-  const composerVisionLabel =
-    visualMode === "dom+vision"
-      ? "Emma AI browser copilot • Live browser view attached"
-      : selectedModelSupportsVision
-        ? "Emma AI browser copilot • Browser vision ready"
-        : "Emma AI browser copilot • DOM only";
+  const composerVisionLabel = "Copilot Browser Powered By Emma AI";
 
   const resizeComposerInput = useCallback(() => {
     const textarea = composerTextareaRef.current;
@@ -475,6 +478,22 @@ export function EmmaPilotApp() {
     },
     [],
   );
+
+  const handleMessagesScroll = useCallback(() => {
+    const lastScrollAt = Date.now();
+    setIsMessagesScrolling(
+      shouldKeepPilotScrollbarVisible(lastScrollAt, lastScrollAt),
+    );
+
+    if (messagesScrollTimeoutRef.current !== null) {
+      window.clearTimeout(messagesScrollTimeoutRef.current);
+    }
+
+    messagesScrollTimeoutRef.current = window.setTimeout(() => {
+      setIsMessagesScrolling(shouldKeepPilotScrollbarVisible(lastScrollAt));
+      messagesScrollTimeoutRef.current = null;
+    }, PILOT_SCROLLBAR_IDLE_MS);
+  }, []);
 
   const mergeActionResults = useCallback(
     (current: PilotActionResult[], next: PilotActionResult) => [
@@ -1160,6 +1179,10 @@ export function EmmaPilotApp() {
         window.clearTimeout(snapshotRefreshTimeoutRef.current);
         snapshotRefreshTimeoutRef.current = null;
       }
+      if (messagesScrollTimeoutRef.current !== null) {
+        window.clearTimeout(messagesScrollTimeoutRef.current);
+        messagesScrollTimeoutRef.current = null;
+      }
     };
   }, [refreshSnapshot]);
 
@@ -1768,6 +1791,12 @@ export function EmmaPilotApp() {
   return (
     <div className="pilot-app">
       <header className="pilot-header">
+        <div className="pilot-header-status">
+          <span className="pilot-badge is-success pilot-secure-badge">
+            <ShieldCheck className="size-3" />
+            Secure
+          </span>
+        </div>
         <div className="pilot-header-actions">
           {view === "settings" ? (
             <button
@@ -1813,10 +1842,6 @@ export function EmmaPilotApp() {
         </div>
       </header>
 
-      {statusMessage || pageError ? (
-        <div className="pilot-banner">{statusMessage || pageError}</div>
-      ) : null}
-
       {view === "settings" ? (
         <SettingsView
           auth={auth}
@@ -1834,7 +1859,14 @@ export function EmmaPilotApp() {
       ) : (
         <div className="pilot-workspace">
           <main className="pilot-chat-column">
-            <section ref={messagesContainerRef} className="pilot-messages">
+            <section
+              ref={messagesContainerRef}
+              className={clsx(
+                "pilot-messages",
+                isMessagesScrolling && "is-scrolling",
+              )}
+              onScroll={handleMessagesScroll}
+            >
               {!auth ? (
                 <EmptyState
                   title="Connect Emma Pilot"
@@ -1978,7 +2010,7 @@ export function EmmaPilotApp() {
                         }
                         disabled={!auth || sending}
                       >
-                        <option value="">Emma Pilot broker</option>
+                        <option value="">Emma Pilot</option>
                         {config?.agents.map((agent) => (
                           <option key={agent.id} value={agent.id}>
                             {agent.name}
@@ -2475,8 +2507,9 @@ function ToolPartCard(props: {
         .trim()
     : "";
   const nestedToolParts = outputMessage
-    ? outputMessage.parts.filter((part): part is ToolUIPart =>
-        isToolUIPart(part),
+    ? outputMessage.parts.filter(
+        (part): part is ToolUIPart =>
+          isToolUIPart(part) && !shouldHidePilotToolPart(part),
       )
     : [];
 
@@ -2539,6 +2572,13 @@ function MessageCard(props: {
   actionResults: PilotActionResult[];
   onApproveProposal: (proposal: PilotProposal) => void;
 }) {
+  const visibleParts = props.message.parts.filter((part) => {
+    if (!isToolUIPart(part)) {
+      return true;
+    }
+
+    return !shouldHidePilotToolPart(part);
+  });
   const fileParts = props.message.parts.filter((part) => isFilePilotPart(part));
   const sourceParts = props.message.parts.filter(
     (part) => part.type === "source-url",
@@ -2553,6 +2593,16 @@ function MessageCard(props: {
       ? (props.message.metadata?.pilotProposals ?? [])
       : [];
 
+  if (
+    props.message.role !== "user" &&
+    visibleParts.length === 0 &&
+    fileParts.length === 0 &&
+    sourceParts.length === 0 &&
+    legacyProposals.length === 0
+  ) {
+    return null;
+  }
+
   return (
     <article
       className={clsx(
@@ -2564,7 +2614,7 @@ function MessageCard(props: {
         <span>{props.message.role === "user" ? "You" : "Emma Pilot"}</span>
       </div>
 
-      {props.message.parts.map((part, index) => {
+      {visibleParts.map((part, index) => {
         if (isTextPilotPart(part)) {
           return (
             <div
@@ -2611,7 +2661,7 @@ function MessageCard(props: {
         return null;
       })}
 
-      {props.message.parts.length === 0 ? (
+      {visibleParts.length === 0 ? (
         <p className="pilot-message-text is-muted">
           This message contains content that Emma Pilot does not render inline
           yet.

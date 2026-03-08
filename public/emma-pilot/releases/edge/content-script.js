@@ -102,13 +102,7 @@
 
   function isSensitiveField(input) {
     const haystack = normalizeText(
-      [
-        input.type,
-        input.label,
-        input.name,
-        input.placeholder,
-        input.text,
-      ]
+      [input.type, input.label, input.name, input.placeholder, input.text]
         .filter(Boolean)
         .join(" "),
     ).toLowerCase();
@@ -131,28 +125,28 @@
     };
 
     if (element instanceof HTMLInputElement) {
-        return {
-          ...base,
-          type: element.type || "text",
-          value: getFieldValue(element),
+      return {
+        ...base,
+        type: element.type || "text",
+        value: getFieldValue(element),
         required: element.required || undefined,
         checked: element.checked || undefined,
       };
     }
 
     if (element instanceof HTMLTextAreaElement) {
-        return {
-          ...base,
-          type: "textarea",
+      return {
+        ...base,
+        type: "textarea",
         value: element.value,
         required: element.required || undefined,
       };
     }
 
     if (element instanceof HTMLSelectElement) {
-        return {
-          ...base,
-          type: "select",
+      return {
+        ...base,
+        type: "select",
         value: element.value,
         required: element.required || undefined,
         options: Array.from(element.options).map((option) => ({
@@ -246,7 +240,10 @@
         : null;
     const forms = collectForms();
     const standaloneFields = collectStandaloneFields();
-    const sensitiveFieldRects = [...forms.flatMap((form) => form.fields), ...standaloneFields]
+    const sensitiveFieldRects = [
+      ...forms.flatMap((form) => form.fields),
+      ...standaloneFields,
+    ]
       .filter((field) => field.rect && isSensitiveField(field))
       .map((field) => ({
         elementId: field.elementId,
@@ -255,8 +252,9 @@
       }))
       .filter(
         (field, index, collection) =>
-          collection.findIndex((candidate) => candidate.elementId === field.elementId) ===
-          index,
+          collection.findIndex(
+            (candidate) => candidate.elementId === field.elementId,
+          ) === index,
       );
 
     return {

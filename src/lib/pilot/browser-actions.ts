@@ -23,6 +23,9 @@ const SENSITIVE_FIELD_TOKENS = [
 ];
 
 const ALWAYS_APPROVAL_ACTION_TOKENS = [
+  "save",
+  "update",
+  "commit",
   "delete",
   "remove",
   "erase",

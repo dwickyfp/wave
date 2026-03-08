@@ -187,6 +187,17 @@ describe("pilot browser actions", () => {
     expect(updateClick.requiresApproval).toBe(true);
   });
 
+  it("requires approval for commit-like click actions", () => {
+    const commitClick = createPilotActionProposal({
+      kind: "clickElement",
+      label: "Commit changes",
+      explanation: "Click the commit button to commit the latest changes.",
+      elementId: "button-submit",
+    });
+
+    expect(commitClick.requiresApproval).toBe(true);
+  });
+
   it("treats explicit user destructive intent as approval", () => {
     const deleteClick = createPilotActionProposal({
       kind: "clickElement",

@@ -22524,8 +22524,21 @@ var __iconNode13 = [
 ];
 var Settings = createLucideIcon("settings", __iconNode13);
 
-// node_modules/.pnpm/lucide-react@0.486.0_react@19.2.4/node_modules/lucide-react/dist/esm/icons/shield.js
+// node_modules/.pnpm/lucide-react@0.486.0_react@19.2.4/node_modules/lucide-react/dist/esm/icons/shield-check.js
 var __iconNode14 = [
+  [
+    "path",
+    {
+      d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
+      key: "oel41y"
+    }
+  ],
+  ["path", { d: "m9 12 2 2 4-4", key: "dzmm74" }]
+];
+var ShieldCheck = createLucideIcon("shield-check", __iconNode14);
+
+// node_modules/.pnpm/lucide-react@0.486.0_react@19.2.4/node_modules/lucide-react/dist/esm/icons/shield.js
+var __iconNode15 = [
   [
     "path",
     {
@@ -22534,7 +22547,7 @@ var __iconNode14 = [
     }
   ]
 ];
-var Shield = createLucideIcon("shield", __iconNode14);
+var Shield = createLucideIcon("shield", __iconNode15);
 
 // extensions/emma-pilot/src/sidepanel-app.tsx
 var import_react4 = __toESM(require_react(), 1);
@@ -44544,10 +44557,7 @@ function clampRectToViewport(rect, snapshot) {
   }
   const x = Math.max(0, Math.min(rect.x, viewport.innerWidth));
   const y = Math.max(0, Math.min(rect.y, viewport.innerHeight));
-  const right = Math.max(
-    x,
-    Math.min(rect.x + rect.width, viewport.innerWidth)
-  );
+  const right = Math.max(x, Math.min(rect.x + rect.width, viewport.innerWidth));
   const bottom = Math.max(
     y,
     Math.min(rect.y + rect.height, viewport.innerHeight)
@@ -57331,6 +57341,7 @@ function PilotMarkdown(props) {
 }
 
 // extensions/emma-pilot/src/pilot-message-helpers.ts
+var HIDDEN_PILOT_TOOL_NAMES = /* @__PURE__ */ new Set(["mini-javascript-execution"]);
 function extractPilotProposalsFromMessage(message) {
   if (!message) {
     return [];
@@ -57390,6 +57401,9 @@ function getStableStreamItemKey(input) {
   const label = input.fallbackLabel?.trim() || "item";
   return `${messageId}-${label}-${input.index}`;
 }
+function shouldHidePilotToolPart(part) {
+  return HIDDEN_PILOT_TOOL_NAMES.has(getToolName(part));
+}
 
 // extensions/emma-pilot/src/visual-context.ts
 function findModelOption(modelProviders, selectedChatModel) {
@@ -57411,10 +57425,7 @@ function clampRectToViewport2(rect, viewport) {
   }
   const x = Math.max(0, Math.min(rect.x, viewport.innerWidth));
   const y = Math.max(0, Math.min(rect.y, viewport.innerHeight));
-  const right = Math.max(
-    x,
-    Math.min(rect.x + rect.width, viewport.innerWidth)
-  );
+  const right = Math.max(x, Math.min(rect.x + rect.width, viewport.innerWidth));
   const bottom = Math.max(
     y,
     Math.min(rect.y + rect.height, viewport.innerHeight)
@@ -57462,7 +57473,10 @@ function buildImageRedactionRects(input) {
     const overlap = {
       x: Math.max(rect.x, input.clipRect.x),
       y: Math.max(rect.y, input.clipRect.y),
-      width: Math.min(rect.x + rect.width, input.clipRect.x + input.clipRect.width) - Math.max(rect.x, input.clipRect.x),
+      width: Math.min(
+        rect.x + rect.width,
+        input.clipRect.x + input.clipRect.width
+      ) - Math.max(rect.x, input.clipRect.x),
       height: Math.min(
         rect.y + rect.height,
         input.clipRect.y + input.clipRect.height
@@ -57613,6 +57627,15 @@ function shouldAttemptPilotAutoConnect(input) {
     return false;
   }
   return !input.auth?.accessToken;
+}
+
+// extensions/emma-pilot/src/scroll-visibility.ts
+var PILOT_SCROLLBAR_IDLE_MS = 900;
+function shouldKeepPilotScrollbarVisible(lastScrollAt, now = Date.now(), idleMs = PILOT_SCROLLBAR_IDLE_MS) {
+  if (lastScrollAt === null) {
+    return false;
+  }
+  return now - lastScrollAt < idleMs;
 }
 
 // extensions/emma-pilot/src/sidepanel-app.tsx
@@ -57782,11 +57805,12 @@ function EmmaPilotApp() {
   const [hasAllSitesPermission, setHasAllSitesPermission] = (0, import_react4.useState)(false);
   const [activeTab, setActiveTab] = (0, import_react4.useState)(null);
   const [snapshot, setSnapshot] = (0, import_react4.useState)(null);
-  const [statusMessage, setStatusMessage] = (0, import_react4.useState)("");
-  const [pageError, setPageError] = (0, import_react4.useState)("");
+  const [_statusMessage, setStatusMessage] = (0, import_react4.useState)("");
+  const [_pageError, setPageError] = (0, import_react4.useState)("");
   const [loading, setLoading] = (0, import_react4.useState)(true);
   const [sending, setSending] = (0, import_react4.useState)(false);
-  const [visualMode, setVisualMode] = (0, import_react4.useState)("dom-only");
+  const [_visualMode, setVisualMode] = (0, import_react4.useState)("dom-only");
+  const [isMessagesScrolling, setIsMessagesScrolling] = (0, import_react4.useState)(false);
   const [loadingThreadId, setLoadingThreadId] = (0, import_react4.useState)(null);
   const [activeSelections, setActiveSelections] = (0, import_react4.useState)({
     selectedAgentId: "",
@@ -57800,6 +57824,7 @@ function EmmaPilotApp() {
   const initStartedRef = (0, import_react4.useRef)(false);
   const autoConnectAttemptedRef = (0, import_react4.useRef)(false);
   const snapshotRefreshTimeoutRef = (0, import_react4.useRef)(null);
+  const messagesScrollTimeoutRef = (0, import_react4.useRef)(null);
   const activeDraftKey = activeThreadId ?? NEW_THREAD_KEY;
   const currentDraft = drafts[activeDraftKey] ?? {};
   const currentAttachments = attachmentsByThread[activeDraftKey] ?? [];
@@ -57812,7 +57837,7 @@ function EmmaPilotApp() {
     ),
     [activeSelections.selectedChatModel, modelProviders]
   );
-  const composerVisionLabel = visualMode === "dom+vision" ? "Emma AI browser copilot \u2022 Live browser view attached" : selectedModelSupportsVision ? "Emma AI browser copilot \u2022 Browser vision ready" : "Emma AI browser copilot \u2022 DOM only";
+  const composerVisionLabel = "Copilot Browser Powered By Emma AI";
   const resizeComposerInput = (0, import_react4.useCallback)(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea)
@@ -57836,6 +57861,19 @@ function EmmaPilotApp() {
     },
     []
   );
+  const handleMessagesScroll = (0, import_react4.useCallback)(() => {
+    const lastScrollAt = Date.now();
+    setIsMessagesScrolling(
+      shouldKeepPilotScrollbarVisible(lastScrollAt, lastScrollAt)
+    );
+    if (messagesScrollTimeoutRef.current !== null) {
+      window.clearTimeout(messagesScrollTimeoutRef.current);
+    }
+    messagesScrollTimeoutRef.current = window.setTimeout(() => {
+      setIsMessagesScrolling(shouldKeepPilotScrollbarVisible(lastScrollAt));
+      messagesScrollTimeoutRef.current = null;
+    }, PILOT_SCROLLBAR_IDLE_MS);
+  }, []);
   const mergeActionResults = (0, import_react4.useCallback)(
     (current, next) => [
       ...current.filter((item) => item.proposalId !== next.proposalId),
@@ -58363,6 +58401,10 @@ function EmmaPilotApp() {
         window.clearTimeout(snapshotRefreshTimeoutRef.current);
         snapshotRefreshTimeoutRef.current = null;
       }
+      if (messagesScrollTimeoutRef.current !== null) {
+        window.clearTimeout(messagesScrollTimeoutRef.current);
+        messagesScrollTimeoutRef.current = null;
+      }
     };
   }, [refreshSnapshot]);
   (0, import_react4.useEffect)(() => {
@@ -58876,48 +58918,53 @@ function EmmaPilotApp() {
     ] });
   }
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pilot-app", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("header", { className: "pilot-header", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "pilot-header-actions", children: view === "settings" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-      "button",
-      {
-        className: "pilot-icon-button",
-        onClick: () => setView("chat"),
-        title: "Back to chat",
-        type: "button",
-        children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ArrowLeft, { className: "size-3" })
-      }
-    ) : /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react4.Fragment, { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("header", { className: "pilot-header", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "pilot-header-status", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "pilot-badge is-success pilot-secure-badge", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ShieldCheck, { className: "size-3" }),
+        "Secure"
+      ] }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "pilot-header-actions", children: view === "settings" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
         "button",
         {
           className: "pilot-icon-button",
-          onClick: startNewSession,
-          title: "New session",
+          onClick: () => setView("chat"),
+          title: "Back to chat",
           type: "button",
-          children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Plus, { className: "size-3" })
+          children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(ArrowLeft, { className: "size-3" })
         }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-        "button",
-        {
-          className: "pilot-icon-button",
-          onClick: handleSidebarToggle,
-          title: "Toggle session history",
-          type: "button",
-          children: sidebarOpen ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(PanelRightClose, { className: "size-3" }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(PanelRightOpen, { className: "size-3" })
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-        "button",
-        {
-          className: "pilot-icon-button",
-          onClick: () => setView("settings"),
-          title: "Settings",
-          type: "button",
-          children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Settings, { className: "size-3" })
-        }
-      )
-    ] }) }) }),
-    statusMessage || pageError ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "pilot-banner", children: statusMessage || pageError }) : null,
+      ) : /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(import_react4.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+          "button",
+          {
+            className: "pilot-icon-button",
+            onClick: startNewSession,
+            title: "New session",
+            type: "button",
+            children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Plus, { className: "size-3" })
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+          "button",
+          {
+            className: "pilot-icon-button",
+            onClick: handleSidebarToggle,
+            title: "Toggle session history",
+            type: "button",
+            children: sidebarOpen ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(PanelRightClose, { className: "size-3" }) : /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(PanelRightOpen, { className: "size-3" })
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+          "button",
+          {
+            className: "pilot-icon-button",
+            onClick: () => setView("settings"),
+            title: "Settings",
+            type: "button",
+            children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(Settings, { className: "size-3" })
+          }
+        )
+      ] }) })
+    ] }),
     view === "settings" ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
       SettingsView,
       {
@@ -58935,39 +58982,50 @@ function EmmaPilotApp() {
       }
     ) : /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pilot-workspace", children: [
       /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("main", { className: "pilot-chat-column", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("section", { ref: messagesContainerRef, className: "pilot-messages", children: [
-          !auth ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-            EmptyState,
-            {
-              title: "Connect Emma Pilot",
-              description: "Open settings to connect your Emma account, grant site access, and start chatting.",
-              actionLabel: "Open settings",
-              onAction: () => setView("settings")
-            }
-          ) : messages.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-            EmptyState,
-            {
-              title: "Start a new Emma Pilot session",
-              description: "Type your request below. Emma Pilot understands natural language about the current page."
-            }
-          ) : messages.map((message, index2) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
-            MessageCard,
-            {
-              message,
-              isActive: index2 === messages.length - 1,
-              isStreaming: sending && index2 === messages.length - 1,
-              actionResults: currentActionResults,
-              onApproveProposal: handleApproveProposal
-            },
-            getStableStreamItemKey({
-              messageId: message.id,
-              preferredKey: message.id,
-              fallbackLabel: message.role,
-              index: index2
-            })
-          )),
-          /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { ref: messagesEndRef })
-        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
+          "section",
+          {
+            ref: messagesContainerRef,
+            className: clsx(
+              "pilot-messages",
+              isMessagesScrolling && "is-scrolling"
+            ),
+            onScroll: handleMessagesScroll,
+            children: [
+              !auth ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                EmptyState,
+                {
+                  title: "Connect Emma Pilot",
+                  description: "Open settings to connect your Emma account, grant site access, and start chatting.",
+                  actionLabel: "Open settings",
+                  onAction: () => setView("settings")
+                }
+              ) : messages.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                EmptyState,
+                {
+                  title: "Start a new Emma Pilot session",
+                  description: "Type your request below. Emma Pilot understands natural language about the current page."
+                }
+              ) : messages.map((message, index2) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
+                MessageCard,
+                {
+                  message,
+                  isActive: index2 === messages.length - 1,
+                  isStreaming: sending && index2 === messages.length - 1,
+                  actionResults: currentActionResults,
+                  onApproveProposal: handleApproveProposal
+                },
+                getStableStreamItemKey({
+                  messageId: message.id,
+                  preferredKey: message.id,
+                  fallbackLabel: message.role,
+                  index: index2
+                })
+              )),
+              /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { ref: messagesEndRef })
+            ]
+          }
+        ),
         /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pilot-composer-dock", children: [
           /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
             "form",
@@ -59079,7 +59137,7 @@ function EmmaPilotApp() {
                           onChange: (event) => handleAgentChange(event.target.value),
                           disabled: !auth || sending,
                           children: [
-                            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("option", { value: "", children: "Emma Pilot broker" }),
+                            /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("option", { value: "", children: "Emma Pilot" }),
                             config2?.agents.map((agent) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("option", { value: agent.id, children: agent.name }, agent.id))
                           ]
                         }
@@ -59437,7 +59495,7 @@ function ToolPartCard(props) {
   const outputMessage = props.part.state === "output-available" && props.part.output && typeof props.part.output === "object" && "parts" in props.part.output ? props.part.output : null;
   const nestedText = outputMessage ? outputMessage.parts.filter(isTextPilotPart).map((part) => part.text).join("\n").trim() : "";
   const nestedToolParts = outputMessage ? outputMessage.parts.filter(
-    (part) => isToolUIPart(part)
+    (part) => isToolUIPart(part) && !shouldHidePilotToolPart(part)
   ) : [];
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pilot-process-card", children: [
     /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pilot-process-toggle", children: [
@@ -59466,12 +59524,21 @@ function ToolPartCard(props) {
   ] });
 }
 function MessageCard(props) {
+  const visibleParts = props.message.parts.filter((part) => {
+    if (!isToolUIPart(part)) {
+      return true;
+    }
+    return !shouldHidePilotToolPart(part);
+  });
   const fileParts = props.message.parts.filter((part) => isFilePilotPart(part));
   const sourceParts = props.message.parts.filter(
     (part) => part.type === "source-url"
   );
   const streamedProposals = extractPilotProposalsFromMessage(props.message);
   const legacyProposals = streamedProposals.length === 0 ? props.message.metadata?.pilotProposals ?? [] : [];
+  if (props.message.role !== "user" && visibleParts.length === 0 && fileParts.length === 0 && sourceParts.length === 0 && legacyProposals.length === 0) {
+    return null;
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)(
     "article",
     {
@@ -59481,7 +59548,7 @@ function MessageCard(props) {
       ),
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("div", { className: "pilot-message-meta", children: /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("span", { children: props.message.role === "user" ? "You" : "Emma Pilot" }) }),
-        props.message.parts.map((part, index2) => {
+        visibleParts.map((part, index2) => {
           if (isTextPilotPart(part)) {
             return /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
               "div",
@@ -59525,7 +59592,7 @@ function MessageCard(props) {
           }
           return null;
         }),
-        props.message.parts.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "pilot-message-text is-muted", children: "This message contains content that Emma Pilot does not render inline yet." }) : null,
+        visibleParts.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime3.jsx)("p", { className: "pilot-message-text is-muted", children: "This message contains content that Emma Pilot does not render inline yet." }) : null,
         fileParts.length || sourceParts.length ? /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("div", { className: "pilot-message-assets", children: [
           fileParts.map((part, index2) => /* @__PURE__ */ (0, import_jsx_runtime3.jsx)(
             "a",
@@ -59766,6 +59833,14 @@ lucide-react/dist/esm/icons/send.js:
    *)
 
 lucide-react/dist/esm/icons/settings.js:
+  (**
+   * @license lucide-react v0.486.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   *)
+
+lucide-react/dist/esm/icons/shield-check.js:
   (**
    * @license lucide-react v0.486.0 - ISC
    *

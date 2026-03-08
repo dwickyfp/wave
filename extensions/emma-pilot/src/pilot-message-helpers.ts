@@ -1,5 +1,7 @@
 import { getToolName, isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
 
+const HIDDEN_PILOT_TOOL_NAMES = new Set(["mini-javascript-execution"]);
+
 export type PilotProposalLike = {
   id: string;
   kind: string;
@@ -104,4 +106,10 @@ export function getStableStreamItemKey(input: {
   const messageId = input.messageId?.trim() || "pilot-message";
   const label = input.fallbackLabel?.trim() || "item";
   return `${messageId}-${label}-${input.index}`;
+}
+
+export function shouldHidePilotToolPart(
+  part: Parameters<typeof getToolName>[0],
+) {
+  return HIDDEN_PILOT_TOOL_NAMES.has(getToolName(part));
 }

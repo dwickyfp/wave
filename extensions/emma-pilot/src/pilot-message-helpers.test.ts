@@ -4,6 +4,7 @@ import {
   extractPilotProposalsFromMessage,
   getStableStreamItemKey,
   getToolStateLabel,
+  shouldHidePilotToolPart,
   upsertStreamedMessage,
   withStableMessageId,
 } from "./pilot-message-helpers";
@@ -121,5 +122,23 @@ describe("pilot message helpers", () => {
     );
 
     expect(message.id).toBe("stream-message-1");
+  });
+
+  it("hides low-level internal tool parts from the copilot chat", () => {
+    expect(
+      shouldHidePilotToolPart({
+        type: "tool-mini-javascript-execution",
+        toolCallId: "tool-1",
+        state: "input-available",
+      } as any),
+    ).toBe(true);
+
+    expect(
+      shouldHidePilotToolPart({
+        type: "tool-pilot_propose_fill_fields",
+        toolCallId: "tool-2",
+        state: "input-available",
+      } as any),
+    ).toBe(false);
   });
 });
