@@ -1,6 +1,6 @@
 import type { LanguageModelUsage, UIMessage } from "ai";
 import { z } from "zod";
-import type { PilotActionProposal } from "./pilot";
+import type { PilotActionProposal, PilotTaskState } from "./pilot";
 import { AllowedMCPServerZodSchema } from "./mcp";
 import { UserPreferences } from "./user";
 import { tag } from "lib/tag";
@@ -105,6 +105,7 @@ export type ChatMetadata = {
   tabTitle?: string;
   lastApprovedActionSummary?: string;
   pilotProposals?: PilotActionProposal[];
+  pilotTaskState?: PilotTaskState;
   compaction?: ChatCompactionMetadata;
 };
 

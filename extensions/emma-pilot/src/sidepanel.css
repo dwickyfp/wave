@@ -209,7 +209,7 @@ a {
 }
 
 .pilot-header {
-  justify-content: flex-start;
+  justify-content: flex-end;
   padding: 2px 0 4px;
   border: 0;
   border-radius: 0;
@@ -219,12 +219,23 @@ a {
 
 .pilot-header-actions {
   gap: 6px;
+  margin-left: auto;
 }
 
 .pilot-header .pilot-icon-button {
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--pilot-text-soft);
+}
+
+.pilot-header .pilot-icon-button:hover {
+  background: transparent;
+  color: var(--pilot-text);
+  transform: none;
 }
 
 h1,
@@ -376,15 +387,11 @@ h2 {
 
 .pilot-chat-column {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-height: 0;
   height: 100%;
   gap: 12px;
   overflow: hidden;
-}
-
-.pilot-context-strip {
-  flex-shrink: 0;
 }
 
 .pilot-messages {
@@ -400,12 +407,13 @@ h2 {
 .pilot-message-card {
   border-radius: 18px;
   padding: 14px;
-  background: var(--pilot-card-bg);
+  background: transparent;
   border-color: var(--pilot-card-border);
+  box-shadow: none;
 }
 
 .pilot-message-card.is-user {
-  background: var(--pilot-card-user-bg);
+  background: transparent;
   border-color: var(--pilot-card-user-border);
 }
 
@@ -466,17 +474,24 @@ h2 {
   align-items: flex-end;
 }
 
-.pilot-composer {
-  display: grid;
-  grid-template-rows: auto auto auto;
+.pilot-composer-dock {
+  display: flex;
+  flex-direction: column;
   flex-shrink: 0;
-  gap: 10px;
+  gap: 6px;
   margin-top: auto;
-  padding: 14px;
-  border-radius: 24px;
   position: sticky;
   bottom: 0;
   z-index: 2;
+}
+
+.pilot-composer {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border-radius: 24px;
   border-color: var(--pilot-border-strong);
   background: linear-gradient(
       180deg,
@@ -589,15 +604,8 @@ h2 {
   justify-content: flex-end;
 }
 
-.pilot-composer-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  min-height: 14px;
-}
-
 .pilot-composer-label {
-  margin: 0;
+  margin: 0 4px;
   color: var(--pilot-text-soft);
   font-size: 10px;
   font-style: italic;

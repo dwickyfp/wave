@@ -36,6 +36,7 @@ import {
 const AUTH_STORAGE_KEY = "emmaPilotAuth";
 const PANEL_STORAGE_KEY = "emmaPilotPanelStateV2";
 const MODEL_REFRESH_MS = 1000 * 60 * 5;
+const MAX_AUTO_CONTINUATIONS = 3;
 const NEW_THREAD_KEY = "__new__";
 let runtimeConfigPromise: Promise<RuntimeConfig> | null = null;
 
@@ -127,6 +128,16 @@ type PilotActionResult = {
   error?: string;
 };
 
+type PilotTaskState = {
+  mode?: string;
+  targetFormId?: string;
+  targetFieldIds?: string[];
+  missingFieldIds?: string[];
+  lastPhase?: string;
+  selectedAgentId?: string;
+  autoContinuationCount?: number;
+};
+
 type PilotMessagePart = UIMessage["parts"][number];
 
 type PilotMessage = UIMessage & {
@@ -134,6 +145,7 @@ type PilotMessage = UIMessage & {
     agentId?: string;
     chatModel?: ChatModel;
     pilotProposals?: PilotProposal[];
+    pilotTaskState?: PilotTaskState;
   };
 };
 
@@ -346,8 +358,11 @@ export function EmmaPilotApp() {
   });
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const messagesContainerRef = useRef<HTMLElement | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const initializedRef = useRef(false);
   const initStartedRef = useRef(false);
+  const snapshotRefreshTimeoutRef = useRef<number | null>(null);
 
   const activeDraftKey = activeThreadId ?? NEW_THREAD_KEY;
   const currentDraft = drafts[activeDraftKey] ?? {};
@@ -362,6 +377,32 @@ export function EmmaPilotApp() {
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
   }, []);
+
+  const scrollMessagesToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({
+          block: "end",
+          behavior,
+        });
+        return;
+      }
+
+      messagesContainerRef.current?.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior,
+      });
+    },
+    [],
+  );
+
+  const mergeActionResults = useCallback(
+    (current: PilotActionResult[], next: PilotActionResult) => [
+      ...current.filter((item) => item.proposalId !== next.proposalId),
+      next,
+    ],
+    [],
+  );
 
   const persistPanelState = useCallback(
     async (
@@ -829,8 +870,65 @@ export function EmmaPilotApp() {
   }, [auth, loadModels, refreshAuthStatus, refreshSnapshot]);
 
   useEffect(() => {
+    const scheduleSnapshotRefresh = (delay = 120) => {
+      if (snapshotRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(snapshotRefreshTimeoutRef.current);
+      }
+
+      snapshotRefreshTimeoutRef.current = window.setTimeout(() => {
+        snapshotRefreshTimeoutRef.current = null;
+        void refreshSnapshot({ silent: true });
+      }, delay);
+    };
+
+    const handleTabActivated = () => {
+      scheduleSnapshotRefresh(80);
+    };
+
+    const handleTabUpdated = (
+      _tabId: number,
+      changeInfo: {
+        status?: string;
+        url?: string;
+        title?: string;
+      },
+      tab: {
+        active?: boolean;
+      },
+    ) => {
+      if (!tab.active) {
+        return;
+      }
+
+      if (
+        changeInfo.status === "complete" ||
+        typeof changeInfo.url === "string" ||
+        typeof changeInfo.title === "string"
+      ) {
+        scheduleSnapshotRefresh(120);
+      }
+    };
+
+    chrome.tabs.onActivated.addListener(handleTabActivated);
+    chrome.tabs.onUpdated.addListener(handleTabUpdated);
+
+    return () => {
+      chrome.tabs.onActivated.removeListener(handleTabActivated);
+      chrome.tabs.onUpdated.removeListener(handleTabUpdated);
+      if (snapshotRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(snapshotRefreshTimeoutRef.current);
+        snapshotRefreshTimeoutRef.current = null;
+      }
+    };
+  }, [refreshSnapshot]);
+
+  useEffect(() => {
     resizeComposerInput();
   }, [currentDraft.input, resizeComposerInput]);
+
+  useEffect(() => {
+    scrollMessagesToBottom(messages.length > 0 ? "smooth" : "auto");
+  }, [messages.length, scrollMessagesToBottom]);
 
   const handleSidebarToggle = useCallback(() => {
     setSidebarOpen((current) => {
@@ -1046,13 +1144,128 @@ export function EmmaPilotApp() {
     [activeDraftKey, refreshSnapshot],
   );
 
+  const requestContinuation = useCallback(
+    async (
+      threadId: string,
+      actionResults: PilotActionResult[],
+    ): Promise<PilotMessage | null> => {
+      const latestPageState = await refreshSnapshot({ silent: true });
+      const nextTab = latestPageState?.tab ?? activeTab;
+      const nextSnapshot = latestPageState?.snapshot ?? snapshot;
+
+      if (!nextTab?.url) {
+        return null;
+      }
+
+      const response = await pilotFetchJson<{
+        threadId: string;
+        assistantMessage: PilotMessage;
+      }>("/api/pilot/chat/continue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          threadId,
+          tabContext: {
+            tabId: nextTab.tabId,
+            url: nextTab.url,
+            title: nextTab.title || nextSnapshot?.title || "",
+            origin: nextTab.url ? new URL(nextTab.url).origin : undefined,
+          },
+          pageSnapshot: nextSnapshot || undefined,
+          approvedActionIds: actionResults.map((result) => result.proposalId),
+          actionResults,
+        }),
+      });
+
+      return response.assistantMessage;
+    },
+    [activeTab, pilotFetchJson, refreshSnapshot, snapshot],
+  );
+
+  const runAgenticContinuation = useCallback(
+    async (input: {
+      threadId: string;
+      assistantMessage?: PilotMessage | null;
+      seedActionResults?: PilotActionResult[];
+    }) => {
+      let accumulatedResults = [...(input.seedActionResults ?? [])];
+      let latestAssistant = input.assistantMessage ?? null;
+      let continuationCount = 0;
+
+      while (continuationCount <= MAX_AUTO_CONTINUATIONS) {
+        const automaticProposals = (
+          latestAssistant?.metadata?.pilotProposals ?? []
+        ).filter((proposal) => !proposal.requiresApproval);
+
+        if (!automaticProposals.length) {
+          break;
+        }
+
+        for (const proposal of automaticProposals) {
+          const result = await runProposalExecution(proposal, input.threadId);
+          accumulatedResults = mergeActionResults(accumulatedResults, result);
+        }
+
+        if (continuationCount >= MAX_AUTO_CONTINUATIONS) {
+          setStatusMessage(
+            "Emma Pilot paused after several automatic steps. Review the latest result before continuing.",
+          );
+          break;
+        }
+
+        latestAssistant = await requestContinuation(
+          input.threadId,
+          accumulatedResults,
+        );
+
+        if (!latestAssistant) {
+          break;
+        }
+
+        setMessages((current) => [...current, latestAssistant as PilotMessage]);
+        continuationCount += 1;
+
+        const nextProposals = latestAssistant.metadata?.pilotProposals ?? [];
+        if (!nextProposals.length) {
+          break;
+        }
+
+        if (nextProposals.some((proposal) => proposal.requiresApproval)) {
+          break;
+        }
+      }
+
+      return accumulatedResults;
+    },
+    [
+      mergeActionResults,
+      requestContinuation,
+      runProposalExecution,
+      setStatusMessage,
+    ],
+  );
+
   const handleApproveProposal = useCallback(
     async (proposal: PilotProposal) => {
+      if (!activeThreadId) {
+        return;
+      }
+
       setSending(true);
       setStatusMessage("");
 
       try {
-        await runProposalExecution(proposal);
+        const result = await runProposalExecution(proposal, activeThreadId);
+        const nextResults = mergeActionResults(currentActionResults, result);
+        await runAgenticContinuation({
+          threadId: activeThreadId,
+          seedActionResults: nextResults,
+        });
+        await refreshPilotData({
+          initialThreadId: activeThreadId,
+        });
       } catch (error) {
         setStatusMessage(
           (error as Error).message ||
@@ -1062,7 +1275,14 @@ export function EmmaPilotApp() {
         setSending(false);
       }
     },
-    [runProposalExecution],
+    [
+      activeThreadId,
+      currentActionResults,
+      mergeActionResults,
+      refreshPilotData,
+      runAgenticContinuation,
+      runProposalExecution,
+    ],
   );
 
   const handleSendMessage = useCallback(async () => {
@@ -1071,6 +1291,7 @@ export function EmmaPilotApp() {
       return;
     }
 
+    const previousMessages = messages;
     const originalInput = currentDraft.input ?? "";
     const text = originalInput.trim();
     if (!text || sending) {
@@ -1103,12 +1324,13 @@ export function EmmaPilotApp() {
         },
       };
 
-      const currentMessages = [...messages, userMessage];
+      const currentMessages = [...previousMessages, userMessage];
       setMessages(currentMessages);
 
       const selectedAgent = config?.agents.find(
         (agent) => agent.id === activeSelections.selectedAgentId,
       );
+      const seedActionResults = [...currentActionResults];
 
       const response = await pilotFetchJson<{
         threadId: string;
@@ -1187,23 +1409,14 @@ export function EmmaPilotApp() {
       setActionResultsByThread((current) => ({
         ...current,
         [activeDraftKey]: [],
-        [nextThreadId]: [],
+        [nextThreadId]: seedActionResults,
       }));
 
-      const automaticProposals = (
-        assistantMessage.metadata?.pilotProposals ?? []
-      ).filter((proposal) => !proposal.requiresApproval);
-
-      for (const proposal of automaticProposals) {
-        try {
-          await runProposalExecution(proposal, nextThreadId);
-        } catch (error) {
-          setStatusMessage(
-            (error as Error).message ||
-              "Emma Pilot could not execute the browser action.",
-          );
-        }
-      }
+      await runAgenticContinuation({
+        threadId: nextThreadId,
+        assistantMessage,
+        seedActionResults,
+      });
 
       await refreshPilotData({
         initialThreadId: nextThreadId,
@@ -1215,7 +1428,7 @@ export function EmmaPilotApp() {
       setStatusMessage(
         (error as Error).message || "Emma Pilot request failed.",
       );
-      setMessages(messages);
+      setMessages(previousMessages);
     } finally {
       setSending(false);
     }
@@ -1229,16 +1442,16 @@ export function EmmaPilotApp() {
     currentActionResults,
     currentAttachments,
     currentDraft.input,
-    messages,
     persistPanelState,
     pilotFetchJson,
     refreshPilotData,
     refreshSnapshot,
     resizeComposerInput,
-    runProposalExecution,
+    runAgenticContinuation,
     sidebarOpen,
     snapshot,
     activeDraftKey,
+    messages,
     setDraftForKey,
   ]);
 
@@ -1328,46 +1541,7 @@ export function EmmaPilotApp() {
       ) : (
         <div className="pilot-workspace">
           <main className="pilot-chat-column">
-            <section className="pilot-context-strip">
-              <div>
-                <p className="pilot-context-title">
-                  {activeTab?.title || snapshot?.title || "Active page"}
-                </p>
-                <p className="pilot-context-subtitle">
-                  {activeTab?.url ||
-                    snapshot?.url ||
-                    "Waiting for page context"}
-                </p>
-              </div>
-              <div className="pilot-context-actions">
-                <span
-                  className={clsx(
-                    "pilot-badge",
-                    hasAllSitesPermission ? "is-success" : "",
-                  )}
-                >
-                  {hasAllSitesPermission ? "All sites" : "Current tab"}
-                </span>
-                <button
-                  className="pilot-icon-button"
-                  onClick={handleOpenEmma}
-                  title="Open in Emma"
-                  type="button"
-                >
-                  <ExternalLink className="size-4" />
-                </button>
-                <button
-                  className="pilot-icon-button"
-                  onClick={() => void refreshSnapshot()}
-                  title="Refresh page context"
-                  type="button"
-                >
-                  <RefreshCcw className="size-4" />
-                </button>
-              </div>
-            </section>
-
-            <section className="pilot-messages">
+            <section ref={messagesContainerRef} className="pilot-messages">
               {!auth ? (
                 <EmptyState
                   title="Connect Emma Pilot"
@@ -1391,150 +1565,151 @@ export function EmmaPilotApp() {
                   />
                 ))
               )}
+              <div ref={messagesEndRef} />
             </section>
 
-            <form
-              className="pilot-composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleSendMessage();
-              }}
-            >
-              <div className="pilot-composer-body">
-                <textarea
-                  ref={composerTextareaRef}
-                  className="pilot-composer-input"
-                  value={currentDraft.input ?? ""}
-                  onChange={(event) => {
-                    handleDraftInputChange(event.target.value);
-                    resizeComposerInput();
-                  }}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === "Enter" &&
-                      !event.shiftKey &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                  placeholder="Ask Emma Pilot anything about this page"
-                  rows={1}
-                  disabled={!auth || sending}
-                />
-
-                {currentAttachments.length ? (
-                  <div className="pilot-attachment-row">
-                    {currentAttachments.map((attachment) => (
-                      <button
-                        key={attachment.id}
-                        className="pilot-attachment-pill"
-                        onClick={() => handleRemoveAttachment(attachment.id)}
-                        type="button"
-                      >
-                        {attachment.filename || "Attachment"}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="pilot-composer-toolbar">
-                <div className="pilot-toolbar-left">
-                  <input
-                    ref={fileInputRef}
-                    className="hidden-input"
-                    type="file"
-                    multiple
+            <div className="pilot-composer-dock">
+              <form
+                className="pilot-composer"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleSendMessage();
+                }}
+              >
+                <div className="pilot-composer-body">
+                  <textarea
+                    ref={composerTextareaRef}
+                    className="pilot-composer-input"
+                    value={currentDraft.input ?? ""}
                     onChange={(event) => {
-                      void handleUploadFiles(event.target.files);
-                      event.currentTarget.value = "";
+                      handleDraftInputChange(event.target.value);
+                      resizeComposerInput();
                     }}
-                  />
-                  <button
-                    className="pilot-icon-button"
-                    onClick={() => fileInputRef.current?.click()}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    placeholder="Ask Emma Pilot anything about this page"
+                    rows={1}
                     disabled={!auth || sending}
-                    title="Add files"
-                    type="button"
-                  >
-                    <Plus className="size-4" />
-                  </button>
+                  />
 
-                  <div className="pilot-select-shell">
-                    <select
-                      className="pilot-select"
-                      value={createModelValue(
-                        activeSelections.selectedChatModel,
-                      )}
-                      onChange={(event) =>
-                        handleModelChange(event.target.value)
-                      }
-                      disabled={!auth || sending}
-                    >
-                      <option value="">Select model</option>
-                      {modelProviders.map((provider) => (
-                        <optgroup
-                          key={provider.provider}
-                          label={`${provider.provider}${provider.hasAPIKey ? "" : " (No API key)"}`}
+                  {currentAttachments.length ? (
+                    <div className="pilot-attachment-row">
+                      {currentAttachments.map((attachment) => (
+                        <button
+                          key={attachment.id}
+                          className="pilot-attachment-pill"
+                          onClick={() => handleRemoveAttachment(attachment.id)}
+                          type="button"
                         >
-                          {provider.models.map((model) => (
-                            <option
-                              key={`${provider.provider}-${model.name}`}
-                              value={`${provider.provider}::${model.name}`}
-                              disabled={!provider.hasAPIKey}
-                            >
-                              {model.name}
-                            </option>
-                          ))}
-                        </optgroup>
+                          {attachment.filename || "Attachment"}
+                        </button>
                       ))}
-                    </select>
-                    <ChevronDown className="size-3 pilot-select-chevron" />
-                  </div>
+                    </div>
+                  ) : null}
+                </div>
 
-                  <div className="pilot-select-shell">
-                    <select
-                      className="pilot-select"
-                      value={activeSelections.selectedAgentId}
-                      onChange={(event) =>
-                        handleAgentChange(event.target.value)
-                      }
+                <div className="pilot-composer-toolbar">
+                  <div className="pilot-toolbar-left">
+                    <input
+                      ref={fileInputRef}
+                      className="hidden-input"
+                      type="file"
+                      multiple
+                      onChange={(event) => {
+                        void handleUploadFiles(event.target.files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    <button
+                      className="pilot-icon-button"
+                      onClick={() => fileInputRef.current?.click()}
                       disabled={!auth || sending}
+                      title="Add files"
+                      type="button"
                     >
-                      <option value="">Emma Pilot broker</option>
-                      {config?.agents.map((agent) => (
-                        <option key={agent.id} value={agent.id}>
-                          {agent.name}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown className="size-3 pilot-select-chevron" />
+                      <Plus className="size-4" />
+                    </button>
+
+                    <div className="pilot-select-shell">
+                      <select
+                        className="pilot-select"
+                        value={createModelValue(
+                          activeSelections.selectedChatModel,
+                        )}
+                        onChange={(event) =>
+                          handleModelChange(event.target.value)
+                        }
+                        disabled={!auth || sending}
+                      >
+                        <option value="">Select model</option>
+                        {modelProviders.map((provider) => (
+                          <optgroup
+                            key={provider.provider}
+                            label={`${provider.provider}${provider.hasAPIKey ? "" : " (No API key)"}`}
+                          >
+                            {provider.models.map((model) => (
+                              <option
+                                key={`${provider.provider}-${model.name}`}
+                                value={`${provider.provider}::${model.name}`}
+                                disabled={!provider.hasAPIKey}
+                              >
+                                {model.name}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                      <ChevronDown className="size-3 pilot-select-chevron" />
+                    </div>
+
+                    <div className="pilot-select-shell">
+                      <select
+                        className="pilot-select"
+                        value={activeSelections.selectedAgentId}
+                        onChange={(event) =>
+                          handleAgentChange(event.target.value)
+                        }
+                        disabled={!auth || sending}
+                      >
+                        <option value="">Emma Pilot broker</option>
+                        {config?.agents.map((agent) => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.name}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="size-3 pilot-select-chevron" />
+                    </div>
+                  </div>
+
+                  <div className="pilot-toolbar-right">
+                    <button
+                      className="pilot-send-button"
+                      disabled={
+                        !auth || sending || !(currentDraft.input || "").trim()
+                      }
+                      type="submit"
+                    >
+                      {sending ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Send className="size-4" />
+                      )}
+                    </button>
                   </div>
                 </div>
+              </form>
 
-                <div className="pilot-toolbar-right">
-                  <button
-                    className="pilot-send-button"
-                    disabled={
-                      !auth || sending || !(currentDraft.input || "").trim()
-                    }
-                    type="submit"
-                  >
-                    {sending ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Send className="size-4" />
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div className="pilot-composer-footer">
-                <p className="pilot-composer-label">Emma AI browser copilot</p>
-              </div>
-            </form>
+              <p className="pilot-composer-label">Emma AI browser copilot</p>
+            </div>
           </main>
 
           <aside
@@ -1878,12 +2053,6 @@ function MessageCard(props: {
     >
       <div className="pilot-message-meta">
         <span>{props.message.role === "user" ? "You" : "Emma Pilot"}</span>
-        {props.message.metadata?.chatModel ? (
-          <span>
-            {props.message.metadata.chatModel.provider}/
-            {props.message.metadata.chatModel.model}
-          </span>
-        ) : null}
       </div>
 
       {textParts.length ? (

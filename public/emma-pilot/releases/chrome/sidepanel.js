@@ -22249,6 +22249,7 @@ var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
 var AUTH_STORAGE_KEY = "emmaPilotAuth";
 var PANEL_STORAGE_KEY = "emmaPilotPanelStateV2";
 var MODEL_REFRESH_MS = 1e3 * 60 * 5;
+var MAX_AUTO_CONTINUATIONS = 3;
 var NEW_THREAD_KEY = "__new__";
 var runtimeConfigPromise = null;
 function clsx(...values) {
@@ -22343,11 +22344,15 @@ async function setStoredAuth(auth) {
   await chrome.storage.local.remove(AUTH_STORAGE_KEY);
 }
 function EmmaPilotApp() {
-  const [runtimeConfig, setRuntimeConfig] = (0, import_react3.useState)(null);
+  const [runtimeConfig, setRuntimeConfig] = (0, import_react3.useState)(
+    null
+  );
   const [view, setView] = (0, import_react3.useState)("chat");
   const [auth, setAuth] = (0, import_react3.useState)(null);
   const [config, setConfig] = (0, import_react3.useState)(null);
-  const [modelProviders, setModelProviders] = (0, import_react3.useState)([]);
+  const [modelProviders, setModelProviders] = (0, import_react3.useState)(
+    []
+  );
   const [threads, setThreads] = (0, import_react3.useState)([]);
   const [activeThreadId, setActiveThreadId] = (0, import_react3.useState)(null);
   const [messages, setMessages] = (0, import_react3.useState)([]);
@@ -22369,8 +22374,11 @@ function EmmaPilotApp() {
   });
   const fileInputRef = (0, import_react3.useRef)(null);
   const composerTextareaRef = (0, import_react3.useRef)(null);
+  const messagesContainerRef = (0, import_react3.useRef)(null);
+  const messagesEndRef = (0, import_react3.useRef)(null);
   const initializedRef = (0, import_react3.useRef)(false);
   const initStartedRef = (0, import_react3.useRef)(false);
+  const snapshotRefreshTimeoutRef = (0, import_react3.useRef)(null);
   const activeDraftKey = activeThreadId ?? NEW_THREAD_KEY;
   const currentDraft = drafts[activeDraftKey] ?? {};
   const currentAttachments = attachmentsByThread[activeDraftKey] ?? [];
@@ -22383,6 +22391,29 @@ function EmmaPilotApp() {
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 220)}px`;
   }, []);
+  const scrollMessagesToBottom = (0, import_react3.useCallback)(
+    (behavior = "smooth") => {
+      if (messagesEndRef.current) {
+        messagesEndRef.current.scrollIntoView({
+          block: "end",
+          behavior
+        });
+        return;
+      }
+      messagesContainerRef.current?.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior
+      });
+    },
+    []
+  );
+  const mergeActionResults = (0, import_react3.useCallback)(
+    (current, next) => [
+      ...current.filter((item) => item.proposalId !== next.proposalId),
+      next
+    ],
+    []
+  );
   const persistPanelState = (0, import_react3.useCallback)(
     async (nextActiveThreadId = activeThreadId, nextSidebarOpen = sidebarOpen, nextDrafts = drafts) => {
       await saveStoredPanelState({
@@ -22484,10 +22515,13 @@ function EmmaPilotApp() {
       }
       const headers = new Headers(options.headers || {});
       headers.set("Authorization", `Bearer ${currentAuth.accessToken}`);
-      const response = await fetch(`${currentRuntimeConfig.backendOrigin}${path}`, {
-        ...options,
-        headers
-      });
+      const response = await fetch(
+        `${currentRuntimeConfig.backendOrigin}${path}`,
+        {
+          ...options,
+          headers
+        }
+      );
       if (response.status === 401 && allowRefresh && currentAuth.refreshToken) {
         const refreshedAuth = await refreshPilotTokens({
           auth: currentAuth,
@@ -22506,51 +22540,60 @@ function EmmaPilotApp() {
     },
     [auth, refreshPilotTokens, runtimeConfig]
   );
-  const loadModels = (0, import_react3.useCallback)(async (context) => {
-    const currentAuth = context?.auth ?? auth;
-    if (!currentAuth) {
-      setModelProviders([]);
-      return [];
-    }
-    const providers = await pilotFetchJson(
-      "/api/pilot/models",
-      {},
-      true,
-      context
-    );
-    setModelProviders(providers);
-    return providers;
-  }, [auth, pilotFetchJson]);
-  const loadThreads = (0, import_react3.useCallback)(async (context) => {
-    const currentAuth = context?.auth ?? auth;
-    if (!currentAuth) {
-      setThreads([]);
-      return [];
-    }
-    const nextThreads = await pilotFetchJson(
-      "/api/pilot/threads",
-      {},
-      true,
-      context
-    );
-    setThreads(nextThreads);
-    return nextThreads;
-  }, [auth, pilotFetchJson]);
-  const loadConfig = (0, import_react3.useCallback)(async (context) => {
-    const currentAuth = context?.auth ?? auth;
-    if (!currentAuth) {
-      setConfig(null);
-      return null;
-    }
-    const nextConfig = await pilotFetchJson(
-      "/api/pilot/config",
-      {},
-      true,
-      context
-    );
-    setConfig(nextConfig);
-    return nextConfig;
-  }, [auth, pilotFetchJson]);
+  const loadModels = (0, import_react3.useCallback)(
+    async (context) => {
+      const currentAuth = context?.auth ?? auth;
+      if (!currentAuth) {
+        setModelProviders([]);
+        return [];
+      }
+      const providers = await pilotFetchJson(
+        "/api/pilot/models",
+        {},
+        true,
+        context
+      );
+      setModelProviders(providers);
+      return providers;
+    },
+    [auth, pilotFetchJson]
+  );
+  const loadThreads = (0, import_react3.useCallback)(
+    async (context) => {
+      const currentAuth = context?.auth ?? auth;
+      if (!currentAuth) {
+        setThreads([]);
+        return [];
+      }
+      const nextThreads = await pilotFetchJson(
+        "/api/pilot/threads",
+        {},
+        true,
+        context
+      );
+      setThreads(nextThreads);
+      return nextThreads;
+    },
+    [auth, pilotFetchJson]
+  );
+  const loadConfig = (0, import_react3.useCallback)(
+    async (context) => {
+      const currentAuth = context?.auth ?? auth;
+      if (!currentAuth) {
+        setConfig(null);
+        return null;
+      }
+      const nextConfig = await pilotFetchJson(
+        "/api/pilot/config",
+        {},
+        true,
+        context
+      );
+      setConfig(nextConfig);
+      return nextConfig;
+    },
+    [auth, pilotFetchJson]
+  );
   const openThread = (0, import_react3.useCallback)(
     async (threadId, options) => {
       setLoadingThreadId(threadId);
@@ -22596,7 +22639,13 @@ function EmmaPilotApp() {
         setLoadingThreadId(null);
       }
     },
-    [config?.defaultChatModel, drafts, persistPanelState, pilotFetchJson, sidebarOpen]
+    [
+      config?.defaultChatModel,
+      drafts,
+      persistPanelState,
+      pilotFetchJson,
+      sidebarOpen
+    ]
   );
   const startNewSession = (0, import_react3.useCallback)(() => {
     const preferences = resolveThreadPreferences({
@@ -22641,10 +22690,9 @@ function EmmaPilotApp() {
         loadConfig(requestContext),
         loadThreads(requestContext),
         loadModels(requestContext)
-      ]).then(([loadedConfig, loadedThreads]) => [
-        loadedConfig,
-        loadedThreads
-      ]);
+      ]).then(
+        ([loadedConfig, loadedThreads]) => [loadedConfig, loadedThreads]
+      );
       const nextActiveThreadId = options?.initialThreadId && nextThreads.some((thread) => thread.id === options.initialThreadId) ? options.initialThreadId : activeThreadId && nextThreads.some((thread) => thread.id === activeThreadId) ? activeThreadId : nextThreads[0]?.id ?? null;
       if (nextActiveThreadId) {
         await openThread(nextActiveThreadId, {
@@ -22745,8 +22793,43 @@ function EmmaPilotApp() {
     };
   }, [auth, loadModels, refreshAuthStatus, refreshSnapshot]);
   (0, import_react3.useEffect)(() => {
+    const scheduleSnapshotRefresh = (delay = 120) => {
+      if (snapshotRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(snapshotRefreshTimeoutRef.current);
+      }
+      snapshotRefreshTimeoutRef.current = window.setTimeout(() => {
+        snapshotRefreshTimeoutRef.current = null;
+        void refreshSnapshot({ silent: true });
+      }, delay);
+    };
+    const handleTabActivated = () => {
+      scheduleSnapshotRefresh(80);
+    };
+    const handleTabUpdated = (_tabId, changeInfo, tab) => {
+      if (!tab.active) {
+        return;
+      }
+      if (changeInfo.status === "complete" || typeof changeInfo.url === "string" || typeof changeInfo.title === "string") {
+        scheduleSnapshotRefresh(120);
+      }
+    };
+    chrome.tabs.onActivated.addListener(handleTabActivated);
+    chrome.tabs.onUpdated.addListener(handleTabUpdated);
+    return () => {
+      chrome.tabs.onActivated.removeListener(handleTabActivated);
+      chrome.tabs.onUpdated.removeListener(handleTabUpdated);
+      if (snapshotRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(snapshotRefreshTimeoutRef.current);
+        snapshotRefreshTimeoutRef.current = null;
+      }
+    };
+  }, [refreshSnapshot]);
+  (0, import_react3.useEffect)(() => {
     resizeComposerInput();
   }, [currentDraft.input, resizeComposerInput]);
+  (0, import_react3.useEffect)(() => {
+    scrollMessagesToBottom(messages.length > 0 ? "smooth" : "auto");
+  }, [messages.length, scrollMessagesToBottom]);
   const handleSidebarToggle = (0, import_react3.useCallback)(() => {
     setSidebarOpen((current) => {
       const next = !current;
@@ -22772,7 +22855,9 @@ function EmmaPilotApp() {
       });
       await refreshSnapshot({ silent: true });
     } catch (error) {
-      setStatusMessage(error.message || "Emma Pilot sign-in failed.");
+      setStatusMessage(
+        error.message || "Emma Pilot sign-in failed."
+      );
     } finally {
       setSending(false);
     }
@@ -22871,7 +22956,10 @@ function EmmaPilotApp() {
         }
         setAttachmentsByThread((current) => ({
           ...current,
-          [activeDraftKey]: [...current[activeDraftKey] ?? [], ...uploadedEntries]
+          [activeDraftKey]: [
+            ...current[activeDraftKey] ?? [],
+            ...uploadedEntries
+          ]
         }));
       } catch (error) {
         setStatusMessage(
@@ -22883,14 +22971,17 @@ function EmmaPilotApp() {
     },
     [activeDraftKey, auth, pilotFetchJson]
   );
-  const handleRemoveAttachment = (0, import_react3.useCallback)((attachmentId) => {
-    setAttachmentsByThread((current) => ({
-      ...current,
-      [activeDraftKey]: (current[activeDraftKey] ?? []).filter(
-        (attachment) => attachment.id !== attachmentId
-      )
-    }));
-  }, [activeDraftKey]);
+  const handleRemoveAttachment = (0, import_react3.useCallback)(
+    (attachmentId) => {
+      setAttachmentsByThread((current) => ({
+        ...current,
+        [activeDraftKey]: (current[activeDraftKey] ?? []).filter(
+          (attachment) => attachment.id !== attachmentId
+        )
+      }));
+    },
+    [activeDraftKey]
+  );
   const runProposalExecution = (0, import_react3.useCallback)(
     async (proposal, threadKey = activeDraftKey) => {
       const result = await callBackground({
@@ -22921,12 +23012,99 @@ function EmmaPilotApp() {
     },
     [activeDraftKey, refreshSnapshot]
   );
+  const requestContinuation = (0, import_react3.useCallback)(
+    async (threadId, actionResults) => {
+      const latestPageState = await refreshSnapshot({ silent: true });
+      const nextTab = latestPageState?.tab ?? activeTab;
+      const nextSnapshot = latestPageState?.snapshot ?? snapshot;
+      if (!nextTab?.url) {
+        return null;
+      }
+      const response = await pilotFetchJson("/api/pilot/chat/continue", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          threadId,
+          tabContext: {
+            tabId: nextTab.tabId,
+            url: nextTab.url,
+            title: nextTab.title || nextSnapshot?.title || "",
+            origin: nextTab.url ? new URL(nextTab.url).origin : void 0
+          },
+          pageSnapshot: nextSnapshot || void 0,
+          approvedActionIds: actionResults.map((result) => result.proposalId),
+          actionResults
+        })
+      });
+      return response.assistantMessage;
+    },
+    [activeTab, pilotFetchJson, refreshSnapshot, snapshot]
+  );
+  const runAgenticContinuation = (0, import_react3.useCallback)(
+    async (input) => {
+      let accumulatedResults = [...input.seedActionResults ?? []];
+      let latestAssistant = input.assistantMessage ?? null;
+      let continuationCount = 0;
+      while (continuationCount <= MAX_AUTO_CONTINUATIONS) {
+        const automaticProposals = (latestAssistant?.metadata?.pilotProposals ?? []).filter((proposal) => !proposal.requiresApproval);
+        if (!automaticProposals.length) {
+          break;
+        }
+        for (const proposal of automaticProposals) {
+          const result = await runProposalExecution(proposal, input.threadId);
+          accumulatedResults = mergeActionResults(accumulatedResults, result);
+        }
+        if (continuationCount >= MAX_AUTO_CONTINUATIONS) {
+          setStatusMessage(
+            "Emma Pilot paused after several automatic steps. Review the latest result before continuing."
+          );
+          break;
+        }
+        latestAssistant = await requestContinuation(
+          input.threadId,
+          accumulatedResults
+        );
+        if (!latestAssistant) {
+          break;
+        }
+        setMessages((current) => [...current, latestAssistant]);
+        continuationCount += 1;
+        const nextProposals = latestAssistant.metadata?.pilotProposals ?? [];
+        if (!nextProposals.length) {
+          break;
+        }
+        if (nextProposals.some((proposal) => proposal.requiresApproval)) {
+          break;
+        }
+      }
+      return accumulatedResults;
+    },
+    [
+      mergeActionResults,
+      requestContinuation,
+      runProposalExecution,
+      setStatusMessage
+    ]
+  );
   const handleApproveProposal = (0, import_react3.useCallback)(
     async (proposal) => {
+      if (!activeThreadId) {
+        return;
+      }
       setSending(true);
       setStatusMessage("");
       try {
-        await runProposalExecution(proposal);
+        const result = await runProposalExecution(proposal, activeThreadId);
+        const nextResults = mergeActionResults(currentActionResults, result);
+        await runAgenticContinuation({
+          threadId: activeThreadId,
+          seedActionResults: nextResults
+        });
+        await refreshPilotData({
+          initialThreadId: activeThreadId
+        });
       } catch (error) {
         setStatusMessage(
           error.message || "Emma Pilot could not execute the action."
@@ -22935,13 +23113,21 @@ function EmmaPilotApp() {
         setSending(false);
       }
     },
-    [runProposalExecution]
+    [
+      activeThreadId,
+      currentActionResults,
+      mergeActionResults,
+      refreshPilotData,
+      runAgenticContinuation,
+      runProposalExecution
+    ]
   );
   const handleSendMessage = (0, import_react3.useCallback)(async () => {
     if (!auth) {
       setStatusMessage("Connect Emma Pilot from settings before chatting.");
       return;
     }
+    const previousMessages = messages;
     const originalInput = currentDraft.input ?? "";
     const text = originalInput.trim();
     if (!text || sending) {
@@ -22969,11 +23155,12 @@ function EmmaPilotApp() {
           chatModel: activeSelections.selectedChatModel || void 0
         }
       };
-      const currentMessages = [...messages, userMessage];
+      const currentMessages = [...previousMessages, userMessage];
       setMessages(currentMessages);
       const selectedAgent = config?.agents.find(
         (agent) => agent.id === activeSelections.selectedAgentId
       );
+      const seedActionResults = [...currentActionResults];
       const response = await pilotFetchJson("/api/pilot/chat", {
         method: "POST",
         headers: {
@@ -23003,7 +23190,9 @@ function EmmaPilotApp() {
             origin: nextTab.url ? new URL(nextTab.url).origin : void 0
           },
           pageSnapshot: nextSnapshot || void 0,
-          approvedActionIds: currentActionResults.map((result) => result.proposalId),
+          approvedActionIds: currentActionResults.map(
+            (result) => result.proposalId
+          ),
           actionResults: currentActionResults,
           chatModel: activeSelections.selectedChatModel || void 0
         })
@@ -23038,18 +23227,13 @@ function EmmaPilotApp() {
       setActionResultsByThread((current) => ({
         ...current,
         [activeDraftKey]: [],
-        [nextThreadId]: []
+        [nextThreadId]: seedActionResults
       }));
-      const automaticProposals = (assistantMessage.metadata?.pilotProposals ?? []).filter((proposal) => !proposal.requiresApproval);
-      for (const proposal of automaticProposals) {
-        try {
-          await runProposalExecution(proposal, nextThreadId);
-        } catch (error) {
-          setStatusMessage(
-            error.message || "Emma Pilot could not execute the browser action."
-          );
-        }
-      }
+      await runAgenticContinuation({
+        threadId: nextThreadId,
+        assistantMessage,
+        seedActionResults
+      });
       await refreshPilotData({
         initialThreadId: nextThreadId
       });
@@ -23060,7 +23244,7 @@ function EmmaPilotApp() {
       setStatusMessage(
         error.message || "Emma Pilot request failed."
       );
-      setMessages(messages);
+      setMessages(previousMessages);
     } finally {
       setSending(false);
     }
@@ -23074,16 +23258,16 @@ function EmmaPilotApp() {
     currentActionResults,
     currentAttachments,
     currentDraft.input,
-    messages,
     persistPanelState,
     pilotFetchJson,
     refreshPilotData,
     refreshSnapshot,
     resizeComposerInput,
-    runProposalExecution,
+    runAgenticContinuation,
     sidebarOpen,
     snapshot,
     activeDraftKey,
+    messages,
     setDraftForKey
   ]);
   const handleOpenEmma = (0, import_react3.useCallback)(() => {
@@ -23160,198 +23344,167 @@ function EmmaPilotApp() {
       }
     ) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-workspace", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", { className: "pilot-chat-column", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "pilot-context-strip", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-context-title", children: activeTab?.title || snapshot?.title || "Active page" }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-context-subtitle", children: activeTab?.url || snapshot?.url || "Waiting for page context" })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-context-actions", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-              "span",
-              {
-                className: clsx(
-                  "pilot-badge",
-                  hasAllSitesPermission ? "is-success" : ""
-                ),
-                children: hasAllSitesPermission ? "All sites" : "Current tab"
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-              "button",
-              {
-                className: "pilot-icon-button",
-                onClick: handleOpenEmma,
-                title: "Open in Emma",
-                type: "button",
-                children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ExternalLink, { className: "size-4" })
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-              "button",
-              {
-                className: "pilot-icon-button",
-                onClick: () => void refreshSnapshot(),
-                title: "Refresh page context",
-                type: "button",
-                children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(RefreshCcw, { className: "size-4" })
-              }
-            )
-          ] })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "pilot-messages", children: !auth ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          EmptyState,
-          {
-            title: "Connect Emma Pilot",
-            description: "Open settings to connect your Emma account, grant site access, and start chatting.",
-            actionLabel: "Open settings",
-            onAction: () => setView("settings")
-          }
-        ) : messages.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          EmptyState,
-          {
-            title: "Start a new Emma Pilot session",
-            description: "Type your request below. Emma Pilot understands natural language about the current page."
-          }
-        ) : messages.map((message, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          MessageCard,
-          {
-            message,
-            isActive: index === messages.length - 1,
-            actionResults: currentActionResults,
-            onApproveProposal: handleApproveProposal
-          },
-          message.id
-        )) }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-          "form",
-          {
-            className: "pilot-composer",
-            onSubmit: (event) => {
-              event.preventDefault();
-              void handleSendMessage();
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { ref: messagesContainerRef, className: "pilot-messages", children: [
+          !auth ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            EmptyState,
+            {
+              title: "Connect Emma Pilot",
+              description: "Open settings to connect your Emma account, grant site access, and start chatting.",
+              actionLabel: "Open settings",
+              onAction: () => setView("settings")
+            }
+          ) : messages.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            EmptyState,
+            {
+              title: "Start a new Emma Pilot session",
+              description: "Type your request below. Emma Pilot understands natural language about the current page."
+            }
+          ) : messages.map((message, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            MessageCard,
+            {
+              message,
+              isActive: index === messages.length - 1,
+              actionResults: currentActionResults,
+              onApproveProposal: handleApproveProposal
             },
-            children: [
-              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-composer-body", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                  "textarea",
-                  {
-                    ref: composerTextareaRef,
-                    className: "pilot-composer-input",
-                    value: currentDraft.input ?? "",
-                    onChange: (event) => {
-                      handleDraftInputChange(event.target.value);
-                      resizeComposerInput();
-                    },
-                    onKeyDown: (event) => {
-                      if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                        event.preventDefault();
-                        event.currentTarget.form?.requestSubmit();
-                      }
-                    },
-                    placeholder: "Ask Emma Pilot anything about this page",
-                    rows: 1,
-                    disabled: !auth || sending
-                  }
-                ),
-                currentAttachments.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "pilot-attachment-row", children: currentAttachments.map((attachment) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                  "button",
-                  {
-                    className: "pilot-attachment-pill",
-                    onClick: () => handleRemoveAttachment(attachment.id),
-                    type: "button",
-                    children: attachment.filename || "Attachment"
-                  },
-                  attachment.id
-                )) }) : null
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-composer-toolbar", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-toolbar-left", children: [
+            message.id
+          )),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { ref: messagesEndRef })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-composer-dock", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+            "form",
+            {
+              className: "pilot-composer",
+              onSubmit: (event) => {
+                event.preventDefault();
+                void handleSendMessage();
+              },
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-composer-body", children: [
                   /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                    "input",
+                    "textarea",
                     {
-                      ref: fileInputRef,
-                      className: "hidden-input",
-                      type: "file",
-                      multiple: true,
+                      ref: composerTextareaRef,
+                      className: "pilot-composer-input",
+                      value: currentDraft.input ?? "",
                       onChange: (event) => {
-                        void handleUploadFiles(event.target.files);
-                        event.currentTarget.value = "";
-                      }
+                        handleDraftInputChange(event.target.value);
+                        resizeComposerInput();
+                      },
+                      onKeyDown: (event) => {
+                        if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                          event.preventDefault();
+                          event.currentTarget.form?.requestSubmit();
+                        }
+                      },
+                      placeholder: "Ask Emma Pilot anything about this page",
+                      rows: 1,
+                      disabled: !auth || sending
                     }
                   ),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                  currentAttachments.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "pilot-attachment-row", children: currentAttachments.map((attachment) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
                     "button",
                     {
-                      className: "pilot-icon-button",
-                      onClick: () => fileInputRef.current?.click(),
-                      disabled: !auth || sending,
-                      title: "Add files",
+                      className: "pilot-attachment-pill",
+                      onClick: () => handleRemoveAttachment(attachment.id),
                       type: "button",
-                      children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Plus, { className: "size-4" })
-                    }
-                  ),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-select-shell", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-                      "select",
-                      {
-                        className: "pilot-select",
-                        value: createModelValue(activeSelections.selectedChatModel),
-                        onChange: (event) => handleModelChange(event.target.value),
-                        disabled: !auth || sending,
-                        children: [
-                          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "Select model" }),
-                          modelProviders.map((provider) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                            "optgroup",
-                            {
-                              label: `${provider.provider}${provider.hasAPIKey ? "" : " (No API key)"}`,
-                              children: provider.models.map((model) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                                "option",
-                                {
-                                  value: `${provider.provider}::${model.name}`,
-                                  disabled: !provider.hasAPIKey,
-                                  children: model.name
-                                },
-                                `${provider.provider}-${model.name}`
-                              ))
-                            },
-                            provider.provider
-                          ))
-                        ]
-                      }
-                    ),
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "size-3 pilot-select-chevron" })
-                  ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-select-shell", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-                      "select",
-                      {
-                        className: "pilot-select",
-                        value: activeSelections.selectedAgentId,
-                        onChange: (event) => handleAgentChange(event.target.value),
-                        disabled: !auth || sending,
-                        children: [
-                          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "Emma Pilot broker" }),
-                          config?.agents.map((agent) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: agent.id, children: agent.name }, agent.id))
-                        ]
-                      }
-                    ),
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "size-3 pilot-select-chevron" })
-                  ] })
+                      children: attachment.filename || "Attachment"
+                    },
+                    attachment.id
+                  )) }) : null
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "pilot-toolbar-right", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-                  "button",
-                  {
-                    className: "pilot-send-button",
-                    disabled: !auth || sending || !(currentDraft.input || "").trim(),
-                    type: "submit",
-                    children: sending ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "size-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Send, { className: "size-4" })
-                  }
-                ) })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "pilot-composer-footer", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-composer-label", children: "Emma AI browser copilot" }) })
-            ]
-          }
-        )
+                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-composer-toolbar", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-toolbar-left", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                      "input",
+                      {
+                        ref: fileInputRef,
+                        className: "hidden-input",
+                        type: "file",
+                        multiple: true,
+                        onChange: (event) => {
+                          void handleUploadFiles(event.target.files);
+                          event.currentTarget.value = "";
+                        }
+                      }
+                    ),
+                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                      "button",
+                      {
+                        className: "pilot-icon-button",
+                        onClick: () => fileInputRef.current?.click(),
+                        disabled: !auth || sending,
+                        title: "Add files",
+                        type: "button",
+                        children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Plus, { className: "size-4" })
+                      }
+                    ),
+                    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-select-shell", children: [
+                      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+                        "select",
+                        {
+                          className: "pilot-select",
+                          value: createModelValue(
+                            activeSelections.selectedChatModel
+                          ),
+                          onChange: (event) => handleModelChange(event.target.value),
+                          disabled: !auth || sending,
+                          children: [
+                            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "Select model" }),
+                            modelProviders.map((provider) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                              "optgroup",
+                              {
+                                label: `${provider.provider}${provider.hasAPIKey ? "" : " (No API key)"}`,
+                                children: provider.models.map((model) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                                  "option",
+                                  {
+                                    value: `${provider.provider}::${model.name}`,
+                                    disabled: !provider.hasAPIKey,
+                                    children: model.name
+                                  },
+                                  `${provider.provider}-${model.name}`
+                                ))
+                              },
+                              provider.provider
+                            ))
+                          ]
+                        }
+                      ),
+                      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "size-3 pilot-select-chevron" })
+                    ] }),
+                    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-select-shell", children: [
+                      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+                        "select",
+                        {
+                          className: "pilot-select",
+                          value: activeSelections.selectedAgentId,
+                          onChange: (event) => handleAgentChange(event.target.value),
+                          disabled: !auth || sending,
+                          children: [
+                            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: "", children: "Emma Pilot broker" }),
+                            config?.agents.map((agent) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: agent.id, children: agent.name }, agent.id))
+                          ]
+                        }
+                      ),
+                      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ChevronDown, { className: "size-3 pilot-select-chevron" })
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "pilot-toolbar-right", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                    "button",
+                    {
+                      className: "pilot-send-button",
+                      disabled: !auth || sending || !(currentDraft.input || "").trim(),
+                      type: "submit",
+                      children: sending ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LoaderCircle, { className: "size-4 animate-spin" }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Send, { className: "size-4" })
+                    }
+                  ) })
+                ] })
+              ]
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-composer-label", children: "Emma AI browser copilot" })
+        ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
         "aside",
@@ -23417,7 +23570,15 @@ function EmptyState(props) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-empty-state", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: props.title }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: props.description }),
-    props.actionLabel && props.onAction ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "pilot-primary-button", onClick: props.onAction, type: "button", children: props.actionLabel }) : null
+    props.actionLabel && props.onAction ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      "button",
+      {
+        className: "pilot-primary-button",
+        onClick: props.onAction,
+        type: "button",
+        children: props.actionLabel
+      }
+    ) : null
   ] });
 }
 function SettingsView(props) {
@@ -23428,16 +23589,7 @@ function SettingsView(props) {
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-panel-title", children: "Connection" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-panel-subtitle", children: "Sign in and manage browser access." })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          "span",
-          {
-            className: clsx(
-              "pilot-badge",
-              props.auth ? "is-success" : ""
-            ),
-            children: props.auth ? "Connected" : "Disconnected"
-          }
-        )
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: clsx("pilot-badge", props.auth ? "is-success" : ""), children: props.auth ? "Connected" : "Disconnected" })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-settings-row", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
@@ -23589,10 +23741,18 @@ function DownloadCard(props) {
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-panel-title", children: props.title }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-panel-subtitle", children: "Download the latest extension package." })
     ] }),
-    props.href ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("a", { className: "pilot-primary-button pilot-download-button", href: props.href, download: true, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "size-4" }),
-      "Download"
-    ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "pilot-secondary-button is-disabled", children: "Not ready" })
+    props.href ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
+      "a",
+      {
+        className: "pilot-primary-button pilot-download-button",
+        href: props.href,
+        download: true,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Download, { className: "size-4" }),
+          "Download"
+        ]
+      }
+    ) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "pilot-secondary-button is-disabled", children: "Not ready" })
   ] });
 }
 function MessageCard(props) {
@@ -23610,15 +23770,15 @@ function MessageCard(props) {
         props.message.role === "user" ? "is-user" : "is-assistant"
       ),
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-message-meta", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: props.message.role === "user" ? "You" : "Emma Pilot" }),
-          props.message.metadata?.chatModel ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { children: [
-            props.message.metadata.chatModel.provider,
-            "/",
-            props.message.metadata.chatModel.model
-          ] }) : null
-        ] }),
-        textParts.length ? textParts.map((part, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-message-text", children: part.text }, `${props.message.id}-text-${index}`)) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-message-text is-muted", children: "This message contains content that Emma Pilot does not render inline yet." }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "pilot-message-meta", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: props.message.role === "user" ? "You" : "Emma Pilot" }) }),
+        textParts.length ? textParts.map((part, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "p",
+          {
+            className: "pilot-message-text",
+            children: part.text
+          },
+          `${props.message.id}-text-${index}`
+        )) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "pilot-message-text is-muted", children: "This message contains content that Emma Pilot does not render inline yet." }),
         fileParts.length || sourceParts.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "pilot-message-assets", children: [
           fileParts.map((part, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "a",

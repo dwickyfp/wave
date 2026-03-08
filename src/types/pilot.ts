@@ -125,6 +125,87 @@ export const pilotActionResultSchema = z.object({
 
 export type PilotActionResult = z.infer<typeof pilotActionResultSchema>;
 
+export const pilotTaskModeSchema = z.enum([
+  "analyze",
+  "explain",
+  "fill",
+  "navigate",
+  "continue",
+]);
+
+export type PilotTaskMode = z.infer<typeof pilotTaskModeSchema>;
+
+export const pilotFieldCoverageBucketSchema = z.enum([
+  "ready",
+  "missing",
+  "sensitive",
+  "irrelevant",
+]);
+
+export type PilotFieldCoverageBucket = z.infer<
+  typeof pilotFieldCoverageBucketSchema
+>;
+
+export const pilotFieldCoverageSchema = z.object({
+  elementId: z.string(),
+  label: z.string().optional(),
+  name: z.string().optional(),
+  bucket: pilotFieldCoverageBucketSchema,
+  reason: z.string().optional(),
+});
+
+export type PilotFieldCoverage = z.infer<typeof pilotFieldCoverageSchema>;
+
+export const pilotRelevantActionSchema = z.object({
+  elementId: z.string(),
+  label: z.string().optional(),
+  text: z.string().optional(),
+});
+
+export type PilotRelevantAction = z.infer<typeof pilotRelevantActionSchema>;
+
+export const pilotRelevantFormContextSchema = z.object({
+  formId: z.string().optional(),
+  label: z.string().optional(),
+  reason: z.string().optional(),
+  targetFieldIds: z.array(z.string()).default([]),
+  readyFields: z.array(pilotFieldCoverageSchema).default([]),
+  missingFields: z.array(pilotFieldCoverageSchema).default([]),
+  sensitiveFields: z.array(pilotFieldCoverageSchema).default([]),
+  irrelevantFields: z.array(pilotFieldCoverageSchema).default([]),
+  likelySubmitActions: z.array(pilotRelevantActionSchema).default([]),
+});
+
+export type PilotRelevantFormContext = z.infer<
+  typeof pilotRelevantFormContextSchema
+>;
+
+export const pilotTaskPhaseSchema = z.enum([
+  "analyzing",
+  "awaiting_user_input",
+  "ready_to_fill",
+  "executing",
+  "awaiting_approval",
+  "after_execution",
+  "completed",
+]);
+
+export type PilotTaskPhase = z.infer<typeof pilotTaskPhaseSchema>;
+
+export const pilotTaskStateSchema = z.object({
+  mode: pilotTaskModeSchema,
+  targetFormId: z.string().optional(),
+  targetFieldIds: z.array(z.string()).default([]),
+  missingFieldIds: z.array(z.string()).default([]),
+  collectedValues: z.record(z.string(), z.string()).default({}),
+  lastPhase: pilotTaskPhaseSchema.optional(),
+  selectedAgentId: z.string().optional(),
+  relevantForm: pilotRelevantFormContextSchema.optional(),
+  autoContinuationCount: z.number().int().nonnegative().optional(),
+});
+
+export type PilotTaskState = z.infer<typeof pilotTaskStateSchema>;
+
 export const pilotChatRequestSchema = z.object({
   threadId: z.string().uuid().optional(),
   message: z.any() as z.ZodType<UIMessage>,
@@ -145,6 +226,18 @@ export const pilotChatRequestSchema = z.object({
 });
 
 export type PilotChatRequest = z.infer<typeof pilotChatRequestSchema>;
+
+export const pilotChatContinueRequestSchema = z.object({
+  threadId: z.string().uuid(),
+  tabContext: pilotTabContextSchema,
+  pageSnapshot: pageSnapshotSchema.optional(),
+  approvedActionIds: z.array(z.string()).optional(),
+  actionResults: z.array(pilotActionResultSchema).optional(),
+});
+
+export type PilotChatContinueRequest = z.infer<
+  typeof pilotChatContinueRequestSchema
+>;
 
 export const pilotAuthExchangeResponseSchema = z.object({
   sessionId: z.string().uuid(),
