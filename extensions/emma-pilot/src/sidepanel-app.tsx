@@ -23,15 +23,12 @@ import {
   useRef,
   useState,
 } from "react";
+import { type ToolUIPart, type UIMessage } from "ai";
 import {
+  consumePilotUIMessageStream,
   getToolName,
   isToolUIPart,
-  parseJsonEventStream,
-  readUIMessageStream,
-  type ToolUIPart,
-  type UIMessage,
-} from "ai";
-import { z } from "zod";
+} from "./pilot-ui-message";
 import {
   groupThreadsByDate,
   normalizeStoredPanelState,
@@ -57,6 +54,7 @@ import {
   extractPilotProposalsFromMessage,
   getStableStreamItemKey,
   getToolStateLabel,
+  normalizePilotReasoningText,
   shouldHidePilotToolPart,
   upsertStreamedMessage,
   withStableMessageId,
@@ -81,7 +79,6 @@ const MODEL_REFRESH_MS = 1000 * 60 * 5;
 const MAX_AUTO_CONTINUATIONS = 3;
 const NEW_THREAD_KEY = "__new__";
 let runtimeConfigPromise: Promise<RuntimeConfig> | null = null;
-const uiMessageChunkStreamSchema = z.any();
 
 type ViewMode = "chat" | "settings";
 
@@ -294,50 +291,6 @@ async function callBackground<T>(message: Record<string, unknown>): Promise<T> {
       resolve(response);
     });
   });
-}
-
-async function consumePilotUIMessageStream(options: {
-  response: Response;
-  onMessage: (message: PilotMessage) => void;
-}) {
-  if (!options.response.ok) {
-    const payload = await options.response.json().catch(() => ({}));
-    throw new Error(payload.error || payload.message || "Request failed.");
-  }
-
-  if (!options.response.body) {
-    throw new Error("Emma Pilot response stream is empty.");
-  }
-
-  const chunkStream = parseJsonEventStream({
-    stream: options.response.body,
-    schema: uiMessageChunkStreamSchema,
-  }).pipeThrough(
-    new TransformStream<
-      { success: boolean; value?: unknown; error?: Error },
-      any
-    >({
-      transform(chunk, controller) {
-        if (!chunk.success) {
-          throw chunk.error;
-        }
-        controller.enqueue(chunk.value);
-      },
-    }),
-  );
-
-  let latestMessage: PilotMessage | null = null;
-  let streamMessageId = crypto.randomUUID();
-  for await (const nextMessage of readUIMessageStream<PilotMessage>({
-    stream: chunkStream,
-  })) {
-    const normalizedMessage = withStableMessageId(nextMessage, streamMessageId);
-    streamMessageId = normalizedMessage.id;
-    latestMessage = normalizedMessage;
-    options.onMessage(normalizedMessage);
-  }
-
-  return latestMessage;
 }
 
 async function getStoredPanelState() {
@@ -1464,7 +1417,7 @@ export function EmmaPilotApp() {
         }),
       });
 
-      return await consumePilotUIMessageStream({
+      return await consumePilotUIMessageStream<PilotMessage>({
         response,
         onMessage: upsertAssistantMessage,
       });
@@ -1718,7 +1671,7 @@ export function EmmaPilotApp() {
         [nextThreadId]: seedActionResults,
       }));
 
-      const assistantMessage = await consumePilotUIMessageStream({
+      const assistantMessage = await consumePilotUIMessageStream<PilotMessage>({
         response,
         onMessage: (message) => {
           assistantStreamed = true;
@@ -2378,13 +2331,23 @@ function ReasoningCard(props: {
   text: string;
   isStreaming: boolean;
 }) {
-  const [expanded, setExpanded] = useState(props.isStreaming);
+  const visibleText = useMemo(
+    () => normalizePilotReasoningText(props.text),
+    [props.text],
+  );
+  const [expanded, setExpanded] = useState(
+    props.isStreaming && Boolean(visibleText),
+  );
 
   useEffect(() => {
-    if (props.isStreaming) {
+    if (props.isStreaming && visibleText) {
       setExpanded(true);
     }
-  }, [props.isStreaming]);
+  }, [props.isStreaming, visibleText]);
+
+  if (!visibleText && !props.isStreaming) {
+    return null;
+  }
 
   return (
     <div className="pilot-process-card">
@@ -2398,10 +2361,10 @@ function ReasoningCard(props: {
           {props.isStreaming ? "Live" : "Reasoning"}
         </span>
       </button>
-      {expanded ? (
+      {expanded && visibleText ? (
         <div className="pilot-process-body">
           <div className="pilot-markdown">
-            <PilotMarkdown>{props.text}</PilotMarkdown>
+            <PilotMarkdown>{visibleText}</PilotMarkdown>
           </div>
         </div>
       ) : null}

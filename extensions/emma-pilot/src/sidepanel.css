@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark light;
+  color-scheme: dark;
   --pilot-bg: #080a14;
   --pilot-bg-elevated: rgba(18, 23, 42, 0.9);
   --pilot-bg-panel: rgba(24, 30, 53, 0.92);
@@ -21,26 +21,6 @@
   --pilot-proposal-bg: rgba(255, 255, 255, 0.04);
   --pilot-proposal-border: rgba(138, 153, 214, 0.14);
   font-family: "Inter", "Segoe UI", system-ui, sans-serif;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --pilot-bg: #eff3ff;
-    --pilot-bg-elevated: rgba(255, 255, 255, 0.92);
-    --pilot-bg-panel: rgba(247, 249, 255, 0.96);
-    --pilot-bg-soft: rgba(230, 235, 255, 0.9);
-    --pilot-border: rgba(74, 92, 162, 0.14);
-    --pilot-border-strong: rgba(74, 92, 162, 0.22);
-    --pilot-text: #172142;
-    --pilot-text-soft: #58658f;
-    --pilot-shadow: 0 20px 50px rgba(58, 78, 143, 0.12);
-    --pilot-card-bg: rgba(255, 255, 255, 0.96);
-    --pilot-card-user-bg: rgba(255, 255, 255, 0.98);
-    --pilot-card-border: rgba(74, 92, 162, 0.12);
-    --pilot-card-user-border: rgba(255, 107, 26, 0.2);
-    --pilot-proposal-bg: rgba(255, 255, 255, 0.78);
-    --pilot-proposal-border: rgba(74, 92, 162, 0.14);
-  }
 }
 
 * {

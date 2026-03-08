@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { EMMA_PILOT_ICON_TARGETS } from "./lib/emma-pilot-extension-assets";
 
 const repoRoot = process.cwd();
 const extensionRoot = path.join(repoRoot, "extensions", "emma-pilot");
 const sourceRoot = path.join(extensionRoot, "src");
+const assetRoot = path.join(extensionRoot, "assets");
 const releaseRoot = path.join(repoRoot, "public", "emma-pilot", "releases");
 const packageJsonPath = path.join(repoRoot, "package.json");
 const esbuildBin = path.join(repoRoot, "node_modules", ".bin", "esbuild");
@@ -51,6 +53,17 @@ function buildSidepanelBundle(outputDir: string) {
       cwd: repoRoot,
       stdio: "inherit",
     },
+  );
+}
+
+async function buildExtensionIcons(outputDir: string) {
+  await Promise.all(
+    EMMA_PILOT_ICON_TARGETS.map(async (target) => {
+      await copyFile(
+        path.join(assetRoot, "icons", target.filename),
+        path.join(outputDir, "icons", target.filename),
+      );
+    }),
   );
 }
 
@@ -109,22 +122,7 @@ async function buildBrowserPackage(options: {
     "utf8",
   );
 
-  await copyFile(
-    path.join(repoRoot, "src", "app", "favicon-16x16.png"),
-    path.join(outputDir, "icons", "icon16.png"),
-  );
-  await copyFile(
-    path.join(repoRoot, "src", "app", "favicon-32x32.png"),
-    path.join(outputDir, "icons", "icon32.png"),
-  );
-  await copyFile(
-    path.join(repoRoot, "src", "app", "favicon-96x96.png"),
-    path.join(outputDir, "icons", "icon48.png"),
-  );
-  await copyFile(
-    path.join(repoRoot, "src", "app", "web-app-manifest-192x192.png"),
-    path.join(outputDir, "icons", "icon128.png"),
-  );
+  await buildExtensionIcons(outputDir);
 
   const zipPath = path.join(releaseRoot, `${options.browser}.zip`);
   await fs.rm(zipPath, { force: true });

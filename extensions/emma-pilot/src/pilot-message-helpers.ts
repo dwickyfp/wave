@@ -1,6 +1,8 @@
-import { getToolName, isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
+import type { ToolUIPart, UIMessage } from "ai";
+import { getToolName, isToolUIPart } from "./pilot-ui-message";
 
 const HIDDEN_PILOT_TOOL_NAMES = new Set(["mini-javascript-execution"]);
+const REDACTED_REASONING_LINE_PATTERN = /^\[?redacted\]?$/i;
 
 export type PilotProposalLike = {
   id: string;
@@ -112,4 +114,18 @@ export function shouldHidePilotToolPart(
   part: Parameters<typeof getToolName>[0],
 ) {
   return HIDDEN_PILOT_TOOL_NAMES.has(getToolName(part));
+}
+
+export function normalizePilotReasoningText(text: string) {
+  const normalized = text.replace(/\r\n?/g, "\n").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const visibleLines = normalized
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => !REDACTED_REASONING_LINE_PATTERN.test(line.trim()));
+
+  return visibleLines.join("\n").trim();
 }

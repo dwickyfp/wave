@@ -4,6 +4,7 @@ import {
   extractPilotProposalsFromMessage,
   getStableStreamItemKey,
   getToolStateLabel,
+  normalizePilotReasoningText,
   shouldHidePilotToolPart,
   upsertStreamedMessage,
   withStableMessageId,
@@ -140,5 +141,13 @@ describe("pilot message helpers", () => {
         state: "input-available",
       } as any),
     ).toBe(false);
+  });
+
+  it("removes placeholder redacted reasoning text", () => {
+    expect(normalizePilotReasoningText("[REDACTED]")).toBe("");
+    expect(normalizePilotReasoningText("redacted")).toBe("");
+    expect(normalizePilotReasoningText("Line 1\n[REDACTED]\nLine 2")).toBe(
+      "Line 1\nLine 2",
+    );
   });
 });
