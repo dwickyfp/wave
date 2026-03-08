@@ -1,0 +1,44 @@
+name: Emma Pilot Extension
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build_extension:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Emma Pilot packages
+        env:
+          EMMA_PILOT_BACKEND_ORIGIN: https://example.com
+        run: pnpm build:emma-pilot
+
+      - name: Upload Emma Pilot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: emma-pilot-extension
+          path: |
+            public/emma-pilot/releases/chrome.zip
+            public/emma-pilot/releases/edge.zip
+            public/emma-pilot/releases/latest.json

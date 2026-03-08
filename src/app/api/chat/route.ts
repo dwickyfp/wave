@@ -32,7 +32,6 @@ import globalLogger from "logger";
 
 import { safe } from "ts-safe";
 
-import { buildCsvIngestionPreviewParts } from "@/lib/ai/ingest/csv-ingest";
 import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
 import {
@@ -50,8 +49,6 @@ import {
   CHAT_KNOWLEDGE_CONTEXT_TOKENS,
   estimateKnowledgePromptTokens,
 } from "lib/knowledge/token-budget";
-import { serverFileStorage } from "lib/file-storage";
-import { isUserOwnedStorageKey } from "lib/file-storage/upload-policy";
 import {
   type SnowflakeCortexMessage,
   callSnowflakeCortexStream,
@@ -88,6 +85,10 @@ import {
   manualToolExecuteByLastMessage,
 } from "./shared.chat";
 import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
+import {
+  applyChatAttachmentsToMessage,
+  ensureUserChatThread,
+} from "lib/chat/chat-session";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -166,20 +167,17 @@ export async function POST(request: Request) {
       }),
     });
 
-    let thread = await chatRepository.selectThreadDetails(id);
-
-    if (!thread) {
-      logger.info(`create chat thread: ${id}`);
-      const newThread = await chatRepository.insertThread({
-        id,
-        title: "",
+    let thread;
+    try {
+      thread = await ensureUserChatThread({
+        threadId: id,
         userId: session.user.id,
       });
-      thread = await chatRepository.selectThreadDetails(newThread.id);
-    }
-
-    if (thread!.userId !== session.user.id) {
-      return new Response("Forbidden", { status: 403 });
+    } catch (error) {
+      if ((error as Error).message === "Forbidden") {
+        return new Response("Forbidden", { status: 403 });
+      }
+      throw error;
     }
 
     const messages: UIMessage[] = (thread?.messages ?? []).map((m) => {
@@ -194,74 +192,11 @@ export async function POST(request: Request) {
     if (messages.at(-1)?.id == message.id) {
       messages.pop();
     }
-    const ingestionPreviewParts = await buildCsvIngestionPreviewParts(
+    await applyChatAttachmentsToMessage({
+      message,
       attachments,
-      (key) => {
-        if (!isUserOwnedStorageKey(key, session.user.id)) {
-          throw new Error("Unauthorized attachment");
-        }
-        return serverFileStorage.download(key);
-      },
-    );
-    if (ingestionPreviewParts.length) {
-      const baseParts = [...message.parts];
-      let insertionIndex = -1;
-      for (let i = baseParts.length - 1; i >= 0; i -= 1) {
-        if (baseParts[i]?.type === "text") {
-          insertionIndex = i;
-          break;
-        }
-      }
-      if (insertionIndex !== -1) {
-        baseParts.splice(insertionIndex, 0, ...ingestionPreviewParts);
-        message.parts = baseParts;
-      } else {
-        message.parts = [...baseParts, ...ingestionPreviewParts];
-      }
-    }
-
-    if (attachments.length) {
-      const firstTextIndex = message.parts.findIndex(
-        (part: any) => part?.type === "text",
-      );
-      const attachmentParts: any[] = [];
-
-      attachments.forEach((attachment) => {
-        const exists = message.parts.some(
-          (part: any) =>
-            part?.type === attachment.type && part?.url === attachment.url,
-        );
-        if (exists) return;
-
-        if (attachment.type === "file") {
-          attachmentParts.push({
-            type: "file",
-            url: attachment.url,
-            mediaType: attachment.mediaType,
-            filename: attachment.filename,
-          });
-        } else if (attachment.type === "source-url") {
-          attachmentParts.push({
-            type: "source-url",
-            url: attachment.url,
-            mediaType: attachment.mediaType,
-            title: attachment.filename,
-          });
-        }
-      });
-
-      if (attachmentParts.length) {
-        if (firstTextIndex >= 0) {
-          message.parts = [
-            ...message.parts.slice(0, firstTextIndex),
-            ...attachmentParts,
-            ...message.parts.slice(firstTextIndex),
-          ];
-        } else {
-          message.parts = [...message.parts, ...attachmentParts];
-        }
-      }
-    }
+      userId: session.user.id,
+    });
 
     const persistedMessages = [...messages];
     messages.push(message);

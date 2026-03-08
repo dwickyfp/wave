@@ -11,6 +11,7 @@
     "dev:warmup": "tsx scripts/dev-warmup.ts",
     "dev:https": "next dev --experimental-https",
     "build": "next build",
+    "build:emma-pilot": "tsx scripts/build-emma-pilot.ts",
     "start": "next start",
     "build:local": "cross-env NO_HTTPS='1' next build",
     "test": "vitest run",

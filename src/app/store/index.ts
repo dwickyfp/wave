@@ -52,6 +52,7 @@ export interface AppState {
   chatModel?: ChatModel;
   openShortcutsPopup: boolean;
   openChatPreferences: boolean;
+  openEmmaPilotManager: boolean;
   openUserSettings: boolean;
   openSettings: boolean;
   mcpCustomizationPopup?: MCPServerInfo & { id: string };
@@ -105,6 +106,7 @@ const initialState: AppState = {
   chatModel: undefined,
   openShortcutsPopup: false,
   openChatPreferences: false,
+  openEmmaPilotManager: false,
   mcpCustomizationPopup: undefined,
   temporaryChat: {
     isOpen: false,

@@ -50,6 +50,7 @@ import {
   ChatMention,
   ChatMetadata,
 } from "app-types/chat";
+import { PilotBrowser } from "app-types/pilot";
 import { DBEdge, DBNode, DBWorkflow } from "app-types/workflow";
 import { isNotNull } from "drizzle-orm";
 
@@ -104,6 +105,67 @@ export const ChatMessageTable = pgTable(
   (t) => [
     index("chat_message_thread_id_created_at_idx").on(t.threadId, t.createdAt),
     index("chat_message_created_at_idx").on(t.createdAt),
+  ],
+);
+
+export const PilotExtensionAuthCodeTable = pgTable(
+  "pilot_extension_auth_code",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    extensionId: text("extension_id").notNull(),
+    browser: text("browser").$type<PilotBrowser>().notNull(),
+    browserVersion: text("browser_version"),
+    codeHash: text("code_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.codeHash),
+    index("pilot_extension_auth_code_user_id_idx").on(table.userId),
+    index("pilot_extension_auth_code_extension_id_idx").on(table.extensionId),
+    index("pilot_extension_auth_code_expires_at_idx").on(table.expiresAt),
+  ],
+);
+
+export const PilotExtensionSessionTable = pgTable(
+  "pilot_extension_session",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    extensionId: text("extension_id").notNull(),
+    browser: text("browser").$type<PilotBrowser>().notNull(),
+    browserVersion: text("browser_version"),
+    accessTokenHash: text("access_token_hash").notNull(),
+    refreshTokenHash: text("refresh_token_hash").notNull(),
+    accessTokenExpiresAt: timestamp("access_token_expires_at", {
+      withTimezone: true,
+    }).notNull(),
+    refreshTokenExpiresAt: timestamp("refresh_token_expires_at", {
+      withTimezone: true,
+    }).notNull(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.accessTokenHash),
+    unique().on(table.refreshTokenHash),
+    index("pilot_extension_session_user_id_idx").on(table.userId),
+    index("pilot_extension_session_extension_id_idx").on(table.extensionId),
+    index("pilot_extension_session_last_used_at_idx").on(table.lastUsedAt),
   ],
 );
 

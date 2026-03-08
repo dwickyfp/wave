@@ -59,6 +59,16 @@ const UserSettingsPopup = dynamic(
   },
 );
 
+const EmmaPilotManager = dynamic(
+  () =>
+    import("@/components/emma-pilot-manager").then(
+      (mod) => mod.EmmaPilotManager,
+    ),
+  {
+    ssr: false,
+  },
+);
+
 const SettingsPopup = dynamic(
   () =>
     import("@/components/settings/settings-popup").then(
@@ -80,6 +90,7 @@ export function AppPopupProvider({
       <ChatPreferencesPopup />
       <UserSettingsPopup userSettingsComponent={userSettingsComponent} />
       <SettingsPopup />
+      <EmmaPilotManager />
       <ChatBotVoice />
       <ChatBotTemporary />
       <McpCustomizationPopup />
