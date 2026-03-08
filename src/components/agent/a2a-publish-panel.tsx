@@ -37,7 +37,7 @@ export function A2APublishPanel({
   const [isToggling, setIsToggling] = useState(false);
 
   const localStorageKey = useMemo(
-    () => (agentId ? `wave:agent-mcp-api-key:${agentId}` : null),
+    () => (agentId ? `emma:agent-mcp-api-key:${agentId}` : null),
     [agentId],
   );
   const rpcUrl = useMemo(() => {

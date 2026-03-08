@@ -24,8 +24,8 @@ import type { Agent } from "app-types/agent";
 import type { A2AAgentConfig, A2AAgentCard } from "app-types/a2a-agent";
 import {
   createNoopDataStream,
-  buildWaveAgentSystemPrompt,
-  loadWaveAgentBoundTools,
+  buildEmmaAgentSystemPrompt,
+  loadEmmaAgentBoundTools,
 } from "lib/ai/agent/runtime";
 import { resolveExternalAgentModelRuntime } from "lib/ai/agent/external-access";
 import {
@@ -50,8 +50,8 @@ import {
   streamA2AAgentResponse,
 } from "./client";
 
-const A2A_ARTIFACT_ID = "wave-response";
-const A2A_METADATA_KEY = "waveA2A";
+const A2A_ARTIFACT_ID = "emma-response";
+const A2A_METADATA_KEY = "emmaA2A";
 const A2A_SSE_HEADERS = {
   "Cache-Control": "no-cache",
   Connection: "keep-alive",
@@ -71,7 +71,7 @@ type PublishedA2AMetadata = {
 
 type PublishedAgentRuntime = {
   taskStore: TaskStore;
-  executor: WavePublishedA2AExecutor;
+  executor: EmmaPublishedA2AExecutor;
 };
 
 const publishedAgentRuntimeMap = new Map<string, PublishedAgentRuntime>();
@@ -86,9 +86,9 @@ function normalizeAgentType(agent: Agent) {
 
 function buildAgentSkill(agent: Agent) {
   return {
-    id: `wave-agent-${agent.id}`,
+    id: `emma-agent-${agent.id}`,
     name: agent.name,
-    description: agent.description ?? "Chat with this Wave agent.",
+    description: agent.description ?? "Chat with this Emma agent.",
     tags: ["chat", normalizeAgentType(agent)],
     inputModes: ["text"],
     outputModes: ["text"],
@@ -295,7 +295,7 @@ async function streamStandardAgentRun(input: {
     input.agent as any,
   );
   const dataStream = createNoopDataStream();
-  const toolset = await loadWaveAgentBoundTools({
+  const toolset = await loadEmmaAgentBoundTools({
     agent: input.agent,
     userId: input.agent.userId,
     mentions: input.agent.instructions?.mentions ?? [],
@@ -324,7 +324,7 @@ async function streamStandardAgentRun(input: {
   });
   const run = streamText({
     model,
-    system: buildWaveAgentSystemPrompt({
+    system: buildEmmaAgentSystemPrompt({
       agent: input.agent,
       subAgents: toolset.subAgents,
       attachedSkills: toolset.attachedSkills,
@@ -531,7 +531,7 @@ async function streamRemoteA2AAgentRun(input: {
   };
 }
 
-class WavePublishedA2AExecutor implements AgentExecutor {
+class EmmaPublishedA2AExecutor implements AgentExecutor {
   private readonly activeControllers = new Map<string, AbortController>();
 
   constructor(
@@ -651,7 +651,7 @@ function getOrCreatePublishedAgentRuntime(
   const taskStore = new InMemoryTaskStore();
   const runtime = {
     taskStore,
-    executor: new WavePublishedA2AExecutor(agentId, taskStore),
+    executor: new EmmaPublishedA2AExecutor(agentId, taskStore),
   };
   publishedAgentRuntimeMap.set(agentId, runtime);
   return runtime;
@@ -693,11 +693,11 @@ export function buildPublishedA2AAgentCard(input: {
   const rpcUrl = `${input.origin}/api/a2a/agent/${input.agent.id}`;
   const streamUrl = `${rpcUrl}/stream`;
   const remoteCard = input.remoteConfig?.agentCard;
-  const name = input.agent.name || remoteCard?.name || "Wave Agent";
+  const name = input.agent.name || remoteCard?.name || "Emma Agent";
   const description =
     input.agent.description ||
     remoteCard?.description ||
-    `Published Wave agent wrapper for ${name}.`;
+    `Published Emma agent wrapper for ${name}.`;
 
   return {
     name,
@@ -730,7 +730,7 @@ export function buildPublishedA2AAgentCard(input: {
               scheme: "Bearer",
               bearerFormat: "API Key",
               description:
-                "Use the Wave external agent access API key as a bearer token.",
+                "Use the Emma external agent access API key as a bearer token.",
             },
           },
           security: [{ [A2A_SECURITY_SCHEME_NAME]: [] }],

@@ -188,7 +188,7 @@
       "createAccount": "Create account"
     },
     "Intro": {
-      "description": "Welcome to wave-chatbot. Sign in to experience our AI-powered conversational tools."
+      "description": "Welcome to emma-chatbot. Sign in to experience our AI-powered conversational tools."
     }
   },
   "Chat": {
@@ -497,8 +497,8 @@
     "agentMcpPresentationModePlaceholder": "Select presentation mode",
     "agentMcpPresentationModeCompatibility": "Compatibility",
     "agentMcpPresentationModeCopilotNative": "Copilot Native",
-    "agentMcpPresentationModeCompatibilityDescription": "Expose only wave_run_agent. Best for existing MCP clients that expect one opaque tool.",
-    "agentMcpPresentationModeNativeDescription": "Expose wave_run_agent plus direct subagent, workflow, and knowledge tools so Copilot can show separate top-level tool sections.",
+    "agentMcpPresentationModeCompatibilityDescription": "Expose only emma_run_agent. Best for existing MCP clients that expect one opaque tool.",
+    "agentMcpPresentationModeNativeDescription": "Expose emma_run_agent plus direct subagent, workflow, and knowledge tools so Copilot can show separate top-level tool sections.",
     "agentMcpPresentationModeUpdated": "MCP presentation mode updated",
     "agentMcpPresentationModeUpdateFailed": "Failed to update MCP presentation mode",
     "agentMcpModelLabel": "Chat/Agent Execution Model",
@@ -550,10 +550,10 @@
     "agentContinueDocsTitle": "Rules And Docs Awareness",
     "agentContinueDocsDescription": "Prefer project-level .continue/rules plus documentation links or MCP docs servers for repo and docs awareness. Do not rely on deprecated @Codebase or @Docs flows as the primary setup.",
     "agentMcpToolInventoryLabel": "Visible MCP Tools",
-    "agentMcpToolInventoryCompatibility": "wave_run_agent only.",
-    "agentMcpToolInventoryNative": "wave_run_agent plus direct wave_subagent_*, wave_workflow_*, and wave_knowledge_* tools for this agent.",
+    "agentMcpToolInventoryCompatibility": "emma_run_agent only.",
+    "agentMcpToolInventoryNative": "emma_run_agent plus direct emma_subagent_*, emma_workflow_*, and emma_knowledge_* tools for this agent.",
     "agentMcpVisibilityLimitTitle": "Copilot Visibility Limit",
-    "agentMcpVisibilityLimitDescription": "Copilot only renders top-level MCP tools it calls directly. Internal Wave tool calls inside one MCP tool stay hidden.",
+    "agentMcpVisibilityLimitDescription": "Copilot only renders top-level MCP tools it calls directly. Internal Emma tool calls inside one MCP tool stay hidden.",
     "agentMcpCopied": "Copied to clipboard",
     "agentMcpKeyGenerated": "API key generated and saved in this browser",
     "agentMcpKeyGenerateFailed": "Failed to generate API key",
@@ -563,11 +563,11 @@
     "agentMcpDisabled": "Agent MCP disabled",
     "agentMcpToggleFailed": "Failed to update MCP status",
     "dashboardTitle": "Agent Usage Dashboard",
-    "dashboardDescription": "Track in-app Wave usage separately from external Continue chat sessions and autocomplete traffic.",
+    "dashboardDescription": "Track in-app Emma usage separately from external Continue chat sessions and autocomplete traffic.",
     "dashboardRange7": "7d",
     "dashboardRange30": "30d",
     "dashboardRange90": "90d",
-    "dashboardWaveChat": "Wave In-App Chat",
+    "dashboardEmmaChat": "Emma In-App Chat",
     "dashboardContinueChat": "Continue/OpenAI Chat",
     "dashboardAutocomplete": "Continue Autocomplete",
     "dashboardTotalSessions": "Total Sessions",

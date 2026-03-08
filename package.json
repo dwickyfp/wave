@@ -1,5 +1,5 @@
 {
-  "name": "wave-chatbot",
+  "name": "emma-chatbot",
   "version": "1.26.0",
   "private": true,
   "author": "dwicky.f.putra",
@@ -45,9 +45,9 @@
     "docker-compose:logs": "docker-compose -f docker/compose.yml logs -f",
     "docker-compose:ps": "docker-compose -f docker/compose.yml ps",
     "docker-compose:update": "git pull && docker-compose -f docker/compose.yml up -d --build",
-    "docker:pg": "docker run --name wave-chatbot-pg -e POSTGRES_PASSWORD=your_password -e POSTGRES_USER=your_username -e POSTGRES_DB=your_database_name -p 5432:5432 -d postgres",
-    "docker:redis": "docker run --name wave-chatbot-redis -p 6379:6379 -d redis:7-alpine",
-    "docker:app": "docker build -f docker/Dockerfile -t wave-chatbot . && docker run -p 3000:3000 -e NO_HTTPS=1 wave-chatbot",
+    "docker:pg": "docker run --name emma-chatbot-pg -e POSTGRES_PASSWORD=your_password -e POSTGRES_USER=your_username -e POSTGRES_DB=your_database_name -p 5432:5432 -d postgres",
+    "docker:redis": "docker run --name emma-chatbot-redis -p 6379:6379 -d redis:7-alpine",
+    "docker:app": "docker build -f docker/Dockerfile -t emma-chatbot . && docker run -p 3000:3000 -e NO_HTTPS=1 emma-chatbot",
     "prepare": "husky",
     "playwright:install": "playwright install",
     "check": "pnpm lint:fix && pnpm check-types && pnpm test"

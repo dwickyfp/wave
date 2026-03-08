@@ -23,10 +23,10 @@ import {
   buildContinueRoutePrompt,
 } from "lib/ai/agent/continue-prompts";
 import {
-  buildWaveAgentSystemPrompt,
+  buildEmmaAgentSystemPrompt,
   createNoopDataStream,
-  loadWaveAgentContinueCapabilities,
-  loadWaveAgentBoundTools,
+  loadEmmaAgentContinueCapabilities,
+  loadEmmaAgentBoundTools,
 } from "lib/ai/agent/runtime";
 import {
   sanitizeModelMessagesForProvider,
@@ -69,7 +69,7 @@ export const externalAccessFileContextSchema = z.object({
   language: z.string().optional(),
 });
 
-export const waveRunAgentSchema = z.object({
+export const emmaRunAgentSchema = z.object({
   task: z.string().min(1),
   messages: z.array(externalAccessMessageSchema).optional().default([]),
   files: z.array(externalAccessFileContextSchema).optional().default([]),
@@ -81,7 +81,7 @@ export const knowledgeQuerySchema = z.object({
   tokens: z.number().positive().optional(),
 });
 
-export type WaveRunAgentInput = z.infer<typeof waveRunAgentSchema>;
+export type EmmaRunAgentInput = z.infer<typeof emmaRunAgentSchema>;
 
 export function createUnauthorizedResponse() {
   return Response.json(
@@ -103,9 +103,9 @@ export async function authenticateExternalAgentRequest(
     headers.get("emma-agent-key"),
     headers.get("x_emma_agent_key"),
     headers.get("x-emma-agent-key"),
-    headers.get("wave_agent_api_key"),
-    headers.get("wave-agent-api-key"),
-    headers.get("x-wave-agent-api-key"),
+    headers.get("emma_agent_api_key"),
+    headers.get("emma-agent-api-key"),
+    headers.get("x-emma-agent-api-key"),
   ];
   const headerKey = headerCandidates
     .find((candidate) => !!candidate?.trim())
@@ -407,7 +407,7 @@ export function formatToolTextOutput(
 }
 
 function buildTaskSections(
-  input: WaveRunAgentInput,
+  input: EmmaRunAgentInput,
   heading = "Workspace file context from MCP client:",
 ) {
   const taskSections = [input.task];
@@ -419,7 +419,7 @@ function buildTaskSections(
   return taskSections;
 }
 
-export function buildWaveRunAgentMessages(input: WaveRunAgentInput) {
+export function buildEmmaRunAgentMessages(input: EmmaRunAgentInput) {
   return [
     ...input.messages.map((message) => ({
       role: message.role,
@@ -510,7 +510,7 @@ async function runStreamedTextTask(options: {
   return finalText || "Task completed.";
 }
 
-export async function streamWaveManagedAgentRun(options: {
+export async function streamEmmaManagedAgentRun(options: {
   agent: ExternalAccessAgent;
   messages: ModelMessage[];
   abortSignal: AbortSignal;
@@ -532,7 +532,7 @@ export async function streamWaveManagedAgentRun(options: {
 
   options.onProgress?.(20, "Loading tools");
   const dataStream = createNoopDataStream();
-  const toolset = await loadWaveAgentBoundTools({
+  const toolset = await loadEmmaAgentBoundTools({
     agent: resolvedAgent,
     userId: resolvedAgent.userId,
     mentions: resolvedAgent.instructions?.mentions ?? [],
@@ -542,7 +542,7 @@ export async function streamWaveManagedAgentRun(options: {
     source: "mcp",
   });
 
-  const systemPrompt = buildWaveAgentSystemPrompt({
+  const systemPrompt = buildEmmaAgentSystemPrompt({
     agent: resolvedAgent,
     subAgents: toolset.subAgents,
     attachedSkills: toolset.attachedSkills,
@@ -619,17 +619,17 @@ export async function streamWaveManagedAgentRun(options: {
   });
 }
 
-export async function executeWaveRunAgent(
-  input: WaveRunAgentInput,
+export async function executeEmmaRunAgent(
+  input: EmmaRunAgentInput,
   context: {
     agent: ExternalAccessAgent;
     abortSignal: AbortSignal;
     onProgress?: ProgressReporter;
   },
 ): Promise<string> {
-  const result = await streamWaveManagedAgentRun({
+  const result = await streamEmmaManagedAgentRun({
     agent: context.agent,
-    messages: buildWaveRunAgentMessages(input),
+    messages: buildEmmaRunAgentMessages(input),
     abortSignal: context.abortSignal,
     responseMode: input.responseMode,
     onProgress: context.onProgress,
@@ -660,13 +660,13 @@ export async function executeSubAgentExternalTool(
     onProgress?: ProgressReporter;
   },
 ): Promise<string> {
-  const input = waveRunAgentSchema.parse(rawInput);
+  const input = emmaRunAgentSchema.parse(rawInput);
   const { chatModel, model } = await resolveExternalAgentModelRuntime(
     context.agent,
     context.onProgress,
   );
   const dataStream = createNoopDataStream();
-  const toolset = await loadWaveAgentBoundTools({
+  const toolset = await loadEmmaAgentBoundTools({
     userId: context.agent.userId,
     mentions: subagent.tools,
     dataStream,
@@ -696,7 +696,7 @@ export async function executeSubAgentExternalTool(
   return runStreamedTextTask({
     model,
     provider: chatModel.provider,
-    system: buildWaveAgentSystemPrompt({
+    system: buildEmmaAgentSystemPrompt({
       extraPrompts: [
         instructions,
         getUnifiedDiffInstruction(input.responseMode),
@@ -1085,7 +1085,7 @@ function mergeContinueManagedTools(options: {
 
   if (collisions.length > 0) {
     logger.warn(
-      `External Access: Continue client tools override internal Wave capability tools for: ${collisions.join(
+      `External Access: Continue client tools override internal Emma capability tools for: ${collisions.join(
         ", ",
       )}`,
     );
@@ -1127,7 +1127,7 @@ export async function streamContinueManagedTools(options: {
   const externalTools = createContinueManagedToolSet(
     options.request.tools ?? [],
   );
-  const internalCapabilities = await loadWaveAgentContinueCapabilities({
+  const internalCapabilities = await loadEmmaAgentContinueCapabilities({
     agent: resolvedAgent,
     userId: resolvedAgent.userId,
     dataStream,
@@ -1146,7 +1146,7 @@ export async function streamContinueManagedTools(options: {
 
   return streamText({
     model,
-    system: buildWaveAgentSystemPrompt({
+    system: buildEmmaAgentSystemPrompt({
       agent: resolvedAgent,
       subAgents: internalCapabilities.subAgents,
       attachedSkills: internalCapabilities.attachedSkills,

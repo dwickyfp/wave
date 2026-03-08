@@ -1,6 +1,6 @@
 # 🧪 End-to-End Testing Guide
 
-Comprehensive guide for running and developing end-to-end tests for wave-chatbot using Playwright.
+Comprehensive guide for running and developing end-to-end tests for emma-chatbot using Playwright.
 
 ## Quick Start
 

@@ -266,7 +266,7 @@ describe("agent mcp route", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.result.tools).toHaveLength(1);
-    expect(json.result.tools[0].name).toBe("wave_run_agent");
+    expect(json.result.tools[0].name).toBe("emma_run_agent");
   });
 
   it("lists dynamic copilot-native tools when presentation mode is enabled", async () => {
@@ -341,11 +341,11 @@ describe("agent mcp route", () => {
     const json = await res.json();
     expect(json.result.tools.map((tool: any) => tool.name)).toEqual(
       expect.arrayContaining([
-        "wave_run_agent",
-        "wave_subagent_planner",
-        "wave_subagent_coder",
-        "wave_workflow_create_issue",
-        "wave_knowledge_product_docs",
+        "emma_run_agent",
+        "emma_subagent_planner",
+        "emma_subagent_coder",
+        "emma_workflow_create_issue",
+        "emma_knowledge_product_docs",
       ]),
     );
   });
@@ -399,7 +399,7 @@ describe("agent mcp route", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.result.protocolVersion).toBe("2024-11-05");
-    expect(json.result.serverInfo.name).toBe("wave-agent-agent-1");
+    expect(json.result.serverInfo.name).toBe("emma-agent-agent-1");
   });
 
   it("returns method-not-found for unknown methods", async () => {
@@ -421,7 +421,7 @@ describe("agent mcp route", () => {
     expect(json.error.code).toBe(-32601);
   });
 
-  it("returns validation error for invalid wave_run_agent payload", async () => {
+  it("returns validation error for invalid emma_run_agent payload", async () => {
     const res = await POST(
       makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
         method: "POST",
@@ -431,7 +431,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "",
             },
@@ -456,7 +456,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "Update file",
               files: [
@@ -487,7 +487,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_unknown_tool",
+            name: "emma_unknown_tool",
             arguments: {},
           },
         }),
@@ -513,7 +513,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "hello",
             },
@@ -529,7 +529,7 @@ describe("agent mcp route", () => {
     expect(json.error.message).toContain("No enabled tool-capable chat model");
   });
 
-  it("executes wave_run_agent successfully", async () => {
+  it("executes emma_run_agent successfully", async () => {
     const res = await POST(
       makeNextRequest("http://localhost/api/mcp/agent/agent-1", {
         method: "POST",
@@ -539,7 +539,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "Summarize this",
               messages: [
@@ -571,7 +571,7 @@ describe("agent mcp route", () => {
           id: "patch-1",
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "Update algorithm implementation",
               responseMode: "unified_diff",
@@ -633,7 +633,7 @@ describe("agent mcp route", () => {
           id: "subagent-1",
           jsonrpc: "2.0",
           params: {
-            name: "wave_subagent_planner",
+            name: "emma_subagent_planner",
             arguments: {
               task: "Plan this feature",
             },
@@ -695,7 +695,7 @@ describe("agent mcp route", () => {
           id: "workflow-1",
           jsonrpc: "2.0",
           params: {
-            name: "wave_workflow_create_issue",
+            name: "emma_workflow_create_issue",
             arguments: {
               title: "Bug report",
             },
@@ -745,7 +745,7 @@ describe("agent mcp route", () => {
           id: "knowledge-1",
           jsonrpc: "2.0",
           params: {
-            name: "wave_knowledge_product_docs",
+            name: "emma_knowledge_product_docs",
             arguments: {
               query: "deployment",
             },
@@ -775,7 +775,7 @@ describe("agent mcp route", () => {
           id: "stream-1",
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             _meta: {
               progressToken: "p-1",
             },
@@ -825,7 +825,7 @@ describe("agent mcp route", () => {
           id: "run-1",
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "Long running task",
             },
@@ -887,7 +887,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "Hello",
             },
@@ -928,7 +928,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "Hello",
             },
@@ -971,7 +971,7 @@ describe("agent mcp route", () => {
           id: 1,
           jsonrpc: "2.0",
           params: {
-            name: "wave_run_agent",
+            name: "emma_run_agent",
             arguments: {
               task: "Hello",
             },

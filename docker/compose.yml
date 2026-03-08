@@ -1,5 +1,5 @@
 services:
-  wave-chatbot:
+  emma-chatbot:
     build:
       context: ..
       dockerfile: ./docker/Dockerfile
@@ -14,13 +14,13 @@ services:
       - 8.8.8.8 # Google's public DNS server
       - 8.8.4.4 # Google's public DNS server
     networks:
-      - wave-chatbot-networks
+      - emma-chatbot-networks
     depends_on:
       - postgres
       - redis
     restart: unless-stopped
 
-  wave-chatbot-worker:
+  emma-chatbot-worker:
     build:
       context: ..
       dockerfile: ./docker/Dockerfile.worker
@@ -30,7 +30,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - NODE_OPTIONS=--conditions=react-server
     networks:
-      - wave-chatbot-networks
+      - emma-chatbot-networks
     depends_on:
       - postgres
       - redis
@@ -41,7 +41,7 @@ services:
     env_file:
       - .env
     networks:
-      - wave-chatbot-networks
+      - emma-chatbot-networks
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -50,7 +50,7 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
     networks:
-      - wave-chatbot-networks
+      - emma-chatbot-networks
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -60,5 +60,5 @@ volumes:
   redis_data:
 
 networks:
-  wave-chatbot-networks:
+  emma-chatbot-networks:
     driver: bridge

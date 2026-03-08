@@ -253,7 +253,7 @@ describe("agent continue/openai route", () => {
     expect(res.status).toBe(403);
   });
 
-  it("returns a non-streaming chat completion for wave-managed chat", async () => {
+  it("returns a non-streaming chat completion for emma-managed chat", async () => {
     const res = (await POST(
       makeNextRequest(
         "http://localhost/api/agent/agent-1/openai/v1/chat/completions",
@@ -293,7 +293,7 @@ describe("agent continue/openai route", () => {
     });
   });
 
-  it("returns tool calls and skips wave-managed tool loading when OpenAI tools are supplied", async () => {
+  it("returns tool calls and skips emma-managed tool loading when OpenAI tools are supplied", async () => {
     vi.mocked(streamText).mockImplementationOnce(((_options: any) => ({
       text: Promise.resolve(""),
       toolCalls: Promise.resolve([
@@ -522,7 +522,7 @@ describe("agent continue/openai route", () => {
     expect(callArgs.tools.get_docs_kg1).toBeDefined();
     expect(callArgs.tools.subagent_planner_sa1).toBeDefined();
     expect(callArgs.tools.load_skill).toBeDefined();
-    expect(callArgs.system).toContain("Attached Wave knowledge tools");
+    expect(callArgs.system).toContain("Attached Emma knowledge tools");
     expect(callArgs.system).not.toContain(
       "Focus on production-grade software work",
     );
@@ -668,7 +668,7 @@ describe("agent continue/openai route", () => {
     expect(callArgs.tools.load_skill.description).toBe("Client skill loader");
   });
 
-  it("keeps the full Wave-managed toolset on non-Continue-managed runs", async () => {
+  it("keeps the full Emma-managed toolset on non-Continue-managed runs", async () => {
     vi.mocked(agentRepository.selectAgentByIdForMcp).mockResolvedValue({
       id: "agent-1",
       name: "Agent One",

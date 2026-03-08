@@ -188,7 +188,7 @@
       "createAccount": "Opprett konto"
     },
     "Intro": {
-      "description": "Velkommen til wave-chatbot. Logg inn for å oppleve våre AI-drevne samtaleverktøy."
+      "description": "Velkommen til emma-chatbot. Logg inn for å oppleve våre AI-drevne samtaleverktøy."
     }
   },
   "Chat": {
@@ -496,8 +496,8 @@
     "agentMcpPresentationModePlaceholder": "Velg presentasjonsmodus",
     "agentMcpPresentationModeCompatibility": "Kompatibilitet",
     "agentMcpPresentationModeCopilotNative": "Copilot Native",
-    "agentMcpPresentationModeCompatibilityDescription": "Eksponer kun wave_run_agent. Best for eksisterende MCP-klienter som forventer ett lukket verktøy.",
-    "agentMcpPresentationModeNativeDescription": "Eksponer wave_run_agent pluss direkte subagent-, arbeidsflyt- og kunnskapsverktøy slik at Copilot kan vise separate toppnivåseksjoner.",
+    "agentMcpPresentationModeCompatibilityDescription": "Eksponer kun emma_run_agent. Best for eksisterende MCP-klienter som forventer ett lukket verktøy.",
+    "agentMcpPresentationModeNativeDescription": "Eksponer emma_run_agent pluss direkte subagent-, arbeidsflyt- og kunnskapsverktøy slik at Copilot kan vise separate toppnivåseksjoner.",
     "agentMcpPresentationModeUpdated": "MCP-presentasjonsmodus oppdatert",
     "agentMcpPresentationModeUpdateFailed": "Kunne ikke oppdatere MCP-presentasjonsmodus",
     "agentMcpModelLabel": "Chat-/agentmodell",
@@ -549,10 +549,10 @@
     "agentContinueDocsTitle": "Regler og dokumentasjonsbevissthet",
     "agentContinueDocsDescription": "Bruk helst prosjektets .continue/rules sammen med dokumentasjonslenker eller MCP-dokservere for kodebase- og dokumentasjonsbevissthet. Ikke baser oppsettet primært på utdaterte @Codebase- eller @Docs-flyter.",
     "agentMcpToolInventoryLabel": "Synlige MCP-verktøy",
-    "agentMcpToolInventoryCompatibility": "Kun wave_run_agent.",
-    "agentMcpToolInventoryNative": "wave_run_agent pluss direkte wave_subagent_*, wave_workflow_* og wave_knowledge_* verktøy for denne agenten.",
+    "agentMcpToolInventoryCompatibility": "Kun emma_run_agent.",
+    "agentMcpToolInventoryNative": "emma_run_agent pluss direkte emma_subagent_*, emma_workflow_* og emma_knowledge_* verktøy for denne agenten.",
     "agentMcpVisibilityLimitTitle": "Copilot-begrensning",
-    "agentMcpVisibilityLimitDescription": "Copilot viser bare toppnivåverktøy den kaller direkte. Interne Wave-verktøykall inne i ett MCP-verktøy forblir skjult.",
+    "agentMcpVisibilityLimitDescription": "Copilot viser bare toppnivåverktøy den kaller direkte. Interne Emma-verktøykall inne i ett MCP-verktøy forblir skjult.",
     "agentMcpCopied": "Kopiert til utklippstavlen",
     "agentMcpKeyGenerated": "API-nøkkel generert og lagret i denne nettleseren",
     "agentMcpKeyGenerateFailed": "Kunne ikke generere API-nøkkel",
@@ -562,11 +562,11 @@
     "agentMcpDisabled": "Agent MCP deaktivert",
     "agentMcpToggleFailed": "Kunne ikke oppdatere MCP-status",
     "dashboardTitle": "Bruksdashboard for agent",
-    "dashboardDescription": "Spor intern Wave-bruk separat fra eksterne Continue-chatsesjoner og autocomplete-trafikk.",
+    "dashboardDescription": "Spor intern Emma-bruk separat fra eksterne Continue-chatsesjoner og autocomplete-trafikk.",
     "dashboardRange7": "7d",
     "dashboardRange30": "30d",
     "dashboardRange90": "90d",
-    "dashboardWaveChat": "Wave intern chat",
+    "dashboardEmmaChat": "Emma intern chat",
     "dashboardContinueChat": "Continue/OpenAI chat",
     "dashboardAutocomplete": "Continue autocomplete",
     "dashboardTotalSessions": "Totale sesjoner",

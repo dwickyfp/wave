@@ -249,7 +249,7 @@ export default function EditAgent({
   );
   const agentMcpLocalStorageKey = useMemo(
     () =>
-      initialAgent?.id ? `wave:agent-mcp-api-key:${initialAgent.id}` : null,
+      initialAgent?.id ? `emma:agent-mcp-api-key:${initialAgent.id}` : null,
     [initialAgent?.id],
   );
   const showAgentAccessTab =
@@ -1015,7 +1015,7 @@ export default function EditAgent({
   const agentContinueConfig = useMemo(
     () =>
       [
-        `- name: ${yamlScalar(agent.name || "Wave Agent")}`,
+        `- name: ${yamlScalar(agent.name || "Emma Agent")}`,
         "  provider: openai",
         `  model: ${yamlScalar(agentContinueModelId)}`,
         `  apiBase: ${yamlScalar(
@@ -1044,7 +1044,7 @@ export default function EditAgent({
         ...(agentAutocompleteModel
           ? []
           : [t("Agent.agentContinueConfigAutocompleteWarning")]),
-        `- name: ${yamlScalar(`${agent.name || "Wave Agent"} Autocomplete`)}`,
+        `- name: ${yamlScalar(`${agent.name || "Emma Agent"} Autocomplete`)}`,
         "  provider: openai",
         `  model: ${yamlScalar(agentContinueAutocompleteModelId)}`,
         `  apiBase: ${yamlScalar(

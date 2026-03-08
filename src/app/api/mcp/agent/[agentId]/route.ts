@@ -10,21 +10,21 @@ import {
   createProgressReporter,
   executeKnowledgeExternalTool,
   executeSubAgentExternalTool,
-  executeWaveRunAgent,
+  executeEmmaRunAgent,
   executeWorkflowExternalTool,
   getAgentPresentationMode,
   getCopilotNativeMcpResources,
   knowledgeQuerySchema,
   loadExternalAccessAgent,
   type ExternalAccessAgent,
-  waveRunAgentSchema,
+  emmaRunAgentSchema,
 } from "lib/ai/agent/external-access";
 
 interface Params {
   params: Promise<{ agentId: string }>;
 }
 
-const TOOL_RUN_AGENT = "wave_run_agent";
+const TOOL_RUN_AGENT = "emma_run_agent";
 const MCP_PROTOCOL_VERSION = "2024-11-05";
 
 type JsonRpcResponsePayload =
@@ -65,13 +65,13 @@ type McpRouteToolDefinition = {
 const WAVE_RUN_AGENT_TOOL = {
   name: TOOL_RUN_AGENT,
   description:
-    "Run this Wave base agent with its configured capabilities (subagents, workflows, default tools, MCP tools, knowledge, and skills). In Copilot Native mode, prefer direct wave_subagent_*, wave_workflow_*, and wave_knowledge_* tools when you want separate top-level tool sections. For coding workflows, pass file context and optionally request unified_diff output so Copilot can apply changes with native file tools.",
+    "Run this Emma base agent with its configured capabilities (subagents, workflows, default tools, MCP tools, knowledge, and skills). In Copilot Native mode, prefer direct emma_subagent_*, emma_workflow_*, and emma_knowledge_* tools when you want separate top-level tool sections. For coding workflows, pass file context and optionally request unified_diff output so Copilot can apply changes with native file tools.",
   inputSchema: {
     type: "object",
     properties: {
       task: {
         type: "string",
-        description: "The task or prompt to run with this Wave agent.",
+        description: "The task or prompt to run with this Emma agent.",
       },
       messages: {
         type: "array",
@@ -315,9 +315,9 @@ async function buildMcpToolRegistry(
 
   registry.set(TOOL_RUN_AGENT, {
     ...WAVE_RUN_AGENT_TOOL,
-    validateInput: (input) => waveRunAgentSchema.parse(input),
+    validateInput: (input) => emmaRunAgentSchema.parse(input),
     execute: (input, context) =>
-      executeWaveRunAgent(input as z.infer<typeof waveRunAgentSchema>, context),
+      executeEmmaRunAgent(input as z.infer<typeof emmaRunAgentSchema>, context),
   });
 
   if (
@@ -333,7 +333,7 @@ async function buildMcpToolRegistry(
     .filter((subagent) => subagent.enabled)
     .forEach((subagent: SubAgent) => {
       const toolName = buildDynamicToolName(
-        "wave_subagent",
+        "emma_subagent",
         subagent.name,
         subagent.id,
         usedNames,
@@ -343,9 +343,9 @@ async function buildMcpToolRegistry(
         name: toolName,
         description:
           subagent.description?.trim() ||
-          `Run the ${subagent.name} Wave subagent directly. Use this instead of wave_run_agent when you want a dedicated Copilot tool section.`,
+          `Run the ${subagent.name} Emma subagent directly. Use this instead of emma_run_agent when you want a dedicated Copilot tool section.`,
         inputSchema: WAVE_RUN_AGENT_TOOL.inputSchema,
-        validateInput: (input) => waveRunAgentSchema.parse(input),
+        validateInput: (input) => emmaRunAgentSchema.parse(input),
         execute: (input, context) =>
           executeSubAgentExternalTool(subagent, input, context),
       });
@@ -353,7 +353,7 @@ async function buildMcpToolRegistry(
 
   workflows.forEach((workflow) => {
     const toolName = buildDynamicToolName(
-      "wave_workflow",
+      "emma_workflow",
       workflow.name,
       workflow.id,
       usedNames,
@@ -363,7 +363,7 @@ async function buildMcpToolRegistry(
       name: toolName,
       description:
         workflow.description?.trim() ||
-        `Run the ${workflow.name} workflow directly on the Wave server.`,
+        `Run the ${workflow.name} workflow directly on the Emma server.`,
       inputSchema: workflow.schema as Record<string, unknown>,
       validateInput: (input) => {
         if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -385,7 +385,7 @@ async function buildMcpToolRegistry(
 
   knowledgeGroups.forEach((group: KnowledgeSummary) => {
     const toolName = buildDynamicToolName(
-      "wave_knowledge",
+      "emma_knowledge",
       group.name,
       group.id,
       usedNames,
@@ -395,7 +395,7 @@ async function buildMcpToolRegistry(
       name: toolName,
       description:
         group.description?.trim() ||
-        `Search the ${group.name} knowledge base directly from Wave.`,
+        `Search the ${group.name} knowledge base directly from Emma.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -480,7 +480,7 @@ async function handleJsonRpcRequest(
     return jsonRpcResultPayload(id, {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: `wave-agent-${agentId}`, version: "1.0.0" },
+      serverInfo: { name: `emma-agent-${agentId}`, version: "1.0.0" },
     });
   }
 
@@ -789,7 +789,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   }
 
   return NextResponse.json({
-    name: `wave-agent-${agentId}`,
+    name: `emma-agent-${agentId}`,
     protocolVersion: MCP_PROTOCOL_VERSION,
     capabilities: { tools: {} },
   });

@@ -291,16 +291,16 @@ export function AgentDashboardTab({ agentId }: { agentId: string }) {
 
       <Accordion
         type="multiple"
-        defaultValue={["wave-in-app", "continue-openai", "autocomplete"]}
+        defaultValue={["emma-in-app", "continue-openai", "autocomplete"]}
         className="space-y-4"
       >
-        <AccordionItem value="wave-in-app" className="rounded-lg border px-4">
+        <AccordionItem value="emma-in-app" className="rounded-lg border px-4">
           <AccordionTrigger className="py-3 hover:no-underline">
             <div className="flex min-w-0 items-center gap-2 text-left">
               <MessageSquareIcon className="size-4 text-primary" />
               <div className="min-w-0">
                 <p className="text-sm font-medium">
-                  {t("Agent.dashboardWaveChat")}
+                  {t("Agent.dashboardEmmaChat")}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {data.inApp.totalSessions.toLocaleString()}{" "}

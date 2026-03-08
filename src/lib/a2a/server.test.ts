@@ -11,7 +11,7 @@ let buildPublishedA2AAgentCard: typeof import(
 function createAgent(overrides: Partial<Agent> = {}): Agent {
   return {
     id: "agent-1",
-    name: "Wave Test Agent",
+    name: "Emma Test Agent",
     description: "Test description",
     userId: "user-1",
     visibility: "private",
@@ -71,11 +71,11 @@ describe("a2a server card generation", () => {
       agent: createAgent({
         a2aEnabled: true,
       }),
-      origin: "https://wave.example.com",
+      origin: "https://emma.example.com",
     });
 
-    expect(card.name).toBe("Wave Test Agent");
-    expect(card.url).toBe("https://wave.example.com/api/a2a/agent/agent-1");
+    expect(card.name).toBe("Emma Test Agent");
+    expect(card.url).toBe("https://emma.example.com/api/a2a/agent/agent-1");
     expect(card.capabilities.streaming).toBe(true);
     expect(card.securitySchemes).toMatchObject({
       bearerAuth: {
@@ -84,8 +84,8 @@ describe("a2a server card generation", () => {
       },
     });
     expect(card.skills[0]).toMatchObject({
-      id: "wave-agent-agent-1",
-      name: "Wave Test Agent",
+      id: "emma-agent-agent-1",
+      name: "Emma Test Agent",
     });
   });
 
@@ -96,7 +96,7 @@ describe("a2a server card generation", () => {
         name: "",
         description: undefined,
       }),
-      origin: "https://wave.example.com",
+      origin: "https://emma.example.com",
       remoteConfig: createRemoteConfig(),
     });
 

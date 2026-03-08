@@ -42,7 +42,7 @@ export async function GET(req: NextRequest, { params }: Params) {
         id: getExternalAgentOpenAiModelId(agent.name),
         object: "model",
         created: Math.floor(Date.now() / 1000),
-        owned_by: "wave",
+        owned_by: "emma",
       },
       ...(agent.mcpAutocompleteModelProvider && agent.mcpAutocompleteModelName
         ? [
@@ -50,7 +50,7 @@ export async function GET(req: NextRequest, { params }: Params) {
               id: getExternalAgentAutocompleteOpenAiModelId(agent.name),
               object: "model",
               created: Math.floor(Date.now() / 1000),
-              owned_by: "wave",
+              owned_by: "emma",
             },
           ]
         : []),

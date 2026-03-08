@@ -132,7 +132,7 @@ describe("agent mcp key route", () => {
 
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.key).toContain("wavea_");
+    expect(json.key).toContain("emmaa_");
     expect(json.preview).toBeTypeOf("string");
     expect(vi.mocked(agentRepository.setMcpApiKey)).toHaveBeenCalledOnce();
   });

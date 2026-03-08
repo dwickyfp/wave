@@ -78,7 +78,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       return NextResponse.json({ success: true });
     }
 
-    const rawKey = `wavea_${nanoid(40)}`;
+    const rawKey = `emmaa_${nanoid(40)}`;
     const keyHash = await hash(rawKey, 10);
     const keyPreview = rawKey.slice(-4);
 

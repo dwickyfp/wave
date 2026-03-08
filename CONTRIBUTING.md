@@ -1,6 +1,6 @@
-# Contributing to wave-chatbot
+# Contributing to emma-chatbot
 
-Thank you for your interest in contributing to wave-chatbot! We welcome contributions from the community and truly appreciate your effort to improve the project.
+Thank you for your interest in contributing to emma-chatbot! We welcome contributions from the community and truly appreciate your effort to improve the project.
 
 ---
 
@@ -41,8 +41,8 @@ This helps us:
 2. **Clone your fork** locally:
 
    ```bash
-   git clone https://github.com/YOUR_USERNAME/wave-chatbot.git
-   cd wave-chatbot
+   git clone https://github.com/YOUR_USERNAME/emma-chatbot.git
+   cd emma-chatbot
    ```
 
 3. **Create a new branch** for your changes:
@@ -191,5 +191,5 @@ When submitting **Issues** or **Pull Requests**:
 
 ## Thank You
 
-We sincerely appreciate your contribution to wave-chatbot.
+We sincerely appreciate your contribution to emma-chatbot.
 Let’s build a powerful, well tested and lightweight AI experience together! 🚀
