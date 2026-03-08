@@ -1,6 +1,6 @@
 {
   "name": "emma-chatbot",
-  "version": "1.26.0",
+  "version": "1.0.0",
   "private": true,
   "author": "dwicky.f.putra",
   "license": "MIT",
@@ -178,7 +178,10 @@
     "vitest": "^3.2.4"
   },
   "lint-staged": {
-    "*.{js,json,mjs,ts,yaml,tsx,css}": ["pnpm format", "pnpm lint:fix"]
+    "*.{js,json,mjs,ts,yaml,tsx,css}": [
+      "pnpm format",
+      "pnpm lint:fix"
+    ]
   },
   "packageManager": "pnpm@10.2.1",
   "engines": {
