@@ -14,6 +14,8 @@ import {
   Settings,
   Shield,
   ShieldCheck,
+  ThumbsDown,
+  ThumbsUp,
 } from "lucide-react";
 import {
   Fragment,
@@ -44,6 +46,7 @@ import type {
   PilotTaskState,
   PilotVisualContext,
 } from "../../../src/types/pilot";
+import type { ChatFeedbackType } from "../../../src/types/chat";
 import {
   getLatestPilotTaskState,
   getLatestUserText,
@@ -71,6 +74,10 @@ import {
   PILOT_SCROLLBAR_IDLE_MS,
   shouldKeepPilotScrollbarVisible,
 } from "./scroll-visibility";
+import {
+  resolveNextPilotFeedback,
+  shouldFetchPilotFeedback,
+} from "./message-feedback";
 
 const AUTH_STORAGE_KEY = "emmaPilotAuth";
 const AUTO_CONNECT_STORAGE_KEY = "emmaPilotAutoConnectDisabled";
@@ -362,6 +369,9 @@ export function EmmaPilotApp() {
   const [actionResultsByThread, setActionResultsByThread] = useState<
     Record<string, PilotActionResult[]>
   >({});
+  const [messageFeedbackById, setMessageFeedbackById] = useState<
+    Record<string, ChatFeedbackType | null>
+  >({});
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [hasAllSitesPermission, setHasAllSitesPermission] = useState(false);
   const [activeTab, setActiveTab] = useState<TabInfo | null>(null);
@@ -406,6 +416,16 @@ export function EmmaPilotApp() {
     [activeSelections.selectedChatModel, modelProviders],
   );
   const composerVisionLabel = "Copilot Browser Powered By Emma AI";
+  const assistantMessageIdsNeedingFeedback = useMemo(
+    () =>
+      messages
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.id)
+        .filter((messageId) =>
+          shouldFetchPilotFeedback(messageId, messageFeedbackById),
+        ),
+    [messageFeedbackById, messages],
+  );
 
   const resizeComposerInput = useCallback(() => {
     const textarea = composerTextareaRef.current;
@@ -731,6 +751,83 @@ export function EmmaPilotApp() {
     },
     [auth, refreshPilotTokens, runtimeConfig],
   );
+
+  const handleMessageFeedback = useCallback(
+    async (messageId: string, requested: ChatFeedbackType) => {
+      const currentFeedback = messageFeedbackById[messageId] ?? null;
+      const nextFeedback = resolveNextPilotFeedback(currentFeedback, requested);
+
+      setMessageFeedbackById((current) => ({
+        ...current,
+        [messageId]: nextFeedback,
+      }));
+
+      try {
+        if (nextFeedback === null) {
+          await pilotFetchJson(`/api/pilot/message-feedback/${messageId}`, {
+            method: "DELETE",
+          });
+          return;
+        }
+
+        await pilotFetchJson(`/api/pilot/message-feedback/${messageId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            type: nextFeedback,
+          }),
+        });
+      } catch (error) {
+        setMessageFeedbackById((current) => ({
+          ...current,
+          [messageId]: currentFeedback,
+        }));
+        setStatusMessage(
+          (error as Error).message || "Emma Pilot feedback could not be saved.",
+        );
+      }
+    },
+    [messageFeedbackById, pilotFetchJson],
+  );
+
+  useEffect(() => {
+    if (!auth || assistantMessageIdsNeedingFeedback.length === 0) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void Promise.all(
+      assistantMessageIdsNeedingFeedback.map(async (messageId) => {
+        try {
+          const result = await pilotFetchJson<{
+            type: ChatFeedbackType | null;
+          }>(`/api/pilot/message-feedback/${messageId}`);
+          return [messageId, result.type ?? null] as const;
+        } catch {
+          return [messageId, null] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled || entries.length === 0) {
+        return;
+      }
+
+      setMessageFeedbackById((current) => {
+        const next = { ...current };
+        for (const [messageId, feedback] of entries) {
+          next[messageId] = feedback;
+        }
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [assistantMessageIdsNeedingFeedback, auth, pilotFetchJson]);
 
   const loadModels = useCallback(
     async (context?: PilotRequestContext) => {
@@ -1845,6 +1942,8 @@ export function EmmaPilotApp() {
                     isActive={index === messages.length - 1}
                     isStreaming={sending && index === messages.length - 1}
                     actionResults={currentActionResults}
+                    feedback={messageFeedbackById[message.id] ?? null}
+                    onFeedback={handleMessageFeedback}
                     onApproveProposal={handleApproveProposal}
                   />
                 ))
@@ -2533,6 +2632,8 @@ function MessageCard(props: {
   isActive: boolean;
   isStreaming: boolean;
   actionResults: PilotActionResult[];
+  feedback: ChatFeedbackType | null;
+  onFeedback: (messageId: string, requested: ChatFeedbackType) => void;
   onApproveProposal: (proposal: PilotProposal) => void;
 }) {
   const visibleParts = props.message.parts.filter((part) => {
@@ -2679,6 +2780,35 @@ function MessageCard(props: {
               />
             );
           })}
+        </div>
+      ) : null}
+
+      {props.message.role === "assistant" && props.message.id ? (
+        <div className="pilot-message-actions">
+          <button
+            className={clsx(
+              "pilot-feedback-button",
+              props.feedback === "like" && "is-active-like",
+            )}
+            onClick={() => props.onFeedback(props.message.id, "like")}
+            disabled={props.isStreaming}
+            type="button"
+          >
+            <ThumbsUp className="size-3" />
+            Like
+          </button>
+          <button
+            className={clsx(
+              "pilot-feedback-button",
+              props.feedback === "dislike" && "is-active-dislike",
+            )}
+            onClick={() => props.onFeedback(props.message.id, "dislike")}
+            disabled={props.isStreaming}
+            type="button"
+          >
+            <ThumbsDown className="size-3" />
+            Dislike
+          </button>
         </div>
       ) : null}
     </article>

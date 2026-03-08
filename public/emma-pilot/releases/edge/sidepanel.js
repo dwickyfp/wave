@@ -22209,6 +22209,32 @@ var __iconNode15 = [
 ];
 var Shield = createLucideIcon("shield", __iconNode15);
 
+// node_modules/.pnpm/lucide-react@0.486.0_react@19.2.4/node_modules/lucide-react/dist/esm/icons/thumbs-down.js
+var __iconNode16 = [
+  ["path", { d: "M17 14V2", key: "8ymqnk" }],
+  [
+    "path",
+    {
+      d: "M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z",
+      key: "m61m77"
+    }
+  ]
+];
+var ThumbsDown = createLucideIcon("thumbs-down", __iconNode16);
+
+// node_modules/.pnpm/lucide-react@0.486.0_react@19.2.4/node_modules/lucide-react/dist/esm/icons/thumbs-up.js
+var __iconNode17 = [
+  ["path", { d: "M7 10v12", key: "1qc93n" }],
+  [
+    "path",
+    {
+      d: "M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z",
+      key: "emmmcr"
+    }
+  ]
+];
+var ThumbsUp = createLucideIcon("thumbs-up", __iconNode17);
+
 // extensions/emma-pilot/src/sidepanel-app.tsx
 var import_react4 = __toESM(require_react(), 1);
 
@@ -22563,7 +22589,9 @@ function applyPilotStreamChunk(options) {
       return;
     }
     case "start-step": {
-      state.message.parts.push({ type: "step-start" });
+      state.message.parts.push({
+        type: "step-start"
+      });
       emitMessage(state, onMessage);
       return;
     }
@@ -23418,7 +23446,13 @@ function renderBlock(block, index) {
     case "paragraph":
       return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: renderInlineNodes(block.text, `paragraph-${index}`) }, `paragraph-${index}`);
     case "code":
-      return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("code", { className: block.language ? `language-${block.language}` : void 0, children: block.text }) }, `code-${index}`);
+      return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("pre", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        "code",
+        {
+          className: block.language ? `language-${block.language}` : void 0,
+          children: block.text
+        }
+      ) }, `code-${index}`);
     case "list": {
       const ListTag = block.ordered ? "ol" : "ul";
       return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ListTag, { children: block.items.map((item, itemIndex) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: renderInlineNodes(item, `list-${index}-${itemIndex}`) }, `list-${index}-${itemIndex}`)) }, `list-${index}`);
@@ -23740,6 +23774,18 @@ function shouldKeepPilotScrollbarVisible(lastScrollAt, now = Date.now(), idleMs 
   return now - lastScrollAt < idleMs;
 }
 
+// extensions/emma-pilot/src/message-feedback.ts
+function resolveNextPilotFeedback(current, requested) {
+  return current === requested ? null : requested;
+}
+function shouldFetchPilotFeedback(messageId, feedbackByMessageId) {
+  const normalizedId = messageId?.trim();
+  if (!normalizedId) {
+    return false;
+  }
+  return !(normalizedId in feedbackByMessageId);
+}
+
 // extensions/emma-pilot/src/sidepanel-app.tsx
 var import_jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
 var AUTH_STORAGE_KEY = "emmaPilotAuth";
@@ -23869,6 +23915,7 @@ function EmmaPilotApp() {
   const [drafts, setDrafts] = (0, import_react4.useState)({});
   const [attachmentsByThread, setAttachmentsByThread] = (0, import_react4.useState)({});
   const [actionResultsByThread, setActionResultsByThread] = (0, import_react4.useState)({});
+  const [messageFeedbackById, setMessageFeedbackById] = (0, import_react4.useState)({});
   const [sidebarOpen, setSidebarOpen] = (0, import_react4.useState)(false);
   const [hasAllSitesPermission, setHasAllSitesPermission] = (0, import_react4.useState)(false);
   const [activeTab, setActiveTab] = (0, import_react4.useState)(null);
@@ -23906,6 +23953,12 @@ function EmmaPilotApp() {
     [activeSelections.selectedChatModel, modelProviders]
   );
   const composerVisionLabel = "Copilot Browser Powered By Emma AI";
+  const assistantMessageIdsNeedingFeedback = (0, import_react4.useMemo)(
+    () => messages.filter((message) => message.role === "assistant").map((message) => message.id).filter(
+      (messageId) => shouldFetchPilotFeedback(messageId, messageFeedbackById)
+    ),
+    [messageFeedbackById, messages]
+  );
   const resizeComposerInput = (0, import_react4.useCallback)(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea)
@@ -24151,6 +24204,75 @@ function EmmaPilotApp() {
     },
     [auth, refreshPilotTokens, runtimeConfig]
   );
+  const handleMessageFeedback = (0, import_react4.useCallback)(
+    async (messageId, requested) => {
+      const currentFeedback = messageFeedbackById[messageId] ?? null;
+      const nextFeedback = resolveNextPilotFeedback(
+        currentFeedback,
+        requested
+      );
+      setMessageFeedbackById((current) => ({
+        ...current,
+        [messageId]: nextFeedback
+      }));
+      try {
+        if (nextFeedback === null) {
+          await pilotFetchJson(`/api/pilot/message-feedback/${messageId}`, {
+            method: "DELETE"
+          });
+          return;
+        }
+        await pilotFetchJson(`/api/pilot/message-feedback/${messageId}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            type: nextFeedback
+          })
+        });
+      } catch (error) {
+        setMessageFeedbackById((current) => ({
+          ...current,
+          [messageId]: currentFeedback
+        }));
+        setStatusMessage(
+          error.message || "Emma Pilot feedback could not be saved."
+        );
+      }
+    },
+    [messageFeedbackById, pilotFetchJson]
+  );
+  (0, import_react4.useEffect)(() => {
+    if (!auth || assistantMessageIdsNeedingFeedback.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      assistantMessageIdsNeedingFeedback.map(async (messageId) => {
+        try {
+          const result = await pilotFetchJson(`/api/pilot/message-feedback/${messageId}`);
+          return [messageId, result.type ?? null];
+        } catch {
+          return [messageId, null];
+        }
+      })
+    ).then((entries) => {
+      if (cancelled || entries.length === 0) {
+        return;
+      }
+      setMessageFeedbackById((current) => {
+        const next = { ...current };
+        for (const [messageId, feedback] of entries) {
+          next[messageId] = feedback;
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [assistantMessageIdsNeedingFeedback, auth, pilotFetchJson]);
   const loadModels = (0, import_react4.useCallback)(
     async (context) => {
       const currentAuth = context?.auth ?? auth;
@@ -25081,6 +25203,8 @@ function EmmaPilotApp() {
                   isActive: index === messages.length - 1,
                   isStreaming: sending && index === messages.length - 1,
                   actionResults: currentActionResults,
+                  feedback: messageFeedbackById[message.id] ?? null,
+                  onFeedback: handleMessageFeedback,
                   onApproveProposal: handleApproveProposal
                 },
                 getStableStreamItemKey({
@@ -25712,7 +25836,41 @@ function MessageCard(props) {
               index: proposalIndex
             })
           );
-        }) }) : null
+        }) }) : null,
+        props.message.role === "assistant" && props.message.id ? /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("div", { className: "pilot-message-actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+            "button",
+            {
+              className: clsx(
+                "pilot-feedback-button",
+                props.feedback === "like" && "is-active-like"
+              ),
+              onClick: () => props.onFeedback(props.message.id, "like"),
+              disabled: props.isStreaming,
+              type: "button",
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ThumbsUp, { className: "size-3" }),
+                "Like"
+              ]
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
+            "button",
+            {
+              className: clsx(
+                "pilot-feedback-button",
+                props.feedback === "dislike" && "is-active-dislike"
+              ),
+              onClick: () => props.onFeedback(props.message.id, "dislike"),
+              disabled: props.isStreaming,
+              type: "button",
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(ThumbsDown, { className: "size-3" }),
+                "Dislike"
+              ]
+            }
+          )
+        ] }) : null
       ]
     }
   );
@@ -25926,6 +26084,22 @@ lucide-react/dist/esm/icons/shield-check.js:
    *)
 
 lucide-react/dist/esm/icons/shield.js:
+  (**
+   * @license lucide-react v0.486.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   *)
+
+lucide-react/dist/esm/icons/thumbs-down.js:
+  (**
+   * @license lucide-react v0.486.0 - ISC
+   *
+   * This source code is licensed under the ISC license.
+   * See the LICENSE file in the root directory of this source tree.
+   *)
+
+lucide-react/dist/esm/icons/thumbs-up.js:
   (**
    * @license lucide-react v0.486.0 - ISC
    *
