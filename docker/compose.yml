@@ -3,11 +3,14 @@ services:
     build:
       context: ..
       dockerfile: ./docker/Dockerfile
+      args:
+        EMMA_PILOT_BACKEND_ORIGIN: ${EMMA_PILOT_BACKEND_ORIGIN:-http://localhost:3000}
     ports:
       - '3000:3000'
     environment:
       - NO_HTTPS=1
       - REDIS_URL=redis://redis:6379
+      - EMMA_PILOT_BACKEND_ORIGIN=${EMMA_PILOT_BACKEND_ORIGIN:-http://localhost:3000}
     env_file:
       - .env
     dns:

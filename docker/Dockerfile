@@ -1,6 +1,9 @@
 FROM node:23-alpine AS builder
 ARG DOCKER_BUILD="1"
+ARG EMMA_PILOT_BACKEND_ORIGIN="http://localhost:3000"
 WORKDIR /app
+
+RUN apk add --no-cache zip
 
 COPY . . 
 
@@ -12,7 +15,9 @@ RUN pnpm install --frozen-lockfile
 # Makes the next output standalone
 # https://github.com/vercel/next.js/discussions/65511
 ENV NEXT_STANDALONE_OUTPUT="true"
+ENV EMMA_PILOT_BACKEND_ORIGIN="${EMMA_PILOT_BACKEND_ORIGIN}"
 
+RUN pnpm build:emma-pilot
 RUN pnpm build
 
 FROM node:23-alpine AS runner

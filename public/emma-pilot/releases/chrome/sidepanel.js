@@ -24207,10 +24207,7 @@ function EmmaPilotApp() {
   const handleMessageFeedback = (0, import_react4.useCallback)(
     async (messageId, requested) => {
       const currentFeedback = messageFeedbackById[messageId] ?? null;
-      const nextFeedback = resolveNextPilotFeedback(
-        currentFeedback,
-        requested
-      );
+      const nextFeedback = resolveNextPilotFeedback(currentFeedback, requested);
       setMessageFeedbackById((current) => ({
         ...current,
         [messageId]: nextFeedback
@@ -25245,7 +25242,7 @@ function EmmaPilotApp() {
                           event.currentTarget.form?.requestSubmit();
                         }
                       },
-                      placeholder: "Ask Emma Pilot anything about this page",
+                      placeholder: "Ask Emma Pilot anything",
                       rows: 1,
                       disabled: !auth || sending
                     }
