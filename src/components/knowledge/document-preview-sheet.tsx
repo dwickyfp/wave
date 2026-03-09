@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { Markdown } from "@/components/markdown";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
 import { Input } from "ui/input";
@@ -322,11 +323,43 @@ export function DocumentPreviewSheet({
                 </TabsContent>
                 <TabsContent value="markdown" className="h-full mt-0">
                   {previewData.markdownContent ? (
-                    <ScrollArea className="h-full">
-                      <pre className="p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
-                        {previewData.markdownContent}
-                      </pre>
-                    </ScrollArea>
+                    <Tabs
+                      defaultValue="result"
+                      className="flex h-full min-h-0 flex-col"
+                    >
+                      <div className="border-b px-6 py-3">
+                        <TabsList className="h-8">
+                          <TabsTrigger value="result" className="h-7 text-xs">
+                            Result
+                          </TabsTrigger>
+                          <TabsTrigger value="source" className="h-7 text-xs">
+                            Markdown
+                          </TabsTrigger>
+                        </TabsList>
+                      </div>
+
+                      <TabsContent
+                        value="result"
+                        className="mt-0 flex-1 min-h-0"
+                      >
+                        <ScrollArea className="h-full">
+                          <div className="p-6 pb-10">
+                            <Markdown>{previewData.markdownContent}</Markdown>
+                          </div>
+                        </ScrollArea>
+                      </TabsContent>
+
+                      <TabsContent
+                        value="source"
+                        className="mt-0 flex-1 min-h-0"
+                      >
+                        <ScrollArea className="h-full">
+                          <pre className="p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
+                            {previewData.markdownContent}
+                          </pre>
+                        </ScrollArea>
+                      </TabsContent>
+                    </Tabs>
                   ) : (
                     <div className="flex flex-col items-center justify-center h-full p-8 text-center">
                       <p className="text-sm text-muted-foreground">

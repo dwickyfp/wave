@@ -2,6 +2,7 @@ import { generateText, Output } from "ai";
 import type {
   EvaluationJudgeModelConfig,
   SelfLearningEvaluation,
+  SelfLearningEmbeddingModelConfig,
   SelfLearningEligibilitySummary,
   SelfLearningMemory,
   SelfLearningOverview,
@@ -17,7 +18,9 @@ import type {
 import {
   EVALUATION_JUDGE_MODEL_KEY,
   EvaluationJudgeModelConfigZodSchema,
+  SELF_LEARNING_EMBEDDING_MODEL_KEY,
   SELF_LEARNING_SYSTEM_KEY,
+  SelfLearningEmbeddingModelConfigZodSchema,
   SelfLearningSystemConfigZodSchema,
   isAutoSafeMemoryCategory,
 } from "app-types/self-learning";
@@ -273,20 +276,22 @@ async function ensureHiddenKnowledgeTargets(userId: string): Promise<{
   config: SelfLearningUserConfig;
 }> {
   const config = await selfLearningRepository.ensureUserConfig(userId);
+  const embeddingConfig = await getSelfLearningEmbeddingModelConfig();
 
-  let group: typeof KnowledgeGroupTable.$inferSelect | null = null;
+  let group: Awaited<
+    ReturnType<typeof knowledgeRepository.insertGroup>
+  > | null = null;
 
   if (config.hiddenKnowledgeGroupId) {
-    const [existingGroup] = await db
-      .select()
-      .from(KnowledgeGroupTable)
-      .where(eq(KnowledgeGroupTable.id, config.hiddenKnowledgeGroupId));
-    group = existingGroup ?? null;
+    group = await knowledgeRepository.selectGroupById(
+      config.hiddenKnowledgeGroupId,
+      userId,
+    );
   }
 
   if (!group) {
     const [existingByPurpose] = await db
-      .select()
+      .select({ id: KnowledgeGroupTable.id })
       .from(KnowledgeGroupTable)
       .where(
         and(
@@ -295,16 +300,41 @@ async function ensureHiddenKnowledgeTargets(userId: string): Promise<{
         ),
       );
 
-    group =
-      existingByPurpose ??
-      (await knowledgeRepository.insertGroup({
+    group = existingByPurpose
+      ? await knowledgeRepository.selectGroupById(existingByPurpose.id, userId)
+      : null;
+
+    if (!group) {
+      group = await knowledgeRepository.insertGroup({
         userId,
         name: "Emma Personalization Memory",
         description: "System-managed per-user personalization memory.",
         visibility: "private",
         purpose: "personalization",
         isSystemManaged: true,
-      }));
+        ...(embeddingConfig
+          ? {
+              embeddingProvider: embeddingConfig.provider,
+              embeddingModel: embeddingConfig.model,
+            }
+          : {}),
+      });
+    }
+  }
+
+  if (!group) {
+    throw new Error("Failed to resolve personalization knowledge group.");
+  }
+
+  if (
+    embeddingConfig &&
+    (group.embeddingProvider !== embeddingConfig.provider ||
+      group.embeddingModel !== embeddingConfig.model)
+  ) {
+    group = await knowledgeRepository.updateGroup(group.id, userId, {
+      embeddingProvider: embeddingConfig.provider,
+      embeddingModel: embeddingConfig.model,
+    });
   }
 
   const documentId = config.hiddenKnowledgeDocumentId ?? null;
@@ -478,6 +508,23 @@ export async function setEvaluationJudgeModelConfig(
   config: EvaluationJudgeModelConfig | null,
 ): Promise<void> {
   await settingsRepository.upsertSetting(EVALUATION_JUDGE_MODEL_KEY, config);
+}
+
+export async function getSelfLearningEmbeddingModelConfig(): Promise<SelfLearningEmbeddingModelConfig | null> {
+  const raw = await settingsRepository.getSetting(
+    SELF_LEARNING_EMBEDDING_MODEL_KEY,
+  );
+  if (!raw) return null;
+  return SelfLearningEmbeddingModelConfigZodSchema.parse(raw);
+}
+
+export async function setSelfLearningEmbeddingModelConfig(
+  config: SelfLearningEmbeddingModelConfig | null,
+): Promise<void> {
+  await settingsRepository.upsertSetting(
+    SELF_LEARNING_EMBEDDING_MODEL_KEY,
+    config,
+  );
 }
 
 export async function listSelfLearningUsers(input?: {

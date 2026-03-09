@@ -24,6 +24,8 @@ import { embedSingleText, embedTexts } from "./embedder";
 import { parseDocumentToMarkdown } from "./markdown-parser";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
 import { processDocument } from "./processor";
+import { applyContextImageBlocks } from "./processor/image-markdown";
+import type { ProcessedDocument } from "./processor/types";
 import {
   buildKnowledgeSectionGraph,
   SECTION_GRAPH_VERSION,
@@ -61,29 +63,39 @@ export async function runIngestPipeline(
 
   const group = await knowledgeRepository.selectGroupById(groupId, doc.userId);
   if (!group) throw new Error(`Knowledge group not found: ${groupId}`);
-
-  // ── 1. Get document content as markdown ──────────────────────────────────
-  await reportProgress(5);
-  let markdown: string;
-
-  if (doc.fileType === "url" && doc.sourceUrl) {
-    markdown = await processDocument("url", doc.sourceUrl);
-  } else if (fileBuffer) {
-    // Inline mode: use the buffer that was already read (no S3 download needed)
-    markdown = await processDocument(doc.fileType, fileBuffer);
-  } else if (doc.storagePath) {
-    const buffer = await serverFileStorage.download(doc.storagePath);
-    markdown = await processDocument(doc.fileType, buffer);
-  } else {
-    throw new Error("Document has no storage path, source URL, or file buffer");
-  }
-
-  // ── 2. Optional LLM-based markdown parsing ──────────────────────────────
-  await reportProgress(15);
   const documentTitle = doc.name || doc.originalFilename || "Untitled";
   const contextxConfig = (await settingsRepository.getSetting(
     "contextx-model",
   )) as { provider: string; model: string } | null | undefined;
+
+  // ── 1. Get document content as markdown ──────────────────────────────────
+  await reportProgress(5);
+  let processedDocument: ProcessedDocument;
+
+  if (doc.fileType === "url" && doc.sourceUrl) {
+    processedDocument = await processDocument("url", doc.sourceUrl, {
+      documentTitle,
+      imageAnalysis: contextxConfig,
+    });
+  } else if (fileBuffer) {
+    // Inline mode: use the buffer that was already read (no S3 download needed)
+    processedDocument = await processDocument(doc.fileType, fileBuffer, {
+      documentTitle,
+      imageAnalysis: contextxConfig,
+    });
+  } else if (doc.storagePath) {
+    const buffer = await serverFileStorage.download(doc.storagePath);
+    processedDocument = await processDocument(doc.fileType, buffer, {
+      documentTitle,
+      imageAnalysis: contextxConfig,
+    });
+  } else {
+    throw new Error("Document has no storage path, source URL, or file buffer");
+  }
+  let markdown = processedDocument.markdown;
+
+  // ── 2. Optional LLM-based markdown parsing ──────────────────────────────
+  await reportProgress(15);
   if (contextxConfig?.provider && contextxConfig?.model) {
     markdown = await parseDocumentToMarkdown(
       markdown,
@@ -92,6 +104,7 @@ export async function runIngestPipeline(
       contextxConfig.model,
     );
   }
+  markdown = applyContextImageBlocks(markdown, processedDocument.imageBlocks);
 
   // ── 3. Normalize markdown ─────────────────────────────────────────────────
   await reportProgress(35);

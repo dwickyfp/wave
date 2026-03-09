@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const SELF_LEARNING_SYSTEM_KEY = "self-learning-system";
 export const EVALUATION_JUDGE_MODEL_KEY = "evaluation-judge-model";
+export const SELF_LEARNING_EMBEDDING_MODEL_KEY =
+  "self-learning-embedding-model";
 
 export const SELF_LEARNING_DEFAULTS = {
   isRunning: false,
@@ -50,6 +52,13 @@ export const EvaluationJudgeModelConfigZodSchema = z.object({
 
 export type EvaluationJudgeModelConfig = z.infer<
   typeof EvaluationJudgeModelConfigZodSchema
+>;
+
+export const SelfLearningEmbeddingModelConfigZodSchema =
+  EvaluationJudgeModelConfigZodSchema;
+
+export type SelfLearningEmbeddingModelConfig = z.infer<
+  typeof SelfLearningEmbeddingModelConfigZodSchema
 >;
 
 export type SelfLearningSignalType =

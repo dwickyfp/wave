@@ -1,13 +1,11 @@
 import mammoth from "mammoth";
-import TurndownService from "turndown";
+import { convertHtmlFragmentToProcessedDocument } from "./image-markdown";
+import type { DocumentProcessingOptions, ProcessedDocument } from "./types";
 
-const turndown = new TurndownService({
-  headingStyle: "atx",
-  bulletListMarker: "-",
-  codeBlockStyle: "fenced",
-});
-
-export async function processDocx(buffer: Buffer): Promise<string> {
+export async function processDocx(
+  buffer: Buffer,
+  options: DocumentProcessingOptions = {},
+): Promise<ProcessedDocument> {
   const { value: html } = await mammoth.convertToHtml({ buffer });
-  return turndown.turndown(html);
+  return convertHtmlFragmentToProcessedDocument(html, options);
 }

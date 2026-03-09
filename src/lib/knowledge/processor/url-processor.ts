@@ -1,13 +1,11 @@
 import * as cheerio from "cheerio";
-import TurndownService from "turndown";
+import { convertHtmlFragmentToProcessedDocument } from "./image-markdown";
+import type { DocumentProcessingOptions, ProcessedDocument } from "./types";
 
-const turndown = new TurndownService({
-  headingStyle: "atx",
-  bulletListMarker: "-",
-  codeBlockStyle: "fenced",
-});
-
-export async function processUrl(url: string): Promise<string> {
+export async function processUrl(
+  url: string,
+  options: DocumentProcessingOptions = {},
+): Promise<ProcessedDocument> {
   const response = await fetch(url, {
     headers: {
       "User-Agent":
@@ -24,6 +22,7 @@ export async function processUrl(url: string): Promise<string> {
 
   const html = await response.text();
   const $ = cheerio.load(html);
+  const title = $("title").text().trim();
 
   // Remove noise elements
   $(
@@ -38,17 +37,26 @@ export async function processUrl(url: string): Promise<string> {
     $("body").html() ||
     "";
 
-  const markdown = turndown.turndown(mainContent);
+  const processed = await convertHtmlFragmentToProcessedDocument(mainContent, {
+    ...options,
+    baseUrl: url,
+    documentTitle: options.documentTitle || title || url,
+  });
 
   // Add source info at the top
-  const title = $("title").text().trim();
-  return `# ${title || url}\n\nSource: ${url}\n\n${markdown}`;
+  return {
+    markdown: `# ${title || url}\n\nSource: ${url}\n\n${processed.markdown}`,
+    imageBlocks: processed.imageBlocks,
+  };
 }
 
-export async function processHtml(buffer: Buffer): Promise<string> {
+export async function processHtml(
+  buffer: Buffer,
+  options: DocumentProcessingOptions = {},
+): Promise<ProcessedDocument> {
   const html = buffer.toString("utf-8");
   const $ = cheerio.load(html);
   $("script, style").remove();
   const body = $("body").html() || html;
-  return turndown.turndown(body);
+  return convertHtmlFragmentToProcessedDocument(body, options);
 }

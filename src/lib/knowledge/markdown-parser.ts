@@ -29,8 +29,10 @@ Tables:
 - Preserve values exactly, including numbers, dates, percentages, and units
 
 Images and Visual Elements:
-- Replace image references or placeholders with a markdown blockquote description inferred from nearby context
-- Never silently drop image references
+- Preserve any literal CTX_IMAGE_<number> marker exactly as written
+- Never renumber, rewrite, or remove CTX_IMAGE markers
+- Keep each CTX_IMAGE marker close to the surrounding content it belongs to
+- Never silently drop image references or visual markers
 
 Other:
 - Remove page numbers, repeated headers or footers, and watermark artifacts
@@ -91,7 +93,8 @@ ${rawText}
 </document_window>
 
 Convert this document window into clean, well-structured markdown.
-Preserve all content and keep the original order.`;
+Preserve all content and keep the original order.
+If you see CTX_IMAGE markers, keep them unchanged in the output.`;
 }
 
 function findWindowEnd(
