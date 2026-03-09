@@ -20,7 +20,7 @@ import {
   TableIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Markdown } from "@/components/markdown";
 import { Badge } from "ui/badge";
@@ -164,6 +164,29 @@ interface Props {
   onDocumentUpdated?: (doc: KnowledgeDocument) => void;
 }
 
+function clampOffset(offset: number, markdown: string) {
+  return Math.max(0, Math.min(offset, markdown.length));
+}
+
+function scrollTextareaToOffset(
+  textarea: HTMLTextAreaElement,
+  offset: number,
+  markdown: string,
+) {
+  const clampedOffset = clampOffset(offset, markdown);
+  const lineHeight =
+    Number.parseFloat(getComputedStyle(textarea).lineHeight) || 24;
+  const lineIndex = markdown.slice(0, clampedOffset).split("\n").length - 1;
+  const targetTop = Math.max(
+    0,
+    lineIndex * lineHeight - textarea.clientHeight / 2 + lineHeight,
+  );
+
+  textarea.focus();
+  textarea.setSelectionRange(clampedOffset, clampedOffset);
+  textarea.scrollTop = targetTop;
+}
+
 export function DocumentPreviewSheet({
   doc,
   groupId,
@@ -191,6 +214,10 @@ export function DocumentPreviewSheet({
   );
   const [draftMarkdown, setDraftMarkdown] = useState("");
   const [isEditingMarkdown, setIsEditingMarkdown] = useState(false);
+  const [pendingSourceOffset, setPendingSourceOffset] = useState<number | null>(
+    null,
+  );
+  const markdownTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const loadPreview = useEffectEvent(
     async ({ showLoader = true }: { showLoader?: boolean } = {}) => {
@@ -276,6 +303,7 @@ export function DocumentPreviewSheet({
       setPreferredVersionId(null);
       setDraftMarkdown("");
       setIsEditingMarkdown(false);
+      setPendingSourceOffset(null);
       setMainTab("configuration");
       setMarkdownTab("result");
       return;
@@ -364,6 +392,28 @@ export function DocumentPreviewSheet({
       selectedVersion?.markdownContent ?? previewData.markdownContent ?? "",
     );
   }, [previewData, selectedVersionId]);
+
+  useEffect(() => {
+    if (
+      !isEditingMarkdown ||
+      markdownTab !== "source" ||
+      pendingSourceOffset === null
+    ) {
+      return;
+    }
+
+    const textarea = markdownTextareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      scrollTextareaToOffset(textarea, pendingSourceOffset, draftMarkdown);
+      setPendingSourceOffset(null);
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [draftMarkdown, isEditingMarkdown, markdownTab, pendingSourceOffset]);
 
   const currentTitle = previewData?.doc?.name ?? "";
   const currentDescription = previewData?.doc?.description ?? "";
@@ -455,6 +505,7 @@ export function DocumentPreviewSheet({
     setMarkdownTab("result");
     setSelectedVersionId(previewData?.activeVersionId ?? null);
     setPreferredVersionId(null);
+    setPendingSourceOffset(null);
     setDraftMarkdown(
       activeVersion?.markdownContent ?? previewData?.markdownContent ?? "",
     );
@@ -538,12 +589,25 @@ export function DocumentPreviewSheet({
     setSelectedVersionId(value);
     setIsEditingMarkdown(false);
     setMarkdownTab("result");
+    setPendingSourceOffset(null);
   };
 
   const startMarkdownEdit = () => {
     if (!canEditMarkdown) return;
     setIsEditingMarkdown(true);
     setMarkdownTab("source");
+  };
+
+  const handleResultDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!canEditMarkdown) return;
+
+    const target = event.target as HTMLElement | null;
+    const sourceElement = target?.closest<HTMLElement>("[data-source-start]");
+    const sourceStart = sourceElement?.dataset.sourceStart;
+    const parsedOffset = sourceStart ? Number.parseInt(sourceStart, 10) : 0;
+
+    setPendingSourceOffset(Number.isFinite(parsedOffset) ? parsedOffset : 0);
+    startMarkdownEdit();
   };
 
   const FileIconComp = FILE_ICONS[doc?.fileType ?? ""] ?? FileIcon;
@@ -822,7 +886,7 @@ export function DocumentPreviewSheet({
                                 "p-6 pb-10",
                                 canEditMarkdown && "cursor-text",
                               )}
-                              onDoubleClick={startMarkdownEdit}
+                              onDoubleClick={handleResultDoubleClick}
                             >
                               <Markdown>{draftMarkdown}</Markdown>
                             </div>
@@ -839,6 +903,7 @@ export function DocumentPreviewSheet({
                             >
                               {isEditingMarkdown && canEditMarkdown ? (
                                 <Textarea
+                                  ref={markdownTextareaRef}
                                   value={draftMarkdown}
                                   onChange={(event) =>
                                     setDraftMarkdown(event.target.value)

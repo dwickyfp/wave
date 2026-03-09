@@ -50,6 +50,20 @@ WordByWordFadeIn.displayName = "WordByWordFadeIn";
 
 const TABLE_PAGE_SIZE = 10;
 
+function getSourceAttrs(node?: any) {
+  const start = node?.position?.start?.offset;
+  const end = node?.position?.end?.offset;
+
+  if (typeof start !== "number") {
+    return {};
+  }
+
+  return {
+    "data-source-start": String(start),
+    ...(typeof end === "number" ? { "data-source-end": String(end) } : {}),
+  };
+}
+
 // Lazy load XLSX library from CDN (same pattern as interactive-table)
 const loadXLSX = async () => {
   if (typeof window === "undefined") {
@@ -315,7 +329,11 @@ function CitationLink({
 
 const components: Partial<Components> = {
   table: ({ node }) => {
-    return <MarkdownTable node={node} />;
+    return (
+      <div {...getSourceAttrs(node)}>
+        <MarkdownTable node={node} />
+      </div>
+    );
   },
   code: ({ children }) => {
     return (
@@ -324,46 +342,54 @@ const components: Partial<Components> = {
       </code>
     );
   },
-  blockquote: ({ children }) => {
+  blockquote: ({ node, children }) => {
     return (
-      <div className="px-4">
+      <div className="px-4" {...getSourceAttrs(node)}>
         <blockquote className="relative bg-accent/30 p-6 rounded-2xl my-6 overflow-hidden border">
           <WordByWordFadeIn>{children}</WordByWordFadeIn>
         </blockquote>
       </div>
     );
   },
-  p: ({ children }) => {
+  p: ({ node, children }) => {
     return (
-      <p className="leading-6 my-4 break-words">
+      <p className="leading-6 my-4 break-words" {...getSourceAttrs(node)}>
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </p>
     );
   },
-  pre: ({ children }) => {
+  pre: ({ node, children }) => {
     return (
-      <div className="px-4 py-2">
+      <div className="px-4 py-2" {...getSourceAttrs(node)}>
         <PreBlock>{children}</PreBlock>
       </div>
     );
   },
   ol: ({ node, children, ...props }) => {
     return (
-      <ol className="px-8 list-decimal list-outside" {...props}>
+      <ol
+        className="px-8 list-decimal list-outside"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         {children}
       </ol>
     );
   },
   li: ({ node, children, ...props }) => {
     return (
-      <li className="py-2 break-words" {...props}>
+      <li className="py-2 break-words" {...getSourceAttrs(node)} {...props}>
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </li>
     );
   },
   ul: ({ node, children, ...props }) => {
     return (
-      <ul className="px-8 list-outside list-disc" {...props}>
+      <ul
+        className="px-8 list-outside list-disc"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         {children}
       </ul>
     );
@@ -397,42 +423,66 @@ const components: Partial<Components> = {
   },
   h1: ({ node, children, ...props }) => {
     return (
-      <h1 className="text-3xl font-semibold mt-6 mb-2" {...props}>
+      <h1
+        className="text-3xl font-semibold mt-6 mb-2"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </h1>
     );
   },
   h2: ({ node, children, ...props }) => {
     return (
-      <h2 className="text-2xl font-semibold mt-6 mb-2" {...props}>
+      <h2
+        className="text-2xl font-semibold mt-6 mb-2"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </h2>
     );
   },
   h3: ({ node, children, ...props }) => {
     return (
-      <h3 className="text-xl font-semibold mt-6 mb-2" {...props}>
+      <h3
+        className="text-xl font-semibold mt-6 mb-2"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </h3>
     );
   },
   h4: ({ node, children, ...props }) => {
     return (
-      <h4 className="text-lg font-semibold mt-6 mb-2" {...props}>
+      <h4
+        className="text-lg font-semibold mt-6 mb-2"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </h4>
     );
   },
   h5: ({ node, children, ...props }) => {
     return (
-      <h5 className="text-base font-semibold mt-6 mb-2" {...props}>
+      <h5
+        className="text-base font-semibold mt-6 mb-2"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </h5>
     );
   },
   h6: ({ node, children, ...props }) => {
     return (
-      <h6 className="text-sm font-semibold mt-6 mb-2" {...props}>
+      <h6
+        className="text-sm font-semibold mt-6 mb-2"
+        {...getSourceAttrs(node)}
+        {...props}
+      >
         <WordByWordFadeIn>{children}</WordByWordFadeIn>
       </h6>
     );
