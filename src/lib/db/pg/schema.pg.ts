@@ -50,7 +50,19 @@ import {
   ChatMention,
   ChatMetadata,
 } from "app-types/chat";
+import { KnowledgePurpose } from "app-types/knowledge";
 import { PilotBrowser } from "app-types/pilot";
+import {
+  SelfLearningAuditAction,
+  SelfLearningEvaluationStatus,
+  SelfLearningJudgeOutput,
+  SelfLearningMemoryCategory,
+  SelfLearningMemoryStatus,
+  SelfLearningRunStatus,
+  SelfLearningRunTrigger,
+  SelfLearningSignalPayload,
+  SelfLearningSignalType,
+} from "app-types/self-learning";
 import { DBEdge, DBNode, DBWorkflow } from "app-types/workflow";
 import { isNotNull } from "drizzle-orm";
 
@@ -851,6 +863,11 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
   })
     .notNull()
     .default("private"),
+  purpose: varchar("purpose", { enum: ["default", "personalization"] })
+    .notNull()
+    .default("default")
+    .$type<KnowledgePurpose>(),
+  isSystemManaged: boolean("is_system_managed").notNull().default(false),
   embeddingModel: text("embedding_model")
     .notNull()
     .default("text-embedding-3-small"),
@@ -1105,6 +1122,283 @@ export const KnowledgeUsageLogTable = pgTable(
   ],
 );
 
+export const SelfLearningUserConfigTable = pgTable(
+  "self_learning_user_config",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    personalizationEnabled: boolean("personalization_enabled")
+      .notNull()
+      .default(true),
+    hiddenKnowledgeGroupId: uuid("hidden_knowledge_group_id").references(
+      () => KnowledgeGroupTable.id,
+      { onDelete: "set null" },
+    ),
+    hiddenKnowledgeDocumentId: uuid("hidden_knowledge_document_id").references(
+      () => KnowledgeDocumentTable.id,
+      { onDelete: "set null" },
+    ),
+    lastManualRunAt: timestamp("last_manual_run_at", { withTimezone: true }),
+    lastEvaluatedAt: timestamp("last_evaluated_at", { withTimezone: true }),
+    lastResetAt: timestamp("last_reset_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.userId),
+    index("self_learning_user_config_user_id_idx").on(table.userId),
+  ],
+);
+
+export const SelfLearningSignalEventTable = pgTable(
+  "self_learning_signal_event",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    threadId: uuid("thread_id").references(() => ChatThreadTable.id, {
+      onDelete: "cascade",
+    }),
+    messageId: text("message_id").references(() => ChatMessageTable.id, {
+      onDelete: "cascade",
+    }),
+    signalType: varchar("signal_type", {
+      enum: [
+        "feedback_like",
+        "feedback_dislike",
+        "regenerate_response",
+        "branch_from_response",
+        "delete_response",
+        "follow_up_continue",
+      ],
+    })
+      .notNull()
+      .$type<SelfLearningSignalType>(),
+    value: real("value").notNull().default(0),
+    payload: json("payload").$type<SelfLearningSignalPayload>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_signal_event_user_id_idx").on(table.userId),
+    index("self_learning_signal_event_message_id_idx").on(table.messageId),
+    index("self_learning_signal_event_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const SelfLearningRunTable = pgTable(
+  "self_learning_run",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    trigger: varchar("trigger", { enum: ["daily", "manual", "rebuild"] })
+      .notNull()
+      .$type<SelfLearningRunTrigger>(),
+    status: varchar("status", {
+      enum: ["queued", "running", "completed", "failed"],
+    })
+      .notNull()
+      .default("queued")
+      .$type<SelfLearningRunStatus>(),
+    queuedAt: timestamp("queued_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    totalCandidates: integer("total_candidates").notNull().default(0),
+    processedCandidates: integer("processed_candidates").notNull().default(0),
+    appliedMemoryCount: integer("applied_memory_count").notNull().default(0),
+    skippedMemoryCount: integer("skipped_memory_count").notNull().default(0),
+    errorMessage: text("error_message"),
+    metadata: json("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_run_user_id_idx").on(table.userId),
+    index("self_learning_run_status_idx").on(table.status),
+    index("self_learning_run_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const SelfLearningMemoryTable = pgTable(
+  "self_learning_memory",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    category: varchar("category", {
+      enum: [
+        "preference",
+        "style",
+        "format",
+        "avoidance",
+        "workflow",
+        "factual",
+        "policy",
+      ],
+    })
+      .notNull()
+      .$type<SelfLearningMemoryCategory>(),
+    status: varchar("status", {
+      enum: ["active", "inactive", "superseded", "deleted"],
+    })
+      .notNull()
+      .default("inactive")
+      .$type<SelfLearningMemoryStatus>(),
+    isAutoSafe: boolean("is_auto_safe").notNull().default(false),
+    fingerprint: text("fingerprint").notNull(),
+    contradictionFingerprint: text("contradiction_fingerprint"),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    supportCount: integer("support_count").notNull().default(0),
+    distinctThreadCount: integer("distinct_thread_count").notNull().default(0),
+    sourceEvaluationId: uuid("source_evaluation_id"),
+    supersededByMemoryId: uuid("superseded_by_memory_id"),
+    lastAppliedAt: timestamp("last_applied_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.userId, table.fingerprint),
+    index("self_learning_memory_user_id_idx").on(table.userId),
+    index("self_learning_memory_status_idx").on(table.status),
+  ],
+);
+
+export const SelfLearningEvaluationTable = pgTable(
+  "self_learning_evaluation",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => SelfLearningRunTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    threadId: uuid("thread_id").references(() => ChatThreadTable.id, {
+      onDelete: "set null",
+    }),
+    messageId: text("message_id").references(() => ChatMessageTable.id, {
+      onDelete: "set null",
+    }),
+    signalEventId: uuid("signal_event_id").references(
+      () => SelfLearningSignalEventTable.id,
+      { onDelete: "set null" },
+    ),
+    status: varchar("status", {
+      enum: ["proposed", "applied", "skipped", "rejected"],
+    })
+      .notNull()
+      .default("proposed")
+      .$type<SelfLearningEvaluationStatus>(),
+    explicitScore: real("explicit_score").notNull().default(0),
+    implicitScore: real("implicit_score").notNull().default(0),
+    llmScore: real("llm_score").notNull().default(0),
+    compositeScore: real("composite_score").notNull().default(0),
+    confidence: real("confidence").notNull().default(0),
+    category: varchar("category", {
+      enum: [
+        "preference",
+        "style",
+        "format",
+        "avoidance",
+        "workflow",
+        "factual",
+        "policy",
+      ],
+    }).$type<SelfLearningMemoryCategory>(),
+    candidateFingerprint: text("candidate_fingerprint"),
+    candidateTitle: text("candidate_title"),
+    candidateContent: text("candidate_content"),
+    judgeOutput: json("judge_output").$type<SelfLearningJudgeOutput>(),
+    metrics: json("metrics"),
+    appliedMemoryId: uuid("applied_memory_id").references(
+      () => SelfLearningMemoryTable.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_evaluation_run_id_idx").on(table.runId),
+    index("self_learning_evaluation_user_id_idx").on(table.userId),
+    index("self_learning_evaluation_status_idx").on(table.status),
+    index("self_learning_evaluation_message_id_idx").on(table.messageId),
+  ],
+);
+
+export const SelfLearningAuditLogTable = pgTable(
+  "self_learning_audit_log",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    actorUserId: uuid("actor_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    runId: uuid("run_id").references(() => SelfLearningRunTable.id, {
+      onDelete: "set null",
+    }),
+    evaluationId: uuid("evaluation_id").references(
+      () => SelfLearningEvaluationTable.id,
+      { onDelete: "set null" },
+    ),
+    memoryId: uuid("memory_id").references(() => SelfLearningMemoryTable.id, {
+      onDelete: "set null",
+    }),
+    action: varchar("action", {
+      enum: [
+        "signal_recorded",
+        "manual_run_requested",
+        "run_completed",
+        "run_failed",
+        "memory_applied",
+        "memory_skipped",
+        "memory_superseded",
+        "personalization_reset",
+        "learning_deleted",
+        "user_toggle_updated",
+        "system_toggle_updated",
+      ],
+    })
+      .notNull()
+      .$type<SelfLearningAuditAction>(),
+    details: json("details"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_audit_log_user_id_idx").on(table.userId),
+    index("self_learning_audit_log_created_at_idx").on(table.createdAt),
+  ],
+);
+
 export const AgentExternalChatSessionTable = pgTable(
   "agent_external_chat_session",
   {
@@ -1196,6 +1490,17 @@ export type SkillEntity = typeof SkillTable.$inferSelect;
 export type SkillAgentEntity = typeof SkillAgentTable.$inferSelect;
 export type KnowledgeUsageLogEntity =
   typeof KnowledgeUsageLogTable.$inferSelect;
+export type SelfLearningUserConfigEntity =
+  typeof SelfLearningUserConfigTable.$inferSelect;
+export type SelfLearningSignalEventEntity =
+  typeof SelfLearningSignalEventTable.$inferSelect;
+export type SelfLearningRunEntity = typeof SelfLearningRunTable.$inferSelect;
+export type SelfLearningEvaluationEntity =
+  typeof SelfLearningEvaluationTable.$inferSelect;
+export type SelfLearningMemoryEntity =
+  typeof SelfLearningMemoryTable.$inferSelect;
+export type SelfLearningAuditLogEntity =
+  typeof SelfLearningAuditLogTable.$inferSelect;
 export type AgentExternalChatSessionEntity =
   typeof AgentExternalChatSessionTable.$inferSelect;
 export type AgentExternalUsageLogEntity =

@@ -30,6 +30,11 @@ import { ChatExportSummary } from "app-types/chat-export";
 import { formatDistanceToNow } from "date-fns";
 import { notify } from "lib/notify";
 
+type SelfLearningDeletionStatus = {
+  hasLearningData: boolean;
+  activeMemoryCount: number;
+};
+
 export function UserInstructionsContent() {
   const t = useTranslations();
 
@@ -75,8 +80,14 @@ export function UserInstructionsContent() {
       setPreferences(data);
     },
   });
+  const {
+    data: learningStatus,
+    mutate: refetchLearningStatus,
+    isLoading: isLearningStatusLoading,
+  } = useSWR<SelfLearningDeletionStatus>("/api/user/self-learning", fetcher);
 
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeletingLearningData, setIsDeletingLearningData] = useState(false);
 
   const savePreferences = async () => {
     safe(() => setIsSaving(true))
@@ -108,6 +119,36 @@ export function UserInstructionsContent() {
     if ((data?.botName || "") !== (preferences.botName || "")) return true;
     return false;
   }, [preferences, data]);
+
+  const deleteLearningData = async () => {
+    const confirmed = await notify.confirm({
+      title: "Delete self-learning data?",
+      description:
+        "This removes Emma's stored personalization memories, learning signals, evaluations, and feedback history for your account.",
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setIsDeletingLearningData(true);
+      const response = await fetch("/api/user/self-learning", {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to delete learning data");
+      }
+
+      await refetchLearningStatus();
+      toast.success("Self-learning data deleted");
+    } catch {
+      toast.error("Failed to delete self-learning data");
+    } finally {
+      setIsDeletingLearningData(false);
+    }
+  };
 
   return (
     <div className="flex flex-col">
@@ -205,6 +246,42 @@ export function UserInstructionsContent() {
                 )}
               </>
             )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1">
+              <Label className="text-base">Self-Learning Privacy</Label>
+              <p className="text-sm text-muted-foreground">
+                Delete Emma&apos;s learning data for your account at any time.
+                This removes stored personalization memories, evaluation
+                history, and chat feedback signals.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {isLearningStatusLoading
+                  ? "Checking learning data…"
+                  : learningStatus?.hasLearningData
+                    ? `${learningStatus.activeMemoryCount} active personalization memorie(s) currently applied.`
+                    : "No self-learning data is currently stored for your account."}
+              </p>
+            </div>
+            <Button
+              variant="destructive"
+              className="gap-2 self-start"
+              onClick={deleteLearningData}
+              disabled={
+                isDeletingLearningData ||
+                (!learningStatus?.hasLearningData && !isLearningStatusLoading)
+              }
+            >
+              {isDeletingLearningData ? (
+                <Loader className="size-4 animate-spin" />
+              ) : (
+                <Trash2 className="size-4" />
+              )}
+              Delete learning data
+            </Button>
           </div>
         </div>
       </div>

@@ -6,6 +6,7 @@ export type KnowledgeGroupIcon = {
 };
 
 export type KnowledgeVisibility = "public" | "private" | "readonly";
+export type KnowledgePurpose = "default" | "personalization";
 export type DocumentFileType =
   | "pdf"
   | "docx"
@@ -25,6 +26,8 @@ export interface KnowledgeGroup {
   icon?: KnowledgeGroupIcon;
   userId: string;
   visibility: KnowledgeVisibility;
+  purpose: KnowledgePurpose;
+  isSystemManaged: boolean;
   embeddingModel: string;
   embeddingProvider: string;
   rerankingModel?: string | null;
@@ -59,6 +62,8 @@ export interface KnowledgeSummary {
   icon?: KnowledgeGroupIcon;
   userId: string;
   visibility: KnowledgeVisibility;
+  purpose: KnowledgePurpose;
+  isSystemManaged: boolean;
   embeddingModel: string;
   embeddingProvider: string;
   rerankingModel?: string | null;
@@ -214,10 +219,10 @@ export const createKnowledgeGroupSchema = z.object({
 
 export const updateKnowledgeGroupSchema = createKnowledgeGroupSchema.partial();
 
-export type CreateKnowledgeGroupInput = z.infer<
+export type CreateKnowledgeGroupInput = z.input<
   typeof createKnowledgeGroupSchema
 >;
-export type UpdateKnowledgeGroupInput = z.infer<
+export type UpdateKnowledgeGroupInput = z.input<
   typeof updateKnowledgeGroupSchema
 >;
 
@@ -226,7 +231,11 @@ export type UpdateKnowledgeGroupInput = z.infer<
 export interface KnowledgeRepository {
   // Groups
   insertGroup(
-    data: CreateKnowledgeGroupInput & { userId: string },
+    data: CreateKnowledgeGroupInput & {
+      userId: string;
+      purpose?: KnowledgePurpose;
+      isSystemManaged?: boolean;
+    },
   ): Promise<KnowledgeGroup>;
   selectGroupById(id: string, userId: string): Promise<KnowledgeGroup | null>;
   selectGroupByIdForMcp(id: string): Promise<KnowledgeGroup | null>;

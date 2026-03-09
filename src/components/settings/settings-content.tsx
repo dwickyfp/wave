@@ -16,6 +16,7 @@ import { ProviderConfigTab } from "./provider-config-tab";
 import { StorageSettingsTab } from "./storage-settings-tab";
 import { OtherConfigsTab } from "./other-configs-tab";
 import { ContextXModelButton } from "./contextx-model-button";
+import { EvaluationJudgeModelButton } from "./evaluation-judge-model-button";
 
 export function SettingsContent() {
   const [importing, setImporting] = useState(false);
@@ -93,8 +94,11 @@ export function SettingsContent() {
           </TabsTrigger>
         </TabsList>
 
-        <div className="flex items-center gap-2">
-          <ContextXModelButton />
+        <div className="flex items-start gap-2">
+          <div className="flex flex-col gap-2">
+            <ContextXModelButton />
+            <EvaluationJudgeModelButton />
+          </div>
           <Button
             variant="outline"
             size="sm"

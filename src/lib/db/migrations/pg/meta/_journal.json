@@ -302,6 +302,13 @@
       "when": 1774400000000,
       "tag": "0042_emma_pilot_extension",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1774500000000,
+      "tag": "0043_self_learning_evaluation_system",
+      "breakpoints": true
     }
   ]
 }

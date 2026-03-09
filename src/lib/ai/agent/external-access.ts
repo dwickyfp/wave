@@ -42,6 +42,7 @@ import {
   subAgentRepository,
   workflowRepository,
 } from "lib/db/repository";
+import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 import logger from "logger";
 import { z } from "zod";
 
@@ -541,12 +542,15 @@ export async function streamEmmaManagedAgentRun(options: {
     chatModel,
     source: "mcp",
   });
+  const learnedPersonalizationPrompt =
+    await getLearnedPersonalizationPromptForUser(resolvedAgent.userId);
 
   const systemPrompt = buildEmmaAgentSystemPrompt({
     agent: resolvedAgent,
     subAgents: toolset.subAgents,
     attachedSkills: toolset.attachedSkills,
     extraPrompts: [
+      ...(learnedPersonalizationPrompt ? [learnedPersonalizationPrompt] : []),
       ...buildContinueRoutePrompt({
         codingMode: resolvedAgent.mcpCodingMode ?? false,
         agentName: resolvedAgent.name,
@@ -692,12 +696,15 @@ export async function executeSubAgentExternalTool(
       ).join("\n\n"),
     },
   ] satisfies ModelMessage[];
+  const learnedPersonalizationPrompt =
+    await getLearnedPersonalizationPromptForUser(context.agent.userId);
 
   return runStreamedTextTask({
     model,
     provider: chatModel.provider,
     system: buildEmmaAgentSystemPrompt({
       extraPrompts: [
+        ...(learnedPersonalizationPrompt ? [learnedPersonalizationPrompt] : []),
         instructions,
         getUnifiedDiffInstruction(input.responseMode),
       ],
@@ -1143,6 +1150,8 @@ export async function streamContinueManagedTools(options: {
       ...internalCapabilities.skillTools,
     },
   });
+  const learnedPersonalizationPrompt =
+    await getLearnedPersonalizationPromptForUser(resolvedAgent.userId);
 
   return streamText({
     model,
@@ -1150,17 +1159,20 @@ export async function streamContinueManagedTools(options: {
       agent: resolvedAgent,
       subAgents: internalCapabilities.subAgents,
       attachedSkills: internalCapabilities.attachedSkills,
-      extraPrompts: buildContinueRoutePrompt({
-        codingMode: resolvedAgent.mcpCodingMode ?? false,
-        agentName: resolvedAgent.name,
-        messages: options.request.messages,
-        clientOwnsWorkspaceTools: true,
-        capabilityState: getContinueCapabilityState({
-          knowledgeGroups: internalCapabilities.knowledgeGroups,
-          subAgents: internalCapabilities.subAgents ?? [],
-          attachedSkills: internalCapabilities.attachedSkills,
+      extraPrompts: [
+        ...(learnedPersonalizationPrompt ? [learnedPersonalizationPrompt] : []),
+        ...buildContinueRoutePrompt({
+          codingMode: resolvedAgent.mcpCodingMode ?? false,
+          agentName: resolvedAgent.name,
+          messages: options.request.messages,
+          clientOwnsWorkspaceTools: true,
+          capabilityState: getContinueCapabilityState({
+            knowledgeGroups: internalCapabilities.knowledgeGroups,
+            subAgents: internalCapabilities.subAgents ?? [],
+            attachedSkills: internalCapabilities.attachedSkills,
+          }),
         }),
-      }),
+      ],
     }),
     messages: sanitizeModelMessagesForProvider({
       provider: chatModel.provider,

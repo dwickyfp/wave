@@ -113,6 +113,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         icon: data.icon,
         userId: data.userId,
         visibility: data.visibility ?? "private",
+        purpose: data.purpose ?? "default",
+        isSystemManaged: data.isSystemManaged ?? false,
         embeddingModel: data.embeddingModel ?? "text-embedding-3-small",
         embeddingProvider: data.embeddingProvider ?? "openai",
         rerankingModel: data.rerankingModel ?? null,
@@ -156,22 +158,30 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
   async selectGroups(userId, filters = ["mine", "shared"]) {
     let whereCondition: any;
+    const visiblePurposeCondition = eq(KnowledgeGroupTable.purpose, "default");
 
     if (filters.includes("mine") && filters.includes("shared")) {
-      whereCondition = or(
-        eq(KnowledgeGroupTable.userId, userId),
-        and(
-          ne(KnowledgeGroupTable.userId, userId),
-          or(
-            eq(KnowledgeGroupTable.visibility, "public"),
-            eq(KnowledgeGroupTable.visibility, "readonly"),
+      whereCondition = and(
+        visiblePurposeCondition,
+        or(
+          eq(KnowledgeGroupTable.userId, userId),
+          and(
+            ne(KnowledgeGroupTable.userId, userId),
+            or(
+              eq(KnowledgeGroupTable.visibility, "public"),
+              eq(KnowledgeGroupTable.visibility, "readonly"),
+            ),
           ),
         ),
       );
     } else if (filters.includes("mine")) {
-      whereCondition = eq(KnowledgeGroupTable.userId, userId);
+      whereCondition = and(
+        visiblePurposeCondition,
+        eq(KnowledgeGroupTable.userId, userId),
+      );
     } else {
       whereCondition = and(
+        visiblePurposeCondition,
         ne(KnowledgeGroupTable.userId, userId),
         or(
           eq(KnowledgeGroupTable.visibility, "public"),
@@ -206,6 +216,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         icon: KnowledgeGroupTable.icon,
         userId: KnowledgeGroupTable.userId,
         visibility: KnowledgeGroupTable.visibility,
+        purpose: KnowledgeGroupTable.purpose,
+        isSystemManaged: KnowledgeGroupTable.isSystemManaged,
         embeddingModel: KnowledgeGroupTable.embeddingModel,
         embeddingProvider: KnowledgeGroupTable.embeddingProvider,
         rerankingModel: KnowledgeGroupTable.rerankingModel,
@@ -237,6 +249,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       ...r,
       description: r.description ?? undefined,
       icon: r.icon ?? undefined,
+      purpose: r.purpose,
+      isSystemManaged: r.isSystemManaged,
       rerankingModel: r.rerankingModel ?? null,
       rerankingProvider: r.rerankingProvider ?? null,
       parsingModel: r.parsingModel ?? null,
@@ -1347,6 +1361,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         icon: KnowledgeGroupTable.icon,
         userId: KnowledgeGroupTable.userId,
         visibility: KnowledgeGroupTable.visibility,
+        purpose: KnowledgeGroupTable.purpose,
+        isSystemManaged: KnowledgeGroupTable.isSystemManaged,
         embeddingModel: KnowledgeGroupTable.embeddingModel,
         embeddingProvider: KnowledgeGroupTable.embeddingProvider,
         rerankingModel: KnowledgeGroupTable.rerankingModel,

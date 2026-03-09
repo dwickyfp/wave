@@ -8,6 +8,8 @@ import {
 import { getDbModel } from "lib/ai/provider-factory";
 import globalLogger from "logger";
 import { buildUserSystemPrompt } from "lib/ai/prompts";
+import { mergeSystemPrompt } from "../shared.chat";
+import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 import { getUserPreferences } from "lib/user/server";
 
 import { colorize } from "consola/utils";
@@ -47,13 +49,17 @@ export async function POST(request: Request) {
 
     const userPreferences =
       (await getUserPreferences(session.user.id)) || undefined;
+    const learnedPersonalizationPrompt =
+      await getLearnedPersonalizationPromptForUser(session.user.id);
 
     const modelMessages = await convertToModelMessages(messages);
     return streamText({
       model: dbModelResult.model,
-      system: `${buildUserSystemPrompt(session.user, userPreferences)} ${
-        instructions ? `\n\n${instructions}` : ""
-      }`.trim(),
+      system: mergeSystemPrompt(
+        buildUserSystemPrompt(session.user, userPreferences),
+        learnedPersonalizationPrompt,
+        instructions,
+      ),
       messages: modelMessages,
       experimental_transform: smoothStream({ chunking: "word" }),
     }).toUIMessageStreamResponse();

@@ -275,6 +275,8 @@ export type ChatRepository = {
 
   selectMessagesByThreadId(threadId: string): Promise<ChatMessage[]>;
 
+  selectMessageById(messageId: string): Promise<ChatMessage | null>;
+
   selectCompactionCheckpoint(
     threadId: string,
   ): Promise<ChatThreadCompactionCheckpoint | null>;

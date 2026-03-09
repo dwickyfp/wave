@@ -33,6 +33,7 @@ import {
   createNoopDataStream,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
+import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 import { AppDefaultToolkit } from "lib/ai/tools";
 import { getDbModel } from "lib/ai/provider-factory";
 import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
@@ -479,6 +480,8 @@ async function executePilotModelTurn(input: {
   });
 
   const uiMessages = await convertToModelMessages(input.messages);
+  const learnedPersonalizationPrompt =
+    await getLearnedPersonalizationPromptForUser(input.userId);
   const system = buildWaveAgentSystemPrompt({
     user: input.user ?? undefined,
     userPreferences: input.userPreferences ?? undefined,
@@ -486,6 +489,7 @@ async function executePilotModelTurn(input: {
     subAgents: toolset.subAgents,
     attachedSkills: toolset.attachedSkills,
     extraPrompts: [
+      learnedPersonalizationPrompt,
       buildPilotBrokerPrompt({
         tabUrl: input.tabContext.url,
         tabTitle: input.tabContext.title,
@@ -679,6 +683,8 @@ async function streamPilotModelTurn(input: {
   });
 
   const uiMessages = await convertToModelMessages(input.modelMessages);
+  const learnedPersonalizationPrompt =
+    await getLearnedPersonalizationPromptForUser(input.user.id);
   const system = buildWaveAgentSystemPrompt({
     user: input.user ?? undefined,
     userPreferences: input.userPreferences ?? undefined,
@@ -686,6 +692,7 @@ async function streamPilotModelTurn(input: {
     subAgents: toolset.subAgents,
     attachedSkills: toolset.attachedSkills,
     extraPrompts: [
+      learnedPersonalizationPrompt,
       buildPilotBrokerPrompt({
         tabUrl: input.tabContext.url,
         tabTitle: input.tabContext.title,

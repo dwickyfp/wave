@@ -1,7 +1,7 @@
 "use client";
 import { Sidebar, SidebarContent, SidebarFooter } from "ui/sidebar";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { AppSidebarMenus } from "./app-sidebar-menus";
 import { AppSidebarAgents } from "./app-sidebar-agents";
@@ -20,6 +20,7 @@ export function AppSidebar({
 }) {
   const userRole = user?.role;
   const router = useRouter();
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Handle new chat shortcut (specific to main app)
   useEffect(() => {
@@ -33,6 +34,41 @@ export function AppSidebar({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [router]);
+
+  useEffect(() => {
+    const scrollContainer = scrollContainerRef.current;
+
+    if (!scrollContainer) {
+      return;
+    }
+
+    let scrollTimeout: number | null = null;
+
+    const markScrolling = () => {
+      scrollContainer.dataset.scrolling = "true";
+
+      if (scrollTimeout) {
+        window.clearTimeout(scrollTimeout);
+      }
+
+      scrollTimeout = window.setTimeout(() => {
+        scrollContainer.dataset.scrolling = "false";
+      }, 700);
+    };
+
+    scrollContainer.dataset.scrolling = "false";
+    scrollContainer.addEventListener("scroll", markScrolling, {
+      passive: true,
+    });
+
+    return () => {
+      scrollContainer.removeEventListener("scroll", markScrolling);
+
+      if (scrollTimeout) {
+        window.clearTimeout(scrollTimeout);
+      }
+    };
+  }, []);
 
   return (
     <Sidebar
@@ -52,7 +88,10 @@ export function AppSidebar({
       />
 
       <SidebarContent className="mt-2 overflow-hidden relative">
-        <div className="flex flex-col overflow-y-auto">
+        <div
+          ref={scrollContainerRef}
+          className="sidebar-minimal-scrollbar flex flex-col overflow-y-auto"
+        >
           <AppSidebarMenus user={user} />
           <AppSidebarAgents userRole={userRole} />
           <AppSidebarThreads />

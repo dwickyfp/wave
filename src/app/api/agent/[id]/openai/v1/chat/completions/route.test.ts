@@ -522,7 +522,7 @@ describe("agent continue/openai route", () => {
     expect(callArgs.tools.get_docs_kg1).toBeDefined();
     expect(callArgs.tools.subagent_planner_sa1).toBeDefined();
     expect(callArgs.tools.load_skill).toBeDefined();
-    expect(callArgs.system).toContain("Attached Emma knowledge tools");
+    expect(callArgs.system).toContain("Attached Wave knowledge tools");
     expect(callArgs.system).not.toContain(
       "Focus on production-grade software work",
     );

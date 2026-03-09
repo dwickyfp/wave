@@ -39,6 +39,10 @@ import {
   requireMessageAccess,
   requireThreadAccess,
 } from "lib/chat/access";
+import {
+  recordSelfLearningSignal,
+  syncExplicitFeedbackSignal,
+} from "lib/self-learning/service";
 
 export async function getUserId() {
   return requireAuthenticatedChatUserId();
@@ -86,7 +90,20 @@ export async function selectThreadWithMessagesAction(threadId: string) {
 }
 
 export async function deleteMessageAction(messageId: string) {
+  const userId = await getUserId();
   await requireMessageAccess(messageId);
+  const message = await chatRepository.selectMessageById(messageId);
+  if (message?.role === "assistant") {
+    await recordSelfLearningSignal({
+      userId,
+      threadId: message.threadId,
+      messageId,
+      signalType: "delete_response",
+      payload: {
+        source: "delete_message_action",
+      },
+    });
+  }
   await chatRepository.deleteChatMessage(messageId);
 }
 
@@ -97,9 +114,23 @@ export async function deleteThreadAction(threadId: string) {
 
 export async function deleteMessagesByChatIdAfterTimestampAction(
   messageId: string,
+  reason?: "regenerate" | "edit",
 ) {
   "use server";
+  const userId = await getUserId();
   await requireMessageAccess(messageId);
+  const message = await chatRepository.selectMessageById(messageId);
+  if (reason === "regenerate" && message?.role === "assistant") {
+    await recordSelfLearningSignal({
+      userId,
+      threadId: message.threadId,
+      messageId,
+      signalType: "regenerate_response",
+      payload: {
+        source: "change_model_regenerate",
+      },
+    });
+  }
   await chatRepository.deleteMessagesByChatIdAfterTimestamp(messageId);
 }
 
@@ -255,6 +286,17 @@ export async function forkThreadAction(
     if (!cutoffMessage) {
       throw new Error("Message not found");
     }
+    if (cutoffMessage.role === "assistant") {
+      await recordSelfLearningSignal({
+        userId,
+        threadId,
+        messageId: cutoffMessage.id,
+        signalType: "branch_from_response",
+        payload: {
+          source: "branch_thread_action",
+        },
+      });
+    }
     messages = messages.filter((m) => m.createdAt <= cutoffMessage.createdAt);
   }
 
@@ -322,15 +364,42 @@ export async function submitMessageFeedbackAction(
   reason?: string,
 ) {
   const userId = await getUserId();
-  return chatRepository.upsertMessageFeedback(messageId, userId, type, reason);
+  await requireMessageAccess(messageId);
+  const feedback = await chatRepository.upsertMessageFeedback(
+    messageId,
+    userId,
+    type,
+    reason,
+  );
+  const message = await chatRepository.selectMessageById(messageId);
+  if (message) {
+    await syncExplicitFeedbackSignal({
+      userId,
+      messageId,
+      threadId: message.threadId,
+      type,
+      reason,
+    });
+  }
+  return feedback;
 }
 
 export async function getMessageFeedbackAction(messageId: string) {
+  await requireMessageAccess(messageId);
   const userId = await getUserId();
   return chatRepository.getMessageFeedback(messageId, userId);
 }
 
 export async function deleteMessageFeedbackAction(messageId: string) {
+  await requireMessageAccess(messageId);
   const userId = await getUserId();
-  return chatRepository.deleteMessageFeedback(messageId, userId);
+  await chatRepository.deleteMessageFeedback(messageId, userId);
+  const message = await chatRepository.selectMessageById(messageId);
+  if (message) {
+    await syncExplicitFeedbackSignal({
+      userId,
+      messageId,
+      threadId: message.threadId,
+    });
+  }
 }

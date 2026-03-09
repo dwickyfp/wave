@@ -10,6 +10,7 @@ import {
   buildMcpServerCustomizationsSystemPrompt,
   buildSpeechSystemPrompt,
 } from "lib/ai/prompts";
+import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 
 import { safe } from "ts-safe";
 import { DEFAULT_VOICE_TOOLS } from "lib/ai/speech";
@@ -70,6 +71,8 @@ export async function POST(request: NextRequest) {
     }
 
     const userPreferences = await getUserPreferences(session.user.id);
+    const learnedPersonalizationPrompt =
+      await getLearnedPersonalizationPromptForUser(session.user.id);
 
     const mcpServerCustomizations = await safe()
       .map(() => {
@@ -92,6 +95,7 @@ export async function POST(request: NextRequest) {
         userPreferences ?? undefined,
         agent,
       ),
+      learnedPersonalizationPrompt,
       buildMcpServerCustomizationsSystemPrompt(mcpServerCustomizations),
     );
 

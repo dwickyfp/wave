@@ -39,10 +39,36 @@ services:
       - redis
     restart: unless-stopped
 
+  emma-chatbot-self-learning-worker:
+    build:
+      context: ..
+      dockerfile: ./docker/Dockerfile.worker
+    command:
+      [
+        "node",
+        "--conditions=react-server",
+        "--import",
+        "tsx",
+        "./src/lib/self-learning/worker.ts",
+      ]
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - NODE_OPTIONS=--conditions=react-server
+    networks:
+      - emma-chatbot-networks
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
   postgres:
     image: postgres:17
     env_file:
       - .env
+    ports:
+      - '5453:5432'
     networks:
       - emma-chatbot-networks
     volumes:
@@ -52,6 +78,8 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - '6377:6379'
     networks:
       - emma-chatbot-networks
     volumes:

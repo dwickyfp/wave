@@ -9,7 +9,13 @@ import {
 import { Tooltip } from "ui/tooltip";
 import { SidebarMenuItem } from "ui/sidebar";
 import { SidebarMenuButton } from "ui/sidebar";
-import { BarChart2, ChevronRight, Shield, Users } from "lucide-react";
+import {
+  BarChart2,
+  BrainCircuit,
+  ChevronRight,
+  Shield,
+  Users,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 
 const AppSidebarAdmin = () => {
@@ -41,6 +47,13 @@ const AppSidebarAdmin = () => {
         url: "/admin/usage-monitoring",
         icon: BarChart2,
         isActive: pathname.startsWith("/admin/usage-monitoring"),
+      },
+      {
+        id: "evaluation-system",
+        title: "Evaluation System",
+        url: "/admin/evaluation",
+        icon: BrainCircuit,
+        isActive: pathname.startsWith("/admin/evaluation"),
       },
     ],
     [t, pathname],

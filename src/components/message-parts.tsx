@@ -538,7 +538,7 @@ export const AssistMessagePart = memo(function AssistMessagePart({
     safe(() => setIsLoading(true))
       .ifOk(() =>
         threadId
-          ? deleteMessagesByChatIdAfterTimestampAction(message.id)
+          ? deleteMessagesByChatIdAfterTimestampAction(message.id, "regenerate")
           : Promise.resolve(),
       )
       .ifOk(() =>

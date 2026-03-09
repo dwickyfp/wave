@@ -76,6 +76,8 @@ import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
 } from "./actions";
+import { recordSelfLearningSignal } from "lib/self-learning/service";
+import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 import {
   convertToSavePart,
   excludeToolExecution,
@@ -199,6 +201,20 @@ export async function POST(request: Request) {
     });
 
     const persistedMessages = [...messages];
+    const previousAssistantMessage = [...persistedMessages]
+      .reverse()
+      .find((persistedMessage) => persistedMessage.role === "assistant");
+    if (message.role === "user" && previousAssistantMessage) {
+      await recordSelfLearningSignal({
+        userId: session.user.id,
+        threadId: thread?.id ?? null,
+        messageId: previousAssistantMessage.id,
+        signalType: "follow_up_continue",
+        payload: {
+          source: "chat_follow_up",
+        },
+      }).catch(() => {});
+    }
     messages.push(message);
 
     const supportToolCall = dbModelResult.supportsTools;
@@ -811,6 +827,8 @@ export async function POST(request: Request) {
             return await cache.get(totalBudget)!;
           };
         })();
+        const learnedPersonalizationPrompt =
+          await getLearnedPersonalizationPromptForUser(session.user.id);
 
         const buildSystemPromptForKnowledgeBudget = async (
           knowledgeBudget: number,
@@ -829,6 +847,7 @@ export async function POST(request: Request) {
               knowledgeContexts,
               mcpServerCustomizations,
               toolCallUnsupported: !supportToolCall,
+              extraPrompts: [learnedPersonalizationPrompt],
             }),
           };
         };
