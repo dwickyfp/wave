@@ -723,6 +723,11 @@ export const pgSelfLearningRepository = {
         and(
           eq(SelfLearningEvaluationTable.userId, userId),
           inArray(SelfLearningEvaluationTable.messageId, filteredMessageIds),
+          inArray(SelfLearningEvaluationTable.status, [
+            "proposed",
+            "applied",
+            "skipped",
+          ]),
         ),
       );
 

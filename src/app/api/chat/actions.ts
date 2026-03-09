@@ -385,9 +385,15 @@ export async function submitMessageFeedbackAction(
 }
 
 export async function getMessageFeedbackAction(messageId: string) {
-  await requireMessageAccess(messageId);
-  const userId = await getUserId();
-  return chatRepository.getMessageFeedback(messageId, userId);
+  try {
+    const { userId } = await requireMessageAccess(messageId);
+    return await chatRepository.getMessageFeedback(messageId, userId);
+  } catch (error) {
+    logger.warn(
+      `[Chat Feedback] Failed to load feedback for message ${messageId}: ${error}`,
+    );
+    return null;
+  }
 }
 
 export async function deleteMessageFeedbackAction(messageId: string) {

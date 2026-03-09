@@ -63,7 +63,7 @@ describe("self-learning candidate extraction", () => {
     expect(SELF_LEARNING_PROPOSAL_THRESHOLD).toBe(0.4);
   });
 
-  it("excludes intro and small-talk prompts from passive history candidates", () => {
+  it("keeps structurally valid chats eligible for model-side judgment", () => {
     const messages = [
       textMessage("u-1", "user", "Kamu siapa?"),
       textMessage("a-1", "assistant", "Saya Emma."),
@@ -75,9 +75,9 @@ describe("self-learning candidate extraction", () => {
       threadMessagesByThread: [{ threadId: "thread-1", messages }],
     });
 
-    expect(result.candidates).toHaveLength(0);
-    expect(result.diagnostics.smallTalkExcluded).toBe(2);
-    expect(result.diagnostics.emptyReason).toBe("only_low_value_small_talk");
+    expect(result.candidates).toHaveLength(2);
+    expect(result.diagnostics.smallTalkExcluded).toBe(0);
+    expect(result.diagnostics.emptyReason).toBeNull();
   });
 
   it("retains task-like multi-turn chats as passive history candidates", () => {
@@ -103,5 +103,28 @@ describe("self-learning candidate extraction", () => {
     expect(result.candidates).toHaveLength(2);
     expect(result.diagnostics.smallTalkExcluded).toBe(0);
     expect(result.diagnostics.finalCandidateCount).toBe(2);
+  });
+
+  it("keeps direct user preference statements available for model-side evaluation", () => {
+    const messages = [
+      textMessage(
+        "u-1",
+        "user",
+        "Aku sangat menyukai Python dan data engineering.",
+      ),
+      textMessage(
+        "a-1",
+        "assistant",
+        "Baik, saya akan carikan materi Python untuk data engineering.",
+      ),
+    ];
+
+    const result = buildPassiveHistoryCandidateSelection({
+      threadMessagesByThread: [{ threadId: "thread-1", messages }],
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]?.sourceMetricScore).toBeGreaterThanOrEqual(0.2);
+    expect(result.candidates[0]?.precedingUserPrompt).toContain("Python");
   });
 });

@@ -66,6 +66,7 @@ const JUDGE_SCHEMA = z.object({
     "policy",
   ]),
   shouldProposeMemory: z.boolean(),
+  directPersonalizationSignal: z.boolean().default(false),
   memoryTitle: z.string().min(1),
   memoryContent: z.string().min(1),
   contradictionFingerprint: z.string().optional().nullable(),
@@ -100,6 +101,8 @@ Rules:
 - Do not propose memories that override safety, policies, or live user instructions.
 - Do not store one-off task details, secrets, temporary project state, or transient facts.
 - You may infer recurring work materials, toolchains, or user habits only when they appear durable across the recent user message snapshot.
+- If the previous user message directly states a durable preference, interest, domain focus, or working identity, treat that as strong evidence for a reusable memory when it is safe.
+- Set directPersonalizationSignal=true when the user directly states a durable preference, interest, identity, role, working style, or habit in any language.
 - If the evidence only reflects one-off task content, set shouldProposeMemory=false.
 - score should reflect how strong and reusable the proposed memory is.
 - confidence should reflect certainty in the judgment.
@@ -264,9 +267,7 @@ async function buildEvaluationCandidateSelectionForUser(
   };
 }
 
-async function ensureHiddenKnowledgeTargets(
-  userId: string,
-): Promise<{
+async function ensureHiddenKnowledgeTargets(userId: string): Promise<{
   groupId: string;
   documentId: string;
   config: SelfLearningUserConfig;
@@ -348,10 +349,12 @@ async function applyMemoryFromEvaluation(input: {
   judge: JudgeOutput;
   systemConfig: SelfLearningSystemConfig;
   allowApply: boolean;
+  trigger: SelfLearningRunTrigger;
 }): Promise<{
   memory: SelfLearningMemory;
   applied: boolean;
   supersededIds: string[];
+  activationReason: "bias_guard" | "direct_user_declaration" | "inactive";
 }> {
   const fingerprint = buildMemoryFingerprint({
     category: input.judge.category,
@@ -364,11 +367,25 @@ async function applyMemoryFromEvaluation(input: {
     fingerprint,
   );
 
-  const shouldActivate =
+  const meetsBiasGuard =
     input.allowApply &&
     isAutoSafeMemoryCategory(input.judge.category) &&
     supportStats.supportCount >= input.systemConfig.biasGuardMinimumEvals &&
     supportStats.distinctThreadCount >= input.systemConfig.minDistinctThreads;
+  const activatesFromDirectDeclaration =
+    input.allowApply &&
+    input.trigger === "manual" &&
+    input.judge.directPersonalizationSignal &&
+    isAutoSafeMemoryCategory(input.judge.category) &&
+    (input.judge.category === "preference" ||
+      input.judge.category === "workflow") &&
+    input.judge.confidence >= 0.6;
+  const shouldActivate = meetsBiasGuard || activatesFromDirectDeclaration;
+  const activationReason = shouldActivate
+    ? meetsBiasGuard
+      ? "bias_guard"
+      : "direct_user_declaration"
+    : "inactive";
 
   const contradictionFingerprint = buildContradictionFingerprint({
     category: input.judge.category,
@@ -423,6 +440,7 @@ async function applyMemoryFromEvaluation(input: {
     memory,
     applied: shouldActivate,
     supersededIds,
+    activationReason,
   };
 }
 
@@ -813,7 +831,8 @@ export async function runSelfLearningEvaluationForUser(input: {
       const judge = await judgeCandidate(judgeModel, candidate);
       const explicitScore =
         candidate.sourceType === "feedback_like" ||
-        candidate.sourceType === "feedback_dislike"
+        candidate.sourceType === "feedback_dislike" ||
+        judge.directPersonalizationSignal
           ? 1
           : 0;
       const implicitScore = candidate.sourceMetricScore;
@@ -854,6 +873,7 @@ export async function runSelfLearningEvaluationForUser(input: {
         metrics: {
           sourceType: candidate.sourceType,
           sourceMetricScore: candidate.sourceMetricScore,
+          directPersonalizationSignal: judge.directPersonalizationSignal,
           recentUserSnapshotIncluded: Boolean(
             candidate.recentUserMessageSnapshot,
           ),
@@ -874,6 +894,7 @@ export async function runSelfLearningEvaluationForUser(input: {
         judge,
         systemConfig: system,
         allowApply: userConfig.personalizationEnabled,
+        trigger: input.trigger,
       });
 
       await selfLearningRepository.updateEvaluation(evaluation.id, {
@@ -892,6 +913,8 @@ export async function runSelfLearningEvaluationForUser(input: {
           supportCount: applied.memory.supportCount,
           distinctThreadCount: applied.memory.distinctThreadCount,
           supersededIds: applied.supersededIds,
+          activationReason: applied.activationReason,
+          directPersonalizationSignal: judge.directPersonalizationSignal,
         },
       });
 

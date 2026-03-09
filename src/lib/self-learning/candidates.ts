@@ -16,19 +16,6 @@ export const SELF_LEARNING_USER_SNAPSHOT_LIMIT = 8;
 const PASSIVE_HISTORY_BASE_SCORE = 0.2;
 const PASSIVE_HISTORY_FOLLOW_UP_SCORE = 0.35;
 const MAX_SNAPSHOT_SNIPPET_LENGTH = 220;
-const LOW_VALUE_PROMPT_PATTERNS = [
-  /^(hi+|hello+|halo+|hey+|hai+|yo+|test(ing)?)\b[!. ]*$/i,
-  /^(how are you|apa kabar|gimana kabarnya)\b[?.! ]*$/i,
-  /^(who are you|what are you|what can you do)\b[?.! ]*$/i,
-  /^(siapa kamu|kamu siapa|kamu ini siapa|perkenalan( dengan emma)?|kenalin diri(kamu)?|apa yang bisa kamu lakukan)\b[?.! ]*$/i,
-  /^(what day is it|what time is it|hari ini hari apa|jam berapa|tanggal berapa)\b[?.! ]*$/i,
-  /^(thanks|thank you|terima kasih|makasih)\b[!. ]*$/i,
-];
-const TASK_HINT_PATTERNS = [
-  /\b(add|analy[sz]e|audit|build|check|compare|create|debug|design|document|explain|find|fix|implement|improve|investigate|make|optimi[sz]e|refactor|review|search|sort|summari[sz]e|trace|update|write)\b/i,
-  /\b(agent|api|bug|bullmq|chat|code|database|docker|evaluation|feature|file|flow|knowledge|llm|memory|message|page|pagination|personalization|prompt|queue|redis|route|schema|self-learning|table|ui|worker)\b/i,
-  /\b(analisa|buat|cari|cek|debug|desain|implementasi|perbaiki|ringkas|tambah(kan)?|ubah|urutkan)\b/i,
-];
 
 export type SelfLearningCandidateSourceType =
   | SelfLearningSignalType
@@ -110,19 +97,6 @@ function findNextUserMessage(messages: ChatMessage[], assistantIndex: number) {
   );
 }
 
-function isLowValueSmallTalkPrompt(text: string): boolean {
-  const normalized = normalizeMessageText(text);
-  if (!normalized) {
-    return true;
-  }
-
-  if (TASK_HINT_PATTERNS.some((pattern) => pattern.test(normalized))) {
-    return false;
-  }
-
-  return LOW_VALUE_PROMPT_PATTERNS.some((pattern) => pattern.test(normalized));
-}
-
 function rankPassiveHistoryCandidate(
   candidate: CandidateContext,
   threadLength: number,
@@ -131,12 +105,14 @@ function rankPassiveHistoryCandidate(
   const normalizedNextMessage = normalizeMessageText(candidate.nextUserMessage);
   let score = candidate.sourceMetricScore;
 
-  if (TASK_HINT_PATTERNS.some((pattern) => pattern.test(normalizedPrompt))) {
-    score += 0.45;
-  }
-
-  if (normalizedPrompt.length >= 48) {
-    score += 0.15;
+  // Structural ranking stays language-agnostic. Semantic judgment is delegated
+  // to the evaluation model so we do not hardcode language-specific patterns.
+  if (normalizedPrompt.length >= 96) {
+    score += 0.2;
+  } else if (normalizedPrompt.length >= 48) {
+    score += 0.12;
+  } else if (normalizedPrompt.length >= 24) {
+    score += 0.05;
   }
 
   if (normalizedNextMessage) {
@@ -294,7 +270,7 @@ export function buildPassiveHistoryCandidateSelection(input: {
   }> = [];
   let assistantTurnsSeen = 0;
   let alreadyEvaluatedExcluded = 0;
-  let smallTalkExcluded = 0;
+  const smallTalkExcluded = 0;
   let missingPrecedingUserExcluded = 0;
 
   for (const thread of input.threadMessagesByThread) {
@@ -317,11 +293,6 @@ export function buildPassiveHistoryCandidateSelection(input: {
       );
       if (!precedingUserPrompt) {
         missingPrecedingUserExcluded += 1;
-        continue;
-      }
-
-      if (isLowValueSmallTalkPrompt(precedingUserPrompt)) {
-        smallTalkExcluded += 1;
         continue;
       }
 
@@ -387,10 +358,7 @@ export function buildPassiveHistoryCandidateSelection(input: {
     assistantTurnsSeen ===
     alreadyEvaluatedExcluded + smallTalkExcluded + missingPrecedingUserExcluded
   ) {
-    emptyReason =
-      smallTalkExcluded > 0
-        ? "only_low_value_small_talk"
-        : "no_candidates_after_filters";
+    emptyReason = "no_candidates_after_filters";
   } else {
     emptyReason = "no_candidates_after_filters";
   }

@@ -827,8 +827,15 @@ export async function POST(request: Request) {
             return await cache.get(totalBudget)!;
           };
         })();
-        const learnedPersonalizationPrompt =
-          await getLearnedPersonalizationPromptForUser(session.user.id);
+        const learnedPersonalizationPrompt: string | false =
+          await getLearnedPersonalizationPromptForUser(session.user.id).catch(
+            (error) => {
+              logger.warn(
+                `[Chat Route] Failed to load learned personalization for user ${session.user.id}: ${error}`,
+              );
+              return false as const;
+            },
+          );
 
         const buildSystemPromptForKnowledgeBudget = async (
           knowledgeBudget: number,

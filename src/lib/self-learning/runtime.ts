@@ -4,6 +4,7 @@ import {
   SelfLearningSystemConfigZodSchema,
 } from "app-types/self-learning";
 import * as repositories from "lib/db/repository";
+import logger from "logger";
 import { renderLearnedUserPersonalizationPrompt } from "./logic";
 
 type SelfLearningRepositoryLike = {
@@ -39,21 +40,36 @@ export async function getLearnedPersonalizationPromptForUser(
     return false;
   }
 
-  const raw =
-    settingsRepository && typeof settingsRepository.getSetting === "function"
-      ? await settingsRepository.getSetting(SELF_LEARNING_SYSTEM_KEY)
-      : null;
-  const system = SelfLearningSystemConfigZodSchema.parse({
-    ...SELF_LEARNING_DEFAULTS,
-    ...(raw && typeof raw === "object" ? raw : {}),
-  });
-  const memories = await selfLearningRepository.listActiveMemoriesForUser(
-    userId,
-    system.maxActiveMemories,
-  );
+  try {
+    const raw =
+      settingsRepository && typeof settingsRepository.getSetting === "function"
+        ? await settingsRepository.getSetting(SELF_LEARNING_SYSTEM_KEY)
+        : null;
+    const parsedSystem = SelfLearningSystemConfigZodSchema.safeParse({
+      ...SELF_LEARNING_DEFAULTS,
+      ...(raw && typeof raw === "object" ? raw : {}),
+    });
+    if (!parsedSystem.success) {
+      logger.warn(
+        `[Self-Learning Runtime] Invalid system config for user ${userId}; falling back to defaults: ${parsedSystem.error.message}`,
+      );
+    }
+    const system = parsedSystem.success
+      ? parsedSystem.data
+      : SELF_LEARNING_DEFAULTS;
+    const memories = await selfLearningRepository.listActiveMemoriesForUser(
+      userId,
+      system.maxActiveMemories,
+    );
 
-  return renderLearnedUserPersonalizationPrompt(
-    memories,
-    system.maxActiveMemories,
-  );
+    return renderLearnedUserPersonalizationPrompt(
+      memories,
+      system.maxActiveMemories,
+    );
+  } catch (error) {
+    logger.warn(
+      `[Self-Learning Runtime] Failed to load personalization prompt for user ${userId}: ${error}`,
+    );
+    return false;
+  }
 }
