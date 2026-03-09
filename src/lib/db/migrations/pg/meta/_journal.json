@@ -309,6 +309,13 @@
       "when": 1774500000000,
       "tag": "0043_self_learning_evaluation_system",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1774600000000,
+      "tag": "0044_knowledge_document_versions",
+      "breakpoints": true
     }
   ]
 }

@@ -55,6 +55,8 @@ function mapDocument(
     processingProgress: row.processingProgress ?? null,
     metadata: (row.metadata as Record<string, unknown>) ?? null,
     markdownContent: row.markdownContent ?? null,
+    activeVersionId: row.activeVersionId ?? null,
+    latestVersionNumber: row.latestVersionNumber ?? 0,
   };
 }
 

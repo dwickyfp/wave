@@ -1,0 +1,1307 @@
+import type {
+  KnowledgeChunkMetadata,
+  KnowledgeDocument,
+  KnowledgeDocumentHistoryEvent,
+  KnowledgeDocumentVersion,
+  KnowledgeDocumentVersionSummary,
+  KnowledgeGroup,
+} from "app-types/knowledge";
+import { asc, desc, eq, sql } from "drizzle-orm";
+import { knowledgeRepository } from "lib/db/repository";
+import { pgDb as db } from "lib/db/pg/db.pg";
+import {
+  KnowledgeChunkTable,
+  KnowledgeChunkVersionTable,
+  KnowledgeDocumentHistoryEventTable,
+  KnowledgeDocumentTable,
+  KnowledgeDocumentVersionTable,
+  KnowledgeGroupTable,
+  KnowledgeSectionTable,
+  KnowledgeSectionVersionTable,
+} from "lib/db/pg/schema.pg";
+import { materializeDocumentMarkdown } from "lib/knowledge/materialize-markdown";
+import { generateUUID } from "lib/utils";
+
+const VERSION_BATCH_SIZE = 100;
+const ROLLBACK_MODEL_MISMATCH_REASON =
+  "This version uses a different embedding model than the current knowledge group.";
+
+type DocumentVersionChangeType =
+  | "initial_ingest"
+  | "edit"
+  | "rollback"
+  | "reingest";
+type HistoryEventType =
+  | "created"
+  | "edited"
+  | "rollback"
+  | "failed"
+  | "bootstrap"
+  | "reingest";
+
+type SelectedDocumentRow = typeof KnowledgeDocumentTable.$inferSelect & {
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkSize: number;
+  chunkOverlapPercent: number;
+};
+
+type VersionSnapshotSection = {
+  id: string;
+  parentSectionId?: string | null;
+  prevSectionId?: string | null;
+  nextSectionId?: string | null;
+  heading: string;
+  headingPath: string;
+  level: number;
+  partIndex: number;
+  partCount: number;
+  content: string;
+  summary: string;
+  tokenCount: number;
+  sourcePath?: string | null;
+  libraryId?: string | null;
+  libraryVersion?: string | null;
+  includeHeadingInChunkContent?: boolean;
+};
+
+type VersionSnapshotChunk = {
+  id: string;
+  sectionId?: string | null;
+  content: string;
+  contextSummary?: string | null;
+  embedding?: number[] | null;
+  chunkIndex: number;
+  tokenCount: number;
+  metadata?: KnowledgeChunkMetadata | null;
+};
+
+type MaterializedCommitInput = {
+  versionId: string;
+  versionNumber: number;
+  sourceVersionId?: string | null;
+  expectedActiveVersionId?: string | null;
+  eventType: HistoryEventType;
+  actorUserId?: string | null;
+  doc: KnowledgeDocument;
+  group: KnowledgeGroup;
+  markdown: string;
+  resolvedTitle: string;
+  resolvedDescription?: string | null;
+  metadata?: Record<string, unknown> | null;
+  metadataEmbedding?: number[] | null;
+  sections: VersionSnapshotSection[];
+  chunks: VersionSnapshotChunk[];
+  totalTokens: number;
+};
+
+type VersionRowWithVector =
+  typeof KnowledgeDocumentVersionTable.$inferSelect & {
+    metadataEmbeddingText?: string | null;
+  };
+
+const documentVersionSelection = {
+  id: KnowledgeDocumentVersionTable.id,
+  documentId: KnowledgeDocumentVersionTable.documentId,
+  groupId: KnowledgeDocumentVersionTable.groupId,
+  userId: KnowledgeDocumentVersionTable.userId,
+  versionNumber: KnowledgeDocumentVersionTable.versionNumber,
+  status: KnowledgeDocumentVersionTable.status,
+  changeType: KnowledgeDocumentVersionTable.changeType,
+  markdownContent: KnowledgeDocumentVersionTable.markdownContent,
+  resolvedTitle: KnowledgeDocumentVersionTable.resolvedTitle,
+  resolvedDescription: KnowledgeDocumentVersionTable.resolvedDescription,
+  metadata: KnowledgeDocumentVersionTable.metadata,
+  metadataEmbeddingText: sql<
+    string | null
+  >`${KnowledgeDocumentVersionTable.metadataEmbedding}::text`,
+  embeddingProvider: KnowledgeDocumentVersionTable.embeddingProvider,
+  embeddingModel: KnowledgeDocumentVersionTable.embeddingModel,
+  chunkCount: KnowledgeDocumentVersionTable.chunkCount,
+  tokenCount: KnowledgeDocumentVersionTable.tokenCount,
+  sourceVersionId: KnowledgeDocumentVersionTable.sourceVersionId,
+  createdByUserId: KnowledgeDocumentVersionTable.createdByUserId,
+  errorMessage: KnowledgeDocumentVersionTable.errorMessage,
+  createdAt: KnowledgeDocumentVersionTable.createdAt,
+  updatedAt: KnowledgeDocumentVersionTable.updatedAt,
+};
+
+class VersionConflictError extends Error {
+  constructor() {
+    super("version_conflict");
+  }
+}
+
+class RollbackModelMismatchError extends Error {
+  constructor() {
+    super("rollback_model_mismatch");
+  }
+}
+
+class VersionNotFoundError extends Error {
+  constructor() {
+    super("version_not_found");
+  }
+}
+
+function parsePgVectorLiteral(
+  value: string | number[] | null | undefined,
+): number[] | null {
+  if (!value) return null;
+  if (Array.isArray(value)) {
+    return value.map((entry) => Number(entry));
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "[]") return [];
+
+  return trimmed
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter((entry) => Number.isFinite(entry));
+}
+
+function toPgVectorLiteral(embedding: number[] | null | undefined) {
+  if (!embedding || embedding.length === 0) return null;
+  const safe = embedding.map((entry) => (Number.isFinite(entry) ? entry : 0));
+  return `[${safe.join(",")}]`;
+}
+
+function toPgVectorExpression(embedding: number[] | null | undefined) {
+  const literal = toPgVectorLiteral(embedding);
+  return literal === null ? sql`NULL::vector` : sql`${literal}::vector`;
+}
+
+function mapDocumentVersion(
+  row: VersionRowWithVector,
+): KnowledgeDocumentVersion {
+  return {
+    id: row.id,
+    documentId: row.documentId,
+    groupId: row.groupId,
+    userId: row.userId,
+    versionNumber: row.versionNumber,
+    status: row.status,
+    changeType: row.changeType,
+    markdownContent: row.markdownContent ?? null,
+    resolvedTitle: row.resolvedTitle,
+    resolvedDescription: row.resolvedDescription ?? null,
+    metadata: (row.metadata as Record<string, unknown>) ?? null,
+    metadataEmbedding: parsePgVectorLiteral(row.metadataEmbeddingText ?? null),
+    embeddingProvider: row.embeddingProvider,
+    embeddingModel: row.embeddingModel,
+    chunkCount: row.chunkCount ?? 0,
+    tokenCount: row.tokenCount ?? 0,
+    sourceVersionId: row.sourceVersionId ?? null,
+    createdByUserId: row.createdByUserId ?? null,
+    errorMessage: row.errorMessage ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function selectDocumentRow(documentId: string) {
+  const [row] = await db
+    .select({
+      id: KnowledgeDocumentTable.id,
+      groupId: KnowledgeDocumentTable.groupId,
+      userId: KnowledgeDocumentTable.userId,
+      name: KnowledgeDocumentTable.name,
+      description: KnowledgeDocumentTable.description,
+      descriptionManual: KnowledgeDocumentTable.descriptionManual,
+      titleManual: KnowledgeDocumentTable.titleManual,
+      originalFilename: KnowledgeDocumentTable.originalFilename,
+      fileType: KnowledgeDocumentTable.fileType,
+      fileSize: KnowledgeDocumentTable.fileSize,
+      storagePath: KnowledgeDocumentTable.storagePath,
+      sourceUrl: KnowledgeDocumentTable.sourceUrl,
+      status: KnowledgeDocumentTable.status,
+      errorMessage: KnowledgeDocumentTable.errorMessage,
+      processingProgress: KnowledgeDocumentTable.processingProgress,
+      chunkCount: KnowledgeDocumentTable.chunkCount,
+      tokenCount: KnowledgeDocumentTable.tokenCount,
+      metadata: KnowledgeDocumentTable.metadata,
+      markdownContent: KnowledgeDocumentTable.markdownContent,
+      activeVersionId: KnowledgeDocumentTable.activeVersionId,
+      latestVersionNumber: KnowledgeDocumentTable.latestVersionNumber,
+      createdAt: KnowledgeDocumentTable.createdAt,
+      updatedAt: KnowledgeDocumentTable.updatedAt,
+      embeddingProvider: KnowledgeGroupTable.embeddingProvider,
+      embeddingModel: KnowledgeGroupTable.embeddingModel,
+      chunkSize: KnowledgeGroupTable.chunkSize,
+      chunkOverlapPercent: KnowledgeGroupTable.chunkOverlapPercent,
+    })
+    .from(KnowledgeDocumentTable)
+    .innerJoin(
+      KnowledgeGroupTable,
+      eq(KnowledgeDocumentTable.groupId, KnowledgeGroupTable.id),
+    )
+    .where(eq(KnowledgeDocumentTable.id, documentId));
+
+  return row as SelectedDocumentRow | undefined;
+}
+
+async function selectVersionRow(versionId: string) {
+  const [row] = await db
+    .select(documentVersionSelection)
+    .from(KnowledgeDocumentVersionTable)
+    .where(eq(KnowledgeDocumentVersionTable.id, versionId));
+
+  return row as VersionRowWithVector | undefined;
+}
+
+async function selectLiveSections(
+  documentId: string,
+): Promise<VersionSnapshotSection[]> {
+  const rows = await db
+    .select()
+    .from(KnowledgeSectionTable)
+    .where(eq(KnowledgeSectionTable.documentId, documentId))
+    .orderBy(
+      asc(KnowledgeSectionTable.createdAt),
+      asc(KnowledgeSectionTable.partIndex),
+      asc(KnowledgeSectionTable.id),
+    );
+
+  return rows.map((row) => ({
+    id: row.id,
+    parentSectionId: row.parentSectionId ?? null,
+    prevSectionId: row.prevSectionId ?? null,
+    nextSectionId: row.nextSectionId ?? null,
+    heading: row.heading,
+    headingPath: row.headingPath,
+    level: row.level,
+    partIndex: row.partIndex,
+    partCount: row.partCount,
+    content: row.content,
+    summary: row.summary,
+    tokenCount: row.tokenCount,
+    sourcePath: null,
+    libraryId: null,
+    libraryVersion: null,
+    includeHeadingInChunkContent: false,
+  }));
+}
+
+async function selectLiveChunks(
+  documentId: string,
+): Promise<VersionSnapshotChunk[]> {
+  const rows = await db.execute<{
+    id: string;
+    section_id: string | null;
+    content: string;
+    context_summary: string | null;
+    embedding_text: string | null;
+    chunk_index: number;
+    token_count: number;
+    metadata: KnowledgeChunkMetadata | null;
+  }>(
+    sql`
+      SELECT
+        id,
+        section_id,
+        content,
+        context_summary,
+        embedding::text AS embedding_text,
+        chunk_index,
+        token_count,
+        metadata
+      FROM knowledge_chunk
+      WHERE document_id = ${documentId}::uuid
+      ORDER BY chunk_index ASC
+    `,
+  );
+
+  return rows.rows.map((row) => ({
+    id: row.id,
+    sectionId: row.section_id ?? null,
+    content: row.content,
+    contextSummary: row.context_summary ?? null,
+    embedding: parsePgVectorLiteral(row.embedding_text),
+    chunkIndex: row.chunk_index,
+    tokenCount: row.token_count,
+    metadata: row.metadata ?? null,
+  }));
+}
+
+async function selectVersionSections(
+  versionId: string,
+): Promise<VersionSnapshotSection[]> {
+  const rows = await db
+    .select()
+    .from(KnowledgeSectionVersionTable)
+    .where(eq(KnowledgeSectionVersionTable.versionId, versionId))
+    .orderBy(
+      asc(KnowledgeSectionVersionTable.position),
+      asc(KnowledgeSectionVersionTable.id),
+    );
+
+  return rows.map((row) => ({
+    id: row.id,
+    parentSectionId: row.parentSectionId ?? null,
+    prevSectionId: row.prevSectionId ?? null,
+    nextSectionId: row.nextSectionId ?? null,
+    heading: row.heading,
+    headingPath: row.headingPath,
+    level: row.level,
+    partIndex: row.partIndex,
+    partCount: row.partCount,
+    content: row.content,
+    summary: row.summary,
+    tokenCount: row.tokenCount,
+    sourcePath: row.sourcePath ?? null,
+    libraryId: row.libraryId ?? null,
+    libraryVersion: row.libraryVersion ?? null,
+    includeHeadingInChunkContent: row.includeHeadingInChunkContent ?? false,
+  }));
+}
+
+async function selectVersionChunks(
+  versionId: string,
+): Promise<VersionSnapshotChunk[]> {
+  const rows = await db.execute<{
+    id: string;
+    section_version_id: string | null;
+    content: string;
+    context_summary: string | null;
+    embedding_text: string | null;
+    chunk_index: number;
+    token_count: number;
+    metadata: KnowledgeChunkMetadata | null;
+  }>(
+    sql`
+      SELECT
+        id,
+        section_version_id,
+        content,
+        context_summary,
+        embedding::text AS embedding_text,
+        chunk_index,
+        token_count,
+        metadata
+      FROM knowledge_chunk_version
+      WHERE version_id = ${versionId}::uuid
+      ORDER BY chunk_index ASC
+    `,
+  );
+
+  return rows.rows.map((row) => ({
+    id: row.id,
+    sectionId: row.section_version_id ?? null,
+    content: row.content,
+    contextSummary: row.context_summary ?? null,
+    embedding: parsePgVectorLiteral(row.embedding_text),
+    chunkIndex: row.chunk_index,
+    tokenCount: row.token_count,
+    metadata: row.metadata ?? null,
+  }));
+}
+
+async function insertSectionSnapshots(
+  tx: any,
+  versionId: string,
+  documentId: string,
+  groupId: string,
+  sections: VersionSnapshotSection[],
+) {
+  if (sections.length === 0) return;
+
+  for (let index = 0; index < sections.length; index += VERSION_BATCH_SIZE) {
+    const batch = sections.slice(index, index + VERSION_BATCH_SIZE);
+    await tx.insert(KnowledgeSectionVersionTable).values(
+      batch.map((section, offset) => ({
+        id: section.id,
+        versionId,
+        documentId,
+        groupId,
+        position: index + offset,
+        parentSectionId: section.parentSectionId ?? null,
+        prevSectionId: section.prevSectionId ?? null,
+        nextSectionId: section.nextSectionId ?? null,
+        heading: section.heading,
+        headingPath: section.headingPath,
+        level: section.level,
+        partIndex: section.partIndex,
+        partCount: section.partCount,
+        content: section.content,
+        summary: section.summary,
+        tokenCount: section.tokenCount,
+        sourcePath: section.sourcePath ?? null,
+        libraryId: section.libraryId ?? null,
+        libraryVersion: section.libraryVersion ?? null,
+        includeHeadingInChunkContent:
+          section.includeHeadingInChunkContent ?? false,
+        createdAt: new Date(),
+      })),
+    );
+  }
+}
+
+async function insertChunkSnapshots(
+  tx: any,
+  versionId: string,
+  documentId: string,
+  groupId: string,
+  chunks: VersionSnapshotChunk[],
+) {
+  if (chunks.length === 0) return;
+
+  for (let index = 0; index < chunks.length; index += VERSION_BATCH_SIZE) {
+    const batch = chunks.slice(index, index + VERSION_BATCH_SIZE);
+    await tx.insert(KnowledgeChunkVersionTable).values(
+      batch.map((chunk) => ({
+        id: chunk.id,
+        versionId,
+        documentId,
+        groupId,
+        sectionVersionId: chunk.sectionId ?? null,
+        content: chunk.content,
+        contextSummary: chunk.contextSummary ?? null,
+        embedding: chunk.embedding ?? null,
+        chunkIndex: chunk.chunkIndex,
+        tokenCount: chunk.tokenCount,
+        metadata: chunk.metadata ?? null,
+        createdAt: new Date(),
+      })),
+    );
+  }
+}
+
+async function replaceLiveMaterialization(
+  tx: any,
+  documentId: string,
+  groupId: string,
+  sections: VersionSnapshotSection[],
+  chunks: VersionSnapshotChunk[],
+) {
+  await tx
+    .delete(KnowledgeChunkTable)
+    .where(eq(KnowledgeChunkTable.documentId, documentId));
+  await tx
+    .delete(KnowledgeSectionTable)
+    .where(eq(KnowledgeSectionTable.documentId, documentId));
+
+  if (sections.length > 0) {
+    for (let index = 0; index < sections.length; index += VERSION_BATCH_SIZE) {
+      const batch = sections.slice(index, index + VERSION_BATCH_SIZE);
+      await tx.insert(KnowledgeSectionTable).values(
+        batch.map((section) => ({
+          id: section.id,
+          documentId,
+          groupId,
+          parentSectionId: section.parentSectionId ?? null,
+          prevSectionId: section.prevSectionId ?? null,
+          nextSectionId: section.nextSectionId ?? null,
+          heading: section.heading,
+          headingPath: section.headingPath,
+          level: section.level,
+          partIndex: section.partIndex,
+          partCount: section.partCount,
+          content: section.content,
+          summary: section.summary,
+          tokenCount: section.tokenCount,
+          createdAt: new Date(),
+        })),
+      );
+    }
+  }
+
+  if (chunks.length > 0) {
+    for (let index = 0; index < chunks.length; index += VERSION_BATCH_SIZE) {
+      const batch = chunks.slice(index, index + VERSION_BATCH_SIZE);
+      await tx.insert(KnowledgeChunkTable).values(
+        batch.map((chunk) => ({
+          id: chunk.id,
+          documentId,
+          groupId,
+          sectionId: chunk.sectionId ?? null,
+          content: chunk.content,
+          contextSummary: chunk.contextSummary ?? null,
+          embedding: chunk.embedding ?? null,
+          chunkIndex: chunk.chunkIndex,
+          tokenCount: chunk.tokenCount,
+          metadata: chunk.metadata ?? null,
+          createdAt: new Date(),
+        })),
+      );
+    }
+  }
+}
+
+async function insertHistoryEvent(
+  tx: any,
+  args: {
+    documentId: string;
+    groupId: string;
+    userId: string;
+    actorUserId?: string | null;
+    eventType: HistoryEventType;
+    fromVersionId?: string | null;
+    toVersionId?: string | null;
+    details?: Record<string, unknown> | null;
+  },
+) {
+  await tx.insert(KnowledgeDocumentHistoryEventTable).values({
+    id: generateUUID(),
+    documentId: args.documentId,
+    groupId: args.groupId,
+    userId: args.userId,
+    actorUserId: args.actorUserId ?? null,
+    eventType: args.eventType,
+    fromVersionId: args.fromVersionId ?? null,
+    toVersionId: args.toVersionId ?? null,
+    details: args.details ?? null,
+    createdAt: new Date(),
+  });
+}
+
+function ensureModelMatch(
+  version: Pick<
+    KnowledgeDocumentVersion,
+    "embeddingProvider" | "embeddingModel"
+  >,
+  group: Pick<KnowledgeGroup, "embeddingProvider" | "embeddingModel">,
+) {
+  if (
+    version.embeddingProvider !== group.embeddingProvider ||
+    version.embeddingModel !== group.embeddingModel
+  ) {
+    throw new RollbackModelMismatchError();
+  }
+}
+
+async function finalizeMaterializedVersion({
+  versionId,
+  versionNumber,
+  sourceVersionId,
+  expectedActiveVersionId,
+  eventType,
+  actorUserId,
+  doc,
+  group,
+  markdown,
+  resolvedTitle,
+  resolvedDescription,
+  metadata,
+  metadataEmbedding,
+  sections,
+  chunks,
+  totalTokens,
+}: MaterializedCommitInput) {
+  await db.transaction(async (tx) => {
+    const [currentDoc] = await tx
+      .select({
+        id: KnowledgeDocumentTable.id,
+        activeVersionId: KnowledgeDocumentTable.activeVersionId,
+        latestVersionNumber: KnowledgeDocumentTable.latestVersionNumber,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(eq(KnowledgeDocumentTable.id, doc.id));
+
+    if (!currentDoc) {
+      throw new VersionNotFoundError();
+    }
+
+    if (
+      expectedActiveVersionId !== undefined &&
+      (currentDoc.activeVersionId ?? null) !== (expectedActiveVersionId ?? null)
+    ) {
+      throw new VersionConflictError();
+    }
+
+    await tx
+      .delete(KnowledgeChunkVersionTable)
+      .where(eq(KnowledgeChunkVersionTable.versionId, versionId));
+    await tx
+      .delete(KnowledgeSectionVersionTable)
+      .where(eq(KnowledgeSectionVersionTable.versionId, versionId));
+
+    await insertSectionSnapshots(tx, versionId, doc.id, group.id, sections);
+    await insertChunkSnapshots(tx, versionId, doc.id, group.id, chunks);
+    await replaceLiveMaterialization(tx, doc.id, group.id, sections, chunks);
+
+    await tx
+      .update(KnowledgeDocumentVersionTable)
+      .set({
+        status: "ready",
+        markdownContent: markdown,
+        resolvedTitle,
+        resolvedDescription: resolvedDescription ?? null,
+        metadata: metadata ?? null,
+        metadataEmbedding: toPgVectorExpression(metadataEmbedding ?? null),
+        chunkCount: chunks.length,
+        tokenCount: totalTokens,
+        errorMessage: null,
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(KnowledgeDocumentVersionTable.id, versionId));
+
+    await tx
+      .update(KnowledgeDocumentTable)
+      .set({
+        name: resolvedTitle,
+        description: resolvedDescription ?? null,
+        metadata: metadata ?? null,
+        metadataEmbedding: toPgVectorExpression(metadataEmbedding ?? null),
+        markdownContent: markdown,
+        status: "ready",
+        errorMessage: null,
+        processingProgress: null,
+        chunkCount: chunks.length,
+        tokenCount: totalTokens,
+        activeVersionId: versionId,
+        latestVersionNumber: Math.max(
+          currentDoc.latestVersionNumber ?? 0,
+          versionNumber,
+        ),
+        updatedAt: new Date(),
+      } as any)
+      .where(eq(KnowledgeDocumentTable.id, doc.id));
+
+    await insertHistoryEvent(tx, {
+      documentId: doc.id,
+      groupId: group.id,
+      userId: doc.userId,
+      actorUserId: actorUserId ?? doc.userId,
+      eventType,
+      fromVersionId: sourceVersionId ?? null,
+      toVersionId: versionId,
+      details: {
+        chunkCount: chunks.length,
+        tokenCount: totalTokens,
+      },
+    });
+  });
+}
+
+export async function ensureDocumentVersionBootstrap(documentId: string) {
+  const selectedDoc = await selectDocumentRow(documentId);
+  if (!selectedDoc) return;
+  if (
+    (selectedDoc.activeVersionId ?? null) !== null &&
+    (selectedDoc.latestVersionNumber ?? 0) > 0
+  ) {
+    return;
+  }
+  if (selectedDoc.status !== "ready" || !selectedDoc.markdownContent) {
+    return;
+  }
+
+  await db.transaction(async (tx) => {
+    const [currentDoc] = await tx
+      .select({
+        id: KnowledgeDocumentTable.id,
+        activeVersionId: KnowledgeDocumentTable.activeVersionId,
+        latestVersionNumber: KnowledgeDocumentTable.latestVersionNumber,
+        name: KnowledgeDocumentTable.name,
+        description: KnowledgeDocumentTable.description,
+        metadata: KnowledgeDocumentTable.metadata,
+        markdownContent: KnowledgeDocumentTable.markdownContent,
+      })
+      .from(KnowledgeDocumentTable)
+      .where(eq(KnowledgeDocumentTable.id, documentId));
+
+    if (
+      !currentDoc ||
+      currentDoc.activeVersionId ||
+      (currentDoc.latestVersionNumber ?? 0) > 0 ||
+      !currentDoc.markdownContent
+    ) {
+      return;
+    }
+
+    const liveSections = await selectLiveSections(documentId);
+    const liveChunks = await selectLiveChunks(documentId);
+    const [version] = await tx
+      .insert(KnowledgeDocumentVersionTable)
+      .values({
+        id: generateUUID(),
+        documentId: documentId,
+        groupId: selectedDoc.groupId,
+        userId: selectedDoc.userId,
+        versionNumber: 1,
+        status: "ready",
+        changeType: "initial_ingest",
+        markdownContent: currentDoc.markdownContent,
+        resolvedTitle: currentDoc.name,
+        resolvedDescription: currentDoc.description ?? null,
+        metadata: currentDoc.metadata ?? null,
+        metadataEmbedding: sql`NULL::vector`,
+        embeddingProvider: selectedDoc.embeddingProvider,
+        embeddingModel: selectedDoc.embeddingModel,
+        chunkCount: liveChunks.length,
+        tokenCount: liveChunks.reduce(
+          (sum, chunk) => sum + chunk.tokenCount,
+          0,
+        ),
+        sourceVersionId: null,
+        createdByUserId: selectedDoc.userId,
+        errorMessage: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any)
+      .returning();
+
+    await insertSectionSnapshots(
+      tx,
+      version.id,
+      documentId,
+      selectedDoc.groupId,
+      liveSections,
+    );
+    await insertChunkSnapshots(
+      tx,
+      version.id,
+      documentId,
+      selectedDoc.groupId,
+      liveChunks,
+    );
+
+    await tx
+      .update(KnowledgeDocumentTable)
+      .set({
+        activeVersionId: version.id,
+        latestVersionNumber: 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(KnowledgeDocumentTable.id, documentId));
+
+    await insertHistoryEvent(tx, {
+      documentId,
+      groupId: selectedDoc.groupId,
+      userId: selectedDoc.userId,
+      actorUserId: selectedDoc.userId,
+      eventType: "bootstrap",
+      toVersionId: version.id,
+      details: {
+        chunkCount: liveChunks.length,
+      },
+    });
+  });
+}
+
+export async function listDocumentVersions(documentId: string) {
+  await ensureDocumentVersionBootstrap(documentId);
+
+  const selectedDoc = await selectDocumentRow(documentId);
+  if (!selectedDoc) return [];
+
+  const rows = await db
+    .select(documentVersionSelection)
+    .from(KnowledgeDocumentVersionTable)
+    .where(eq(KnowledgeDocumentVersionTable.documentId, documentId))
+    .orderBy(desc(KnowledgeDocumentVersionTable.versionNumber));
+
+  return rows.map((row) => {
+    const isActive = row.id === selectedDoc.activeVersionId;
+    const canRollback =
+      !isActive &&
+      row.status === "ready" &&
+      row.embeddingProvider === selectedDoc.embeddingProvider &&
+      row.embeddingModel === selectedDoc.embeddingModel;
+
+    return {
+      id: row.id,
+      versionNumber: row.versionNumber,
+      status: row.status,
+      changeType: row.changeType,
+      isActive,
+      markdownContent: row.markdownContent ?? null,
+      resolvedTitle: row.resolvedTitle,
+      resolvedDescription: row.resolvedDescription ?? null,
+      embeddingProvider: row.embeddingProvider,
+      embeddingModel: row.embeddingModel,
+      chunkCount: row.chunkCount ?? 0,
+      tokenCount: row.tokenCount ?? 0,
+      sourceVersionId: row.sourceVersionId ?? null,
+      createdByUserId: row.createdByUserId ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      canRollback,
+      rollbackBlockedReason:
+        !isActive && row.status === "ready" && !canRollback
+          ? ROLLBACK_MODEL_MISMATCH_REASON
+          : null,
+    } satisfies KnowledgeDocumentVersionSummary;
+  });
+}
+
+export async function getDocumentHistory(documentId: string) {
+  await ensureDocumentVersionBootstrap(documentId);
+
+  const rows = await db.execute<{
+    id: string;
+    document_id: string;
+    group_id: string;
+    user_id: string;
+    actor_user_id: string | null;
+    actor_user_name: string | null;
+    event_type: HistoryEventType;
+    from_version_id: string | null;
+    from_version_number: number | null;
+    to_version_id: string | null;
+    to_version_number: number | null;
+    details: Record<string, unknown> | null;
+    created_at: Date;
+  }>(
+    sql`
+      SELECT
+        event.id,
+        event.document_id,
+        event.group_id,
+        event.user_id,
+        event.actor_user_id,
+        actor.name AS actor_user_name,
+        event.event_type,
+        event.from_version_id,
+        from_version.version_number AS from_version_number,
+        event.to_version_id,
+        to_version.version_number AS to_version_number,
+        event.details,
+        event.created_at
+      FROM knowledge_document_history_event event
+      LEFT JOIN "user" actor ON actor.id = event.actor_user_id
+      LEFT JOIN knowledge_document_version from_version
+        ON from_version.id = event.from_version_id
+      LEFT JOIN knowledge_document_version to_version
+        ON to_version.id = event.to_version_id
+      WHERE event.document_id = ${documentId}::uuid
+      ORDER BY event.created_at DESC
+    `,
+  );
+
+  return rows.rows.map((row) => ({
+    id: row.id,
+    documentId: row.document_id,
+    groupId: row.group_id,
+    userId: row.user_id,
+    actorUserId: row.actor_user_id,
+    actorUserName: row.actor_user_name,
+    eventType: row.event_type,
+    fromVersionId: row.from_version_id,
+    fromVersionNumber: row.from_version_number,
+    toVersionId: row.to_version_id,
+    toVersionNumber: row.to_version_number,
+    details: row.details ?? null,
+    createdAt: row.created_at,
+  })) satisfies KnowledgeDocumentHistoryEvent[];
+}
+
+export async function prepareSourceDocumentVersion(documentId: string) {
+  const docRow = await selectDocumentRow(documentId);
+  if (!docRow) {
+    throw new VersionNotFoundError();
+  }
+
+  const nextVersionNumber = (docRow.latestVersionNumber ?? 0) + 1;
+  const changeType: DocumentVersionChangeType =
+    (docRow.latestVersionNumber ?? 0) > 0 ? "reingest" : "initial_ingest";
+
+  const [version] = await db
+    .insert(KnowledgeDocumentVersionTable)
+    .values({
+      id: generateUUID(),
+      documentId: docRow.id,
+      groupId: docRow.groupId,
+      userId: docRow.userId,
+      versionNumber: nextVersionNumber,
+      status: "processing",
+      changeType,
+      markdownContent: docRow.markdownContent ?? null,
+      resolvedTitle: docRow.name,
+      resolvedDescription: docRow.description ?? null,
+      metadata: docRow.metadata ?? null,
+      metadataEmbedding: sql`NULL::vector`,
+      embeddingProvider: docRow.embeddingProvider,
+      embeddingModel: docRow.embeddingModel,
+      chunkCount: docRow.chunkCount ?? 0,
+      tokenCount: docRow.tokenCount ?? 0,
+      sourceVersionId: docRow.activeVersionId ?? null,
+      createdByUserId: docRow.userId,
+      errorMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any)
+    .returning(documentVersionSelection);
+
+  return mapDocumentVersion(version as VersionRowWithVector);
+}
+
+export async function createMarkdownEditVersion(args: {
+  documentId: string;
+  actorUserId: string;
+  markdownContent: string;
+  expectedActiveVersionId?: string | null;
+}) {
+  await ensureDocumentVersionBootstrap(args.documentId);
+
+  const docRow = await selectDocumentRow(args.documentId);
+  if (!docRow) {
+    throw new VersionNotFoundError();
+  }
+
+  if (
+    (docRow.activeVersionId ?? null) !== (args.expectedActiveVersionId ?? null)
+  ) {
+    throw new VersionConflictError();
+  }
+
+  const [version] = await db
+    .insert(KnowledgeDocumentVersionTable)
+    .values({
+      id: generateUUID(),
+      documentId: docRow.id,
+      groupId: docRow.groupId,
+      userId: docRow.userId,
+      versionNumber: (docRow.latestVersionNumber ?? 0) + 1,
+      status: "processing",
+      changeType: "edit",
+      markdownContent: args.markdownContent,
+      resolvedTitle: docRow.name,
+      resolvedDescription: docRow.description ?? null,
+      metadata: docRow.metadata ?? null,
+      metadataEmbedding: sql`NULL::vector`,
+      embeddingProvider: docRow.embeddingProvider,
+      embeddingModel: docRow.embeddingModel,
+      chunkCount: 0,
+      tokenCount: 0,
+      sourceVersionId: docRow.activeVersionId ?? null,
+      createdByUserId: args.actorUserId,
+      errorMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any)
+    .returning(documentVersionSelection);
+
+  return mapDocumentVersion(version as VersionRowWithVector);
+}
+
+export async function createRollbackVersion(args: {
+  documentId: string;
+  actorUserId: string;
+  rollbackFromVersionId: string;
+  expectedActiveVersionId?: string | null;
+}) {
+  await ensureDocumentVersionBootstrap(args.documentId);
+
+  const docRow = await selectDocumentRow(args.documentId);
+  if (!docRow) {
+    throw new VersionNotFoundError();
+  }
+
+  if (
+    (docRow.activeVersionId ?? null) !== (args.expectedActiveVersionId ?? null)
+  ) {
+    throw new VersionConflictError();
+  }
+
+  const sourceVersion = await selectVersionRow(args.rollbackFromVersionId);
+  if (!sourceVersion || sourceVersion.documentId !== args.documentId) {
+    throw new VersionNotFoundError();
+  }
+
+  const parsedSourceVersion = mapDocumentVersion(sourceVersion);
+  ensureModelMatch(parsedSourceVersion, {
+    embeddingProvider: docRow.embeddingProvider,
+    embeddingModel: docRow.embeddingModel,
+  });
+
+  const [version] = await db
+    .insert(KnowledgeDocumentVersionTable)
+    .values({
+      id: generateUUID(),
+      documentId: docRow.id,
+      groupId: docRow.groupId,
+      userId: docRow.userId,
+      versionNumber: (docRow.latestVersionNumber ?? 0) + 1,
+      status: "processing",
+      changeType: "rollback",
+      markdownContent: parsedSourceVersion.markdownContent ?? null,
+      resolvedTitle: parsedSourceVersion.resolvedTitle,
+      resolvedDescription: parsedSourceVersion.resolvedDescription ?? null,
+      metadata: parsedSourceVersion.metadata ?? null,
+      metadataEmbedding: toPgVectorExpression(
+        parsedSourceVersion.metadataEmbedding ?? null,
+      ),
+      embeddingProvider: parsedSourceVersion.embeddingProvider,
+      embeddingModel: parsedSourceVersion.embeddingModel,
+      chunkCount: parsedSourceVersion.chunkCount,
+      tokenCount: parsedSourceVersion.tokenCount,
+      sourceVersionId: parsedSourceVersion.id,
+      createdByUserId: args.actorUserId,
+      errorMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any)
+    .returning(documentVersionSelection);
+
+  return mapDocumentVersion(version as VersionRowWithVector);
+}
+
+export async function completeSourceDocumentVersion(args: {
+  versionId: string;
+  doc: KnowledgeDocument;
+  group: KnowledgeGroup;
+  materialized: Awaited<ReturnType<typeof materializeDocumentMarkdown>>;
+}) {
+  const version = await selectVersionRow(args.versionId);
+  if (!version) throw new VersionNotFoundError();
+
+  await finalizeMaterializedVersion({
+    versionId: version.id,
+    versionNumber: version.versionNumber,
+    sourceVersionId: version.sourceVersionId ?? null,
+    expectedActiveVersionId:
+      version.changeType === "initial_ingest"
+        ? undefined
+        : (version.sourceVersionId ?? null),
+    eventType: version.changeType === "reingest" ? "reingest" : "created",
+    actorUserId: version.createdByUserId ?? args.doc.userId,
+    doc: args.doc,
+    group: args.group,
+    markdown: args.materialized.markdown,
+    resolvedTitle: args.materialized.resolvedTitle,
+    resolvedDescription: args.materialized.resolvedDescription,
+    metadata: args.materialized.metadata,
+    metadataEmbedding: args.materialized.metadataEmbedding ?? null,
+    sections: args.materialized.sections.map((section) => ({
+      id: section.id,
+      parentSectionId: section.parentSectionId ?? null,
+      prevSectionId: section.prevSectionId ?? null,
+      nextSectionId: section.nextSectionId ?? null,
+      heading: section.heading,
+      headingPath: section.headingPath,
+      level: section.level,
+      partIndex: section.partIndex,
+      partCount: section.partCount,
+      content: section.content,
+      summary: section.summary,
+      tokenCount: section.tokenCount,
+      sourcePath: section.sourcePath ?? null,
+      libraryId: section.libraryId ?? null,
+      libraryVersion: section.libraryVersion ?? null,
+      includeHeadingInChunkContent:
+        section.includeHeadingInChunkContent ?? false,
+    })),
+    chunks: args.materialized.chunks,
+    totalTokens: args.materialized.totalTokens,
+  });
+}
+
+export async function runMarkdownEditVersion(args: {
+  versionId: string;
+  expectedActiveVersionId?: string | null;
+}) {
+  const version = await selectVersionRow(args.versionId);
+  if (!version) {
+    throw new VersionNotFoundError();
+  }
+  const doc = await knowledgeRepository.selectDocumentById(version.documentId);
+  if (!doc) {
+    throw new VersionNotFoundError();
+  }
+  const group = await knowledgeRepository.selectGroupById(
+    version.groupId,
+    doc.userId,
+  );
+  if (!group) {
+    throw new VersionNotFoundError();
+  }
+
+  const materialized = await materializeDocumentMarkdown({
+    documentId: doc.id,
+    groupId: group.id,
+    documentTitle: doc.name,
+    doc,
+    group,
+    markdown: version.markdownContent ?? "",
+  });
+
+  await finalizeMaterializedVersion({
+    versionId: version.id,
+    versionNumber: version.versionNumber,
+    sourceVersionId: version.sourceVersionId ?? null,
+    expectedActiveVersionId: args.expectedActiveVersionId ?? null,
+    eventType: "edited",
+    actorUserId: version.createdByUserId ?? doc.userId,
+    doc,
+    group,
+    markdown: materialized.markdown,
+    resolvedTitle: materialized.resolvedTitle,
+    resolvedDescription: materialized.resolvedDescription,
+    metadata: materialized.metadata,
+    metadataEmbedding: materialized.metadataEmbedding ?? null,
+    sections: materialized.sections.map((section) => ({
+      id: section.id,
+      parentSectionId: section.parentSectionId ?? null,
+      prevSectionId: section.prevSectionId ?? null,
+      nextSectionId: section.nextSectionId ?? null,
+      heading: section.heading,
+      headingPath: section.headingPath,
+      level: section.level,
+      partIndex: section.partIndex,
+      partCount: section.partCount,
+      content: section.content,
+      summary: section.summary,
+      tokenCount: section.tokenCount,
+      sourcePath: section.sourcePath ?? null,
+      libraryId: section.libraryId ?? null,
+      libraryVersion: section.libraryVersion ?? null,
+      includeHeadingInChunkContent:
+        section.includeHeadingInChunkContent ?? false,
+    })),
+    chunks: materialized.chunks,
+    totalTokens: materialized.totalTokens,
+  });
+}
+
+export async function runRollbackVersion(args: {
+  versionId: string;
+  expectedActiveVersionId?: string | null;
+}) {
+  const version = await selectVersionRow(args.versionId);
+  if (!version) {
+    throw new VersionNotFoundError();
+  }
+
+  const sourceVersionId = version.sourceVersionId;
+  if (!sourceVersionId) {
+    throw new VersionNotFoundError();
+  }
+
+  const sourceVersion = await selectVersionRow(sourceVersionId);
+  if (!sourceVersion) {
+    throw new VersionNotFoundError();
+  }
+
+  const doc = await knowledgeRepository.selectDocumentById(version.documentId);
+  if (!doc) {
+    throw new VersionNotFoundError();
+  }
+  const group = await knowledgeRepository.selectGroupById(
+    version.groupId,
+    doc.userId,
+  );
+  if (!group) {
+    throw new VersionNotFoundError();
+  }
+
+  ensureModelMatch(mapDocumentVersion(sourceVersion), group);
+
+  const sourceSections = await selectVersionSections(sourceVersionId);
+  const sourceChunks = await selectVersionChunks(sourceVersionId);
+  const sectionIdMap = new Map<string, string>();
+  const duplicatedSections = sourceSections.map((section) => {
+    const newId = generateUUID();
+    sectionIdMap.set(section.id, newId);
+    return {
+      ...section,
+      id: newId,
+    };
+  });
+
+  const remappedSections = duplicatedSections.map((section, index) => {
+    const source = sourceSections[index];
+    return {
+      ...section,
+      parentSectionId: source.parentSectionId
+        ? (sectionIdMap.get(source.parentSectionId) ?? null)
+        : null,
+      prevSectionId: source.prevSectionId
+        ? (sectionIdMap.get(source.prevSectionId) ?? null)
+        : null,
+      nextSectionId: source.nextSectionId
+        ? (sectionIdMap.get(source.nextSectionId) ?? null)
+        : null,
+    };
+  });
+
+  const duplicatedChunks = sourceChunks.map((chunk) => ({
+    ...chunk,
+    id: generateUUID(),
+    sectionId: chunk.sectionId
+      ? (sectionIdMap.get(chunk.sectionId) ?? null)
+      : null,
+    embedding: chunk.embedding ?? null,
+  }));
+
+  await finalizeMaterializedVersion({
+    versionId: version.id,
+    versionNumber: version.versionNumber,
+    sourceVersionId,
+    expectedActiveVersionId: args.expectedActiveVersionId ?? null,
+    eventType: "rollback",
+    actorUserId: version.createdByUserId ?? doc.userId,
+    doc,
+    group,
+    markdown: sourceVersion.markdownContent ?? "",
+    resolvedTitle: sourceVersion.resolvedTitle,
+    resolvedDescription: sourceVersion.resolvedDescription ?? null,
+    metadata: (sourceVersion.metadata as Record<string, unknown>) ?? null,
+    metadataEmbedding: parsePgVectorLiteral(
+      sourceVersion.metadataEmbeddingText ?? null,
+    ),
+    sections: remappedSections,
+    chunks: duplicatedChunks,
+    totalTokens: sourceVersion.tokenCount ?? 0,
+  });
+}
+
+export async function markDocumentVersionFailed(args: {
+  versionId: string;
+  errorMessage: string;
+  updateDocumentStatus?: boolean;
+}) {
+  const version = await selectVersionRow(args.versionId);
+  if (!version) {
+    return;
+  }
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(KnowledgeDocumentVersionTable)
+      .set({
+        status: "failed",
+        errorMessage: args.errorMessage,
+        updatedAt: new Date(),
+      })
+      .where(eq(KnowledgeDocumentVersionTable.id, args.versionId));
+
+    if (args.updateDocumentStatus) {
+      await tx
+        .update(KnowledgeDocumentTable)
+        .set({
+          status: "failed",
+          errorMessage: args.errorMessage,
+          processingProgress: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(KnowledgeDocumentTable.id, version.documentId));
+    }
+
+    await insertHistoryEvent(tx, {
+      documentId: version.documentId,
+      groupId: version.groupId,
+      userId: version.userId,
+      actorUserId: version.createdByUserId ?? version.userId,
+      eventType: "failed",
+      fromVersionId: version.sourceVersionId ?? null,
+      toVersionId: version.id,
+      details: {
+        errorMessage: args.errorMessage,
+      },
+    });
+  });
+}
+
+export function isKnowledgeVersionConflictError(error: unknown) {
+  return error instanceof VersionConflictError;
+}
+
+export function isKnowledgeRollbackModelMismatchError(error: unknown) {
+  return error instanceof RollbackModelMismatchError;
+}
+
+export { ROLLBACK_MODEL_MISMATCH_REASON };

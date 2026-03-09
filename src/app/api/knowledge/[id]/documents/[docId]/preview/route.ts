@@ -1,6 +1,7 @@
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import { listDocumentVersions } from "lib/knowledge/versioning";
 import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
@@ -44,6 +45,8 @@ export async function GET(_req: NextRequest, { params }: Params) {
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const versions = await listDocumentVersions(docId);
+  const activeVersion = versions.find((version) => version.isActive) ?? null;
 
   let sourceMeta: {
     id: string;
@@ -91,12 +94,18 @@ export async function GET(_req: NextRequest, { params }: Params) {
         fileType: doc.fileType,
         fileSize: doc.fileSize,
         mimeType,
+        activeVersionId: doc.activeVersionId ?? null,
+        latestVersionNumber: doc.latestVersionNumber ?? 0,
       },
       sourceUrl: doc.sourceUrl ?? null,
       previewUrl: null,
       content: null,
       markdownContent: doc.markdownContent ?? null,
       isUrlOnly: true,
+      activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
+      activeVersionNumber:
+        activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,
+      versions,
     });
   }
 
@@ -141,11 +150,17 @@ export async function GET(_req: NextRequest, { params }: Params) {
         fileType: doc.fileType,
         fileSize: doc.fileSize,
         mimeType,
+        activeVersionId: doc.activeVersionId ?? null,
+        latestVersionNumber: doc.latestVersionNumber ?? 0,
       },
       previewUrl,
       content,
       markdownContent: doc.markdownContent ?? null,
       isUrlOnly: false,
+      activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
+      activeVersionNumber:
+        activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,
+      versions,
     });
   } catch {
     return NextResponse.json(

@@ -9,6 +9,11 @@ import IORedis from "ioredis";
 import { knowledgeRepository } from "lib/db/repository";
 import { runIngestPipeline } from "./ingest-pipeline";
 import { getRedisUrl } from "./redis-url";
+import {
+  markDocumentVersionFailed,
+  runMarkdownEditVersion,
+  runRollbackVersion,
+} from "./versioning";
 import { KnowledgeJob } from "./worker-client";
 
 const QUEUE_NAME = "contextx-ingest";
@@ -49,6 +54,16 @@ async function main() {
         await runIngestPipeline(data.documentId, data.groupId);
       } else if (data.type === "reembed-group") {
         await handleReembedGroup(data.groupId);
+      } else if (data.type === "materialize-document-version") {
+        await runMarkdownEditVersion({
+          versionId: data.versionId,
+          expectedActiveVersionId: data.expectedActiveVersionId ?? null,
+        });
+      } else if (data.type === "rollback-document-version") {
+        await runRollbackVersion({
+          versionId: data.versionId,
+          expectedActiveVersionId: data.expectedActiveVersionId ?? null,
+        });
       }
     },
     {
@@ -69,6 +84,15 @@ async function main() {
           errorMessage: String(err),
         })
         .catch(() => {});
+    } else if (
+      job?.data?.type === "materialize-document-version" ||
+      job?.data?.type === "rollback-document-version"
+    ) {
+      await markDocumentVersionFailed({
+        versionId: job.data.versionId,
+        errorMessage: String(err),
+        updateDocumentStatus: false,
+      }).catch(() => {});
     }
   });
 

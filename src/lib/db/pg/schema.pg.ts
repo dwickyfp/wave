@@ -946,6 +946,8 @@ export const KnowledgeDocumentTable = pgTable(
     metadataEmbedding: vector("metadata_embedding"),
     /** Full markdown content of the processed document (Context7-style retrieval) */
     markdownContent: text("markdown_content"),
+    activeVersionId: uuid("active_version_id"),
+    latestVersionNumber: integer("latest_version_number").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -954,6 +956,62 @@ export const KnowledgeDocumentTable = pgTable(
       .default(sql`CURRENT_TIMESTAMP`),
   },
   (t) => [index("knowledge_document_group_id_idx").on(t.groupId)],
+);
+
+export const KnowledgeDocumentVersionTable = pgTable(
+  "knowledge_document_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    status: varchar("status", {
+      enum: ["processing", "ready", "failed"],
+    })
+      .notNull()
+      .default("processing"),
+    changeType: varchar("change_type", {
+      enum: ["initial_ingest", "edit", "rollback", "reingest"],
+    }).notNull(),
+    markdownContent: text("markdown_content"),
+    resolvedTitle: text("resolved_title").notNull(),
+    resolvedDescription: text("resolved_description"),
+    metadata: json("metadata"),
+    metadataEmbedding: vector("metadata_embedding"),
+    embeddingProvider: text("embedding_provider").notNull(),
+    embeddingModel: text("embedding_model").notNull(),
+    chunkCount: integer("chunk_count").notNull().default(0),
+    tokenCount: integer("token_count").notNull().default(0),
+    sourceVersionId: uuid("source_version_id"),
+    createdByUserId: uuid("created_by_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique("knowledge_document_version_document_version_unique").on(
+      t.documentId,
+      t.versionNumber,
+    ),
+    index("knowledge_document_version_document_id_idx").on(t.documentId),
+    index("knowledge_document_version_group_id_idx").on(t.groupId),
+    index("knowledge_document_version_source_version_id_idx").on(
+      t.sourceVersionId,
+    ),
+  ],
 );
 
 export const KnowledgeSectionTable = pgTable(
@@ -1033,6 +1091,146 @@ export const KnowledgeChunkTable = pgTable(
     index("knowledge_chunk_group_id_idx").on(t.groupId),
     index("knowledge_chunk_document_id_idx").on(t.documentId),
     index("knowledge_chunk_section_id_idx").on(t.sectionId),
+  ],
+);
+
+export const KnowledgeSectionVersionTable = pgTable(
+  "knowledge_section_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => KnowledgeDocumentVersionTable.id, {
+        onDelete: "cascade",
+      }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    parentSectionId: uuid("parent_section_id"),
+    prevSectionId: uuid("prev_section_id"),
+    nextSectionId: uuid("next_section_id"),
+    heading: text("heading").notNull(),
+    headingPath: text("heading_path").notNull(),
+    level: integer("level").notNull().default(1),
+    partIndex: integer("part_index").notNull().default(0),
+    partCount: integer("part_count").notNull().default(1),
+    content: text("content").notNull(),
+    summary: text("summary").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    sourcePath: text("source_path"),
+    libraryId: text("library_id"),
+    libraryVersion: text("library_version"),
+    includeHeadingInChunkContent: boolean("include_heading_in_chunk_content")
+      .notNull()
+      .default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_section_version_version_id_idx").on(t.versionId),
+    index("knowledge_section_version_document_id_idx").on(t.documentId),
+  ],
+);
+
+export const KnowledgeChunkVersionTable = pgTable(
+  "knowledge_chunk_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => KnowledgeDocumentVersionTable.id, {
+        onDelete: "cascade",
+      }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    sectionVersionId: uuid("section_version_id").references(
+      () => KnowledgeSectionVersionTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    content: text("content").notNull(),
+    contextSummary: text("context_summary"),
+    embedding: vector("embedding"),
+    chunkIndex: integer("chunk_index").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    metadata: json("metadata").$type<{
+      section?: string;
+      sectionTitle?: string;
+      headings?: string[];
+      headingPath?: string;
+      chunkType?:
+        | "code"
+        | "directive"
+        | "api"
+        | "narrative"
+        | "table"
+        | "list"
+        | "other";
+      sourcePath?: string;
+      libraryId?: string;
+      libraryVersion?: string;
+      pageNumber?: number;
+      sheetName?: string;
+    }>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_chunk_version_version_id_idx").on(t.versionId),
+    index("knowledge_chunk_version_document_id_idx").on(t.documentId),
+    index("knowledge_chunk_version_section_version_id_idx").on(
+      t.sectionVersionId,
+    ),
+  ],
+);
+
+export const KnowledgeDocumentHistoryEventTable = pgTable(
+  "knowledge_document_history_event",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    actorUserId: uuid("actor_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    eventType: varchar("event_type", {
+      enum: [
+        "created",
+        "edited",
+        "rollback",
+        "failed",
+        "bootstrap",
+        "reingest",
+      ],
+    }).notNull(),
+    fromVersionId: uuid("from_version_id"),
+    toVersionId: uuid("to_version_id"),
+    details: json("details"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_document_history_event_document_id_idx").on(t.documentId),
+    index("knowledge_document_history_event_group_id_idx").on(t.groupId),
   ],
 );
 

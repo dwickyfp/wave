@@ -7,6 +7,19 @@ export type KnowledgeGroupIcon = {
 
 export type KnowledgeVisibility = "public" | "private" | "readonly";
 export type KnowledgePurpose = "default" | "personalization";
+export type KnowledgeDocumentVersionStatus = "processing" | "ready" | "failed";
+export type KnowledgeDocumentVersionChangeType =
+  | "initial_ingest"
+  | "edit"
+  | "rollback"
+  | "reingest";
+export type KnowledgeDocumentHistoryEventType =
+  | "created"
+  | "edited"
+  | "rollback"
+  | "failed"
+  | "bootstrap"
+  | "reingest";
 export type DocumentFileType =
   | "pdf"
   | "docx"
@@ -18,6 +31,29 @@ export type DocumentFileType =
   | "html";
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type UsageSource = "chat" | "agent" | "mcp";
+
+export type KnowledgeChunkMetadata = {
+  section?: string;
+  sectionTitle?: string;
+  headings?: string[];
+  headingPath?: string;
+  chunkType?:
+    | "code"
+    | "directive"
+    | "api"
+    | "narrative"
+    | "table"
+    | "list"
+    | "other";
+  sourcePath?: string;
+  libraryId?: string;
+  libraryVersion?: string;
+  hasStructuredContent?: boolean;
+  pageNumber?: number;
+  sheetName?: string;
+  sourceGroupId?: string;
+  sourceGroupName?: string;
+};
 
 export interface KnowledgeGroup {
   id: string;
@@ -102,6 +138,8 @@ export interface KnowledgeDocument {
   metadata?: Record<string, unknown> | null;
   /** Full markdown content of the processed document */
   markdownContent?: string | null;
+  activeVersionId?: string | null;
+  latestVersionNumber?: number;
   /** True when this doc is inherited from a linked source group */
   isInherited?: boolean;
   /** Source group metadata (set only for inherited docs) */
@@ -140,29 +178,102 @@ export interface KnowledgeChunk {
   contextSummary?: string | null;
   chunkIndex: number;
   tokenCount: number;
-  metadata?: {
-    section?: string;
-    sectionTitle?: string;
-    headings?: string[];
-    headingPath?: string;
-    chunkType?:
-      | "code"
-      | "directive"
-      | "api"
-      | "narrative"
-      | "table"
-      | "list"
-      | "other";
-    sourcePath?: string;
-    libraryId?: string;
-    libraryVersion?: string;
-    hasStructuredContent?: boolean;
-    pageNumber?: number;
-    sheetName?: string;
-    sourceGroupId?: string;
-    sourceGroupName?: string;
-  } | null;
+  metadata?: KnowledgeChunkMetadata | null;
   createdAt: Date;
+}
+
+export interface KnowledgeChunkSnapshot extends KnowledgeChunk {
+  embedding?: number[] | null;
+}
+
+export interface KnowledgeDocumentVersion {
+  id: string;
+  documentId: string;
+  groupId: string;
+  userId: string;
+  versionNumber: number;
+  status: KnowledgeDocumentVersionStatus;
+  changeType: KnowledgeDocumentVersionChangeType;
+  markdownContent?: string | null;
+  resolvedTitle: string;
+  resolvedDescription?: string | null;
+  metadata?: Record<string, unknown> | null;
+  metadataEmbedding?: number[] | null;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkCount: number;
+  tokenCount: number;
+  sourceVersionId?: string | null;
+  createdByUserId?: string | null;
+  errorMessage?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface KnowledgeDocumentVersionSummary {
+  id: string;
+  versionNumber: number;
+  status: KnowledgeDocumentVersionStatus;
+  changeType: KnowledgeDocumentVersionChangeType;
+  isActive: boolean;
+  markdownContent?: string | null;
+  resolvedTitle: string;
+  resolvedDescription?: string | null;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkCount: number;
+  tokenCount: number;
+  sourceVersionId?: string | null;
+  createdByUserId?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  canRollback: boolean;
+  rollbackBlockedReason?: string | null;
+}
+
+export interface KnowledgeDocumentHistoryEvent {
+  id: string;
+  documentId: string;
+  groupId: string;
+  userId: string;
+  actorUserId?: string | null;
+  actorUserName?: string | null;
+  eventType: KnowledgeDocumentHistoryEventType;
+  fromVersionId?: string | null;
+  fromVersionNumber?: number | null;
+  toVersionId?: string | null;
+  toVersionNumber?: number | null;
+  details?: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+export interface KnowledgeDocumentPreview {
+  doc: {
+    id: string;
+    name: string;
+    description?: string | null;
+    descriptionManual?: boolean;
+    titleManual?: boolean;
+    isInherited?: boolean;
+    sourceGroupId?: string | null;
+    sourceGroupName?: string | null;
+    sourceGroupVisibility?: KnowledgeVisibility | null;
+    sourceGroupUserName?: string | null;
+    originalFilename: string;
+    fileType: string;
+    fileSize?: number | null;
+    mimeType: string;
+    activeVersionId?: string | null;
+    latestVersionNumber?: number;
+  };
+  previewUrl: string | null;
+  sourceUrl: string | null;
+  content: string | null;
+  markdownContent: string | null;
+  isUrlOnly: boolean;
+  activeVersionId: string | null;
+  activeVersionNumber: number | null;
+  versions: KnowledgeDocumentVersionSummary[];
 }
 
 export interface KnowledgeQueryResult {

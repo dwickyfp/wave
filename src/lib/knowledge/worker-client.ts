@@ -13,7 +13,23 @@ export type ReembedGroupJob = {
   groupId: string;
 };
 
-export type KnowledgeJob = IngestDocumentJob | ReembedGroupJob;
+export type MaterializeDocumentVersionJob = {
+  type: "materialize-document-version";
+  versionId: string;
+  expectedActiveVersionId?: string | null;
+};
+
+export type RollbackDocumentVersionJob = {
+  type: "rollback-document-version";
+  versionId: string;
+  expectedActiveVersionId?: string | null;
+};
+
+export type KnowledgeJob =
+  | IngestDocumentJob
+  | ReembedGroupJob
+  | MaterializeDocumentVersionJob
+  | RollbackDocumentVersionJob;
 
 const QUEUE_NAME = "contextx-ingest";
 
@@ -63,5 +79,37 @@ export async function enqueueReembedGroup(groupId: string): Promise<void> {
     "reembed-group",
     { type: "reembed-group", groupId } satisfies KnowledgeJob,
     { jobId: `reembed-${groupId}-${Date.now()}` },
+  );
+}
+
+export async function enqueueMaterializeDocumentVersion(args: {
+  versionId: string;
+  expectedActiveVersionId?: string | null;
+}): Promise<void> {
+  const queue = await getKnowledgeQueue();
+  await queue.add(
+    "materialize-document-version",
+    {
+      type: "materialize-document-version",
+      versionId: args.versionId,
+      expectedActiveVersionId: args.expectedActiveVersionId ?? null,
+    } satisfies KnowledgeJob,
+    { jobId: `materialize-version-${args.versionId}` },
+  );
+}
+
+export async function enqueueRollbackDocumentVersion(args: {
+  versionId: string;
+  expectedActiveVersionId?: string | null;
+}): Promise<void> {
+  const queue = await getKnowledgeQueue();
+  await queue.add(
+    "rollback-document-version",
+    {
+      type: "rollback-document-version",
+      versionId: args.versionId,
+      expectedActiveVersionId: args.expectedActiveVersionId ?? null,
+    } satisfies KnowledgeJob,
+    { jobId: `rollback-version-${args.versionId}` },
   );
 }

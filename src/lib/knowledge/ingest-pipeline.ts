@@ -14,24 +14,16 @@
  */
 import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
-import { chunkKnowledgeSections } from "./chunker";
-import { enrichChunksWithContext } from "./context-enricher";
 import {
-  buildDocumentMetadataEmbeddingText,
-  extractAutoDocumentMetadata,
-} from "./document-metadata";
-import { embedSingleText, embedTexts } from "./embedder";
+  completeSourceDocumentVersion,
+  markDocumentVersionFailed,
+  prepareSourceDocumentVersion,
+} from "./versioning";
+import { materializeDocumentMarkdown } from "./materialize-markdown";
 import { parseDocumentToMarkdown } from "./markdown-parser";
-import { normalizeStructuredMarkdown } from "./markdown-structurer";
 import { processDocument } from "./processor";
 import { applyContextImageBlocks } from "./processor/image-markdown";
 import type { ProcessedDocument } from "./processor/types";
-import {
-  buildKnowledgeSectionGraph,
-  SECTION_GRAPH_VERSION,
-} from "./section-graph";
-
-const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
 
 /**
  * Run the full ingestion pipeline for a single document.
@@ -63,172 +55,82 @@ export async function runIngestPipeline(
 
   const group = await knowledgeRepository.selectGroupById(groupId, doc.userId);
   if (!group) throw new Error(`Knowledge group not found: ${groupId}`);
+  const pendingVersion = await prepareSourceDocumentVersion(documentId);
   const documentTitle = doc.name || doc.originalFilename || "Untitled";
   const contextxConfig = (await settingsRepository.getSetting(
     "contextx-model",
   )) as { provider: string; model: string } | null | undefined;
+  try {
+    // ── 1. Get document content as markdown ────────────────────────────────
+    await reportProgress(5);
+    let processedDocument: ProcessedDocument;
 
-  // ── 1. Get document content as markdown ──────────────────────────────────
-  await reportProgress(5);
-  let processedDocument: ProcessedDocument;
-
-  if (doc.fileType === "url" && doc.sourceUrl) {
-    processedDocument = await processDocument("url", doc.sourceUrl, {
-      documentTitle,
-      imageAnalysis: contextxConfig,
-    });
-  } else if (fileBuffer) {
-    // Inline mode: use the buffer that was already read (no S3 download needed)
-    processedDocument = await processDocument(doc.fileType, fileBuffer, {
-      documentTitle,
-      imageAnalysis: contextxConfig,
-    });
-  } else if (doc.storagePath) {
-    const buffer = await serverFileStorage.download(doc.storagePath);
-    processedDocument = await processDocument(doc.fileType, buffer, {
-      documentTitle,
-      imageAnalysis: contextxConfig,
-    });
-  } else {
-    throw new Error("Document has no storage path, source URL, or file buffer");
-  }
-  let markdown = processedDocument.markdown;
-
-  // ── 2. Optional LLM-based markdown parsing ──────────────────────────────
-  await reportProgress(15);
-  if (contextxConfig?.provider && contextxConfig?.model) {
-    markdown = await parseDocumentToMarkdown(
-      markdown,
-      documentTitle,
-      contextxConfig.provider,
-      contextxConfig.model,
-    );
-  }
-  markdown = applyContextImageBlocks(markdown, processedDocument.imageBlocks);
-
-  // ── 3. Normalize markdown ─────────────────────────────────────────────────
-  await reportProgress(35);
-  markdown = normalizeStructuredMarkdown(markdown);
-
-  // ── 4. Auto metadata extraction ──────────────────────────────────────────
-  await reportProgress(40);
-  const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId);
-  const autoMeta = extractAutoDocumentMetadata(markdown, documentTitle);
-  const effectiveMetaTitle = doc.titleManual ? doc.name : autoMeta.title;
-  const effectiveMetaDescription = doc.descriptionManual
-    ? (doc.description ?? null)
-    : autoMeta.description;
-
-  let metadataEmbedding: number[] | undefined;
-  if (DOC_META_VECTOR_ENABLED) {
-    const metadataText = buildDocumentMetadataEmbeddingText({
-      title: effectiveMetaTitle,
-      description: effectiveMetaDescription,
-      originalFilename: doc.originalFilename,
-      sourceUrl: doc.sourceUrl,
-    });
-    if (metadataText) {
-      try {
-        metadataEmbedding = await embedSingleText(
-          metadataText,
-          group.embeddingProvider,
-          group.embeddingModel,
-        );
-      } catch (err) {
-        console.warn(
-          `[ContextX] Metadata embedding failed for document ${documentId}:`,
-          err,
-        );
-      }
+    if (doc.fileType === "url" && doc.sourceUrl) {
+      processedDocument = await processDocument("url", doc.sourceUrl, {
+        documentTitle,
+        imageAnalysis: contextxConfig,
+      });
+    } else if (fileBuffer) {
+      // Inline mode: use the buffer that was already read (no S3 download needed)
+      processedDocument = await processDocument(doc.fileType, fileBuffer, {
+        documentTitle,
+        imageAnalysis: contextxConfig,
+      });
+    } else if (doc.storagePath) {
+      const buffer = await serverFileStorage.download(doc.storagePath);
+      processedDocument = await processDocument(doc.fileType, buffer, {
+        documentTitle,
+        imageAnalysis: contextxConfig,
+      });
+    } else {
+      throw new Error(
+        "Document has no storage path, source URL, or file buffer",
+      );
     }
-  }
+    let markdown = processedDocument.markdown;
 
-  // Store full markdown (Context7-style: keep full doc for retrieval)
-  await reportProgress(45);
-  await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
-    markdownContent: markdown,
-    processingProgress: 45,
-  });
-  const mergedMetadata = {
-    ...(doc.metadata ?? {}),
-    sectionGraphVersion: SECTION_GRAPH_VERSION,
-  };
-  await knowledgeRepository.updateDocumentAutoMetadata(documentId, {
-    title: autoMeta.title,
-    description: autoMeta.description,
-    ...(metadataEmbedding !== undefined ? { metadataEmbedding } : {}),
-    metadata: mergedMetadata,
-  });
-
-  // ── 5. Chunk ──────────────────────────────────────────────────────────────
-  await reportProgress(50);
-  await knowledgeRepository.deleteChunksByDocumentId(documentId);
-  await knowledgeRepository.deleteSectionsByDocumentId(documentId);
-
-  const chunks = chunkKnowledgeSections(
-    sections,
-    group.chunkSize,
-    group.chunkOverlapPercent,
-  );
-  if (chunks.length === 0) {
-    if (sections.length > 0) {
-      await knowledgeRepository.insertSections(sections);
+    // ── 2. Optional LLM-based markdown parsing ────────────────────────────
+    await reportProgress(15);
+    if (contextxConfig?.provider && contextxConfig?.model) {
+      markdown = await parseDocumentToMarkdown(
+        markdown,
+        documentTitle,
+        contextxConfig.provider,
+        contextxConfig.model,
+      );
     }
-    await knowledgeRepository.updateDocumentStatus(documentId, "ready", {
-      chunkCount: 0,
-      tokenCount: 0,
-    });
-    return;
-  }
+    markdown = applyContextImageBlocks(markdown, processedDocument.imageBlocks);
 
-  // ── 6. Enrich chunks with contextual summaries ────────────────────────────
-  await reportProgress(60);
-  const enrichedChunks = await enrichChunksWithContext(
-    chunks,
-    autoMeta.title || documentTitle,
-    sections.map((section) => ({
-      id: section.id,
-      headingPath: section.headingPath,
-      content: section.content,
-      summary: section.summary,
-      parentSectionId: section.parentSectionId ?? null,
-    })),
-  );
-
-  // ── 7. Embed chunks ───────────────────────────────────────────────────────
-  await reportProgress(75);
-  const embeddingTexts = enrichedChunks.map((c) => c.embeddingText);
-  const embeddings = await embedTexts(
-    embeddingTexts,
-    group.embeddingProvider,
-    group.embeddingModel,
-  );
-
-  const totalTokens = enrichedChunks.reduce((sum, c) => sum + c.tokenCount, 0);
-
-  // ── 8. Store chunks ───────────────────────────────────────────────────────
-  await reportProgress(90);
-  await knowledgeRepository.insertSections(sections);
-  await knowledgeRepository.insertChunks(
-    enrichedChunks.map((c, i) => ({
+    // ── 3–8. Normalize, structure, enrich, embed, commit ──────────────────
+    await reportProgress(35);
+    const materialized = await materializeDocumentMarkdown({
       documentId,
       groupId,
-      sectionId: c.sectionId ?? null,
-      content: c.content,
-      contextSummary: c.contextSummary || null,
-      chunkIndex: c.chunkIndex,
-      tokenCount: c.tokenCount,
-      metadata: c.metadata,
-      embedding: embeddings[i],
-    })),
-  );
+      documentTitle,
+      doc,
+      group,
+      markdown,
+      reportProgress,
+    });
 
-  await knowledgeRepository.updateDocumentStatus(documentId, "ready", {
-    chunkCount: enrichedChunks.length,
-    tokenCount: totalTokens,
-  });
+    await reportProgress(90);
+    await completeSourceDocumentVersion({
+      versionId: pendingVersion.id,
+      doc,
+      group,
+      materialized,
+    });
 
-  console.log(
-    `[ContextX] Ingested document ${documentId}: ${enrichedChunks.length} chunks, ${totalTokens} tokens`,
-  );
+    console.log(
+      `[ContextX] Ingested document ${documentId}: ${materialized.chunks.length} chunks, ${materialized.totalTokens} tokens`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await markDocumentVersionFailed({
+      versionId: pendingVersion.id,
+      errorMessage: message,
+      updateDocumentStatus: true,
+    });
+    throw error;
+  }
 }
