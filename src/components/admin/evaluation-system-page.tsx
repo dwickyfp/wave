@@ -15,7 +15,6 @@ import {
   Clock3,
   Loader2,
   Play,
-  RefreshCw,
   RotateCcw,
   Search,
   ShieldCheck,
@@ -50,12 +49,7 @@ import {
   TableRow,
 } from "ui/table";
 import { TablePagination } from "ui/table-pagination";
-import {
-  formatEmptyReason,
-  formatTimestamp,
-  getRunDiagnostics,
-  statusVariant,
-} from "./evaluation-system-shared";
+import { formatEmptyReason } from "./evaluation-system-shared";
 
 type EvaluationSystemResponse = {
   overview: SelfLearningOverview;
@@ -390,7 +384,7 @@ export function EvaluationSystemPage(props: {
 
   return (
     <div className="space-y-6 px-4 pb-10 sm:px-6 lg:px-8">
-      <div className="flex flex-col gap-4 rounded-2xl border bg-gradient-to-br from-background via-background to-muted/40 p-6">
+      <div className="space-y-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
@@ -413,32 +407,13 @@ export function EvaluationSystemPage(props: {
             </p>
           </div>
 
-          <div className="flex flex-col gap-3 rounded-xl border bg-background/80 p-4 shadow-sm">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="font-medium text-sm">Run Self-Learning</p>
-                <p className="text-muted-foreground text-xs">
-                  Pausing keeps collecting data but stops automatic judging and
-                  memory application.
-                </p>
-              </div>
-              <Switch
-                checked={systemData.overview.system.isRunning}
-                onCheckedChange={toggleSystem}
-                disabled={isUpdatingSystem}
-              />
-            </div>
-            <div className="text-muted-foreground text-xs">
-              Judge model:{" "}
-              {systemData.overview.judgeModel
-                ? `${systemData.overview.judgeModel.provider}/${systemData.overview.judgeModel.model}`
-                : "Not configured"}
-            </div>
-            <div className="text-muted-foreground text-xs">
-              Bias guard: {systemData.overview.system.biasGuardMinimumEvals}{" "}
-              evals across {systemData.overview.system.minDistinctThreads}{" "}
-              threads
-            </div>
+          <div className="flex items-start justify-end lg:pt-1">
+            <Switch
+              aria-label="Run Self-Learning"
+              checked={systemData.overview.system.isRunning}
+              onCheckedChange={toggleSystem}
+              disabled={isUpdatingSystem}
+            />
           </div>
         </div>
 
@@ -469,87 +444,6 @@ export function EvaluationSystemPage(props: {
           />
         </div>
       </div>
-
-      <Card>
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <CardTitle>Recent Global Runs</CardTitle>
-            <p className="text-muted-foreground text-sm">
-              Latest worker runs across all users. Open a user to inspect full
-              metrics and history.
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-2"
-            onClick={() => mutateSystemData()}
-            disabled={isRefreshingList}
-          >
-            {isRefreshingList ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <RefreshCw className="size-4" />
-            )}
-            Refresh overview
-          </Button>
-        </CardHeader>
-        <CardContent className="grid gap-3 lg:grid-cols-3">
-          {systemData.overview.recentRuns.length === 0 ? (
-            <p className="text-muted-foreground text-sm">
-              No self-learning runs recorded yet.
-            </p>
-          ) : (
-            systemData.overview.recentRuns.map((run) => {
-              const diagnostics = getRunDiagnostics(run);
-
-              return (
-                <div
-                  key={run.id}
-                  className="rounded-xl border border-border/70 bg-background p-4"
-                >
-                  <div className="flex items-center gap-2">
-                    <Badge variant={statusVariant(run.status)}>
-                      {run.status}
-                    </Badge>
-                    <Badge variant="outline">{run.trigger}</Badge>
-                  </div>
-                  <div className="mt-3 space-y-1">
-                    <p className="font-medium text-sm">
-                      {run.userName || run.userEmail || run.userId}
-                    </p>
-                    {run.userName && run.userEmail ? (
-                      <p className="text-muted-foreground text-xs">
-                        {run.userEmail}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="mt-3 grid gap-1 text-muted-foreground text-xs">
-                    <span>{formatTimestamp(run.createdAt)}</span>
-                    <span>
-                      {run.processedCandidates}/{run.totalCandidates} processed
-                    </span>
-                    {diagnostics?.emptyReason ? (
-                      <span>{formatEmptyReason(diagnostics.emptyReason)}</span>
-                    ) : null}
-                  </div>
-                  <Button
-                    asChild
-                    variant="ghost"
-                    size="sm"
-                    className="mt-3 -ml-3 gap-2"
-                  >
-                    <Link href={`/admin/evaluation/${run.userId}`}>
-                      Open user
-                      <ArrowRight className="size-4" />
-                    </Link>
-                  </Button>
-                </div>
-              );
-            })
-          )}
-        </CardContent>
-      </Card>
 
       <Card>
         <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
