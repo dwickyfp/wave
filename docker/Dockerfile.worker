@@ -18,4 +18,4 @@ RUN adduser --system --uid 1001 nextjs
 
 USER nextjs
 
-CMD ["pnpm", "exec", "tsx", "src/lib/knowledge/worker.ts"]
+CMD ["sh", "-c", "node --conditions=react-server --import tsx ./src/lib/knowledge/worker.ts & node --conditions=react-server --import tsx ./src/lib/self-learning/worker.ts & wait"]

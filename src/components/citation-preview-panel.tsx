@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { appStore } from "@/app/store";
 import { useShallow } from "zustand/shallow";
 import { ScrollArea } from "ui/scroll-area";
@@ -14,7 +14,6 @@ import {
   DownloadIcon,
   Loader2Icon,
   XIcon,
-  ExternalLinkIcon,
 } from "lucide-react";
 import { cn } from "lib/utils";
 import { AnimatePresence, motion } from "framer-motion";
@@ -60,13 +59,19 @@ export function CitationPreviewPanel() {
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const latestRequestRef = useRef(0);
 
   useEffect(() => {
     if (!citationPreview) {
+      setLoading(false);
       setPreviewData(null);
       setError(null);
       return;
     }
+
+    const requestId = latestRequestRef.current + 1;
+    latestRequestRef.current = requestId;
+    const controller = new AbortController();
 
     setLoading(true);
     setError(null);
@@ -74,14 +79,34 @@ export function CitationPreviewPanel() {
 
     fetch(
       `/api/knowledge/${citationPreview.groupId}/documents/${citationPreview.documentId}/preview`,
+      { signal: controller.signal },
     )
       .then((r) => r.json())
       .then((data) => {
+        if (
+          controller.signal.aborted ||
+          latestRequestRef.current !== requestId
+        ) {
+          return;
+        }
         if (data.error) throw new Error(data.error);
         setPreviewData(data);
       })
-      .catch((e) => setError(e.message ?? "Failed to load preview"))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (controller.signal.aborted) return;
+        setError(e.message ?? "Failed to load preview");
+      })
+      .finally(() => {
+        if (
+          controller.signal.aborted ||
+          latestRequestRef.current !== requestId
+        ) {
+          return;
+        }
+        setLoading(false);
+      });
+
+    return () => controller.abort();
   }, [citationPreview]);
 
   const handleClose = () => {
@@ -96,101 +121,103 @@ export function CitationPreviewPanel() {
       {citationPreview && (
         <motion.div
           key="citation-panel"
-          initial={{ width: 0, opacity: 0 }}
-          animate={{ width: 420, opacity: 1 }}
-          exit={{ width: 0, opacity: 0 }}
+          initial={{ width: 0, opacity: 0, x: 24 }}
+          animate={{ width: 520, opacity: 1, x: 0 }}
+          exit={{ width: 0, opacity: 0, x: 24 }}
           transition={{ duration: 0.25, ease: "easeInOut" }}
-          className="relative flex-shrink-0 h-full overflow-hidden border-l bg-background flex flex-col"
+          className="relative z-40 flex h-full flex-shrink-0 overflow-hidden bg-transparent p-5"
         >
-          {/* Header */}
-          <div className="px-4 py-3 border-b shrink-0 flex flex-col gap-2">
-            <div className="flex items-start gap-3">
-              <div className="shrink-0 p-1.5 rounded-md bg-primary/10 mt-0.5">
-                <FileIconComp className="size-4 text-primary" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p
-                  className="text-sm font-semibold leading-snug truncate"
-                  title={citationPreview.documentName}
-                >
-                  {citationPreview.documentName}
-                </p>
-                {previewData && (
-                  <p className="text-xs text-muted-foreground truncate mt-0.5">
-                    {previewData.doc.originalFilename}
-                  </p>
-                )}
-                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                  {citationPreview.fileType && (
-                    <Badge variant="outline" className="text-xs px-1.5 py-0">
-                      {citationPreview.fileType.toUpperCase()}
-                    </Badge>
-                  )}
-                  {previewData?.doc.fileSize && (
-                    <span className="text-xs text-muted-foreground">
-                      {formatBytes(previewData.doc.fileSize)}
-                    </span>
-                  )}
+          <div className="flex h-full w-full flex-col overflow-hidden rounded-[28px] border border-border/50 bg-background/35 shadow-sm backdrop-blur-xl">
+            <div className="border-b border-border/60 px-5 py-4">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 shrink-0 rounded-xl bg-primary/10 p-2">
+                  <FileIconComp className="size-4 text-primary" />
                 </div>
+                <div className="min-w-0 flex-1">
+                  <p
+                    className="truncate text-lg font-semibold leading-snug text-primary"
+                    title={citationPreview.documentName}
+                  >
+                    {citationPreview.documentName}
+                  </p>
+                  {previewData && (
+                    <p
+                      className="mt-1 truncate text-xs text-muted-foreground"
+                      title={previewData.doc.originalFilename}
+                    >
+                      {previewData.doc.originalFilename}
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {citationPreview.fileType && (
+                      <Badge
+                        variant="outline"
+                        className="rounded-full px-2 py-0 text-[11px]"
+                      >
+                        {citationPreview.fileType.toUpperCase()}
+                      </Badge>
+                    )}
+                    {previewData?.doc.fileSize && (
+                      <span className="text-xs text-muted-foreground">
+                        {formatBytes(previewData.doc.fileSize)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="-mr-1 -mt-1 size-8 shrink-0 rounded-full"
+                  onClick={handleClose}
+                >
+                  <XIcon className="size-4" />
+                </Button>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7 shrink-0 -mt-1 -mr-1"
-                onClick={handleClose}
-              >
-                <XIcon className="size-4" />
-              </Button>
+
+              {!loading && downloadUrl && (
+                <div className="mt-4 flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    asChild
+                    className="h-8 gap-1.5 rounded-full text-xs"
+                  >
+                    <a
+                      href={downloadUrl}
+                      download={previewData?.doc.originalFilename}
+                    >
+                      <DownloadIcon className="size-3.5" />
+                      Download
+                    </a>
+                  </Button>
+                </div>
+              )}
             </div>
 
-            {!loading && downloadUrl && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  asChild
-                  className="h-7 text-xs gap-1.5"
-                >
-                  <a href={downloadUrl} target="_blank" rel="noreferrer">
-                    <ExternalLinkIcon className="size-3.5" />
-                    Open
-                  </a>
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  asChild
-                  className="h-7 text-xs gap-1.5"
-                >
-                  <a
-                    href={downloadUrl}
-                    download={previewData?.doc.originalFilename}
-                  >
-                    <DownloadIcon className="size-3.5" />
-                    Download
-                  </a>
-                </Button>
-              </div>
-            )}
-          </div>
+            <div className="relative min-h-0 flex-1 bg-background/10">
+              {loading && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
+                </div>
+              )}
 
-          {/* Content */}
-          <div className="flex-1 min-h-0 relative">
-            {loading && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <Loader2Icon className="size-6 animate-spin text-muted-foreground" />
-              </div>
-            )}
+              {error && (
+                <div className="flex h-full flex-col items-center justify-center p-8 text-center">
+                  <p className="text-sm text-muted-foreground">{error}</p>
+                </div>
+              )}
 
-            {error && (
-              <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-                <p className="text-sm text-muted-foreground">{error}</p>
-              </div>
-            )}
-
-            {!loading && !error && previewData && (
-              <PanelPreviewContent data={previewData} />
-            )}
+              {!loading && !error && previewData && (
+                <div className="h-full p-4">
+                  <div className="h-full overflow-hidden rounded-3xl border border-border/50 bg-background/30 backdrop-blur-md">
+                    <PanelPreviewContent
+                      key={`${citationPreview.groupId}:${citationPreview.documentId}`}
+                      data={previewData}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </motion.div>
       )}
@@ -204,7 +231,7 @@ function PanelPreviewContent({ data }: { data: PreviewData }) {
 
   if (isUrlOnly) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-8 gap-4 text-center">
+      <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
         <LinkIcon className="size-10 text-muted-foreground/50" />
         <p className="text-sm text-muted-foreground">
           This is a URL source document.
@@ -212,7 +239,7 @@ function PanelPreviewContent({ data }: { data: PreviewData }) {
         {sourceUrl && (
           <Button variant="outline" size="sm" asChild>
             <a href={sourceUrl} target="_blank" rel="noreferrer">
-              <ExternalLinkIcon className="size-3.5 mr-1.5" />
+              <LinkIcon className="mr-1.5 size-3.5" />
               Open URL
             </a>
           </Button>
@@ -223,18 +250,18 @@ function PanelPreviewContent({ data }: { data: PreviewData }) {
 
   if (doc.fileType === "pdf" && url) {
     return (
-      <iframe src={url} className="w-full h-full border-0" title={doc.name} />
+      <iframe src={url} className="h-full w-full border-0" title={doc.name} />
     );
   }
 
   if (["png", "jpg", "jpeg", "gif", "webp"].includes(doc.fileType) && url) {
     return (
-      <div className="flex items-center justify-center h-full p-4 overflow-auto">
+      <div className="flex h-full items-center justify-center overflow-auto p-4">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={url}
           alt={doc.name}
-          className="max-w-full max-h-full object-contain rounded-lg"
+          className="max-h-full max-w-full rounded-lg object-contain"
         />
       </div>
     );
@@ -255,7 +282,7 @@ function PanelPreviewContent({ data }: { data: PreviewData }) {
   }
 
   return (
-    <div className="flex flex-col items-center justify-center h-full p-8 gap-4 text-center">
+    <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
       <FileIcon className="size-10 text-muted-foreground/50" />
       <p className="text-sm text-muted-foreground">
         Preview not available for{" "}
@@ -264,7 +291,7 @@ function PanelPreviewContent({ data }: { data: PreviewData }) {
       {url && (
         <Button variant="outline" size="sm" asChild>
           <a href={url} download={doc.originalFilename}>
-            <DownloadIcon className="size-3.5 mr-1.5" />
+            <DownloadIcon className="mr-1.5 size-3.5" />
             Download to view
           </a>
         </Button>

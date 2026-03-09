@@ -98,6 +98,17 @@ export type ChatCompactionMetadata = {
   breakdown?: ChatContextPressureBreakdown;
 };
 
+export type ChatKnowledgeSource = {
+  groupId: string;
+  groupName: string;
+  documentId: string;
+  documentName: string;
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  isInherited?: boolean;
+  matchedSections?: string[];
+};
+
 export type ChatMetadata = {
   usage?: ChatUsage;
   chatModel?: ChatModel;
@@ -113,6 +124,7 @@ export type ChatMetadata = {
   pilotVisualMode?: PilotVisualContext["mode"];
   pilotVisualCaptureCount?: number;
   compaction?: ChatCompactionMetadata;
+  knowledgeSources?: ChatKnowledgeSource[];
 };
 
 export type ChatFeedbackType = "like" | "dislike";

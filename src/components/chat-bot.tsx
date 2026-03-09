@@ -109,6 +109,7 @@ export default function ChatBot({
     threadMentions,
     pendingThreadMention,
     threadImageToolModel,
+    citationDocumentPreview,
   ] = appStore(
     useShallow((state) => [
       state.mutate,
@@ -120,6 +121,7 @@ export default function ChatBot({
       state.threadMentions,
       state.pendingThreadMention,
       state.threadImageToolModel,
+      state.citationDocumentPreview,
     ]),
   );
 
@@ -500,7 +502,17 @@ export default function ChatBot({
     if (mounted) {
       handleFocus();
     }
-  }, [input]);
+  }, [input, mounted, handleFocus]);
+
+  useEffect(() => {
+    if (mounted) {
+      handleFocus();
+    }
+  }, [citationDocumentPreview, mounted, handleFocus]);
+
+  useEffect(() => {
+    return () => debounce.clear();
+  }, []);
 
   return (
     <>

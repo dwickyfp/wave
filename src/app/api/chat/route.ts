@@ -15,6 +15,7 @@ import { getDbModel } from "lib/ai/provider-factory";
 import {
   ChatContextPressureBreakdown,
   ChatMention,
+  ChatKnowledgeSource,
   ChatMetadata,
   ChatThreadCompactionCheckpoint,
   ChatUsage,
@@ -91,6 +92,10 @@ import {
   applyChatAttachmentsToMessage,
   ensureUserChatThread,
 } from "lib/chat/chat-session";
+import {
+  buildChatKnowledgeSources,
+  dedupeChatKnowledgeSources,
+} from "lib/chat/knowledge-sources";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -759,7 +764,13 @@ export async function POST(request: Request) {
           .map((v) => filterMcpServerCustomizations(toolset.mcpTools as any, v))
           .orElse({});
         const buildKnowledgeContextsForBudget = (() => {
-          const cache = new Map<number, Promise<string[]>>();
+          const cache = new Map<
+            number,
+            Promise<{
+              contexts: string[];
+              sources: ChatKnowledgeSource[];
+            }>
+          >();
 
           return async (totalBudget: number) => {
             if (
@@ -767,7 +778,10 @@ export async function POST(request: Request) {
               !userQueryText ||
               totalBudget < 1
             ) {
-              return [];
+              return {
+                contexts: [],
+                sources: [],
+              };
             }
 
             if (!cache.has(totalBudget)) {
@@ -775,6 +789,7 @@ export async function POST(request: Request) {
                 totalBudget,
                 (async () => {
                   const contexts: string[] = [];
+                  const sources: ChatKnowledgeSource[] = [];
                   let remainingKnowledgeBudget = totalBudget;
 
                   for (const [
@@ -811,6 +826,13 @@ export async function POST(request: Request) {
                         userQueryText,
                       );
                       contexts.push(formatted);
+                      sources.push(
+                        ...buildChatKnowledgeSources({
+                          groupId: group.id,
+                          groupName: group.name,
+                          docs,
+                        }),
+                      );
                       remainingKnowledgeBudget = Math.max(
                         0,
                         remainingKnowledgeBudget -
@@ -819,7 +841,10 @@ export async function POST(request: Request) {
                     }
                   }
 
-                  return contexts;
+                  return {
+                    contexts,
+                    sources: dedupeChatKnowledgeSources(sources),
+                  };
                 })(),
               );
             }
@@ -840,11 +865,12 @@ export async function POST(request: Request) {
         const buildSystemPromptForKnowledgeBudget = async (
           knowledgeBudget: number,
         ) => {
-          const knowledgeContexts =
+          const { contexts: knowledgeContexts, sources: knowledgeSources } =
             await buildKnowledgeContextsForBudget(knowledgeBudget);
 
           return {
             knowledgeContexts,
+            knowledgeSources,
             systemPrompt: buildWaveAgentSystemPrompt({
               user: session.user,
               userPreferences,
@@ -1060,6 +1086,9 @@ export async function POST(request: Request) {
               const promptContext = await buildSystemPromptForKnowledgeBudget(
                 activeKnowledgeBudget,
               );
+              metadata.knowledgeSources = promptContext.knowledgeSources.length
+                ? promptContext.knowledgeSources
+                : undefined;
               const assembly = await buildCompactionAssembly({
                 persistedMessages: stripAttachmentPreviews
                   ? strippedPersistedMessages

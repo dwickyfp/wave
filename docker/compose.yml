@@ -27,30 +27,13 @@ services:
     build:
       context: ..
       dockerfile: ./docker/Dockerfile.worker
-    env_file:
-      - .env
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - NODE_OPTIONS=--conditions=react-server
-    networks:
-      - emma-chatbot-networks
-    depends_on:
-      - postgres
-      - redis
-    restart: unless-stopped
-
-  emma-chatbot-self-learning-worker:
-    build:
-      context: ..
-      dockerfile: ./docker/Dockerfile.worker
     command:
-      [
-        "node",
-        "--conditions=react-server",
-        "--import",
-        "tsx",
-        "./src/lib/self-learning/worker.ts",
-      ]
+      - sh
+      - -c
+      - |
+        node --conditions=react-server --import tsx ./src/lib/knowledge/worker.ts &
+        node --conditions=react-server --import tsx ./src/lib/self-learning/worker.ts &
+        wait
     env_file:
       - .env
     environment:

@@ -80,6 +80,7 @@ import dynamic from "next/dynamic";
 import { ModelProviderIcon } from "ui/model-provider-icon";
 import { WorkflowInvocation } from "./tool-invocation/workflow-invocation";
 import { tokenizeUserMessageMentions } from "@/lib/chat/user-message-mentions";
+import { KnowledgeSourcesBadge } from "./knowledge-sources-badge";
 
 type MessagePart = UIMessage["parts"][number];
 type TextMessagePart = Extract<MessagePart, { type: "text" }>;
@@ -400,6 +401,7 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   const t = useTranslations();
   const ref = useRef<HTMLDivElement>(null);
   const metadata = message.metadata as ChatMetadata | undefined;
+  const knowledgeSources = metadata?.knowledgeSources ?? [];
 
   const [feedback, setFeedback] = useState<ChatFeedbackType | null>(null);
   const [isCling, setIsCling] = useState(false);
@@ -578,7 +580,8 @@ export const AssistMessagePart = memo(function AssistMessagePart({
       </div>
       {showActions && (
         <div className="flex flex-col gap-1 w-full">
-          <div className="flex w-full">
+          <div className="flex w-full flex-wrap items-center gap-1">
+            <KnowledgeSourcesBadge sources={knowledgeSources} />
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
