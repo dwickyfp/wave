@@ -534,7 +534,19 @@
       "role": "角色",
       "status": "状态",
       "joined": "加入时间",
-      "backToUsers": "返回用户列表"
+      "backToUsers": "返回用户列表",
+      "deleteSelected": "删除（{count}）",
+      "deleteSelectedTitle": "删除已选择的 {count} 个用户",
+      "deleteSelectedDescription": "你将永久删除已选择的 {count} 个用户。此操作无法撤销。",
+      "confirmDeleteSelected": "删除 {count} 个用户",
+      "selectedUsers": "已选择的用户",
+      "moreSelectedUsers": "另外 {count} 个用户",
+      "selectAllUsers": "选择此页上的所有用户",
+      "selectUser": "选择 {name}",
+      "usersDeletedSuccessfully": "已成功删除 {count} 个用户",
+      "failedToDeleteSelectedUsers": "删除所选用户失败",
+      "partiallyDeletedSelectedUsers": "已删除 {deletedCount} 个用户，但有 {failedCount} 个用户删除失败",
+      "cannotDeleteYourself": "你不能删除自己"
     },
     "UserDelete": {
       "title": "删除用户账户",

@@ -18,6 +18,7 @@ import useSWR from "swr";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
+import { Checkbox } from "ui/checkbox";
 import { Input } from "ui/input";
 import { SortableHeader } from "ui/sortable-header";
 import {
@@ -32,6 +33,12 @@ import { TablePagination } from "ui/table-pagination";
 
 import { UserRoleBadges } from "@/components/user/user-detail/user-role-badges";
 import { UserStatusBadge } from "@/components/user/user-detail/user-status-badge";
+import { UsersBulkDeleteDialog } from "./users-bulk-delete-dialog";
+import {
+  filterSelectedUserIds,
+  toggleAllSelectedUserIds,
+  toggleSelectedUserId,
+} from "./users-table.utils";
 import {
   ADMIN_USERS_DEFAULT_SORT_BY,
   ADMIN_USERS_DEFAULT_SORT_DIRECTION,
@@ -109,6 +116,7 @@ export function UsersTable(props: UsersTableProps) {
     getTableState(props),
   );
   const [queryInput, setQueryInput] = useState(query ?? "");
+  const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
 
   const requestUrl = useMemo(
     () => buildAdminUsersApiUrl(tableState),
@@ -124,6 +132,7 @@ export function UsersTable(props: UsersTableProps) {
     },
     error,
     isValidating,
+    mutate,
   } = useSWR<AdminUsersPaginated>(requestUrl, fetcher, {
     fallbackData: {
       users,
@@ -136,6 +145,27 @@ export function UsersTable(props: UsersTableProps) {
   });
 
   const totalPages = Math.ceil(resolvedData.total / tableState.limit);
+  const selectedUserIdSet = useMemo(
+    () => new Set(selectedUserIds),
+    [selectedUserIds],
+  );
+  const selectableUserIds = useMemo(
+    () =>
+      resolvedData.users
+        .filter((user) => user.id !== currentUserId)
+        .map((user) => user.id),
+    [currentUserId, resolvedData.users],
+  );
+  const selectedUsers = useMemo(
+    () => resolvedData.users.filter((user) => selectedUserIdSet.has(user.id)),
+    [resolvedData.users, selectedUserIdSet],
+  );
+  const allSelectableUsersSelected =
+    selectableUserIds.length > 0 &&
+    selectableUserIds.every((userId) => selectedUserIdSet.has(userId));
+  const someSelectableUsersSelected =
+    !allSelectableUsersSelected &&
+    selectableUserIds.some((userId) => selectedUserIdSet.has(userId));
 
   const updateBrowserUrl = useCallback(
     (nextState: UsersTableState, historyMode: "push" | "replace" = "push") => {
@@ -216,6 +246,19 @@ export function UsersTable(props: UsersTableProps) {
   }, [limit]);
 
   useEffect(() => {
+    setSelectedUserIds((currentSelectedUserIds) => {
+      const nextSelectedUserIds = filterSelectedUserIds(
+        currentSelectedUserIds,
+        selectableUserIds,
+      );
+
+      return nextSelectedUserIds.length === currentSelectedUserIds.length
+        ? currentSelectedUserIds
+        : nextSelectedUserIds;
+    });
+  }, [selectableUserIds]);
+
+  useEffect(() => {
     if (
       resolvedData.total === 0 ||
       totalPages === 0 ||
@@ -292,6 +335,33 @@ export function UsersTable(props: UsersTableProps) {
     [router, tableState],
   );
 
+  const handleToggleUserSelection = useCallback(
+    (userId: string, checked: boolean) => {
+      setSelectedUserIds((currentSelectedUserIds) =>
+        toggleSelectedUserId(currentSelectedUserIds, userId, checked),
+      );
+    },
+    [],
+  );
+
+  const handleToggleAllUserSelection = useCallback(
+    (checked: boolean) => {
+      setSelectedUserIds((currentSelectedUserIds) =>
+        toggleAllSelectedUserIds(
+          currentSelectedUserIds,
+          selectableUserIds,
+          checked,
+        ),
+      );
+    },
+    [selectableUserIds],
+  );
+
+  const handleBulkDeleteComplete = useCallback(async () => {
+    setSelectedUserIds([]);
+    await mutate();
+  }, [mutate]);
+
   const isFiltered =
     !!tableState.query ||
     tableState.sortBy !== ADMIN_USERS_DEFAULT_SORT_BY ||
@@ -339,14 +409,20 @@ export function UsersTable(props: UsersTableProps) {
             </Button>
           )}
         </div>
-        <div
-          className="flex items-center gap-2 text-sm text-muted-foreground"
-          data-testid="users-total-count"
-        >
-          <span>{t("totalCount", { count: resolvedData.total })}</span>
-          {isValidating && (
-            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-          )}
+        <div className="flex items-center justify-end gap-2">
+          <UsersBulkDeleteDialog
+            selectedUsers={selectedUsers}
+            onDeleted={handleBulkDeleteComplete}
+          />
+          <div
+            className="flex items-center gap-2 text-sm text-muted-foreground"
+            data-testid="users-total-count"
+          >
+            <span>{t("totalCount", { count: resolvedData.total })}</span>
+            {isValidating && (
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            )}
+          </div>
         </div>
       </div>
 
@@ -365,6 +441,23 @@ export function UsersTable(props: UsersTableProps) {
         <Table data-testid="users-table" className="w-full">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
+              <TableHead className="w-12">
+                <Checkbox
+                  checked={
+                    allSelectableUsersSelected
+                      ? true
+                      : someSelectableUsersSelected
+                        ? "indeterminate"
+                        : false
+                  }
+                  onCheckedChange={(checked) => {
+                    handleToggleAllUserSelection(checked === true);
+                  }}
+                  aria-label={t("selectAllUsers")}
+                  disabled={selectableUserIds.length === 0}
+                  data-testid="select-all-users-checkbox"
+                />
+              </TableHead>
               <SortableHeader
                 field="name"
                 currentSortBy={tableState.sortBy}
@@ -402,7 +495,7 @@ export function UsersTable(props: UsersTableProps) {
             {resolvedData.users.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={6}
                   className="text-center py-8 text-muted-foreground"
                 >
                   {t("noUsersFound")}
@@ -413,9 +506,27 @@ export function UsersTable(props: UsersTableProps) {
                 <TableRow
                   key={user.id}
                   className="cursor-pointer hover:bg-muted/50 transition-colors"
+                  data-state={
+                    selectedUserIdSet.has(user.id) ? "selected" : undefined
+                  }
                   onClick={() => handleRowClick(user.id)}
                   data-testid={`user-row-${user.id}`}
                 >
+                  <TableCell
+                    onClick={(event) => {
+                      event.stopPropagation();
+                    }}
+                  >
+                    <Checkbox
+                      checked={selectedUserIdSet.has(user.id)}
+                      disabled={user.id === currentUserId}
+                      onCheckedChange={(checked) => {
+                        handleToggleUserSelection(user.id, checked === true);
+                      }}
+                      aria-label={t("selectUser", { name: user.name })}
+                      data-testid={`select-user-checkbox-${user.id}`}
+                    />
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-3 px-2">
                       <Avatar className="size-8 rounded-full">

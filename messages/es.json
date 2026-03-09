@@ -535,7 +535,19 @@
       "role": "Rol",
       "status": "Estado",
       "joined": "Se unió",
-      "backToUsers": "Volver a Usuarios"
+      "backToUsers": "Volver a Usuarios",
+      "deleteSelected": "Eliminar ({count})",
+      "deleteSelectedTitle": "Eliminar {count} usuario{count, plural, =1 {} other {s}} seleccionado{count, plural, =1 {} other {s}}",
+      "deleteSelectedDescription": "Estás a punto de eliminar permanentemente {count} usuario{count, plural, =1 {} other {s}} seleccionado{count, plural, =1 {} other {s}}. Esta acción no se puede deshacer.",
+      "confirmDeleteSelected": "Eliminar {count} usuario{count, plural, =1 {} other {s}}",
+      "selectedUsers": "Usuarios seleccionados",
+      "moreSelectedUsers": "{count} usuario{count, plural, =1 {} other {s}} más",
+      "selectAllUsers": "Seleccionar todos los usuarios de esta página",
+      "selectUser": "Seleccionar a {name}",
+      "usersDeletedSuccessfully": "Se eliminaron correctamente {count} usuario{count, plural, =1 {} other {s}}",
+      "failedToDeleteSelectedUsers": "No se pudieron eliminar los usuarios seleccionados",
+      "partiallyDeletedSelectedUsers": "Se eliminaron {deletedCount} usuario{deletedCount, plural, =1 {} other {s}}, pero no se pudieron eliminar {failedCount} usuario{failedCount, plural, =1 {} other {s}}",
+      "cannotDeleteYourself": "No puedes eliminarte a ti mismo"
     },
     "UserDelete": {
       "title": "Eliminar Cuenta de Usuario",

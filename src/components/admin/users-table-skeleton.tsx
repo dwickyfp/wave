@@ -38,6 +38,7 @@ export function UsersTableSkeleton() {
         <Table data-testid="users-table-skeleton" className="w-full">
           <TableHeader>
             <TableRow className="hover:bg-transparent">
+              <TableHead className="w-12"></TableHead>
               <TableHead className="font-semibold w-1/2">User</TableHead>
               <TableHead className="font-semibold w-32">Role</TableHead>
               <TableHead className="font-semibold w-24">Status</TableHead>
@@ -48,6 +49,9 @@ export function UsersTableSkeleton() {
           <TableBody>
             {skeletonRows.map((index) => (
               <TableRow key={index}>
+                <TableCell>
+                  <Skeleton className="h-4 w-4 rounded-sm" />
+                </TableCell>
                 {/* User Column */}
                 <TableCell>
                   <div className="flex items-center gap-3">

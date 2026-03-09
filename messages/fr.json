@@ -535,7 +535,19 @@
       "role": "Rôle",
       "status": "Statut",
       "joined": "Rejoint",
-      "backToUsers": "Retour aux Utilisateurs"
+      "backToUsers": "Retour aux Utilisateurs",
+      "deleteSelected": "Supprimer ({count})",
+      "deleteSelectedTitle": "Supprimer {count} utilisateur{count, plural, =1 {} other {s}} sélectionné{count, plural, =1 {} other {s}}",
+      "deleteSelectedDescription": "Vous êtes sur le point de supprimer définitivement {count} utilisateur{count, plural, =1 {} other {s}} sélectionné{count, plural, =1 {} other {s}}. Cette action est irréversible.",
+      "confirmDeleteSelected": "Supprimer {count} utilisateur{count, plural, =1 {} other {s}}",
+      "selectedUsers": "Utilisateurs sélectionnés",
+      "moreSelectedUsers": "{count} utilisateur{count, plural, =1 {} other {s}} de plus",
+      "selectAllUsers": "Sélectionner tous les utilisateurs de cette page",
+      "selectUser": "Sélectionner {name}",
+      "usersDeletedSuccessfully": "{count} utilisateur{count, plural, =1 {} other {s}} supprimé{count, plural, =1 {} other {s}} avec succès",
+      "failedToDeleteSelectedUsers": "Impossible de supprimer les utilisateurs sélectionnés",
+      "partiallyDeletedSelectedUsers": "{deletedCount} utilisateur{deletedCount, plural, =1 {} other {s}} supprimé{deletedCount, plural, =1 {} other {s}}, mais suppression impossible pour {failedCount} utilisateur{failedCount, plural, =1 {} other {s}}",
+      "cannotDeleteYourself": "Vous ne pouvez pas vous supprimer"
     },
     "UserDelete": {
       "title": "Supprimer le Compte Utilisateur",

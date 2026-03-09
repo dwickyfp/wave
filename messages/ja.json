@@ -534,7 +534,19 @@
       "role": "ロール",
       "status": "ステータス",
       "joined": "参加日",
-      "backToUsers": "ユーザー一覧に戻る"
+      "backToUsers": "ユーザー一覧に戻る",
+      "deleteSelected": "削除 ({count})",
+      "deleteSelectedTitle": "選択した {count} 人のユーザーを削除",
+      "deleteSelectedDescription": "選択した {count} 人のユーザーを完全に削除しようとしています。この操作は元に戻せません。",
+      "confirmDeleteSelected": "{count} 人のユーザーを削除",
+      "selectedUsers": "選択したユーザー",
+      "moreSelectedUsers": "さらに {count} 人",
+      "selectAllUsers": "このページのユーザーをすべて選択",
+      "selectUser": "{name} を選択",
+      "usersDeletedSuccessfully": "{count} 人のユーザーを削除しました",
+      "failedToDeleteSelectedUsers": "選択したユーザーを削除できませんでした",
+      "partiallyDeletedSelectedUsers": "{deletedCount} 人のユーザーを削除しましたが、{failedCount} 人の削除に失敗しました",
+      "cannotDeleteYourself": "自分自身を削除することはできません"
     },
     "UserDelete": {
       "title": "ユーザーアカウントの削除",

@@ -897,7 +897,19 @@
       "role": "Role",
       "status": "Status",
       "joined": "Joined",
-      "backToUsers": "Back to Users"
+      "backToUsers": "Back to Users",
+      "deleteSelected": "Delete ({count})",
+      "deleteSelectedTitle": "Delete {count} selected user{count, plural, =1 {} other {s}}",
+      "deleteSelectedDescription": "You are about to permanently delete {count} selected user{count, plural, =1 {} other {s}}. This action cannot be undone.",
+      "confirmDeleteSelected": "Delete {count} user{count, plural, =1 {} other {s}}",
+      "selectedUsers": "Selected users",
+      "moreSelectedUsers": "{count} more user{count, plural, =1 {} other {s}}",
+      "selectAllUsers": "Select all users on this page",
+      "selectUser": "Select {name}",
+      "usersDeletedSuccessfully": "{count} user{count, plural, =1 {} other {s}} deleted successfully",
+      "failedToDeleteSelectedUsers": "Failed to delete selected users",
+      "partiallyDeletedSelectedUsers": "Deleted {deletedCount} user{deletedCount, plural, =1 {} other {s}}, but failed to delete {failedCount} user{failedCount, plural, =1 {} other {s}}",
+      "cannotDeleteYourself": "You cannot delete yourself"
     },
     "UserDelete": {
       "title": "Delete User Account",

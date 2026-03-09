@@ -853,7 +853,19 @@
       "role": "Rolle",
       "status": "Status",
       "joined": "Ble med",
-      "backToUsers": "Tilbake til brukere"
+      "backToUsers": "Tilbake til brukere",
+      "deleteSelected": "Slett ({count})",
+      "deleteSelectedTitle": "Slett {count} valgte bruker{count, plural, =1 {} other {e}}",
+      "deleteSelectedDescription": "Du er i ferd med å permanent slette {count} valgte bruker{count, plural, =1 {} other {e}}. Denne handlingen kan ikke angres.",
+      "confirmDeleteSelected": "Slett {count} bruker{count, plural, =1 {} other {e}}",
+      "selectedUsers": "Valgte brukere",
+      "moreSelectedUsers": "{count} flere bruker{count, plural, =1 {} other {e}}",
+      "selectAllUsers": "Velg alle brukere på denne siden",
+      "selectUser": "Velg {name}",
+      "usersDeletedSuccessfully": "{count} bruker{count, plural, =1 {} other {e}} slettet",
+      "failedToDeleteSelectedUsers": "Kunne ikke slette valgte brukere",
+      "partiallyDeletedSelectedUsers": "Slettet {deletedCount} bruker{deletedCount, plural, =1 {} other {e}}, men kunne ikke slette {failedCount} bruker{failedCount, plural, =1 {} other {e}}",
+      "cannotDeleteYourself": "Du kan ikke slette deg selv"
     },
     "UserDelete": {
       "title": "Slett brukerkonto",

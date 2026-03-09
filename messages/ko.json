@@ -549,7 +549,19 @@
       "role": "역할",
       "status": "상태",
       "joined": "가입일",
-      "backToUsers": "사용자 목록으로 돌아가기"
+      "backToUsers": "사용자 목록으로 돌아가기",
+      "deleteSelected": "삭제 ({count})",
+      "deleteSelectedTitle": "선택한 사용자 {count}명 삭제",
+      "deleteSelectedDescription": "선택한 사용자 {count}명을 영구적으로 삭제하려고 합니다. 이 작업은 되돌릴 수 없습니다.",
+      "confirmDeleteSelected": "사용자 {count}명 삭제",
+      "selectedUsers": "선택한 사용자",
+      "moreSelectedUsers": "{count}명 더",
+      "selectAllUsers": "이 페이지의 사용자 모두 선택",
+      "selectUser": "{name} 선택",
+      "usersDeletedSuccessfully": "사용자 {count}명이 삭제되었습니다",
+      "failedToDeleteSelectedUsers": "선택한 사용자를 삭제하지 못했습니다",
+      "partiallyDeletedSelectedUsers": "사용자 {deletedCount}명은 삭제했지만 {failedCount}명은 삭제하지 못했습니다",
+      "cannotDeleteYourself": "자기 자신은 삭제할 수 없습니다"
     },
     "UserDelete": {
       "title": "사용자 계정 삭제",
