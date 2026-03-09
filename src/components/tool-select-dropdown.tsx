@@ -272,7 +272,7 @@ export function ToolSelectDropdown({
         <div className="py-1">
           <DropdownMenuSeparator />
         </div>
-        <div className="py-2">
+        <div className="py-1">
           <ToolPresets />
           <div className="py-1">
             <DropdownMenuSeparator />
