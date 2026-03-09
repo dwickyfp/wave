@@ -60,7 +60,7 @@ export function KnowledgeSourcesBadge({
           <span className="font-medium">{label}</span>
         </button>
       </HoverCardTrigger>
-      <HoverCardContent align="start" className="w-80 p-0">
+      <HoverCardContent side="top" align="start" className="w-80 p-0">
         <div className="border-b px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <LibraryBigIcon className="size-4 text-primary" />
