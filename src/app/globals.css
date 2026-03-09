@@ -1491,6 +1491,7 @@
     border: 4px solid transparent;
     border-radius: 9999px;
     min-height: 48px;
+    transition: background-color 180ms ease, border-color 180ms ease;
   }
 
   .sidebar-minimal-scrollbar:hover::-webkit-scrollbar-thumb,
@@ -1511,6 +1512,12 @@
       var(--sidebar-foreground) 36%,
       transparent
     );
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar-minimal-scrollbar::-webkit-scrollbar-thumb {
+      transition: none;
+    }
   }
 
   .mention {
