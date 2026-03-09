@@ -79,6 +79,7 @@ import { notify } from "lib/notify";
 import dynamic from "next/dynamic";
 import { ModelProviderIcon } from "ui/model-provider-icon";
 import { WorkflowInvocation } from "./tool-invocation/workflow-invocation";
+import { tokenizeUserMessageMentions } from "@/lib/chat/user-message-mentions";
 
 type MessagePart = UIMessage["parts"][number];
 type TextMessagePart = Extract<MessagePart, { type: "text" }>;
@@ -124,38 +125,28 @@ interface ToolMessagePartProps {
 
 const MAX_TEXT_LENGTH = 600;
 
-function renderUserTextWithToolMentions(text: string) {
-  const regex = /@tool\(\s*['"]([^'"]+)['"]\s*\)/g;
-  const nodes: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null = null;
+function renderUserTextWithMentions(text: string) {
+  const segments = tokenizeUserMessageMentions(text);
+  const hasMention = segments.some((segment) => segment.type === "mention");
 
-  while ((match = regex.exec(text)) !== null) {
-    const start = match.index;
-    const end = regex.lastIndex;
-    const toolName = match[1];
+  if (!hasMention) {
+    return text;
+  }
 
-    if (start > lastIndex) {
-      nodes.push(text.slice(lastIndex, start));
+  return segments.map((segment, index) => {
+    if (segment.type === "text") {
+      return segment.text;
     }
 
-    nodes.push(
+    return (
       <span
-        key={`tool-mention-${start}-${end}`}
+        key={`${segment.mentionKind}-${segment.value}-${index}`}
         className="inline-flex items-center rounded-xl bg-orange-500/10 px-2.5 py-0.5 font-semibold text-orange-500"
       >
-        {toolName}
-      </span>,
+        {segment.value}
+      </span>
     );
-
-    lastIndex = end;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return nodes.length > 0 ? nodes : text;
+  });
 }
 
 export const UserMessagePart = memo(
@@ -273,7 +264,7 @@ export const UserMessagePart = memo(
             <div className="absolute pointer-events-none bg-gradient-to-t from-accent to-transparent w-full h-40 bottom-0 left-0" />
           )}
           <p className={cn("whitespace-pre-wrap text-sm break-words")}>
-            {renderUserTextWithToolMentions(displayText)}
+            {renderUserTextWithMentions(displayText)}
           </p>
           {isLongText && (
             <Button
