@@ -83,7 +83,7 @@ export function AppSidebarUserInner(props: {
                 <AvatarFallback>{user?.name?.slice(0, 1) || ""}</AvatarFallback>
               </Avatar>
               <span className="truncate" data-testid="sidebar-user-email">
-                {user?.email}
+                {user?.name}
               </span>
               <ChevronsUpDown className="ml-auto" />
             </SidebarMenuButton>
