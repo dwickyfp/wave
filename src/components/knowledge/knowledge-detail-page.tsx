@@ -581,6 +581,23 @@ export function KnowledgeDetailPage({
             </div>
           </div>
         </div>
+
+        {isOwner && (
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={deletingGroup}
+            onClick={handleDeleteGroup}
+            className="shrink-0"
+          >
+            {deletingGroup ? (
+              <Loader2Icon className="size-3.5 animate-spin mr-1" />
+            ) : (
+              <Trash2Icon className="size-3.5 mr-1" />
+            )}
+            Delete Group
+          </Button>
+        )}
       </div>
 
       {/* Settings Section (owner only) */}
@@ -1164,36 +1181,6 @@ export function KnowledgeDetailPage({
               </div>
             </div>
           )}
-        </div>
-      )}
-
-      {/* Danger Zone */}
-      {isOwner && (
-        <div className="border border-destructive/30 rounded-xl p-4 flex flex-col gap-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-medium text-destructive">
-                Danger Zone
-              </h2>
-              <p className="text-xs text-muted-foreground mt-1">
-                Deleting this knowledge group permanently removes all local
-                documents and chunks in this group.
-              </p>
-            </div>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={deletingGroup}
-              onClick={handleDeleteGroup}
-            >
-              {deletingGroup ? (
-                <Loader2Icon className="size-3.5 animate-spin mr-1" />
-              ) : (
-                <Trash2Icon className="size-3.5 mr-1" />
-              )}
-              Delete Group
-            </Button>
-          </div>
         </div>
       )}
 
