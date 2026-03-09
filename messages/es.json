@@ -303,7 +303,7 @@
     "generateAgentGreeting": "¡Hola! Te ayudaré a crear tu propio agente. ¿Qué te gustaría crear?",
     "generateAgentDetailedGreeting": "¡Hola! Te ayudaré a crear tu propio agente. ¿Qué te gustaría crear? Puedes escribir de forma breve o detallada.",
     "inputPromptHere": "escribe el prompt aquí...",
-    "agentNamePlaceholder": "better-agent",
+    "agentNamePlaceholder": "emma-agent",
     "myAgents": "Mis Agentes",
     "sharedAgents": "Agentes Compartidos",
     "noAgents": "Aún no hay agentes",

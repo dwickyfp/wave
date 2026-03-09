@@ -317,7 +317,7 @@
     "generateAgentGreeting": "안녕하세요! 당신만의 에이전트를 만드는 걸 도와드릴게요. 무엇을 만들고 싶으신가요?",
     "generateAgentDetailedGreeting": "안녕하세요! 당신만의 에이전트를 만드는 걸 도와드릴게요. 무엇을 만들고 싶으신가요? 간단하게 작성하셔도 좋고, 자세하게 작성하셔도 좋아요.",
     "inputPromptHere": "여기에 프롬프트를 입력하세요...",
-    "agentNamePlaceholder": "better-agent",
+    "agentNamePlaceholder": "emma-agent",
     "myAgents": "내 에이전트",
     "sharedAgents": "공유된 에이전트",
     "noAgents": "에이전트가 없습니다",

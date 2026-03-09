@@ -302,7 +302,7 @@
     "generateAgentGreeting": "こんにちは！あなた専用のエージェントを作成するお手伝いをします。何を作りたいですか？",
     "generateAgentDetailedGreeting": "こんにちは！あなた専用のエージェントを作成するお手伝いをします。何を作りたいですか？簡潔に書いても詳しく書いても構いません。",
     "inputPromptHere": "ここにプロンプトを入力してください...",
-    "agentNamePlaceholder": "better-agent",
+    "agentNamePlaceholder": "emma-agent",
     "myAgents": "マイエージェント",
     "sharedAgents": "共有エージェント",
     "noAgents": "エージェントがありません",

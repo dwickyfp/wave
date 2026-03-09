@@ -302,7 +302,7 @@
     "generateAgentGreeting": "您好！我将帮助您创建您自己的智能体。您想创建什么？",
     "generateAgentDetailedGreeting": "您好！我将帮助您创建您自己的智能体。您想创建什么？您可以简要描述或详细描述。",
     "inputPromptHere": "在此输入提示词...",
-    "agentNamePlaceholder": "better-agent",
+    "agentNamePlaceholder": "emma-agent",
     "myAgents": "我的智能体",
     "sharedAgents": "共享智能体",
     "noAgents": "还没有智能体",
