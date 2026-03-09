@@ -64,7 +64,7 @@ export function KnowledgeSourcesBadge({
         <div className="border-b px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <LibraryBigIcon className="size-4 text-primary" />
-            Knowledge sources
+            Knowledge Sources
           </div>
         </div>
 
@@ -84,7 +84,7 @@ export function KnowledgeSourcesBadge({
                   });
                   setOpen(false);
                 }}
-                className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-muted/70"
+                className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-muted/70"
               >
                 <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
                   {getSourceInitials(source.documentName)}
