@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "ui/card";
+import { Card, CardFooter, CardHeader, CardTitle } from "ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -73,16 +73,16 @@ export function SkillCard({
   const VisIcon = VISIBILITY_ICONS[skill.visibility];
 
   return (
-    <Card className="w-full min-h-[220px] transition-colors group flex flex-col gap-3 hover:bg-input/40">
-      <CardHeader className="pb-0 overflow-hidden">
-        <CardTitle className="flex items-start justify-between gap-2 min-w-0 overflow-hidden">
-          <div className="flex min-w-0 w-0 flex-1 gap-2 overflow-hidden">
-            <div className="size-8 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
-              <WrenchIcon className="size-4" />
+    <Card className="w-full transition-colors group flex flex-col hover:bg-input/40">
+      <CardHeader className="pb-2 overflow-hidden">
+        <CardTitle className="flex items-center justify-between gap-2 min-w-0 overflow-hidden">
+          <div className="flex min-w-0 w-0 flex-1 gap-2 overflow-hidden items-center">
+            <div className="size-7 rounded-md bg-primary/10 text-primary flex items-center justify-center shrink-0">
+              <WrenchIcon className="size-3.5" />
             </div>
             <div className="min-w-0 flex-1 overflow-hidden">
               <p
-                className="font-medium block w-full min-w-0 truncate"
+                className="font-medium block w-full min-w-0 truncate text-sm"
                 data-testid="skill-card-title"
                 title={skill.title}
               >
@@ -99,21 +99,7 @@ export function SkillCard({
         </CardTitle>
       </CardHeader>
 
-      <CardContent className="pt-2 min-h-0 grow space-y-3">
-        {skill.description ? (
-          <p className="text-xs text-muted-foreground line-clamp-1">
-            {skill.description}
-          </p>
-        ) : (
-          <p className="text-xs text-muted-foreground italic">No description</p>
-        )}
-
-        <pre className="text-xs leading-relaxed whitespace-pre-wrap line-clamp-4 text-foreground/90">
-          {skill.instructions}
-        </pre>
-      </CardContent>
-
-      <CardFooter className="pt-0">
+      <CardFooter className="pt-0 pb-3">
         <div className="flex items-center justify-between w-full">
           <Badge variant="secondary" className="capitalize text-xs">
             {skill.visibility}

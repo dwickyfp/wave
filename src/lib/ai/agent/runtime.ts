@@ -45,9 +45,18 @@ export function createNoopDataStream() {
   } as unknown as UIMessageStreamWriter;
 }
 
+function resolveWaveAgentCapabilityUserId(options: {
+  agent?: Agent | null;
+  userId: string;
+  capabilityUserId?: string;
+}) {
+  return options.capabilityUserId ?? options.agent?.userId ?? options.userId;
+}
+
 export async function loadWaveAgentContinueCapabilities(options: {
   agent?: Agent | null;
   userId: string;
+  capabilityUserId?: string;
   dataStream: UIMessageStreamWriter;
   abortSignal: AbortSignal;
   chatModel: ChatModel;
@@ -75,6 +84,8 @@ export async function loadWaveAgentContinueCapabilities(options: {
     return emptyResult;
   }
 
+  const capabilityUserId = resolveWaveAgentCapabilityUserId(options);
+
   const [subAgents, knowledgeGroups, attachedSkills] = await Promise.all([
     agent.subAgentsEnabled
       ? subAgentRepository.selectSubAgentsByAgentId(agent.id)
@@ -90,7 +101,7 @@ export async function loadWaveAgentContinueCapabilities(options: {
             ...agent,
             subAgents,
           },
-          options.userId,
+          capabilityUserId,
           options.dataStream,
           options.abortSignal,
           options.chatModel,
@@ -100,7 +111,7 @@ export async function loadWaveAgentContinueCapabilities(options: {
   const knowledgeTools = knowledgeGroups.reduce(
     (acc, group) => {
       acc[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(group, {
-        userId: options.userId,
+        userId: capabilityUserId,
         source: options.source,
         onRetrieved: options.onKnowledgeDocsRetrieved,
       });
@@ -128,6 +139,8 @@ export async function loadWaveAgentContinueCapabilities(options: {
 export async function loadWaveAgentBoundTools(options: {
   agent?: Agent | null;
   userId: string;
+  capabilityUserId?: string;
+  additionalMcpUserIds?: string[];
   mentions?: ChatMention[];
   allowedMcpServers?: Record<string, AllowedMCPServer>;
   allowedAppDefaultToolkit?: string[];
@@ -161,12 +174,17 @@ export async function loadWaveAgentBoundTools(options: {
     return emptyResult;
   }
 
+  const additionalMcpUserIds =
+    options.additionalMcpUserIds ??
+    (agent?.userId && agent.userId !== options.userId ? [agent.userId] : []);
+
   const [mcpTools, workflowTools, appDefaultTools, subAgents] =
     await Promise.all([
       loadMcpTools({
         mentions: options.mentions,
         allowedMcpServers: options.allowedMcpServers,
         userId: options.userId,
+        additionalUserIds: additionalMcpUserIds,
       }),
       loadWorkFlowTools({
         mentions: options.mentions,

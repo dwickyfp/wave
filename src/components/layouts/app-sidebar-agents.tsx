@@ -29,6 +29,7 @@ import { ChatMention } from "app-types/chat";
 import { BACKGROUND_COLORS, EMOJI_DATA } from "lib/const";
 import { cn } from "lib/utils";
 import { canCreateAgent } from "lib/auth/client-permissions";
+import { mergeDiscoverableAgents } from "lib/agent/discovery";
 
 const DISPLAY_LIMIT = 5; // Number of agents to show when collapsed
 
@@ -42,8 +43,8 @@ export function AppSidebarAgents({ userRole }: { userRole?: string | null }) {
   }); // Increase limit since we're not artificially limiting display
 
   const agents = useMemo(() => {
-    return [...myAgents, ...bookmarkedAgents];
-  }, [bookmarkedAgents, myAgents]);
+    return mergeDiscoverableAgents(myAgents, bookmarkedAgents, sharedAgents);
+  }, [bookmarkedAgents, myAgents, sharedAgents]);
 
   const handleAgentClick = useCallback(
     (id: string) => {

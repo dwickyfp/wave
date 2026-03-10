@@ -947,12 +947,12 @@ function AgentSelector({
   onSelectAgent?: (agent: AgentSummary) => void;
 }) {
   const t = useTranslations();
-  const { myAgents, bookmarkedAgents } = useAgents({
-    filters: ["mine", "bookmarked"],
+  const { myAgents, sharedAgents } = useAgents({
+    filters: ["all"],
   });
 
   const emptyAgent = useMemo(() => {
-    if (myAgents.length + bookmarkedAgents.length > 0) return null;
+    if (myAgents.length + sharedAgents.length > 0) return null;
     return (
       <Link
         href={"/agent/new"}
@@ -964,14 +964,14 @@ function AgentSelector({
             <ArrowUpRightIcon className="size-3" />
           </div>
           <p className="text-muted-foreground">
-            {bookmarkedAgents.length > 0
+            {sharedAgents.length > 0
               ? t("Layout.createYourOwnAgentOrSelectShared")
               : t("Layout.createYourOwnAgent")}
           </p>
         </div>
       </Link>
     );
-  }, [myAgents.length, bookmarkedAgents.length, t]);
+  }, [myAgents.length, sharedAgents.length, t]);
 
   return (
     <DropdownMenuGroup>
@@ -1008,11 +1008,11 @@ function AgentSelector({
               </DropdownMenuItem>
             ))}
 
-            {myAgents.length > 0 && bookmarkedAgents.length > 0 && (
+            {myAgents.length > 0 && sharedAgents.length > 0 && (
               <DropdownMenuSeparator />
             )}
 
-            {bookmarkedAgents.map((agent) => (
+            {sharedAgents.map((agent) => (
               <DropdownMenuItem
                 key={agent.id}
                 className="cursor-pointer"

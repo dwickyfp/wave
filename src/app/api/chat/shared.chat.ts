@@ -398,18 +398,32 @@ export const loadMcpTools = (opt?: {
   mentions?: ChatMention[];
   allowedMcpServers?: Record<string, AllowedMCPServer>;
   userId?: string;
+  additionalUserIds?: string[];
   includeAllAccessible?: boolean;
 }) =>
   safe(async () => {
-    if (!opt?.userId) {
+    const accessibleUserIds = Array.from(
+      new Set(
+        [opt?.userId, ...(opt?.additionalUserIds ?? [])].filter(
+          (userId): userId is string => !!userId,
+        ),
+      ),
+    );
+
+    if (accessibleUserIds.length === 0) {
       return {} as Record<string, VercelAIMcpTool>;
     }
 
-    const [tools, accessibleServerIds] = await Promise.all([
+    const [tools, accessibleServerIdSets] = await Promise.all([
       mcpClientsManager.tools(),
-      listAccessibleMcpServerIds(opt.userId),
+      Promise.all(
+        accessibleUserIds.map((userId) => listAccessibleMcpServerIds(userId)),
+      ),
     ]);
 
+    const accessibleServerIds = new Set(
+      accessibleServerIdSets.flatMap((serverIds) => Array.from(serverIds)),
+    );
     const accessibleTools = objectFlow(tools).filter((_tool) =>
       accessibleServerIds.has(_tool._mcpServerId),
     );

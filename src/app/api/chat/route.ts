@@ -21,6 +21,7 @@ import {
   ChatUsage,
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
+import { McpServerCustomizationsPrompt } from "app-types/mcp";
 import {
   agentRepository,
   a2aAgentRepository,
@@ -669,20 +670,67 @@ export async function POST(request: Request) {
       });
     }
 
-    if (agent?.instructions?.mentions) {
-      mentions.push(...agent.instructions.mentions);
+    const requestMentions = [...mentions];
+    const agentMentions = [...(agent?.instructions?.mentions ?? [])];
+
+    if (agentMentions.length > 0) {
+      mentions.push(...agentMentions);
     }
 
     // ── Knowledge mention RAG context ────────────────────────────────────────
-    const knowledgeMentionIds = Array.from(
-      new Set(
-        mentions
-          .filter((m) => m.type === "knowledge")
-          .map(
-            (m) =>
-              (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
+    const getKnowledgeMentionIds = (sourceMentions: ChatMention[]) =>
+      Array.from(
+        new Set(
+          sourceMentions
+            .filter((m) => m.type === "knowledge")
+            .map(
+              (m) =>
+                (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
+            ),
+        ),
+      );
+
+    const selectKnowledgeMentionGroups = async (
+      groupIds: string[],
+      userId: string,
+    ) =>
+      (
+        await Promise.all(
+          groupIds.map((groupId) =>
+            knowledgeRepository
+              .selectGroupById(groupId, userId)
+              .catch(() => null),
           ),
+        )
+      ).filter((group) => group !== null) as NonNullable<
+        Awaited<ReturnType<typeof knowledgeRepository.selectGroupById>>
+      >[];
+
+    const [viewerKnowledgeMentionGroups, agentKnowledgeMentionGroups] =
+      await Promise.all([
+        selectKnowledgeMentionGroups(
+          getKnowledgeMentionIds(requestMentions),
+          session.user.id,
+        ),
+        agent && agent.userId !== session.user.id
+          ? selectKnowledgeMentionGroups(
+              getKnowledgeMentionIds(agentMentions),
+              agent.userId,
+            )
+          : Promise.resolve([]),
+      ]);
+
+    const knowledgeMentionGroups = Array.from(
+      new Set(
+        [...viewerKnowledgeMentionGroups, ...agentKnowledgeMentionGroups].map(
+          (group) => group.id,
+        ),
       ),
+    ).map(
+      (groupId) =>
+        [...viewerKnowledgeMentionGroups, ...agentKnowledgeMentionGroups].find(
+          (group) => group.id === groupId,
+        )!,
     );
 
     const userQueryText = message.parts
@@ -690,18 +738,6 @@ export async function POST(request: Request) {
       .map((p: any) => p.text as string)
       .join(" ")
       .trim();
-
-    const knowledgeMentionGroups = (
-      await Promise.all(
-        knowledgeMentionIds.map((groupId) =>
-          knowledgeRepository
-            .selectGroupById(groupId, session.user.id)
-            .catch(() => null),
-        ),
-      )
-    ).filter((group) => group !== null) as NonNullable<
-      Awaited<ReturnType<typeof knowledgeRepository.selectGroupById>>
-    >[];
     // ── end knowledge context ─────────────────────────────────────────────────
 
     const useImageTool = Boolean(imageTool?.provider && imageTool?.model);
@@ -804,12 +840,28 @@ export async function POST(request: Request) {
         }
 
         const userPreferences = thread?.userPreferences || undefined;
+        const mcpCustomizationUserIds = Array.from(
+          new Set(
+            [session.user.id, agent?.userId].filter(
+              (userId): userId is string => !!userId,
+            ),
+          ),
+        );
 
         const mcpServerCustomizations = await safe()
           .map(() => {
             if (Object.keys(toolset.mcpTools ?? {}).length === 0)
               throw new Error("No tools found");
-            return rememberMcpServerCustomizationsAction(session.user.id);
+            return Promise.all(
+              mcpCustomizationUserIds.map((userId) =>
+                rememberMcpServerCustomizationsAction(userId),
+              ),
+            ).then((customizationSets) =>
+              customizationSets.reduce(
+                (acc, customizationSet) => Object.assign(acc, customizationSet),
+                {} as Record<string, McpServerCustomizationsPrompt>,
+              ),
+            );
           })
           .map((v) => filterMcpServerCustomizations(toolset.mcpTools as any, v))
           .orElse({});
@@ -861,7 +913,7 @@ export async function POST(request: Request) {
                       group,
                       userQueryText,
                       {
-                        userId: session.user.id,
+                        userId: group.userId ?? session.user.id,
                         source: "chat",
                         tokens: allocatedTokens,
                         resultMode: "section-first",

@@ -5,14 +5,20 @@ import { handleErrorWithToast } from "ui/shared-toast";
 import { fetcher } from "lib/utils";
 import { AgentSummary } from "app-types/agent";
 import { authClient } from "auth/client";
+import {
+  AgentDiscoveryFilter,
+  shouldSyncAgentStore,
+} from "lib/agent/discovery";
 
 interface UseAgentsOptions extends SWRConfiguration {
-  filters?: ("all" | "mine" | "shared" | "bookmarked")[];
+  filters?: AgentDiscoveryFilter[];
   limit?: number;
+  syncStore?: boolean;
 }
 
 export function useAgents(options: UseAgentsOptions = {}) {
-  const { filters = ["all"], limit = 50, ...swrOptions } = options;
+  const { filters = ["all"], limit = 50, syncStore, ...swrOptions } = options;
+  const shouldPopulateStore = syncStore ?? shouldSyncAgentStore(filters);
 
   // Build query string with filters
   const filtersParam = filters.join(",");
@@ -32,8 +38,9 @@ export function useAgents(options: UseAgentsOptions = {}) {
     fallbackData: [],
     onError: handleErrorWithToast,
     onSuccess: (data) => {
-      // Update Zustand store for chat mentions
-      appStore.setState({ agentList: data });
+      if (shouldPopulateStore) {
+        appStore.setState({ agentList: data });
+      }
     },
     ...swrOptions,
   });

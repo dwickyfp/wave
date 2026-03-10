@@ -16,8 +16,8 @@ export async function GET(
 
   const { id } = await params;
 
-  const hasAccess = await agentRepository.checkAccess(id, session.user.id);
-  if (!hasAccess) {
+  const agent = await agentRepository.selectAgentById(id, session.user.id);
+  if (!agent) {
     return new Response("Unauthorized", { status: 401 });
   }
 
