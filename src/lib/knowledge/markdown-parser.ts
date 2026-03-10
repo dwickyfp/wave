@@ -1,8 +1,9 @@
 /**
- * LLM-based markdown repair for low-quality extracted pages.
+ * LLM-based markdown reconstruction for extracted pages.
  *
- * The parser operates page-by-page so ContextX can keep ingest cheap on clean
- * documents and only spend LLM cost where layout repair materially helps.
+ * The parser operates page-by-page so ContextX can preserve page grounding
+ * while still using high-quality LLM reconstruction instead of full-document
+ * parsing.
  */
 import { createHash } from "node:crypto";
 import { LanguageModel, generateText } from "ai";
@@ -19,20 +20,28 @@ const PARSE_SYSTEM_PROMPT = `You are a document reconstruction expert. Your task
 
 Primary goal:
 - Reconstruct the most likely local reading order when extraction is visibly broken
+- Match the actual document structure semantically, not just readability
 - Prefer local page/section repair over exact raw line order
-- Improve readability without changing the document's facts
 
 Non-negotiable rules:
 - Preserve ALL factual information from the original text
 - Do not summarize, invent, or omit content
+- Do not flatten, merge, or reorder major sections
 - Do not move content across major sections or unrelated page regions
 - When layout is ambiguous, keep the original local grouping instead of guessing
 - Output only markdown content
 
+Structure rules:
+- Preserve heading hierarchy, numbering, and sibling order when they are present
+- Preserve section boundaries, callouts, appendices, footnotes, and figure/table references when they are detectable
+- Preserve list nesting, checklist state, and ordered list numbering
+- Preserve table grouping, captions, nearby notes, and continuation rows
+- Keep each CTX_IMAGE marker at the same local structural anchor; never hoist it to the start of a section
+
 Allowed repairs:
 - Reorder text within the same local section to repair columns and broken reading order
 - Merge wrapped lines back into paragraphs
-- Repair split list items, headings, and table rows
+- Repair split list items, headings, captions, and table rows
 - Keep captions close to the nearest table, chart, image marker, or related paragraph
 - Remove repeated headers, footers, page numbers, and watermark artifacts
 
@@ -43,6 +52,7 @@ Markdown rules:
 - Convert tabular data into markdown tables when the structure is clear
 - Never output horizontal rules (--- or ***)
 - Use a single blank line between sections
+- Do not invent headings to make the page look cleaner
 
 Code and markers:
 - Preserve code exactly and wrap it in fenced code blocks when appropriate
@@ -115,8 +125,10 @@ ${input.rawText}
 </document_window>
 
 Convert this page window into readable markdown.
-You may reorder text within the same local section to repair columns, wrapped paragraphs, tables, and lists.
-Do not summarize, invent, or move content across major sections.
+Reconstruct the page so the markdown follows the actual document structure semantically.
+You may reorder text within the same local section to repair columns, wrapped paragraphs, tables, lists, and captions.
+Preserve heading hierarchy, numbering, list nesting, table/caption grouping, and CTX_IMAGE marker placement.
+Do not summarize, invent, flatten sections, merge sibling sections, or move content across major sections.
 If the layout is ambiguous, keep the original local grouping.`;
 }
 
@@ -243,6 +255,7 @@ async function parseWindowToMarkdown(input: {
   repairPolicy: KnowledgeParseRepairPolicy;
   qualityScore: number;
   repairReason?: string | null;
+  failureMode?: "fallback" | "fail";
 }): Promise<string> {
   const { text } = await generateText({
     model: input.model,
@@ -262,9 +275,11 @@ async function parseWindowToMarkdown(input: {
 
   const parsed = text.trim();
   if (!parsed || parsed.length < Math.max(50, input.rawText.length * 0.15)) {
-    console.warn(
-      `[ContextX] Parser returned suspiciously short output for "${input.documentTitle}" page ${input.pageNumber}; using normalized text`,
-    );
+    const message = `[ContextX] Parser returned suspiciously short output for "${input.documentTitle}" page ${input.pageNumber}`;
+    if (input.failureMode === "fail") {
+      throw new Error(message);
+    }
+    console.warn(`${message}; using normalized text`);
     return input.rawText;
   }
 
@@ -298,6 +313,7 @@ async function parseSinglePage(input: {
   provider: string;
   parsingModel: string;
   repairPolicy: KnowledgeParseRepairPolicy;
+  failureMode?: "fallback" | "fail";
 }): Promise<ProcessedDocumentPage> {
   const cacheKey = buildPageCacheKey({
     page: input.page,
@@ -326,6 +342,7 @@ async function parseSinglePage(input: {
         repairPolicy: input.repairPolicy,
         qualityScore: input.page.qualityScore,
         repairReason: input.page.repairReason,
+        failureMode: input.failureMode,
       }),
     );
   }
@@ -347,6 +364,13 @@ export async function parseDocumentToMarkdown(input: {
   parsingModel: string;
   mode: KnowledgeParseMode;
   repairPolicy: KnowledgeParseRepairPolicy;
+  failureMode?: "fallback" | "fail";
+  onPageProgress?: (state: {
+    currentPage: number;
+    totalPages: number;
+    pageNumber: number;
+    repairing: boolean;
+  }) => Promise<void> | void;
 }): Promise<{
   markdown: string;
   pages: ProcessedDocumentPage[];
@@ -380,9 +404,18 @@ export async function parseDocumentToMarkdown(input: {
       input.parsingModel,
     );
     const updatedPages: ProcessedDocumentPage[] = [];
+    const totalPages = normalizedPages.length;
 
-    for (const page of normalizedPages) {
-      if (!shouldRepairPage(page, input.mode)) {
+    for (const [index, page] of normalizedPages.entries()) {
+      const repairing = shouldRepairPage(page, input.mode);
+      await input.onPageProgress?.({
+        currentPage: index + 1,
+        totalPages,
+        pageNumber: page.pageNumber,
+        repairing,
+      });
+
+      if (!repairing) {
         updatedPages.push(page);
         continue;
       }
@@ -395,6 +428,7 @@ export async function parseDocumentToMarkdown(input: {
           provider: input.parsingProvider,
           parsingModel: input.parsingModel,
           repairPolicy: input.repairPolicy,
+          failureMode: input.failureMode,
         }),
       );
     }
@@ -404,6 +438,9 @@ export async function parseDocumentToMarkdown(input: {
       pages: updatedPages,
     };
   } catch (error) {
+    if (input.failureMode === "fail") {
+      throw error;
+    }
     console.error(
       `[ContextX] Page-level markdown parsing failed for "${input.documentTitle}", falling back to normalized pages:`,
       error,

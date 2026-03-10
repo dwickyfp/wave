@@ -17,6 +17,10 @@ import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { assessExtractedPageQuality } from "./document-quality";
 import {
+  applyEnforcedKnowledgeIngestPolicy,
+  ENFORCED_CONTEXT_MODE,
+} from "./quality-ingest-policy";
+import {
   completeSourceDocumentVersion,
   markDocumentVersionFailed,
   prepareSourceDocumentVersion,
@@ -158,16 +162,27 @@ function buildFallbackPages(processedDocument: ProcessedDocument) {
 }
 
 async function resolveKnowledgeIngestModels() {
-  const [parseModel, contextModel, imageModel] = (await Promise.all([
-    settingsRepository.getSetting("knowledge-parse-model"),
-    settingsRepository.getSetting("knowledge-context-model"),
-    settingsRepository.getSetting("knowledge-image-model"),
-  ])) as Array<{ provider: string; model: string } | null | undefined>;
+  const [parseModel, contextModel, imageModel, imageNeighborContextSetting] =
+    (await Promise.all([
+      settingsRepository.getSetting("knowledge-parse-model"),
+      settingsRepository.getSetting("knowledge-context-model"),
+      settingsRepository.getSetting("knowledge-image-model"),
+      settingsRepository.getSetting("knowledge-image-neighbor-context-enabled"),
+    ])) as Array<
+      { provider: string; model: string } | boolean | null | undefined
+    >;
 
   return {
-    parseModel,
-    contextModel,
-    imageModel,
+    parseModel:
+      (parseModel as { provider: string; model: string } | null) ?? null,
+    contextModel:
+      (contextModel as { provider: string; model: string } | null) ?? null,
+    imageModel:
+      (imageModel as { provider: string; model: string } | null) ?? null,
+    imageNeighborContextEnabled:
+      typeof imageNeighborContextSetting === "boolean"
+        ? imageNeighborContextSetting
+        : true,
   };
 }
 
@@ -187,10 +202,24 @@ export async function runIngestPipeline(
   fileBuffer?: Buffer,
 ): Promise<"completed" | "skipped"> {
   /** Helper to update progress percentage (0–100) on the document row. */
-  const reportProgress = async (pct: number) => {
+  const reportProgress = async (
+    pct: number,
+    processingState?: {
+      stage:
+        | "extracting"
+        | "parsing"
+        | "materializing"
+        | "embedding"
+        | "finalizing";
+      currentPage?: number | null;
+      totalPages?: number | null;
+      pageNumber?: number | null;
+    } | null,
+  ) => {
     await assertDocumentIngestNotCanceled(documentId);
     await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
       processingProgress: Math.min(100, Math.max(0, Math.round(pct))),
+      ...(processingState !== undefined ? { processingState } : {}),
     });
   };
 
@@ -207,37 +236,43 @@ export async function runIngestPipeline(
     return "skipped";
   }
   const documentTitle = doc.name || doc.originalFilename || "Untitled";
-  const { parseModel, contextModel, imageModel } =
+  const { parseModel, contextModel, imageModel, imageNeighborContextEnabled } =
     await resolveKnowledgeIngestModels();
-  const eagerImageAnalysisConfig =
-    group.imageMode === "always" ? imageModel : null;
+  const effectiveGroup = applyEnforcedKnowledgeIngestPolicy(group);
+  const eagerImageAnalysisConfig = imageModel;
   let pendingVersion: Awaited<
     ReturnType<typeof prepareSourceDocumentVersion>
   > | null = null;
   try {
-    await reportProgress(0);
+    await reportProgress(0, { stage: "extracting" });
     pendingVersion = await prepareSourceDocumentVersion(documentId);
 
     // ── 1. Get document content as markdown ────────────────────────────────
-    await reportProgress(5);
+    await reportProgress(5, { stage: "extracting" });
     let processedDocument: ProcessedDocument;
 
     if (doc.fileType === "url" && doc.sourceUrl) {
       processedDocument = await processDocument("url", doc.sourceUrl, {
         documentTitle,
         imageAnalysis: eagerImageAnalysisConfig,
+        imageAnalysisRequired: true,
+        imageNeighborContextEnabled,
       });
     } else if (fileBuffer) {
       // Inline mode: use the buffer that was already read (no S3 download needed)
       processedDocument = await processDocument(doc.fileType, fileBuffer, {
         documentTitle,
         imageAnalysis: eagerImageAnalysisConfig,
+        imageAnalysisRequired: true,
+        imageNeighborContextEnabled,
       });
     } else if (doc.storagePath) {
       const buffer = await serverFileStorage.download(doc.storagePath);
       processedDocument = await processDocument(doc.fileType, buffer, {
         documentTitle,
         imageAnalysis: eagerImageAnalysisConfig,
+        imageAnalysisRequired: true,
+        imageNeighborContextEnabled,
       });
     } else {
       throw new Error(
@@ -247,33 +282,36 @@ export async function runIngestPipeline(
     let processedPages = buildFallbackPages(processedDocument);
     let markdown = processedDocument.markdown;
 
-    // ── 2. Optional LLM-based markdown parsing ────────────────────────────
-    await reportProgress(15);
-    if (
-      parseModel?.provider &&
-      parseModel?.model &&
-      group.parseMode !== "off"
-    ) {
-      const parsedDocument = await parseDocumentToMarkdown({
-        pages: processedPages,
-        documentTitle,
-        parsingProvider: parseModel.provider,
-        parsingModel: parseModel.model,
-        mode: group.parseMode,
-        repairPolicy: group.parseRepairPolicy,
-      });
-      markdown = parsedDocument.markdown;
-      processedPages = parsedDocument.pages;
-    } else if (processedPages.length > 0) {
-      markdown = processedPages
-        .flatMap((page) => [
-          `<!--CTX_PAGE:${page.pageNumber}-->`,
-          page.markdown.trim() || page.normalizedText.trim(),
-        ])
-        .filter(Boolean)
-        .join("\n\n")
-        .trim();
+    if (!parseModel?.provider || !parseModel?.model) {
+      throw new Error(
+        "Knowledge parse model is required for page-by-page markdown reconstruction",
+      );
     }
+
+    // ── 2. LLM-based markdown parsing (page-first) ───────────────────────
+    await reportProgress(15, { stage: "parsing" });
+    const totalPages = processedPages.length;
+    const parsedDocument = await parseDocumentToMarkdown({
+      pages: processedPages,
+      documentTitle,
+      parsingProvider: parseModel.provider,
+      parsingModel: parseModel.model,
+      mode: effectiveGroup.parseMode,
+      repairPolicy: effectiveGroup.parseRepairPolicy,
+      failureMode: "fail",
+      onPageProgress: async ({ currentPage, pageNumber }) => {
+        const parseProgress =
+          totalPages > 0 ? 15 + (currentPage / totalPages) * 20 : 35;
+        await reportProgress(parseProgress, {
+          stage: "parsing",
+          currentPage,
+          totalPages,
+          pageNumber,
+        });
+      },
+    });
+    markdown = parsedDocument.markdown;
+    processedPages = parsedDocument.pages;
     const resolvedImages = resolveContextImageLocations(
       markdown,
       processedDocument.images,
@@ -287,27 +325,27 @@ export async function runIngestPipeline(
     markdown = applyContextImageBlocks(markdown, imageBlocks);
 
     // ── 3–8. Normalize, structure, enrich, embed, commit ──────────────────
-    await reportProgress(35);
+    await reportProgress(35, { stage: "materializing" });
     const materialized = await materializeDocumentMarkdown({
       documentId,
       groupId,
       documentTitle,
       doc,
-      group,
+      group: effectiveGroup,
       markdown,
       images: persistedImages,
       pages: processedPages,
-      contextMode: group.contextMode,
+      contextMode: ENFORCED_CONTEXT_MODE,
       contextModel,
       reportProgress,
     });
 
-    await reportProgress(90);
+    await reportProgress(90, { stage: "finalizing" });
     await assertDocumentIngestNotCanceled(documentId);
     await completeSourceDocumentVersion({
       versionId: pendingVersion.id,
       doc,
-      group,
+      group: effectiveGroup,
       materialized,
     });
 

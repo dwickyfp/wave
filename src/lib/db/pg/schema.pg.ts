@@ -878,7 +878,7 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
     enum: ["off", "auto", "always"],
   })
     .notNull()
-    .default("auto"),
+    .default("always"),
   parseRepairPolicy: varchar("parse_repair_policy", {
     enum: ["strict", "section-safe-reorder", "aggressive"],
   })
@@ -888,12 +888,12 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
     enum: ["deterministic", "auto-llm", "always-llm"],
   })
     .notNull()
-    .default("deterministic"),
+    .default("always-llm"),
   imageMode: varchar("image_mode", {
     enum: ["off", "auto", "always"],
   })
     .notNull()
-    .default("auto"),
+    .default("always"),
   lazyRefinementEnabled: boolean("lazy_refinement_enabled")
     .notNull()
     .default(true),
@@ -966,6 +966,7 @@ export const KnowledgeDocumentTable = pgTable(
     processingProgress: integer("processing_progress"),
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
+    embeddingTokenCount: integer("embedding_token_count").notNull().default(0),
     metadata: json("metadata"),
     metadataEmbedding: vector("metadata_embedding"),
     /** Full markdown content of the processed document (Context7-style retrieval) */
@@ -1019,6 +1020,7 @@ export const KnowledgeDocumentVersionTable = pgTable(
     embeddingModel: text("embedding_model").notNull(),
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
+    embeddingTokenCount: integer("embedding_token_count").notNull().default(0),
     sourceVersionId: uuid("source_version_id"),
     createdByUserId: uuid("created_by_user_id").references(() => UserTable.id, {
       onDelete: "set null",
@@ -1165,6 +1167,8 @@ export const KnowledgeDocumentImageTable = pgTable(
     altText: text("alt_text"),
     caption: text("caption"),
     surroundingText: text("surrounding_text"),
+    precedingText: text("preceding_text"),
+    followingText: text("following_text"),
     isRenderable: boolean("is_renderable").notNull().default(false),
     manualLabel: boolean("manual_label").notNull().default(false),
     manualDescription: boolean("manual_description").notNull().default(false),
@@ -1328,6 +1332,8 @@ export const KnowledgeDocumentImageVersionTable = pgTable(
     altText: text("alt_text"),
     caption: text("caption"),
     surroundingText: text("surrounding_text"),
+    precedingText: text("preceding_text"),
+    followingText: text("following_text"),
     isRenderable: boolean("is_renderable").notNull().default(false),
     manualLabel: boolean("manual_label").notNull().default(false),
     manualDescription: boolean("manual_description").notNull().default(false),

@@ -2,6 +2,7 @@
 
 import { KnowledgeDocument } from "app-types/knowledge";
 import { format } from "date-fns";
+import { formatKnowledgeDocumentProcessingState } from "lib/knowledge/processing-state";
 import { notify } from "lib/notify";
 import { cn } from "lib/utils";
 import {
@@ -67,6 +68,9 @@ export function DocumentCard({
   const [canceling, setCanceling] = useState(false);
   const isInherited = !!doc.isInherited;
   const FileIconComp = FILE_ICONS[doc.fileType] ?? FileIcon;
+  const processingLabel = formatKnowledgeDocumentProcessingState(
+    doc.processingState,
+  );
 
   const handleReEmbed = async () => {
     setReembedding(true);
@@ -259,11 +263,18 @@ export function DocumentCard({
       </div>
 
       {doc.status === "processing" && (
-        <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
-          <div
-            className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
-            style={{ width: `${doc.processingProgress ?? 0}%` }}
-          />
+        <div className="flex w-full flex-col gap-1.5">
+          {processingLabel ? (
+            <div className="text-[11px] text-muted-foreground">
+              {processingLabel}
+            </div>
+          ) : null}
+          <div className="w-full h-1.5 bg-muted rounded-full overflow-hidden">
+            <div
+              className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out"
+              style={{ width: `${doc.processingProgress ?? 0}%` }}
+            />
+          </div>
         </div>
       )}
     </Card>

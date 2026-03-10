@@ -5,8 +5,10 @@ import type {
   KnowledgeDocumentImagePreview,
   KnowledgeDocumentHistoryEvent,
   KnowledgeDocumentPreview,
+  KnowledgeDocumentVersionContent,
   KnowledgeDocumentVersionSummary,
 } from "app-types/knowledge";
+import { formatKnowledgeDocumentProcessingState } from "lib/knowledge/processing-state";
 import { cn } from "lib/utils";
 import {
   Clock3Icon,
@@ -21,9 +23,8 @@ import {
   TableIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import { toast } from "sonner";
-import { Markdown } from "@/components/markdown";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
 import { Input } from "ui/input";
@@ -58,7 +59,8 @@ const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
 };
 
 type MainTab = "configuration" | "original" | "images" | "markdown" | "history";
-type MarkdownTab = "result" | "source";
+
+const LIVE_IMAGE_CACHE_KEY = "__live__";
 
 function isMainTab(value: string): value is MainTab {
   return (
@@ -70,15 +72,15 @@ function isMainTab(value: string): value is MainTab {
   );
 }
 
-function isMarkdownTab(value: string): value is MarkdownTab {
-  return value === "result" || value === "source";
-}
-
 function formatBytes(bytes?: number | null): string {
   if (!bytes) return "";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
+function getImageCacheKey(versionId?: string | null) {
+  return versionId ?? LIVE_IMAGE_CACHE_KEY;
 }
 
 function formatVersionLabel(version: KnowledgeDocumentVersionSummary) {
@@ -182,29 +184,6 @@ interface Props {
   onDocumentUpdated?: (doc: KnowledgeDocument) => void;
 }
 
-function clampOffset(offset: number, markdown: string) {
-  return Math.max(0, Math.min(offset, markdown.length));
-}
-
-function scrollTextareaToOffset(
-  textarea: HTMLTextAreaElement,
-  offset: number,
-  markdown: string,
-) {
-  const clampedOffset = clampOffset(offset, markdown);
-  const lineHeight =
-    Number.parseFloat(getComputedStyle(textarea).lineHeight) || 24;
-  const lineIndex = markdown.slice(0, clampedOffset).split("\n").length - 1;
-  const targetTop = Math.max(
-    0,
-    lineIndex * lineHeight - textarea.clientHeight / 2 + lineHeight,
-  );
-
-  textarea.focus();
-  textarea.setSelectionRange(clampedOffset, clampedOffset);
-  textarea.scrollTop = targetTop;
-}
-
 export function DocumentPreviewSheet({
   doc,
   groupId,
@@ -224,7 +203,6 @@ export function DocumentPreviewSheet({
   const [savingVersion, setSavingVersion] = useState(false);
   const [savingImages, setSavingImages] = useState(false);
   const [mainTab, setMainTab] = useState<MainTab>("configuration");
-  const [markdownTab, setMarkdownTab] = useState<MarkdownTab>("result");
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
     null,
   );
@@ -232,18 +210,21 @@ export function DocumentPreviewSheet({
     null,
   );
   const [draftMarkdown, setDraftMarkdown] = useState("");
+  const [markdownByVersion, setMarkdownByVersion] = useState<
+    Record<string, string>
+  >({});
+  const [markdownLoading, setMarkdownLoading] = useState(false);
+  const [markdownError, setMarkdownError] = useState<string | null>(null);
   const [documentImages, setDocumentImages] = useState<
     KnowledgeDocumentImagePreview[]
   >([]);
+  const [imagesByVersion, setImagesByVersion] = useState<
+    Record<string, KnowledgeDocumentImagePreview[]>
+  >({});
   const [draftImages, setDraftImages] = useState<
     KnowledgeDocumentImagePreview[]
   >([]);
   const [imagesLoading, setImagesLoading] = useState(false);
-  const [isEditingMarkdown, setIsEditingMarkdown] = useState(false);
-  const [pendingSourceOffset, setPendingSourceOffset] = useState<number | null>(
-    null,
-  );
-  const markdownTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const loadPreview = useEffectEvent(
     async ({ showLoader = true }: { showLoader?: boolean } = {}) => {
@@ -326,6 +307,26 @@ export function DocumentPreviewSheet({
       versionId?: string | null,
       { silent = false }: { silent?: boolean } = {},
     ) => {
+      const cacheKey = getImageCacheKey(versionId);
+      const cachedImages = imagesByVersion[cacheKey];
+      if (cachedImages !== undefined) {
+        setDocumentImages(cachedImages);
+        return;
+      }
+
+      if (
+        versionId &&
+        versionId === previewData?.activeVersionId &&
+        previewData.images.length > 0
+      ) {
+        setImagesByVersion((current) => ({
+          ...current,
+          [cacheKey]: previewData.images,
+        }));
+        setDocumentImages(previewData.images);
+        return;
+      }
+
       if (!silent) {
         setImagesLoading(true);
       }
@@ -346,7 +347,12 @@ export function DocumentPreviewSheet({
         if (!response.ok || data.error) {
           throw new Error(data.error || "Failed to load images");
         }
-        setDocumentImages(data.images ?? []);
+        const nextImages = data.images ?? [];
+        setImagesByVersion((current) => ({
+          ...current,
+          [cacheKey]: nextImages,
+        }));
+        setDocumentImages(nextImages);
       } catch (imagesError) {
         if (!silent) {
           toast.error(
@@ -363,6 +369,54 @@ export function DocumentPreviewSheet({
     },
   );
 
+  const loadVersionMarkdown = useEffectEvent(
+    async (
+      documentId: string,
+      versionId: string,
+      { force = false }: { force?: boolean } = {},
+    ) => {
+      if (!force && markdownByVersion[versionId] !== undefined) {
+        setDraftMarkdown(markdownByVersion[versionId] ?? "");
+        setMarkdownError(null);
+        return;
+      }
+
+      setMarkdownLoading(true);
+      setMarkdownError(null);
+      try {
+        const response = await fetch(
+          `/api/knowledge/${groupId}/documents/${documentId}/versions/${versionId}/content?ts=${Date.now()}`,
+          {
+            cache: "no-store",
+          },
+        );
+        const data = (await response.json()) as
+          | (KnowledgeDocumentVersionContent & { error?: string })
+          | { error?: string };
+        if (!response.ok || data.error) {
+          throw new Error(data.error || "Failed to load markdown");
+        }
+
+        const markdown =
+          "markdownContent" in data ? (data.markdownContent ?? "") : "";
+        setMarkdownByVersion((current) => ({
+          ...current,
+          [versionId]: markdown,
+        }));
+        setDraftMarkdown(markdown);
+      } catch (loadError) {
+        setMarkdownError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Failed to load markdown",
+        );
+        setDraftMarkdown("");
+      } finally {
+        setMarkdownLoading(false);
+      }
+    },
+  );
+
   useEffect(() => {
     if (!open || !doc) {
       setPreviewData(null);
@@ -371,12 +425,13 @@ export function DocumentPreviewSheet({
       setSelectedVersionId(null);
       setPreferredVersionId(null);
       setDraftMarkdown("");
+      setMarkdownByVersion({});
+      setMarkdownLoading(false);
+      setMarkdownError(null);
       setDocumentImages([]);
+      setImagesByVersion({});
       setDraftImages([]);
-      setIsEditingMarkdown(false);
-      setPendingSourceOffset(null);
       setMainTab("configuration");
-      setMarkdownTab("result");
       return;
     }
 
@@ -394,13 +449,43 @@ export function DocumentPreviewSheet({
   ]);
 
   useEffect(() => {
+    if (!previewData?.activeVersionId) return;
+    const activeImages = previewData.images ?? [];
+    const activeCacheKey = getImageCacheKey(previewData.activeVersionId);
+    setImagesByVersion((current) =>
+      current[activeCacheKey] === activeImages
+        ? current
+        : {
+            ...current,
+            [activeCacheKey]: activeImages,
+          },
+    );
+
+    if (
+      (selectedVersionId ?? previewData.activeVersionId) ===
+      previewData.activeVersionId
+    ) {
+      setDocumentImages(activeImages);
+    }
+  }, [previewData?.activeVersionId, previewData?.images, selectedVersionId]);
+
+  useEffect(() => {
     if (mainTab === "history" && previewData?.doc?.id) {
       void loadHistory(previewData.doc.id);
     }
     if (mainTab === "images" && previewData?.doc?.id) {
       void loadImages(previewData.doc.id, selectedVersionId ?? null);
     }
-  }, [mainTab, previewData?.doc?.id, groupId, selectedVersionId]);
+    if (mainTab === "markdown" && previewData?.doc?.id && selectedVersionId) {
+      void loadVersionMarkdown(previewData.doc.id, selectedVersionId);
+    }
+  }, [
+    mainTab,
+    previewData?.doc?.id,
+    groupId,
+    selectedVersionId,
+    loadVersionMarkdown,
+  ]);
 
   const hasPendingVersionJob =
     previewData?.versions.some((version) => version.status === "processing") ??
@@ -455,55 +540,37 @@ export function DocumentPreviewSheet({
   }, [previewData?.activeVersionId, preferredVersionId]);
 
   useEffect(() => {
-    if (!previewData) return;
-    const selectedVersion =
-      previewData.versions.find(
-        (version) => version.id === selectedVersionId,
-      ) ??
-      previewData.versions.find((version) => version.isActive) ??
-      null;
-    setDraftMarkdown(
-      selectedVersion?.markdownContent ?? previewData.markdownContent ?? "",
-    );
-  }, [previewData, selectedVersionId]);
+    if (
+      selectedVersionId &&
+      markdownByVersion[selectedVersionId] !== undefined
+    ) {
+      setDraftMarkdown(markdownByVersion[selectedVersionId] ?? "");
+      setMarkdownError(null);
+    }
+  }, [selectedVersionId, markdownByVersion]);
 
   useEffect(() => {
     setDraftImages(documentImages);
   }, [documentImages]);
-
-  useEffect(() => {
-    if (
-      !isEditingMarkdown ||
-      markdownTab !== "source" ||
-      pendingSourceOffset === null
-    ) {
-      return;
-    }
-
-    const textarea = markdownTextareaRef.current;
-    if (!textarea) {
-      return;
-    }
-
-    const frameId = window.requestAnimationFrame(() => {
-      scrollTextareaToOffset(textarea, pendingSourceOffset, draftMarkdown);
-      setPendingSourceOffset(null);
-    });
-
-    return () => window.cancelAnimationFrame(frameId);
-  }, [draftMarkdown, isEditingMarkdown, markdownTab, pendingSourceOffset]);
 
   const currentTitle = previewData?.doc?.name ?? "";
   const currentDescription = previewData?.doc?.description ?? "";
   const isInherited = !!previewData?.doc?.isInherited;
   const activeVersion =
     previewData?.versions.find((version) => version.isActive) ?? null;
+  const processingLabel = formatKnowledgeDocumentProcessingState(
+    doc?.processingState,
+  );
   const selectedVersion =
     previewData?.versions.find((version) => version.id === selectedVersionId) ??
     activeVersion ??
     null;
   const baselineMarkdown =
-    selectedVersion?.markdownContent ?? previewData?.markdownContent ?? "";
+    (selectedVersionId && markdownByVersion[selectedVersionId]) ?? "";
+  const markdownAvailable =
+    !!previewData?.markdownAvailable && !!selectedVersionId;
+  const hasLoadedMarkdown =
+    !!selectedVersionId && markdownByVersion[selectedVersionId] !== undefined;
   const hasConfigChanges =
     !isInherited &&
     (title.trim() !== currentTitle ||
@@ -518,13 +585,16 @@ export function DocumentPreviewSheet({
     (!selectedVersion || !selectedVersion.canRollback);
   const showMarkdownActions =
     mainTab === "markdown" &&
-    (!!previewData?.versions.length || !!previewData?.markdownContent) &&
+    markdownAvailable &&
     (hasVersionSelectionChange || hasMarkdownDraftChanges);
   const isActiveVersionSelected =
     !!selectedVersion &&
     selectedVersion.id === (previewData?.activeVersionId ?? null);
   const canEditMarkdown =
-    !isInherited && isActiveVersionSelected && mainTab === "markdown";
+    !isInherited &&
+    isActiveVersionSelected &&
+    mainTab === "markdown" &&
+    hasLoadedMarkdown;
   const canEditImages =
     !isInherited && isActiveVersionSelected && mainTab === "images";
   const hasImageDraftChanges =
@@ -592,14 +662,14 @@ export function DocumentPreviewSheet({
   };
 
   const resetMarkdownState = () => {
-    setIsEditingMarkdown(false);
-    setMarkdownTab("result");
     setSelectedVersionId(previewData?.activeVersionId ?? null);
     setPreferredVersionId(null);
-    setPendingSourceOffset(null);
-    setDraftMarkdown(
-      activeVersion?.markdownContent ?? previewData?.markdownContent ?? "",
-    );
+    if (previewData?.activeVersionId) {
+      setDraftMarkdown(markdownByVersion[previewData.activeVersionId] ?? "");
+      setMarkdownError(null);
+    } else {
+      setDraftMarkdown("");
+    }
   };
 
   const handleSaveMarkdown = async () => {
@@ -659,9 +729,10 @@ export function DocumentPreviewSheet({
       } else {
         setPreferredVersionId(null);
       }
-      setIsEditingMarkdown(false);
-      setMarkdownTab("result");
       await loadPreview();
+      if (mainTab === "markdown" && queuedVersionId) {
+        await loadVersionMarkdown(doc.id, queuedVersionId, { force: true });
+      }
       if (mainTab === "history") {
         await loadHistory(doc.id);
       }
@@ -724,27 +795,9 @@ export function DocumentPreviewSheet({
 
   const handleSelectVersion = (value: string) => {
     setSelectedVersionId(value);
-    setIsEditingMarkdown(false);
-    setMarkdownTab("result");
-    setPendingSourceOffset(null);
-  };
-
-  const startMarkdownEdit = () => {
-    if (!canEditMarkdown) return;
-    setIsEditingMarkdown(true);
-    setMarkdownTab("source");
-  };
-
-  const handleResultDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!canEditMarkdown) return;
-
-    const target = event.target as HTMLElement | null;
-    const sourceElement = target?.closest<HTMLElement>("[data-source-start]");
-    const sourceStart = sourceElement?.dataset.sourceStart;
-    const parsedOffset = sourceStart ? Number.parseInt(sourceStart, 10) : 0;
-
-    setPendingSourceOffset(Number.isFinite(parsedOffset) ? parsedOffset : 0);
-    startMarkdownEdit();
+    setDraftMarkdown(markdownByVersion[value] ?? "");
+    setMarkdownError(null);
+    setDocumentImages(imagesByVersion[getImageCacheKey(value)] ?? []);
   };
 
   const FileIconComp = FILE_ICONS[doc?.fileType ?? ""] ?? FileIcon;
@@ -793,6 +846,19 @@ export function DocumentPreviewSheet({
                     </div>
                   )}
                 </div>
+                {doc?.status === "processing" ? (
+                  <div className="mt-2 flex max-w-sm flex-col gap-1">
+                    <div className="text-xs text-muted-foreground">
+                      {processingLabel ?? "Processing document"}
+                    </div>
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-blue-500 transition-all duration-500 ease-out"
+                        style={{ width: `${doc.processingProgress ?? 0}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
 
@@ -810,7 +876,7 @@ export function DocumentPreviewSheet({
                 <TabsTrigger
                   value="markdown"
                   className="h-7 text-xs"
-                  disabled={!previewData?.markdownContent}
+                  disabled={!previewData?.markdownAvailable}
                 >
                   Result Markdown
                 </TabsTrigger>
@@ -1073,34 +1139,14 @@ export function DocumentPreviewSheet({
                 </TabsContent>
 
                 <TabsContent value="markdown" className="mt-0 h-full">
-                  {previewData.markdownContent ? (
+                  {previewData.markdownAvailable ? (
                     <div className="flex h-full min-h-0 flex-col">
                       <div className="border-b px-6 py-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
-                          <Tabs
-                            value={markdownTab}
-                            onValueChange={(value) => {
-                              if (isMarkdownTab(value)) {
-                                setMarkdownTab(value);
-                              }
-                            }}
-                            className="w-fit"
-                          >
-                            <TabsList className="h-8">
-                              <TabsTrigger
-                                value="result"
-                                className="h-7 text-xs"
-                              >
-                                Result
-                              </TabsTrigger>
-                              <TabsTrigger
-                                value="source"
-                                className="h-7 text-xs"
-                              >
-                                Markdown
-                              </TabsTrigger>
-                            </TabsList>
-                          </Tabs>
+                          <div className="text-xs text-muted-foreground">
+                            Raw markdown only. Rendered preview is disabled to
+                            keep the drawer lightweight.
+                          </div>
 
                           {showMarkdownActions ? (
                             <div className="flex flex-wrap items-center gap-2">
@@ -1165,43 +1211,34 @@ export function DocumentPreviewSheet({
                       ) : null}
 
                       <div className="min-h-0 flex-1">
-                        {markdownTab === "result" ? (
-                          <ScrollArea className="h-full">
-                            <div
-                              className={cn(
-                                "min-w-0 max-w-full p-6 pb-10",
-                                canEditMarkdown && "cursor-text",
-                              )}
-                              onDoubleClick={handleResultDoubleClick}
-                            >
-                              <Markdown>{draftMarkdown}</Markdown>
-                            </div>
-                          </ScrollArea>
+                        {markdownLoading ? (
+                          <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+                            <Loader2Icon className="size-4 animate-spin" />
+                            Loading markdown...
+                          </div>
+                        ) : markdownError ? (
+                          <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">
+                            {markdownError}
+                          </div>
+                        ) : !hasLoadedMarkdown ? (
+                          <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">
+                            Markdown for this version is not available yet.
+                          </div>
                         ) : (
                           <ScrollArea className="h-full">
-                            <div
-                              className="h-full"
-                              onDoubleClick={() => {
-                                if (canEditMarkdown) {
-                                  setIsEditingMarkdown(true);
+                            {canEditMarkdown ? (
+                              <Textarea
+                                value={draftMarkdown}
+                                onChange={(event) =>
+                                  setDraftMarkdown(event.target.value)
                                 }
-                              }}
-                            >
-                              {isEditingMarkdown && canEditMarkdown ? (
-                                <Textarea
-                                  ref={markdownTextareaRef}
-                                  value={draftMarkdown}
-                                  onChange={(event) =>
-                                    setDraftMarkdown(event.target.value)
-                                  }
-                                  className="min-h-full rounded-none border-0 bg-transparent px-6 py-6 font-mono text-xs leading-relaxed shadow-none focus-visible:ring-0"
-                                />
-                              ) : (
-                                <pre className="p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
-                                  {draftMarkdown}
-                                </pre>
-                              )}
-                            </div>
+                                className="min-h-full rounded-none border-0 bg-transparent px-6 py-6 font-mono text-xs leading-relaxed shadow-none focus-visible:ring-0"
+                              />
+                            ) : (
+                              <pre className="p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
+                                {draftMarkdown || "No markdown content."}
+                              </pre>
+                            )}
                           </ScrollArea>
                         )}
                       </div>

@@ -103,11 +103,14 @@ export async function GET(_req: NextRequest, { params }: Params) {
         mimeType,
         activeVersionId: doc.activeVersionId ?? null,
         latestVersionNumber: doc.latestVersionNumber ?? 0,
+        embeddingTokenCount: doc.embeddingTokenCount ?? 0,
+        processingState: doc.processingState ?? null,
       },
       sourceUrl: doc.sourceUrl ?? null,
       previewUrl: null,
       content: null,
-      markdownContent: doc.markdownContent ?? null,
+      markdownAvailable:
+        Boolean(activeVersion?.id) || Boolean(doc.markdownContent),
       isUrlOnly: true,
       activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
       activeVersionNumber:
@@ -160,10 +163,13 @@ export async function GET(_req: NextRequest, { params }: Params) {
         mimeType,
         activeVersionId: doc.activeVersionId ?? null,
         latestVersionNumber: doc.latestVersionNumber ?? 0,
+        embeddingTokenCount: doc.embeddingTokenCount ?? 0,
+        processingState: doc.processingState ?? null,
       },
       previewUrl,
       content,
-      markdownContent: doc.markdownContent ?? null,
+      markdownAvailable:
+        Boolean(activeVersion?.id) || Boolean(doc.markdownContent),
       isUrlOnly: false,
       activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
       activeVersionNumber:

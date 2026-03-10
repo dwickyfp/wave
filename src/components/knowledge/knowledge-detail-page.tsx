@@ -14,6 +14,12 @@ import {
 } from "app-types/knowledge";
 import { format } from "date-fns";
 import { notify } from "lib/notify";
+import {
+  ENFORCED_CONTEXT_MODE,
+  ENFORCED_IMAGE_MODE,
+  ENFORCED_PARSE_MODE,
+  ENFORCED_PARSE_REPAIR_POLICY,
+} from "lib/knowledge/quality-ingest-policy";
 import { cn } from "lib/utils";
 import {
   BrainIcon,
@@ -211,17 +217,15 @@ export function KnowledgeDetailPage({
   const [threshold, setThreshold] = useState(group.retrievalThreshold ?? 0);
   const [embeddingValue, setEmbeddingValue] = useState(initialEmbeddingValue);
   const [rerankingValue, setRerankingValue] = useState(initialRerankingValue);
-  const [parseMode, setParseMode] = useState<KnowledgeParseMode>(
-    group.parseMode,
-  );
+  const [parseMode, setParseMode] =
+    useState<KnowledgeParseMode>(ENFORCED_PARSE_MODE);
   const [parseRepairPolicy, setParseRepairPolicy] =
-    useState<KnowledgeParseRepairPolicy>(group.parseRepairPolicy);
+    useState<KnowledgeParseRepairPolicy>(ENFORCED_PARSE_REPAIR_POLICY);
   const [contextMode, setContextMode] = useState<KnowledgeContextMode>(
-    group.contextMode,
+    ENFORCED_CONTEXT_MODE,
   );
-  const [imageMode, setImageMode] = useState<KnowledgeImageMode>(
-    group.imageMode,
-  );
+  const [imageMode, setImageMode] =
+    useState<KnowledgeImageMode>(ENFORCED_IMAGE_MODE);
   const [lazyRefinementEnabled, setLazyRefinementEnabled] = useState(
     group.lazyRefinementEnabled,
   );
@@ -234,12 +238,14 @@ export function KnowledgeDetailPage({
   const [savedRerankingValue, setSavedRerankingValue] = useState(
     initialRerankingValue,
   );
-  const [savedParseMode, setSavedParseMode] = useState(group.parseMode);
+  const [savedParseMode, setSavedParseMode] = useState(ENFORCED_PARSE_MODE);
   const [savedParseRepairPolicy, setSavedParseRepairPolicy] = useState(
-    group.parseRepairPolicy,
+    ENFORCED_PARSE_REPAIR_POLICY,
   );
-  const [savedContextMode, setSavedContextMode] = useState(group.contextMode);
-  const [savedImageMode, setSavedImageMode] = useState(group.imageMode);
+  const [savedContextMode, setSavedContextMode] = useState(
+    ENFORCED_CONTEXT_MODE,
+  );
+  const [savedImageMode, setSavedImageMode] = useState(ENFORCED_IMAGE_MODE);
   const [savedLazyRefinementEnabled, setSavedLazyRefinementEnabled] = useState(
     group.lazyRefinementEnabled,
   );
@@ -453,6 +459,7 @@ export function KnowledgeDetailPage({
 
   // ── MCP section state ────────────────────────────────────────────────────
   const [mcpOpen, setMcpOpen] = useState(false);
+  const [linkedGroupOpen, setLinkedGroupOpen] = useState(false);
   const [mcpEnabled, setMcpEnabled] = useState(group.mcpEnabled);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [keyPreview, setKeyPreview] = useState(group.mcpApiKeyPreview);
@@ -691,8 +698,8 @@ export function KnowledgeDetailPage({
                     </span>
                   ) : (
                     <p className="text-xs text-muted-foreground">
-                      Not configured. `parseMode=off` or `auto` will stay
-                      deterministic.
+                      Not configured. Quality-first ingest will fail until a
+                      knowledge parse model is configured.
                     </p>
                   )}
                 </div>
@@ -705,8 +712,8 @@ export function KnowledgeDetailPage({
                     </span>
                   ) : (
                     <p className="text-xs text-muted-foreground">
-                      Not configured. Context falls back to deterministic
-                      summaries.
+                      Not configured. Quality-first ingest expects an LLM
+                      context model for chunk enrichment.
                     </p>
                   )}
                 </div>
@@ -719,7 +726,8 @@ export function KnowledgeDetailPage({
                     </span>
                   ) : (
                     <p className="text-xs text-muted-foreground">
-                      Not configured. Image analysis stays caption-based.
+                      Not configured. Documents with extracted images will fail
+                      ingest until a knowledge image model is configured.
                     </p>
                   )}
                 </div>
@@ -765,6 +773,7 @@ export function KnowledgeDetailPage({
                     onChange={(e) =>
                       setParseMode(e.target.value as KnowledgeParseMode)
                     }
+                    disabled
                     className="h-9 rounded-md border bg-background px-3 text-sm"
                   >
                     <option value="off">off</option>
@@ -772,8 +781,8 @@ export function KnowledgeDetailPage({
                     <option value="always">always</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    `auto` repairs only low-quality pages. `always` repairs
-                    every page.
+                    Locked globally. Knowledge ingest always uses page-first LLM
+                    parsing for every page.
                   </p>
                 </div>
 
@@ -788,6 +797,7 @@ export function KnowledgeDetailPage({
                         e.target.value as KnowledgeParseRepairPolicy,
                       )
                     }
+                    disabled
                     className="h-9 rounded-md border bg-background px-3 text-sm"
                   >
                     <option value="strict">strict</option>
@@ -797,8 +807,8 @@ export function KnowledgeDetailPage({
                     <option value="aggressive">aggressive</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    `section-safe-reorder` keeps local reconstruction readable
-                    without crossing major sections.
+                    Locked globally. Local repair preserves the original
+                    section, list, table, and figure structure.
                   </p>
                 </div>
 
@@ -809,6 +819,7 @@ export function KnowledgeDetailPage({
                     onChange={(e) =>
                       setContextMode(e.target.value as KnowledgeContextMode)
                     }
+                    disabled
                     className="h-9 rounded-md border bg-background px-3 text-sm"
                   >
                     <option value="deterministic">deterministic</option>
@@ -816,8 +827,8 @@ export function KnowledgeDetailPage({
                     <option value="always-llm">always-llm</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    Deterministic is cheapest. `auto-llm` only enhances weak
-                    chunks.
+                    Locked globally. LLM context generation runs for all chunks
+                    before embedding.
                   </p>
                 </div>
 
@@ -828,6 +839,7 @@ export function KnowledgeDetailPage({
                     onChange={(e) =>
                       setImageMode(e.target.value as KnowledgeImageMode)
                     }
+                    disabled
                     className="h-9 rounded-md border bg-background px-3 text-sm"
                   >
                     <option value="off">off</option>
@@ -835,8 +847,8 @@ export function KnowledgeDetailPage({
                     <option value="always">always</option>
                   </select>
                   <p className="text-xs text-muted-foreground">
-                    `auto` keeps ingest cheap; eager image vision runs only in
-                    `always`.
+                    Locked globally. Extracted images always use LLM-based
+                    labeling and description.
                   </p>
                 </div>
               </div>
@@ -900,153 +912,168 @@ export function KnowledgeDetailPage({
 
       {/* Linked Group Chain */}
       {isOwner && (
-        <div className="border rounded-xl p-4 flex flex-col gap-4">
-          <div className="flex items-start justify-between gap-3">
+        <div className="border rounded-xl overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-accent/50 transition-colors"
+            onClick={() => setLinkedGroupOpen((o) => !o)}
+          >
             <div className="flex items-center gap-2">
               <Link2Icon className="size-4 text-primary" />
-              <div>
-                <h2 className="text-sm font-medium">Linked Group Chain</h2>
-                <p className="text-xs text-muted-foreground">
-                  Linked groups are read-only in this group. Retrieval uses each
-                  source group&apos;s own embedding, reranking model, and
-                  threshold.
-                </p>
+              <span className="text-sm font-medium">Linked Group Chain</span>
+              {sourceGroupIds.length > 0 && (
+                <Badge variant="outline" className="text-xs px-1.5 py-0">
+                  {sourceGroupIds.length} linked
+                </Badge>
+              )}
+            </div>
+            {linkedGroupOpen ? (
+              <ChevronUpIcon className="size-4" />
+            ) : (
+              <ChevronDownIcon className="size-4" />
+            )}
+          </button>
+
+          {linkedGroupOpen && (
+            <div className="px-4 pb-4 flex flex-col gap-4 border-t">
+              <p className="text-xs text-muted-foreground pt-3">
+                Linked groups are read-only in this group. Retrieval uses each
+                source group&apos;s own embedding, reranking model, and
+                threshold.
+              </p>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
+                  <Label className="text-sm font-medium">Current Links</Label>
+                  {linkedSourceGroups.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No linked source groups yet.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {linkedSourceGroups.map((source) => {
+                        const removing =
+                          sourceGroupMutation.action === "remove" &&
+                          sourceGroupMutation.sourceGroupId === source.id;
+                        return (
+                          <div
+                            key={source.id}
+                            className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-sm truncate">
+                                  {source.name}
+                                </span>
+                                <Badge
+                                  variant="secondary"
+                                  className="text-[10px] px-1 py-0"
+                                >
+                                  {source.ownerLabel}
+                                </Badge>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] px-1 py-0"
+                                >
+                                  {source.visibility}
+                                </Badge>
+                              </div>
+                              {source.description && (
+                                <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                                  {source.description}
+                                </p>
+                              )}
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="shrink-0"
+                              disabled={sourceMutationInFlight}
+                              onClick={() => handleRemoveSourceGroup(source.id)}
+                            >
+                              {removing ? (
+                                <Loader2Icon className="size-3.5 animate-spin" />
+                              ) : (
+                                <>
+                                  <Trash2Icon className="size-3.5 mr-1" />
+                                  Remove
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
+                  <Label className="text-sm font-medium">
+                    Add Source Group
+                  </Label>
+                  {linkableSourceGroups.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No additional groups available to link.
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {linkableSourceGroups.map((source) => {
+                        const adding =
+                          sourceGroupMutation.action === "add" &&
+                          sourceGroupMutation.sourceGroupId === source.id;
+                        return (
+                          <div
+                            key={source.id}
+                            className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-sm truncate">
+                                  {source.name}
+                                </span>
+                                <Badge
+                                  variant="secondary"
+                                  className="text-[10px] px-1 py-0"
+                                >
+                                  {source.ownerLabel}
+                                </Badge>
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] px-1 py-0"
+                                >
+                                  {source.visibility}
+                                </Badge>
+                              </div>
+                              {source.description && (
+                                <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                                  {source.description}
+                                </p>
+                              )}
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="shrink-0"
+                              disabled={sourceMutationInFlight}
+                              onClick={() => handleAddSourceGroup(source.id)}
+                            >
+                              {adding ? (
+                                <Loader2Icon className="size-3.5 animate-spin" />
+                              ) : (
+                                <>
+                                  <PlusIcon className="size-3.5 mr-1" />
+                                  Add
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-            <Badge variant="outline" className="text-xs px-1.5 py-0">
-              {sourceGroupIds.length} linked
-            </Badge>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
-              <Label className="text-sm font-medium">Current Links</Label>
-              {linkedSourceGroups.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No linked source groups yet.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {linkedSourceGroups.map((source) => {
-                    const removing =
-                      sourceGroupMutation.action === "remove" &&
-                      sourceGroupMutation.sourceGroupId === source.id;
-                    return (
-                      <div
-                        key={source.id}
-                        className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-sm truncate">
-                              {source.name}
-                            </span>
-                            <Badge
-                              variant="secondary"
-                              className="text-[10px] px-1 py-0"
-                            >
-                              {source.ownerLabel}
-                            </Badge>
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] px-1 py-0"
-                            >
-                              {source.visibility}
-                            </Badge>
-                          </div>
-                          {source.description && (
-                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                              {source.description}
-                            </p>
-                          )}
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="shrink-0"
-                          disabled={sourceMutationInFlight}
-                          onClick={() => handleRemoveSourceGroup(source.id)}
-                        >
-                          {removing ? (
-                            <Loader2Icon className="size-3.5 animate-spin" />
-                          ) : (
-                            <>
-                              <Trash2Icon className="size-3.5 mr-1" />
-                              Remove
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <div className="rounded-lg border p-3 bg-muted/30 flex flex-col gap-2">
-              <Label className="text-sm font-medium">Add Source Group</Label>
-              {linkableSourceGroups.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No additional groups available to link.
-                </p>
-              ) : (
-                <div className="space-y-2">
-                  {linkableSourceGroups.map((source) => {
-                    const adding =
-                      sourceGroupMutation.action === "add" &&
-                      sourceGroupMutation.sourceGroupId === source.id;
-                    return (
-                      <div
-                        key={source.id}
-                        className="rounded-md border bg-background/60 p-2.5 flex items-start justify-between gap-2"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-sm truncate">
-                              {source.name}
-                            </span>
-                            <Badge
-                              variant="secondary"
-                              className="text-[10px] px-1 py-0"
-                            >
-                              {source.ownerLabel}
-                            </Badge>
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] px-1 py-0"
-                            >
-                              {source.visibility}
-                            </Badge>
-                          </div>
-                          {source.description && (
-                            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
-                              {source.description}
-                            </p>
-                          )}
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="shrink-0"
-                          disabled={sourceMutationInFlight}
-                          onClick={() => handleAddSourceGroup(source.id)}
-                        >
-                          {adding ? (
-                            <Loader2Icon className="size-3.5 animate-spin" />
-                          ) : (
-                            <>
-                              <PlusIcon className="size-3.5 mr-1" />
-                              Add
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
+          )}
         </div>
       )}
 

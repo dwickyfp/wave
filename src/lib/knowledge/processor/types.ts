@@ -12,6 +12,17 @@ export type ContextImageBlock = {
   markdown: string;
 };
 
+export type ProcessedImageAnchor = {
+  pageNumber?: number | null;
+  blockIndex?: number | null;
+  anchorText?: string | null;
+  precedingText?: string | null;
+  followingText?: string | null;
+  placement: "before" | "after";
+  source: "dom" | "pdf-layout" | "caption" | "page-fallback";
+  confidence: number;
+};
+
 export type ProcessedDocumentPage = {
   pageNumber: number;
   rawText: string;
@@ -39,10 +50,13 @@ export type ProcessedDocumentImage = {
   altText?: string | null;
   caption?: string | null;
   surroundingText?: string | null;
+  precedingText?: string | null;
+  followingText?: string | null;
   headingPath?: string | null;
   stepHint?: string | null;
   label: string;
   description: string;
+  anchor?: ProcessedImageAnchor | null;
   isRenderable?: boolean;
   manualLabel?: boolean;
   manualDescription?: boolean;
@@ -52,6 +66,8 @@ export type ProcessedDocumentImage = {
 export type DocumentProcessingOptions = {
   documentTitle?: string;
   imageAnalysis?: ImageAnalysisConfig;
+  imageAnalysisRequired?: boolean;
+  imageNeighborContextEnabled?: boolean;
 };
 
 export type ProcessedDocument = {

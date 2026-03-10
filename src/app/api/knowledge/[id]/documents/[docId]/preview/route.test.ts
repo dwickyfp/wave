@@ -76,11 +76,11 @@ describe("knowledge document preview route", () => {
         status: "ready",
         changeType: "edit",
         isActive: true,
-        markdownContent: "# Draft",
         resolvedTitle: "Legal Draft",
         resolvedDescription: "Processed markdown",
         embeddingProvider: "openai",
         embeddingModel: "text-embedding-3-small",
+        embeddingTokenCount: 42,
         chunkCount: 3,
         tokenCount: 120,
         sourceVersionId: "version-1",
@@ -154,6 +154,7 @@ describe("knowledge document preview route", () => {
         activeVersionId: "version-2",
         latestVersionNumber: 2,
       },
+      markdownAvailable: true,
     });
   });
 });

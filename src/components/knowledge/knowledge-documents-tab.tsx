@@ -2,7 +2,7 @@
 
 import { useKnowledgeDocuments } from "@/hooks/queries/use-knowledge";
 import { KnowledgeDocument } from "app-types/knowledge";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DocumentCard } from "./document-card";
 import { DocumentPreviewSheet } from "./document-preview-sheet";
 import { DocumentUploadZone } from "./document-upload-zone";
@@ -22,6 +22,14 @@ export function KnowledgeDocumentsTab({
   const [previewDoc, setPreviewDoc] = useState<KnowledgeDocument | null>(null);
 
   const documents = docs ?? initialDocuments;
+
+  useEffect(() => {
+    if (!previewDoc) return;
+    const latest = documents.find((document) => document.id === previewDoc.id);
+    if (latest) {
+      setPreviewDoc(latest);
+    }
+  }, [documents, previewDoc]);
 
   const handleUploaded = () => mutate();
   const handleDelete = (docId: string) => {

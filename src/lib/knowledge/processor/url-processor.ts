@@ -47,6 +47,7 @@ export async function processUrl(
   return {
     markdown: `# ${title || url}\n\nSource: ${url}\n\n${processed.markdown}`,
     imageBlocks: processed.imageBlocks,
+    images: processed.images,
   };
 }
 

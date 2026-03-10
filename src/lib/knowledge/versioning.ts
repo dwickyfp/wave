@@ -104,6 +104,7 @@ type MaterializedCommitInput = {
   chunks: VersionSnapshotChunk[];
   images: VersionSnapshotImage[];
   totalTokens: number;
+  embeddingTokenCount: number;
 };
 
 type VersionRowWithVector =
@@ -130,9 +131,28 @@ const documentVersionSelection = {
   embeddingModel: KnowledgeDocumentVersionTable.embeddingModel,
   chunkCount: KnowledgeDocumentVersionTable.chunkCount,
   tokenCount: KnowledgeDocumentVersionTable.tokenCount,
+  embeddingTokenCount: KnowledgeDocumentVersionTable.embeddingTokenCount,
   sourceVersionId: KnowledgeDocumentVersionTable.sourceVersionId,
   createdByUserId: KnowledgeDocumentVersionTable.createdByUserId,
   errorMessage: KnowledgeDocumentVersionTable.errorMessage,
+  createdAt: KnowledgeDocumentVersionTable.createdAt,
+  updatedAt: KnowledgeDocumentVersionTable.updatedAt,
+};
+
+const documentVersionSummarySelection = {
+  id: KnowledgeDocumentVersionTable.id,
+  versionNumber: KnowledgeDocumentVersionTable.versionNumber,
+  status: KnowledgeDocumentVersionTable.status,
+  changeType: KnowledgeDocumentVersionTable.changeType,
+  resolvedTitle: KnowledgeDocumentVersionTable.resolvedTitle,
+  resolvedDescription: KnowledgeDocumentVersionTable.resolvedDescription,
+  embeddingProvider: KnowledgeDocumentVersionTable.embeddingProvider,
+  embeddingModel: KnowledgeDocumentVersionTable.embeddingModel,
+  chunkCount: KnowledgeDocumentVersionTable.chunkCount,
+  tokenCount: KnowledgeDocumentVersionTable.tokenCount,
+  embeddingTokenCount: KnowledgeDocumentVersionTable.embeddingTokenCount,
+  sourceVersionId: KnowledgeDocumentVersionTable.sourceVersionId,
+  createdByUserId: KnowledgeDocumentVersionTable.createdByUserId,
   createdAt: KnowledgeDocumentVersionTable.createdAt,
   updatedAt: KnowledgeDocumentVersionTable.updatedAt,
 };
@@ -160,6 +180,37 @@ type PendingImageOverride = {
   label?: string | null;
   description?: string | null;
   stepHint?: string | null;
+};
+
+type LockedDocumentVersionRow = {
+  id: string;
+  groupId: string;
+  userId: string;
+  name: string;
+  description: string | null;
+  descriptionManual: boolean;
+  titleManual: boolean;
+  originalFilename: string;
+  fileType: KnowledgeDocument["fileType"];
+  fileSize: number | null;
+  storagePath: string | null;
+  sourceUrl: string | null;
+  status: KnowledgeDocument["status"];
+  errorMessage: string | null;
+  processingProgress: number | null;
+  chunkCount: number;
+  tokenCount: number;
+  embeddingTokenCount: number;
+  metadata: Record<string, unknown> | null;
+  markdownContent: string | null;
+  activeVersionId: string | null;
+  latestVersionNumber: number;
+  createdAt: Date;
+  updatedAt: Date;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkSize: number;
+  chunkOverlapPercent: number;
 };
 
 function readPendingImageOverrides(
@@ -222,6 +273,18 @@ function toPgVectorExpression(embedding: number[] | null | undefined) {
   return literal === null ? sql`NULL::vector` : sql`${literal}::vector`;
 }
 
+export function getNextReservedVersionNumber(input: {
+  latestVersionNumber?: number | null;
+  maxExistingVersionNumber?: number | null;
+}): number {
+  return (
+    Math.max(
+      input.latestVersionNumber ?? 0,
+      input.maxExistingVersionNumber ?? 0,
+    ) + 1
+  );
+}
+
 function mapDocumentVersion(
   row: VersionRowWithVector,
 ): KnowledgeDocumentVersion {
@@ -242,6 +305,7 @@ function mapDocumentVersion(
     embeddingModel: row.embeddingModel,
     chunkCount: row.chunkCount ?? 0,
     tokenCount: row.tokenCount ?? 0,
+    embeddingTokenCount: row.embeddingTokenCount ?? 0,
     sourceVersionId: row.sourceVersionId ?? null,
     createdByUserId: row.createdByUserId ?? null,
     errorMessage: row.errorMessage ?? null,
@@ -270,6 +334,7 @@ async function selectDocumentRow(documentId: string) {
       processingProgress: KnowledgeDocumentTable.processingProgress,
       chunkCount: KnowledgeDocumentTable.chunkCount,
       tokenCount: KnowledgeDocumentTable.tokenCount,
+      embeddingTokenCount: KnowledgeDocumentTable.embeddingTokenCount,
       metadata: KnowledgeDocumentTable.metadata,
       markdownContent: KnowledgeDocumentTable.markdownContent,
       activeVersionId: KnowledgeDocumentTable.activeVersionId,
@@ -289,6 +354,208 @@ async function selectDocumentRow(documentId: string) {
     .where(eq(KnowledgeDocumentTable.id, documentId));
 
   return row as SelectedDocumentRow | undefined;
+}
+
+async function selectDocumentRowForUpdate(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  documentId: string,
+): Promise<LockedDocumentVersionRow | undefined> {
+  const rows = await tx.execute<{
+    id: string;
+    group_id: string;
+    user_id: string;
+    name: string;
+    description: string | null;
+    description_manual: boolean | null;
+    title_manual: boolean | null;
+    original_filename: string;
+    file_type: KnowledgeDocument["fileType"];
+    file_size: number | null;
+    storage_path: string | null;
+    source_url: string | null;
+    status: KnowledgeDocument["status"];
+    error_message: string | null;
+    processing_progress: number | null;
+    chunk_count: number;
+    token_count: number;
+    embedding_token_count: number;
+    metadata: Record<string, unknown> | null;
+    markdown_content: string | null;
+    active_version_id: string | null;
+    latest_version_number: number | null;
+    created_at: Date;
+    updated_at: Date;
+    embedding_provider: string;
+    embedding_model: string;
+    chunk_size: number;
+    chunk_overlap_percent: number;
+  }>(sql`
+    SELECT
+      doc.id,
+      doc.group_id,
+      doc.user_id,
+      doc.name,
+      doc.description,
+      doc.description_manual,
+      doc.title_manual,
+      doc.original_filename,
+      doc.file_type,
+      doc.file_size,
+      doc.storage_path,
+      doc.source_url,
+      doc.status,
+      doc.error_message,
+      doc.processing_progress,
+      doc.chunk_count,
+      doc.token_count,
+      doc.embedding_token_count,
+      doc.metadata,
+      doc.markdown_content,
+      doc.active_version_id,
+      doc.latest_version_number,
+      doc.created_at,
+      doc.updated_at,
+      grp.embedding_provider,
+      grp.embedding_model,
+      grp.chunk_size,
+      grp.chunk_overlap_percent
+    FROM knowledge_document doc
+    INNER JOIN knowledge_group grp
+      ON grp.id = doc.group_id
+    WHERE doc.id = ${documentId}::uuid
+    FOR UPDATE OF doc
+  `);
+
+  const row = rows.rows[0];
+  if (!row) return undefined;
+
+  return {
+    id: row.id,
+    groupId: row.group_id,
+    userId: row.user_id,
+    name: row.name,
+    description: row.description,
+    descriptionManual: row.description_manual ?? false,
+    titleManual: row.title_manual ?? false,
+    originalFilename: row.original_filename,
+    fileType: row.file_type,
+    fileSize: row.file_size,
+    storagePath: row.storage_path,
+    sourceUrl: row.source_url,
+    status: row.status,
+    errorMessage: row.error_message,
+    processingProgress: row.processing_progress,
+    chunkCount: row.chunk_count ?? 0,
+    tokenCount: row.token_count ?? 0,
+    embeddingTokenCount: row.embedding_token_count ?? 0,
+    metadata: row.metadata,
+    markdownContent: row.markdown_content,
+    activeVersionId: row.active_version_id,
+    latestVersionNumber: row.latest_version_number ?? 0,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    embeddingProvider: row.embedding_provider,
+    embeddingModel: row.embedding_model,
+    chunkSize: row.chunk_size,
+    chunkOverlapPercent: row.chunk_overlap_percent,
+  };
+}
+
+async function selectMaxDocumentVersionNumber(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  documentId: string,
+): Promise<number> {
+  const rows = await tx.execute<{ max_version_number: number | null }>(sql`
+    SELECT MAX(version_number)::integer AS max_version_number
+    FROM knowledge_document_version
+    WHERE document_id = ${documentId}::uuid
+  `);
+
+  return rows.rows[0]?.max_version_number ?? 0;
+}
+
+async function insertPendingVersion(args: {
+  documentId: string;
+  expectedActiveVersionId?: string | null;
+  createdByUserId?: string | null;
+  changeType:
+    | DocumentVersionChangeType
+    | ((input: {
+        document: LockedDocumentVersionRow;
+        maxExistingVersionNumber: number;
+      }) => DocumentVersionChangeType);
+  markdownContent: string | null;
+  resolvedTitle: string;
+  resolvedDescription?: string | null;
+  metadata?: Record<string, unknown> | null;
+  metadataEmbedding?: number[] | null;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkCount: number;
+  tokenCount: number;
+  embeddingTokenCount: number;
+  sourceVersionId?: string | null;
+}): Promise<KnowledgeDocumentVersion> {
+  return db.transaction(async (tx) => {
+    const docRow = await selectDocumentRowForUpdate(tx, args.documentId);
+    if (!docRow) {
+      throw new VersionNotFoundError();
+    }
+
+    if (
+      args.expectedActiveVersionId !== undefined &&
+      (docRow.activeVersionId ?? null) !==
+        (args.expectedActiveVersionId ?? null)
+    ) {
+      throw new VersionConflictError();
+    }
+
+    const maxExistingVersionNumber = await selectMaxDocumentVersionNumber(
+      tx,
+      args.documentId,
+    );
+    const changeType =
+      typeof args.changeType === "function"
+        ? args.changeType({
+            document: docRow,
+            maxExistingVersionNumber,
+          })
+        : args.changeType;
+    const nextVersionNumber = getNextReservedVersionNumber({
+      latestVersionNumber: docRow.latestVersionNumber,
+      maxExistingVersionNumber,
+    });
+
+    const [version] = await tx
+      .insert(KnowledgeDocumentVersionTable)
+      .values({
+        id: generateUUID(),
+        documentId: docRow.id,
+        groupId: docRow.groupId,
+        userId: docRow.userId,
+        versionNumber: nextVersionNumber,
+        status: "processing",
+        changeType,
+        markdownContent: args.markdownContent,
+        resolvedTitle: args.resolvedTitle,
+        resolvedDescription: args.resolvedDescription ?? null,
+        metadata: args.metadata ?? null,
+        metadataEmbedding: toPgVectorExpression(args.metadataEmbedding ?? null),
+        embeddingProvider: args.embeddingProvider,
+        embeddingModel: args.embeddingModel,
+        chunkCount: args.chunkCount,
+        tokenCount: args.tokenCount,
+        embeddingTokenCount: args.embeddingTokenCount,
+        sourceVersionId: args.sourceVersionId ?? null,
+        createdByUserId: args.createdByUserId ?? docRow.userId,
+        errorMessage: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      } as any)
+      .returning(documentVersionSelection);
+
+    return mapDocumentVersion(version as VersionRowWithVector);
+  });
 }
 
 async function selectVersionRow(versionId: string) {
@@ -398,6 +665,8 @@ async function selectLiveImages(
     alt_text: string | null;
     caption: string | null;
     surrounding_text: string | null;
+    preceding_text: string | null;
+    following_text: string | null;
     is_renderable: boolean;
     manual_label: boolean;
     manual_description: boolean;
@@ -425,6 +694,8 @@ async function selectLiveImages(
         alt_text,
         caption,
         surrounding_text,
+        preceding_text,
+        following_text,
         is_renderable,
         manual_label,
         manual_description,
@@ -456,6 +727,8 @@ async function selectLiveImages(
     altText: row.alt_text ?? null,
     caption: row.caption ?? null,
     surroundingText: row.surrounding_text ?? null,
+    precedingText: row.preceding_text ?? null,
+    followingText: row.following_text ?? null,
     isRenderable: row.is_renderable,
     manualLabel: row.manual_label,
     manualDescription: row.manual_description,
@@ -560,6 +833,8 @@ async function selectVersionImages(
     alt_text: string | null;
     caption: string | null;
     surrounding_text: string | null;
+    preceding_text: string | null;
+    following_text: string | null;
     is_renderable: boolean;
     manual_label: boolean;
     manual_description: boolean;
@@ -587,6 +862,8 @@ async function selectVersionImages(
         alt_text,
         caption,
         surrounding_text,
+        preceding_text,
+        following_text,
         is_renderable,
         manual_label,
         manual_description,
@@ -618,6 +895,8 @@ async function selectVersionImages(
     altText: row.alt_text ?? null,
     caption: row.caption ?? null,
     surroundingText: row.surrounding_text ?? null,
+    precedingText: row.preceding_text ?? null,
+    followingText: row.following_text ?? null,
     isRenderable: row.is_renderable,
     manualLabel: row.manual_label,
     manualDescription: row.manual_description,
@@ -676,6 +955,8 @@ function toProcessedDocumentImages(
     altText: image.altText ?? null,
     caption: image.caption ?? null,
     surroundingText: image.surroundingText ?? null,
+    precedingText: image.precedingText ?? null,
+    followingText: image.followingText ?? null,
     headingPath: image.headingPath ?? null,
     stepHint: image.stepHint ?? null,
     label: image.label,
@@ -790,6 +1071,8 @@ async function insertImageSnapshots(
         altText: image.altText ?? null,
         caption: image.caption ?? null,
         surroundingText: image.surroundingText ?? null,
+        precedingText: image.precedingText ?? null,
+        followingText: image.followingText ?? null,
         isRenderable: image.isRenderable,
         manualLabel: image.manualLabel,
         manualDescription: image.manualDescription,
@@ -890,6 +1173,8 @@ async function replaceLiveMaterialization(
           altText: image.altText ?? null,
           caption: image.caption ?? null,
           surroundingText: image.surroundingText ?? null,
+          precedingText: image.precedingText ?? null,
+          followingText: image.followingText ?? null,
           isRenderable: image.isRenderable,
           manualLabel: image.manualLabel,
           manualDescription: image.manualDescription,
@@ -962,6 +1247,7 @@ async function finalizeMaterializedVersion({
   chunks,
   images,
   totalTokens,
+  embeddingTokenCount,
 }: MaterializedCommitInput) {
   await db.transaction(async (tx) => {
     const [currentDoc] = await tx
@@ -1020,6 +1306,7 @@ async function finalizeMaterializedVersion({
         metadataEmbedding: toPgVectorExpression(metadataEmbedding ?? null),
         chunkCount: chunks.length,
         tokenCount: totalTokens,
+        embeddingTokenCount,
         errorMessage: null,
         updatedAt: new Date(),
       } as any)
@@ -1038,6 +1325,7 @@ async function finalizeMaterializedVersion({
         processingProgress: null,
         chunkCount: chunks.length,
         tokenCount: totalTokens,
+        embeddingTokenCount,
         activeVersionId: versionId,
         latestVersionNumber: Math.max(
           currentDoc.latestVersionNumber ?? 0,
@@ -1058,6 +1346,7 @@ async function finalizeMaterializedVersion({
       details: {
         chunkCount: chunks.length,
         tokenCount: totalTokens,
+        embeddingTokenCount: eventType === "rollback" ? 0 : embeddingTokenCount,
         imageCount: images.length,
       },
     });
@@ -1078,18 +1367,7 @@ export async function ensureDocumentVersionBootstrap(documentId: string) {
   }
 
   await db.transaction(async (tx) => {
-    const [currentDoc] = await tx
-      .select({
-        id: KnowledgeDocumentTable.id,
-        activeVersionId: KnowledgeDocumentTable.activeVersionId,
-        latestVersionNumber: KnowledgeDocumentTable.latestVersionNumber,
-        name: KnowledgeDocumentTable.name,
-        description: KnowledgeDocumentTable.description,
-        metadata: KnowledgeDocumentTable.metadata,
-        markdownContent: KnowledgeDocumentTable.markdownContent,
-      })
-      .from(KnowledgeDocumentTable)
-      .where(eq(KnowledgeDocumentTable.id, documentId));
+    const currentDoc = await selectDocumentRowForUpdate(tx, documentId);
 
     if (
       !currentDoc ||
@@ -1125,6 +1403,7 @@ export async function ensureDocumentVersionBootstrap(documentId: string) {
           (sum, chunk) => sum + chunk.tokenCount,
           0,
         ),
+        embeddingTokenCount: selectedDoc.embeddingTokenCount ?? 0,
         sourceVersionId: null,
         createdByUserId: selectedDoc.userId,
         errorMessage: null,
@@ -1176,6 +1455,7 @@ export async function ensureDocumentVersionBootstrap(documentId: string) {
       toVersionId: version.id,
       details: {
         chunkCount: liveChunks.length,
+        embeddingTokenCount: 0,
         imageCount: liveImages.length,
       },
     });
@@ -1189,7 +1469,7 @@ export async function listDocumentVersions(documentId: string) {
   if (!selectedDoc) return [];
 
   const rows = await db
-    .select(documentVersionSelection)
+    .select(documentVersionSummarySelection)
     .from(KnowledgeDocumentVersionTable)
     .where(eq(KnowledgeDocumentVersionTable.documentId, documentId))
     .orderBy(desc(KnowledgeDocumentVersionTable.versionNumber));
@@ -1208,13 +1488,13 @@ export async function listDocumentVersions(documentId: string) {
       status: row.status,
       changeType: row.changeType,
       isActive,
-      markdownContent: row.markdownContent ?? null,
       resolvedTitle: row.resolvedTitle,
       resolvedDescription: row.resolvedDescription ?? null,
       embeddingProvider: row.embeddingProvider,
       embeddingModel: row.embeddingModel,
       chunkCount: row.chunkCount ?? 0,
       tokenCount: row.tokenCount ?? 0,
+      embeddingTokenCount: row.embeddingTokenCount ?? 0,
       sourceVersionId: row.sourceVersionId ?? null,
       createdByUserId: row.createdByUserId ?? null,
       createdAt: row.createdAt,
@@ -1226,6 +1506,23 @@ export async function listDocumentVersions(documentId: string) {
           : null,
     } satisfies KnowledgeDocumentVersionSummary;
   });
+}
+
+export async function getDocumentVersionContent(
+  documentId: string,
+  versionId: string,
+) {
+  await ensureDocumentVersionBootstrap(documentId);
+
+  const row = await selectVersionRow(versionId);
+  if (!row || row.documentId !== documentId) {
+    return null;
+  }
+
+  return {
+    versionId: row.id,
+    markdownContent: row.markdownContent ?? null,
+  };
 }
 
 export async function getDocumentHistory(documentId: string) {
@@ -1295,38 +1592,26 @@ export async function prepareSourceDocumentVersion(documentId: string) {
     throw new VersionNotFoundError();
   }
 
-  const nextVersionNumber = (docRow.latestVersionNumber ?? 0) + 1;
-  const changeType: DocumentVersionChangeType =
-    (docRow.latestVersionNumber ?? 0) > 0 ? "reingest" : "initial_ingest";
-
-  const [version] = await db
-    .insert(KnowledgeDocumentVersionTable)
-    .values({
-      id: generateUUID(),
-      documentId: docRow.id,
-      groupId: docRow.groupId,
-      userId: docRow.userId,
-      versionNumber: nextVersionNumber,
-      status: "processing",
-      changeType,
-      markdownContent: docRow.markdownContent ?? null,
-      resolvedTitle: docRow.name,
-      resolvedDescription: docRow.description ?? null,
-      metadata: docRow.metadata ?? null,
-      metadataEmbedding: sql`NULL::vector`,
-      embeddingProvider: docRow.embeddingProvider,
-      embeddingModel: docRow.embeddingModel,
-      chunkCount: docRow.chunkCount ?? 0,
-      tokenCount: docRow.tokenCount ?? 0,
-      sourceVersionId: docRow.activeVersionId ?? null,
-      createdByUserId: docRow.userId,
-      errorMessage: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as any)
-    .returning(documentVersionSelection);
-
-  return mapDocumentVersion(version as VersionRowWithVector);
+  return insertPendingVersion({
+    documentId: docRow.id,
+    changeType: ({ document, maxExistingVersionNumber }) =>
+      Math.max(document.latestVersionNumber ?? 0, maxExistingVersionNumber) > 0
+        ? "reingest"
+        : "initial_ingest",
+    markdownContent: docRow.markdownContent ?? null,
+    resolvedTitle: docRow.name,
+    resolvedDescription: docRow.description ?? null,
+    metadata:
+      ((docRow.metadata ?? null) as Record<string, unknown> | null) ?? null,
+    metadataEmbedding: null,
+    embeddingProvider: docRow.embeddingProvider,
+    embeddingModel: docRow.embeddingModel,
+    chunkCount: docRow.chunkCount ?? 0,
+    tokenCount: docRow.tokenCount ?? 0,
+    embeddingTokenCount: docRow.embeddingTokenCount ?? 0,
+    sourceVersionId: docRow.activeVersionId ?? null,
+    createdByUserId: docRow.userId,
+  });
 }
 
 export async function createMarkdownEditVersion(args: {
@@ -1342,40 +1627,24 @@ export async function createMarkdownEditVersion(args: {
     throw new VersionNotFoundError();
   }
 
-  if (
-    (docRow.activeVersionId ?? null) !== (args.expectedActiveVersionId ?? null)
-  ) {
-    throw new VersionConflictError();
-  }
-
-  const [version] = await db
-    .insert(KnowledgeDocumentVersionTable)
-    .values({
-      id: generateUUID(),
-      documentId: docRow.id,
-      groupId: docRow.groupId,
-      userId: docRow.userId,
-      versionNumber: (docRow.latestVersionNumber ?? 0) + 1,
-      status: "processing",
-      changeType: "edit",
-      markdownContent: args.markdownContent,
-      resolvedTitle: docRow.name,
-      resolvedDescription: docRow.description ?? null,
-      metadata: docRow.metadata ?? null,
-      metadataEmbedding: sql`NULL::vector`,
-      embeddingProvider: docRow.embeddingProvider,
-      embeddingModel: docRow.embeddingModel,
-      chunkCount: 0,
-      tokenCount: 0,
-      sourceVersionId: docRow.activeVersionId ?? null,
-      createdByUserId: args.actorUserId,
-      errorMessage: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as any)
-    .returning(documentVersionSelection);
-
-  return mapDocumentVersion(version as VersionRowWithVector);
+  return insertPendingVersion({
+    documentId: docRow.id,
+    expectedActiveVersionId: args.expectedActiveVersionId ?? null,
+    changeType: "edit",
+    markdownContent: args.markdownContent,
+    resolvedTitle: docRow.name,
+    resolvedDescription: docRow.description ?? null,
+    metadata:
+      ((docRow.metadata ?? null) as Record<string, unknown> | null) ?? null,
+    metadataEmbedding: null,
+    embeddingProvider: docRow.embeddingProvider,
+    embeddingModel: docRow.embeddingModel,
+    chunkCount: 0,
+    tokenCount: 0,
+    embeddingTokenCount: 0,
+    sourceVersionId: docRow.activeVersionId ?? null,
+    createdByUserId: args.actorUserId,
+  });
 }
 
 export async function createImageAnnotationEditVersion(args: {
@@ -1392,43 +1661,26 @@ export async function createImageAnnotationEditVersion(args: {
     throw new VersionNotFoundError();
   }
 
-  if (
-    (docRow.activeVersionId ?? null) !== (args.expectedActiveVersionId ?? null)
-  ) {
-    throw new VersionConflictError();
-  }
-
-  const [version] = await db
-    .insert(KnowledgeDocumentVersionTable)
-    .values({
-      id: generateUUID(),
-      documentId: docRow.id,
-      groupId: docRow.groupId,
-      userId: docRow.userId,
-      versionNumber: (docRow.latestVersionNumber ?? 0) + 1,
-      status: "processing",
-      changeType: "edit",
-      markdownContent: args.markdownContent,
-      resolvedTitle: docRow.name,
-      resolvedDescription: docRow.description ?? null,
-      metadata: {
-        ...(docRow.metadata ?? {}),
-        contextImageOverrides: args.imageOverrides,
-      },
-      metadataEmbedding: sql`NULL::vector`,
-      embeddingProvider: docRow.embeddingProvider,
-      embeddingModel: docRow.embeddingModel,
-      chunkCount: 0,
-      tokenCount: 0,
-      sourceVersionId: docRow.activeVersionId ?? null,
-      createdByUserId: args.actorUserId,
-      errorMessage: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as any)
-    .returning(documentVersionSelection);
-
-  return mapDocumentVersion(version as VersionRowWithVector);
+  return insertPendingVersion({
+    documentId: docRow.id,
+    expectedActiveVersionId: args.expectedActiveVersionId ?? null,
+    changeType: "edit",
+    markdownContent: args.markdownContent,
+    resolvedTitle: docRow.name,
+    resolvedDescription: docRow.description ?? null,
+    metadata: {
+      ...((docRow.metadata ?? {}) as Record<string, unknown>),
+      contextImageOverrides: args.imageOverrides,
+    },
+    metadataEmbedding: null,
+    embeddingProvider: docRow.embeddingProvider,
+    embeddingModel: docRow.embeddingModel,
+    chunkCount: 0,
+    tokenCount: 0,
+    embeddingTokenCount: 0,
+    sourceVersionId: docRow.activeVersionId ?? null,
+    createdByUserId: args.actorUserId,
+  });
 }
 
 export async function createRollbackVersion(args: {
@@ -1444,12 +1696,6 @@ export async function createRollbackVersion(args: {
     throw new VersionNotFoundError();
   }
 
-  if (
-    (docRow.activeVersionId ?? null) !== (args.expectedActiveVersionId ?? null)
-  ) {
-    throw new VersionConflictError();
-  }
-
   const sourceVersion = await selectVersionRow(args.rollbackFromVersionId);
   if (!sourceVersion || sourceVersion.documentId !== args.documentId) {
     throw new VersionNotFoundError();
@@ -1461,36 +1707,23 @@ export async function createRollbackVersion(args: {
     embeddingModel: docRow.embeddingModel,
   });
 
-  const [version] = await db
-    .insert(KnowledgeDocumentVersionTable)
-    .values({
-      id: generateUUID(),
-      documentId: docRow.id,
-      groupId: docRow.groupId,
-      userId: docRow.userId,
-      versionNumber: (docRow.latestVersionNumber ?? 0) + 1,
-      status: "processing",
-      changeType: "rollback",
-      markdownContent: parsedSourceVersion.markdownContent ?? null,
-      resolvedTitle: parsedSourceVersion.resolvedTitle,
-      resolvedDescription: parsedSourceVersion.resolvedDescription ?? null,
-      metadata: parsedSourceVersion.metadata ?? null,
-      metadataEmbedding: toPgVectorExpression(
-        parsedSourceVersion.metadataEmbedding ?? null,
-      ),
-      embeddingProvider: parsedSourceVersion.embeddingProvider,
-      embeddingModel: parsedSourceVersion.embeddingModel,
-      chunkCount: parsedSourceVersion.chunkCount,
-      tokenCount: parsedSourceVersion.tokenCount,
-      sourceVersionId: parsedSourceVersion.id,
-      createdByUserId: args.actorUserId,
-      errorMessage: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    } as any)
-    .returning(documentVersionSelection);
-
-  return mapDocumentVersion(version as VersionRowWithVector);
+  return insertPendingVersion({
+    documentId: docRow.id,
+    expectedActiveVersionId: args.expectedActiveVersionId ?? null,
+    changeType: "rollback",
+    markdownContent: parsedSourceVersion.markdownContent ?? null,
+    resolvedTitle: parsedSourceVersion.resolvedTitle,
+    resolvedDescription: parsedSourceVersion.resolvedDescription ?? null,
+    metadata: parsedSourceVersion.metadata ?? null,
+    metadataEmbedding: parsedSourceVersion.metadataEmbedding ?? null,
+    embeddingProvider: parsedSourceVersion.embeddingProvider,
+    embeddingModel: parsedSourceVersion.embeddingModel,
+    chunkCount: parsedSourceVersion.chunkCount,
+    tokenCount: parsedSourceVersion.tokenCount,
+    embeddingTokenCount: parsedSourceVersion.embeddingTokenCount,
+    sourceVersionId: parsedSourceVersion.id,
+    createdByUserId: args.actorUserId,
+  });
 }
 
 export async function completeSourceDocumentVersion(args: {
@@ -1541,6 +1774,7 @@ export async function completeSourceDocumentVersion(args: {
     chunks: args.materialized.chunks,
     images: args.materialized.images,
     totalTokens: args.materialized.totalTokens,
+    embeddingTokenCount: args.materialized.embeddingTokenCount,
   });
 }
 
@@ -1624,6 +1858,7 @@ export async function runMarkdownEditVersion(args: {
     chunks: materialized.chunks,
     images: materialized.images,
     totalTokens: materialized.totalTokens,
+    embeddingTokenCount: materialized.embeddingTokenCount,
   });
 }
 
@@ -1724,6 +1959,7 @@ export async function runRollbackVersion(args: {
     chunks: duplicatedChunks,
     images: duplicatedImages,
     totalTokens: sourceVersion.tokenCount ?? 0,
+    embeddingTokenCount: sourceVersion.embeddingTokenCount ?? 0,
   });
 }
 

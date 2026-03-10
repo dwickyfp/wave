@@ -15,6 +15,12 @@ export function formatExtractedPageToMarkdown(rawText: string): string {
   let prevWasShort = false;
 
   for (const line of lines) {
+    if (/^(CTX_IMAGE_\d+|<!--CTX_PAGE:\d+-->)$/.test(line)) {
+      output.push(line);
+      prevWasShort = false;
+      continue;
+    }
+
     const wordCount = line.split(/\s+/).length;
     const isLikelySectionHeader =
       wordCount <= 8 &&

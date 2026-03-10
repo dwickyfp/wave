@@ -39,6 +39,19 @@ export type DocumentFileType =
   | "html";
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type UsageSource = "chat" | "agent" | "mcp";
+export type KnowledgeDocumentProcessingStage =
+  | "extracting"
+  | "parsing"
+  | "materializing"
+  | "embedding"
+  | "finalizing";
+
+export interface KnowledgeDocumentProcessingState {
+  stage: KnowledgeDocumentProcessingStage;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  pageNumber?: number | null;
+}
 
 export type KnowledgeChunkMetadata = {
   section?: string;
@@ -156,9 +169,11 @@ export interface KnowledgeDocument {
   status: DocumentStatus;
   /** Ingestion progress percentage 0–100. Null when not processing. */
   processingProgress?: number | null;
+  processingState?: KnowledgeDocumentProcessingState | null;
   errorMessage?: string | null;
   chunkCount: number;
   tokenCount: number;
+  embeddingTokenCount: number;
   metadata?: Record<string, unknown> | null;
   /** Full markdown content of the processed document */
   markdownContent?: string | null;
@@ -231,6 +246,8 @@ export interface KnowledgeDocumentImage {
   altText?: string | null;
   caption?: string | null;
   surroundingText?: string | null;
+  precedingText?: string | null;
+  followingText?: string | null;
   isRenderable: boolean;
   manualLabel: boolean;
   manualDescription: boolean;
@@ -264,6 +281,7 @@ export interface KnowledgeDocumentVersion {
   embeddingModel: string;
   chunkCount: number;
   tokenCount: number;
+  embeddingTokenCount: number;
   sourceVersionId?: string | null;
   createdByUserId?: string | null;
   errorMessage?: string | null;
@@ -277,19 +295,24 @@ export interface KnowledgeDocumentVersionSummary {
   status: KnowledgeDocumentVersionStatus;
   changeType: KnowledgeDocumentVersionChangeType;
   isActive: boolean;
-  markdownContent?: string | null;
   resolvedTitle: string;
   resolvedDescription?: string | null;
   embeddingProvider: string;
   embeddingModel: string;
   chunkCount: number;
   tokenCount: number;
+  embeddingTokenCount: number;
   sourceVersionId?: string | null;
   createdByUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
   canRollback: boolean;
   rollbackBlockedReason?: string | null;
+}
+
+export interface KnowledgeDocumentVersionContent {
+  versionId: string;
+  markdownContent: string | null;
 }
 
 export interface KnowledgeDocumentHistoryEvent {
@@ -326,11 +349,13 @@ export interface KnowledgeDocumentPreview {
     mimeType: string;
     activeVersionId?: string | null;
     latestVersionNumber?: number;
+    embeddingTokenCount?: number;
+    processingState?: KnowledgeDocumentProcessingState | null;
   };
   previewUrl: string | null;
   sourceUrl: string | null;
   content: string | null;
-  markdownContent: string | null;
+  markdownAvailable: boolean;
   isUrlOnly: boolean;
   activeVersionId: string | null;
   activeVersionNumber: number | null;
@@ -351,6 +376,16 @@ export interface KnowledgeUsageStats {
   uniqueUsers: number;
   mcpQueries: number;
   avgLatencyMs: number;
+  storedEmbeddingTokens: number;
+  processedEmbeddingTokens: number;
+  recentEmbeddingTokens: number;
+  documentEmbeddingUsage: Array<{
+    documentId: string;
+    name: string;
+    embeddingTokenCount: number;
+    latestVersionNumber?: number | null;
+    updatedAt: Date;
+  }>;
   recentQueries: Array<{
     id: string;
     query: string;
@@ -384,14 +419,14 @@ export const createKnowledgeGroupSchema = z.object({
   rerankingProvider: z.string().optional().nullable(),
   parsingModel: z.string().optional().nullable(),
   parsingProvider: z.string().optional().nullable(),
-  parseMode: z.enum(["off", "auto", "always"]).default("auto"),
+  parseMode: z.enum(["off", "auto", "always"]).default("always"),
   parseRepairPolicy: z
     .enum(["strict", "section-safe-reorder", "aggressive"])
     .default("section-safe-reorder"),
   contextMode: z
     .enum(["deterministic", "auto-llm", "always-llm"])
-    .default("deterministic"),
-  imageMode: z.enum(["off", "auto", "always"]).default("auto"),
+    .default("always-llm"),
+  imageMode: z.enum(["off", "auto", "always"]).default("always"),
   lazyRefinementEnabled: z.boolean().default(true),
   retrievalThreshold: z.number().min(0).max(1).default(0.0),
   chunkSize: z.number().int().min(128).max(2048).default(768),
@@ -462,6 +497,7 @@ export interface KnowledgeRepository {
       | "updatedAt"
       | "chunkCount"
       | "tokenCount"
+      | "embeddingTokenCount"
       | "status"
       | "errorMessage"
     > & { status?: DocumentStatus },
@@ -480,8 +516,10 @@ export interface KnowledgeRepository {
       errorMessage?: string;
       chunkCount?: number;
       tokenCount?: number;
+      embeddingTokenCount?: number;
       markdownContent?: string;
       processingProgress?: number | null;
+      processingState?: KnowledgeDocumentProcessingState | null;
     },
   ): Promise<void>;
   updateDocumentMetadata(

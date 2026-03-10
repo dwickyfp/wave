@@ -3,6 +3,7 @@ import {
   KnowledgeDocument,
   KnowledgeDocumentImage,
   KnowledgeDocumentImageVersion,
+  KnowledgeDocumentProcessingState,
   KnowledgeGroup,
   KnowledgeGroupSource,
   KnowledgeRepository,
@@ -13,6 +14,7 @@ import {
 } from "app-types/knowledge";
 import { and, count, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { sanitizeImageStepHint } from "lib/knowledge/document-images";
+import { applyEnforcedKnowledgeIngestPolicy } from "lib/knowledge/quality-ingest-policy";
 import { generateUUID } from "lib/utils";
 import { pgDb as db } from "../db.pg";
 import {
@@ -31,28 +33,29 @@ import {
 function mapGroup(
   row: typeof KnowledgeGroupTable.$inferSelect,
 ): KnowledgeGroup {
-  return {
+  return applyEnforcedKnowledgeIngestPolicy({
     ...row,
     description: row.description ?? undefined,
     icon: row.icon ?? undefined,
     rerankingModel: row.rerankingModel ?? null,
     rerankingProvider: row.rerankingProvider ?? null,
-    parseMode: row.parseMode ?? "auto",
+    parseMode: row.parseMode ?? "always",
     parseRepairPolicy: row.parseRepairPolicy ?? "section-safe-reorder",
-    contextMode: row.contextMode ?? "deterministic",
-    imageMode: row.imageMode ?? "auto",
+    contextMode: row.contextMode ?? "always-llm",
+    imageMode: row.imageMode ?? "always",
     lazyRefinementEnabled: row.lazyRefinementEnabled ?? true,
     parsingModel: row.parsingModel ?? null,
     parsingProvider: row.parsingProvider ?? null,
     retrievalThreshold: row.retrievalThreshold ?? 0.0,
     mcpApiKeyHash: row.mcpApiKeyHash ?? null,
     mcpApiKeyPreview: row.mcpApiKeyPreview ?? null,
-  };
+  });
 }
 
 function mapDocument(
   row: typeof KnowledgeDocumentTable.$inferSelect,
 ): KnowledgeDocument {
+  const metadata = (row.metadata as Record<string, unknown>) ?? null;
   return {
     ...row,
     description: row.description ?? null,
@@ -64,18 +67,136 @@ function mapDocument(
     fingerprint: row.fingerprint ?? null,
     errorMessage: row.errorMessage ?? null,
     processingProgress: row.processingProgress ?? null,
-    metadata: (row.metadata as Record<string, unknown>) ?? null,
+    processingState: readDocumentProcessingState(metadata),
+    embeddingTokenCount: row.embeddingTokenCount ?? 0,
+    metadata,
     markdownContent: row.markdownContent ?? null,
     activeVersionId: row.activeVersionId ?? null,
     latestVersionNumber: row.latestVersionNumber ?? 0,
   };
 }
 
-function mapDocumentImage(
-  row:
-    | typeof KnowledgeDocumentImageTable.$inferSelect
-    | typeof KnowledgeDocumentImageVersionTable.$inferSelect,
-): KnowledgeDocumentImage {
+function readDocumentProcessingState(
+  metadata: Record<string, unknown> | null | undefined,
+): KnowledgeDocumentProcessingState | null {
+  const raw = metadata?.processingState;
+  if (!raw || typeof raw !== "object") return null;
+  const stage = "stage" in raw ? raw.stage : null;
+  if (
+    stage !== "extracting" &&
+    stage !== "parsing" &&
+    stage !== "materializing" &&
+    stage !== "embedding" &&
+    stage !== "finalizing"
+  ) {
+    return null;
+  }
+
+  const readNullableNumber = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+
+  return {
+    stage,
+    currentPage: readNullableNumber(
+      "currentPage" in raw ? raw.currentPage : null,
+    ),
+    totalPages: readNullableNumber("totalPages" in raw ? raw.totalPages : null),
+    pageNumber: readNullableNumber("pageNumber" in raw ? raw.pageNumber : null),
+  };
+}
+
+type DocumentImageRow = Pick<
+  KnowledgeDocumentImage,
+  | "id"
+  | "documentId"
+  | "groupId"
+  | "versionId"
+  | "kind"
+  | "ordinal"
+  | "marker"
+  | "label"
+  | "description"
+  | "headingPath"
+  | "stepHint"
+  | "sourceUrl"
+  | "storagePath"
+  | "mediaType"
+  | "pageNumber"
+  | "width"
+  | "height"
+  | "altText"
+  | "caption"
+  | "surroundingText"
+  | "precedingText"
+  | "followingText"
+  | "isRenderable"
+  | "manualLabel"
+  | "manualDescription"
+  | "createdAt"
+  | "updatedAt"
+>;
+
+const knowledgeDocumentImageSelection = {
+  id: KnowledgeDocumentImageTable.id,
+  documentId: KnowledgeDocumentImageTable.documentId,
+  groupId: KnowledgeDocumentImageTable.groupId,
+  versionId: KnowledgeDocumentImageTable.versionId,
+  kind: KnowledgeDocumentImageTable.kind,
+  ordinal: KnowledgeDocumentImageTable.ordinal,
+  marker: KnowledgeDocumentImageTable.marker,
+  label: KnowledgeDocumentImageTable.label,
+  description: KnowledgeDocumentImageTable.description,
+  headingPath: KnowledgeDocumentImageTable.headingPath,
+  stepHint: KnowledgeDocumentImageTable.stepHint,
+  sourceUrl: KnowledgeDocumentImageTable.sourceUrl,
+  storagePath: KnowledgeDocumentImageTable.storagePath,
+  mediaType: KnowledgeDocumentImageTable.mediaType,
+  pageNumber: KnowledgeDocumentImageTable.pageNumber,
+  width: KnowledgeDocumentImageTable.width,
+  height: KnowledgeDocumentImageTable.height,
+  altText: KnowledgeDocumentImageTable.altText,
+  caption: KnowledgeDocumentImageTable.caption,
+  surroundingText: KnowledgeDocumentImageTable.surroundingText,
+  precedingText: KnowledgeDocumentImageTable.precedingText,
+  followingText: KnowledgeDocumentImageTable.followingText,
+  isRenderable: KnowledgeDocumentImageTable.isRenderable,
+  manualLabel: KnowledgeDocumentImageTable.manualLabel,
+  manualDescription: KnowledgeDocumentImageTable.manualDescription,
+  createdAt: KnowledgeDocumentImageTable.createdAt,
+  updatedAt: KnowledgeDocumentImageTable.updatedAt,
+};
+
+const knowledgeDocumentImageVersionSelection = {
+  id: KnowledgeDocumentImageVersionTable.id,
+  documentId: KnowledgeDocumentImageVersionTable.documentId,
+  groupId: KnowledgeDocumentImageVersionTable.groupId,
+  versionId: KnowledgeDocumentImageVersionTable.versionId,
+  kind: KnowledgeDocumentImageVersionTable.kind,
+  ordinal: KnowledgeDocumentImageVersionTable.ordinal,
+  marker: KnowledgeDocumentImageVersionTable.marker,
+  label: KnowledgeDocumentImageVersionTable.label,
+  description: KnowledgeDocumentImageVersionTable.description,
+  headingPath: KnowledgeDocumentImageVersionTable.headingPath,
+  stepHint: KnowledgeDocumentImageVersionTable.stepHint,
+  sourceUrl: KnowledgeDocumentImageVersionTable.sourceUrl,
+  storagePath: KnowledgeDocumentImageVersionTable.storagePath,
+  mediaType: KnowledgeDocumentImageVersionTable.mediaType,
+  pageNumber: KnowledgeDocumentImageVersionTable.pageNumber,
+  width: KnowledgeDocumentImageVersionTable.width,
+  height: KnowledgeDocumentImageVersionTable.height,
+  altText: KnowledgeDocumentImageVersionTable.altText,
+  caption: KnowledgeDocumentImageVersionTable.caption,
+  surroundingText: KnowledgeDocumentImageVersionTable.surroundingText,
+  precedingText: KnowledgeDocumentImageVersionTable.precedingText,
+  followingText: KnowledgeDocumentImageVersionTable.followingText,
+  isRenderable: KnowledgeDocumentImageVersionTable.isRenderable,
+  manualLabel: KnowledgeDocumentImageVersionTable.manualLabel,
+  manualDescription: KnowledgeDocumentImageVersionTable.manualDescription,
+  createdAt: KnowledgeDocumentImageVersionTable.createdAt,
+  updatedAt: KnowledgeDocumentImageVersionTable.updatedAt,
+};
+
+function mapDocumentImage(row: DocumentImageRow): KnowledgeDocumentImage {
   return {
     id: row.id,
     documentId: row.documentId,
@@ -97,6 +218,8 @@ function mapDocumentImage(
     altText: row.altText ?? null,
     caption: row.caption ?? null,
     surroundingText: row.surroundingText ?? null,
+    precedingText: row.precedingText ?? null,
+    followingText: row.followingText ?? null,
     isRenderable: row.isRenderable ?? false,
     manualLabel: row.manualLabel ?? false,
     manualDescription: row.manualDescription ?? false,
@@ -107,7 +230,7 @@ function mapDocumentImage(
 }
 
 function mapVersionedDocumentImage(
-  row: typeof KnowledgeDocumentImageVersionTable.$inferSelect,
+  row: DocumentImageRow & { versionId: string },
 ): KnowledgeDocumentImageVersion {
   return {
     ...mapDocumentImage(row),
@@ -161,29 +284,30 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   // ─── Groups ─────────────────────────────────────────────────────────────────
 
   async insertGroup(data) {
+    const enforced = applyEnforcedKnowledgeIngestPolicy(data);
     const [row] = await db
       .insert(KnowledgeGroupTable)
       .values({
         id: generateUUID(),
-        name: data.name,
-        description: data.description,
-        icon: data.icon,
-        userId: data.userId,
-        visibility: data.visibility ?? "private",
-        purpose: data.purpose ?? "default",
-        isSystemManaged: data.isSystemManaged ?? false,
-        embeddingModel: data.embeddingModel ?? "text-embedding-3-small",
-        embeddingProvider: data.embeddingProvider ?? "openai",
-        rerankingModel: data.rerankingModel ?? null,
-        rerankingProvider: data.rerankingProvider ?? null,
-        parseMode: data.parseMode ?? "auto",
-        parseRepairPolicy: data.parseRepairPolicy ?? "section-safe-reorder",
-        contextMode: data.contextMode ?? "deterministic",
-        imageMode: data.imageMode ?? "auto",
-        lazyRefinementEnabled: data.lazyRefinementEnabled ?? true,
+        name: enforced.name,
+        description: enforced.description,
+        icon: enforced.icon,
+        userId: enforced.userId,
+        visibility: enforced.visibility ?? "private",
+        purpose: enforced.purpose ?? "default",
+        isSystemManaged: enforced.isSystemManaged ?? false,
+        embeddingModel: enforced.embeddingModel ?? "text-embedding-3-small",
+        embeddingProvider: enforced.embeddingProvider ?? "openai",
+        rerankingModel: enforced.rerankingModel ?? null,
+        rerankingProvider: enforced.rerankingProvider ?? null,
+        parseMode: enforced.parseMode,
+        parseRepairPolicy: enforced.parseRepairPolicy,
+        contextMode: enforced.contextMode,
+        imageMode: enforced.imageMode,
+        lazyRefinementEnabled: enforced.lazyRefinementEnabled ?? true,
         mcpEnabled: false,
-        chunkSize: data.chunkSize ?? 768,
-        chunkOverlapPercent: data.chunkOverlapPercent ?? 10,
+        chunkSize: enforced.chunkSize ?? 768,
+        chunkOverlapPercent: enforced.chunkOverlapPercent ?? 10,
         createdAt: new Date(),
         updatedAt: new Date(),
       })
@@ -312,34 +436,39 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         desc(KnowledgeGroupTable.createdAt),
       );
 
-    return rows.map((r) => ({
-      ...r,
-      description: r.description ?? undefined,
-      icon: r.icon ?? undefined,
-      purpose: r.purpose,
-      isSystemManaged: r.isSystemManaged,
-      rerankingModel: r.rerankingModel ?? null,
-      rerankingProvider: r.rerankingProvider ?? null,
-      parseMode: r.parseMode ?? "auto",
-      parseRepairPolicy: r.parseRepairPolicy ?? "section-safe-reorder",
-      contextMode: r.contextMode ?? "deterministic",
-      imageMode: r.imageMode ?? "auto",
-      lazyRefinementEnabled: r.lazyRefinementEnabled ?? true,
-      parsingModel: r.parsingModel ?? null,
-      parsingProvider: r.parsingProvider ?? null,
-      retrievalThreshold: r.retrievalThreshold ?? 0.0,
-      userName: r.userName ?? undefined,
-      userAvatar: r.userAvatar ?? null,
-      documentCount: Number(r.documentCount),
-      chunkCount: Number(r.chunkCount),
-    })) as KnowledgeSummary[];
+    return rows
+      .map((r) => ({
+        ...r,
+        description: r.description ?? undefined,
+        icon: r.icon ?? undefined,
+        purpose: r.purpose,
+        isSystemManaged: r.isSystemManaged,
+        rerankingModel: r.rerankingModel ?? null,
+        rerankingProvider: r.rerankingProvider ?? null,
+        parseMode: r.parseMode ?? "always",
+        parseRepairPolicy: r.parseRepairPolicy ?? "section-safe-reorder",
+        contextMode: r.contextMode ?? "always-llm",
+        imageMode: r.imageMode ?? "always",
+        lazyRefinementEnabled: r.lazyRefinementEnabled ?? true,
+        parsingModel: r.parsingModel ?? null,
+        parsingProvider: r.parsingProvider ?? null,
+        retrievalThreshold: r.retrievalThreshold ?? 0.0,
+        userName: r.userName ?? undefined,
+        userAvatar: r.userAvatar ?? null,
+        documentCount: Number(r.documentCount),
+        chunkCount: Number(r.chunkCount),
+      }))
+      .map((row) =>
+        applyEnforcedKnowledgeIngestPolicy(row),
+      ) as KnowledgeSummary[];
   },
 
   async updateGroup(id, userId, data) {
     const { sourceGroupIds: _ignored, ...groupData } = data as any;
+    const enforced = applyEnforcedKnowledgeIngestPolicy(groupData);
     const [row] = await db
       .update(KnowledgeGroupTable)
-      .set({ ...groupData, updatedAt: new Date() })
+      .set({ ...enforced, updatedAt: new Date() })
       .where(
         and(
           eq(KnowledgeGroupTable.id, id),
@@ -615,6 +744,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         status: (data as any).status ?? "pending",
         chunkCount: 0,
         tokenCount: 0,
+        embeddingTokenCount: 0,
         metadata: data.metadata ?? null,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -714,6 +844,22 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async updateDocumentStatus(id, status, extra) {
+    const metadataUpdate =
+      extra?.processingState !== undefined
+        ? extra.processingState
+          ? sql`(
+              COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) ||
+              jsonb_build_object('processingState', ${JSON.stringify(extra.processingState)}::jsonb)
+            )::json`
+          : sql`(
+              COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) - 'processingState'
+            )::json`
+        : status !== "processing"
+          ? sql`(
+              COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) - 'processingState'
+            )::json`
+          : undefined;
+
     await db
       .update(KnowledgeDocumentTable)
       .set({
@@ -728,9 +874,13 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         ...(extra?.tokenCount !== undefined
           ? { tokenCount: extra.tokenCount }
           : {}),
+        ...(extra?.embeddingTokenCount !== undefined
+          ? { embeddingTokenCount: extra.embeddingTokenCount }
+          : {}),
         ...(extra?.markdownContent !== undefined
           ? { markdownContent: extra.markdownContent }
           : {}),
+        ...(metadataUpdate !== undefined ? { metadata: metadataUpdate } : {}),
         updatedAt: new Date(),
       })
       .where(eq(KnowledgeDocumentTable.id, id));
@@ -818,7 +968,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
   async getDocumentImages(documentId) {
     const rows = await db
-      .select()
+      .select(knowledgeDocumentImageSelection)
       .from(KnowledgeDocumentImageTable)
       .where(eq(KnowledgeDocumentImageTable.documentId, documentId))
       .orderBy(
@@ -830,7 +980,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
   async getDocumentImagesByVersion(documentId, versionId) {
     const rows = await db
-      .select()
+      .select(knowledgeDocumentImageVersionSelection)
       .from(KnowledgeDocumentImageVersionTable)
       .where(
         and(
@@ -847,7 +997,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
   async getDocumentImageById(documentId, imageId) {
     const [row] = await db
-      .select()
+      .select(knowledgeDocumentImageSelection)
       .from(KnowledgeDocumentImageTable)
       .where(
         and(
@@ -860,7 +1010,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
   async getDocumentImageByIdFromVersion(documentId, versionId, imageId) {
     const [row] = await db
-      .select()
+      .select(knowledgeDocumentImageVersionSelection)
       .from(KnowledgeDocumentImageVersionTable)
       .where(
         and(
@@ -1476,6 +1626,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       alt_text: string | null;
       caption: string | null;
       surrounding_text: string | null;
+      preceding_text: string | null;
+      following_text: string | null;
       is_renderable: boolean;
       manual_label: boolean;
       manual_description: boolean;
@@ -1511,6 +1663,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           kdi.alt_text,
           kdi.caption,
           kdi.surrounding_text,
+          kdi.preceding_text,
+          kdi.following_text,
           kdi.is_renderable,
           kdi.manual_label,
           kdi.manual_description,
@@ -1527,6 +1681,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   coalesce(kdi.step_hint, '') || ' ' ||
                   coalesce(kdi.caption, '') || ' ' ||
                   coalesce(kdi.alt_text, '') || ' ' ||
+                  coalesce(kdi.preceding_text, '') || ' ' ||
+                  coalesce(kdi.following_text, '') || ' ' ||
                   coalesce(kdi.surrounding_text, '')
                 ),
                 (SELECT english_q FROM q)
@@ -1540,6 +1696,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   coalesce(kdi.step_hint, '') || ' ' ||
                   coalesce(kdi.caption, '') || ' ' ||
                   coalesce(kdi.alt_text, '') || ' ' ||
+                  coalesce(kdi.preceding_text, '') || ' ' ||
+                  coalesce(kdi.following_text, '') || ' ' ||
                   coalesce(kdi.surrounding_text, '')
                 ),
                 (SELECT simple_q FROM q)
@@ -1553,6 +1711,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   coalesce(kdi.step_hint, '') || ' ' ||
                   coalesce(kdi.caption, '') || ' ' ||
                   coalesce(kdi.alt_text, '') || ' ' ||
+                  coalesce(kdi.preceding_text, '') || ' ' ||
+                  coalesce(kdi.following_text, '') || ' ' ||
                   coalesce(kdi.surrounding_text, '')
                 ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
@@ -1571,6 +1731,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kdi.step_hint, '') || ' ' ||
               coalesce(kdi.caption, '') || ' ' ||
               coalesce(kdi.alt_text, '') || ' ' ||
+              coalesce(kdi.preceding_text, '') || ' ' ||
+              coalesce(kdi.following_text, '') || ' ' ||
               coalesce(kdi.surrounding_text, '')
             ) @@ (SELECT english_q FROM q)
             OR to_tsvector(
@@ -1581,6 +1743,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kdi.step_hint, '') || ' ' ||
               coalesce(kdi.caption, '') || ' ' ||
               coalesce(kdi.alt_text, '') || ' ' ||
+              coalesce(kdi.preceding_text, '') || ' ' ||
+              coalesce(kdi.following_text, '') || ' ' ||
               coalesce(kdi.surrounding_text, '')
             ) @@ (SELECT simple_q FROM q)
             OR (
@@ -1590,6 +1754,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kdi.step_hint, '') || ' ' ||
               coalesce(kdi.caption, '') || ' ' ||
               coalesce(kdi.alt_text, '') || ' ' ||
+              coalesce(kdi.preceding_text, '') || ' ' ||
+              coalesce(kdi.following_text, '') || ' ' ||
               coalesce(kdi.surrounding_text, '')
             ) ILIKE (SELECT ilike_q FROM q)
           )
@@ -1620,6 +1786,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         altText: row.alt_text,
         caption: row.caption,
         surroundingText: row.surrounding_text,
+        precedingText: row.preceding_text,
+        followingText: row.following_text,
         isRenderable: row.is_renderable,
         manualLabel: row.manual_label,
         manualDescription: row.manual_description,
@@ -1662,6 +1830,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       alt_text: string | null;
       caption: string | null;
       surrounding_text: string | null;
+      preceding_text: string | null;
+      following_text: string | null;
       is_renderable: boolean;
       manual_label: boolean;
       manual_description: boolean;
@@ -1691,6 +1861,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           kdi.alt_text,
           kdi.caption,
           kdi.surrounding_text,
+          kdi.preceding_text,
+          kdi.following_text,
           kdi.is_renderable,
           kdi.manual_label,
           kdi.manual_description,
@@ -1729,6 +1901,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         altText: row.alt_text,
         caption: row.caption,
         surroundingText: row.surrounding_text,
+        precedingText: row.preceding_text,
+        followingText: row.following_text,
         isRenderable: row.is_renderable,
         manualLabel: row.manual_label,
         manualDescription: row.manual_description,
@@ -1875,25 +2049,29 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       .leftJoin(chunkCounts, eq(KnowledgeGroupTable.id, chunkCounts.groupId))
       .where(eq(KnowledgeGroupAgentTable.agentId, agentId));
 
-    return rows.map((r) => ({
-      ...r,
-      description: r.description ?? undefined,
-      icon: r.icon ?? undefined,
-      rerankingModel: r.rerankingModel ?? null,
-      rerankingProvider: r.rerankingProvider ?? null,
-      parseMode: r.parseMode ?? "auto",
-      parseRepairPolicy: r.parseRepairPolicy ?? "section-safe-reorder",
-      contextMode: r.contextMode ?? "deterministic",
-      imageMode: r.imageMode ?? "auto",
-      lazyRefinementEnabled: r.lazyRefinementEnabled ?? true,
-      parsingModel: r.parsingModel ?? null,
-      parsingProvider: r.parsingProvider ?? null,
-      retrievalThreshold: r.retrievalThreshold ?? 0.0,
-      userName: r.userName ?? undefined,
-      userAvatar: r.userAvatar ?? null,
-      documentCount: Number(r.documentCount),
-      chunkCount: Number(r.chunkCount),
-    })) as KnowledgeSummary[];
+    return rows
+      .map((r) => ({
+        ...r,
+        description: r.description ?? undefined,
+        icon: r.icon ?? undefined,
+        rerankingModel: r.rerankingModel ?? null,
+        rerankingProvider: r.rerankingProvider ?? null,
+        parseMode: r.parseMode ?? "always",
+        parseRepairPolicy: r.parseRepairPolicy ?? "section-safe-reorder",
+        contextMode: r.contextMode ?? "always-llm",
+        imageMode: r.imageMode ?? "always",
+        lazyRefinementEnabled: r.lazyRefinementEnabled ?? true,
+        parsingModel: r.parsingModel ?? null,
+        parsingProvider: r.parsingProvider ?? null,
+        retrievalThreshold: r.retrievalThreshold ?? 0.0,
+        userName: r.userName ?? undefined,
+        userAvatar: r.userAvatar ?? null,
+        documentCount: Number(r.documentCount),
+        chunkCount: Number(r.chunkCount),
+      }))
+      .map((row) =>
+        applyEnforcedKnowledgeIngestPolicy(row),
+      ) as KnowledgeSummary[];
   },
 
   async getAgentsByGroupId(groupId) {
@@ -1973,6 +2151,64 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       `,
     );
 
+    const [
+      storedEmbeddingTotals,
+      processedEmbeddingTotals,
+      recentEmbeddingTotals,
+    ] = await Promise.all([
+      db.execute<{ total_tokens: number }>(sql`
+          SELECT COALESCE(SUM(embedding_token_count), 0)::int AS total_tokens
+          FROM knowledge_document
+          WHERE group_id = ${groupId}
+            AND status = 'ready'
+        `),
+      db.execute<{ total_tokens: number }>(sql`
+          SELECT COALESCE(SUM(
+            CASE
+              WHEN jsonb_typeof(details) = 'object'
+                AND (details->>'embeddingTokenCount') IS NOT NULL
+              THEN (details->>'embeddingTokenCount')::numeric
+              ELSE 0
+            END
+          ), 0)::int AS total_tokens
+          FROM knowledge_document_history_event
+          WHERE group_id = ${groupId}
+        `),
+      db.execute<{ total_tokens: number }>(sql`
+          SELECT COALESCE(SUM(
+            CASE
+              WHEN jsonb_typeof(details) = 'object'
+                AND (details->>'embeddingTokenCount') IS NOT NULL
+              THEN (details->>'embeddingTokenCount')::numeric
+              ELSE 0
+            END
+          ), 0)::int AS total_tokens
+          FROM knowledge_document_history_event
+          WHERE group_id = ${groupId}
+            AND created_at >= ${since.toISOString()}
+        `),
+    ]);
+
+    const documentEmbeddingRows = await db.execute<{
+      document_id: string;
+      name: string;
+      embedding_token_count: number;
+      latest_version_number: number | null;
+      updated_at: Date;
+    }>(sql`
+      SELECT
+        id AS document_id,
+        name,
+        embedding_token_count,
+        latest_version_number,
+        updated_at
+      FROM knowledge_document
+      WHERE group_id = ${groupId}
+        AND status = 'ready'
+      ORDER BY embedding_token_count DESC, updated_at DESC
+      LIMIT 50
+    `);
+
     const t = totals.rows[0] ?? {
       total: 0,
       unique_users: 0,
@@ -1985,6 +2221,22 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       uniqueUsers: Number(t.unique_users ?? 0),
       mcpQueries: Number(t.mcp_queries ?? 0),
       avgLatencyMs: Math.round(Number(t.avg_latency ?? 0)),
+      storedEmbeddingTokens: Number(
+        storedEmbeddingTotals.rows[0]?.total_tokens ?? 0,
+      ),
+      processedEmbeddingTokens: Number(
+        processedEmbeddingTotals.rows[0]?.total_tokens ?? 0,
+      ),
+      recentEmbeddingTokens: Number(
+        recentEmbeddingTotals.rows[0]?.total_tokens ?? 0,
+      ),
+      documentEmbeddingUsage: documentEmbeddingRows.rows.map((row) => ({
+        documentId: row.document_id,
+        name: row.name,
+        embeddingTokenCount: Number(row.embedding_token_count ?? 0),
+        latestVersionNumber: row.latest_version_number ?? null,
+        updatedAt: row.updated_at,
+      })),
       recentQueries: recentRows.rows.map((r) => ({
         id: r.id,
         query: r.query,

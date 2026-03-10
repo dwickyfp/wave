@@ -8,6 +8,7 @@ import type {
   ContextImageBlock,
   DocumentProcessingOptions,
   ProcessedDocument,
+  ProcessedImageAnchor,
   ProcessedDocumentImage,
 } from "./types";
 
@@ -19,6 +20,7 @@ const turndown = new TurndownService({
 
 const IMAGE_MARKER_PREFIX = "CTX_IMAGE_";
 const IMAGE_CONTEXT_MAX_CHARS = 1_200;
+const IMAGE_NEIGHBOR_CONTEXT_MAX_CHARS = 320;
 const IMAGE_ANALYSIS_CONCURRENCY = 1;
 
 const IMAGE_ANALYSIS_SYSTEM_PROMPT = `You analyze exactly one extracted document image at a time for a knowledge base.
@@ -27,6 +29,9 @@ Requirements:
 - Focus only on the current image, never on other images from the same document
 - Be factual and specific
 - Use only details that are visible in the image itself; nearby document text is only for disambiguation
+- Keep the label focused on the image itself, not on surrounding paragraph summaries
+- Keep the description primarily visual; nearby document text may add at most one short disambiguating sentence when it truly helps
+- Do not replace the visual description with a summary of surrounding text
 - If the exact visual contents are unclear, say that directly instead of guessing
 - If the image is a chart, diagram, or table-like visual, identify the chart type, axes, labels, legend, series, units, and the main relationship or trend
 - If the image is a photo or object image, identify the main subjects, actions, environment, notable text, and distinctive details
@@ -43,10 +48,13 @@ type ImageCandidate = {
   altText?: string | null;
   caption?: string | null;
   surroundingText?: string | null;
+  precedingText?: string | null;
+  followingText?: string | null;
   sourceUrl?: string | null;
   pageNumber?: number | null;
   width?: number | null;
   height?: number | null;
+  anchor?: ProcessedImageAnchor | null;
 };
 
 type ImageAnalysis = {
@@ -61,7 +69,7 @@ type ResolvedImageContext = Pick<
 
 type ResolvedImageAnalysisModel = {
   model: LanguageModel;
-  supportsImageInput: boolean;
+  supportsImageInput: boolean | null;
 };
 
 type HtmlConversionOptions = DocumentProcessingOptions & {
@@ -146,7 +154,10 @@ function extractSiblingText(
 
 function extractHtmlImageContext(
   $img: cheerio.Cheerio<any>,
-): Pick<ImageCandidate, "altText" | "caption" | "surroundingText"> {
+): Pick<
+  ImageCandidate,
+  "altText" | "caption" | "surroundingText" | "precedingText" | "followingText"
+> {
   const altText = cleanInlineText(
     $img.attr("alt") ?? $img.attr("title") ?? $img.attr("aria-label"),
   );
@@ -156,6 +167,14 @@ function extractHtmlImageContext(
   const parentText = extractParentTextWithoutImages($img);
   const prevText = extractSiblingText($img, "prev");
   const nextText = extractSiblingText($img, "next");
+  const precedingText = clipText(
+    prevText || parentText,
+    IMAGE_NEIGHBOR_CONTEXT_MAX_CHARS,
+  );
+  const followingText = clipText(
+    nextText || parentText,
+    IMAGE_NEIGHBOR_CONTEXT_MAX_CHARS,
+  );
   const surroundingText = clipText(
     [figureCaption, parentText, prevText, nextText].filter(Boolean).join(" "),
     IMAGE_CONTEXT_MAX_CHARS,
@@ -165,6 +184,8 @@ function extractHtmlImageContext(
     altText: altText || null,
     caption: figureCaption || null,
     surroundingText: surroundingText || null,
+    precedingText: precedingText || null,
+    followingText: followingText || null,
   };
 }
 
@@ -258,7 +279,10 @@ async function resolveImageAnalysisModel(
 
   return {
     model,
-    supportsImageInput: modelConfig?.supportsImageInput ?? false,
+    supportsImageInput:
+      typeof modelConfig?.supportsImageInput === "boolean"
+        ? modelConfig.supportsImageInput
+        : null,
   };
 }
 
@@ -286,6 +310,18 @@ function buildImageFallbackDescription(candidate: ImageCandidate): string {
       ensureSentenceEnding(
         `Nearby document context: ${candidate.surroundingText}`,
       ),
+    );
+  }
+
+  if (candidate.precedingText) {
+    parts.push(
+      ensureSentenceEnding(`Text before image: ${candidate.precedingText}`),
+    );
+  }
+
+  if (candidate.followingText) {
+    parts.push(
+      ensureSentenceEnding(`Text after image: ${candidate.followingText}`),
     );
   }
 
@@ -341,7 +377,9 @@ function buildImageFallbackAnalysis(
 function buildImageAnalysisPrompt(
   candidate: ImageCandidate,
   documentTitle?: string,
+  options: { neighborContextEnabled?: boolean } = {},
 ): string {
+  const neighborContextEnabled = options.neighborContextEnabled !== false;
   const parts = [
     documentTitle ? `Document title: ${documentTitle}` : null,
     `Image index in document: ${candidate.index}`,
@@ -354,11 +392,21 @@ function buildImageAnalysisPrompt(
       ? `Image size: ${candidate.width}x${candidate.height} pixels`
       : null,
     candidate.sourceUrl ? `Image source URL: ${candidate.sourceUrl}` : null,
+    neighborContextEnabled && candidate.precedingText
+      ? `Text immediately before image:\n${candidate.precedingText}`
+      : null,
+    neighborContextEnabled && candidate.followingText
+      ? `Text immediately after image:\n${candidate.followingText}`
+      : null,
     candidate.surroundingText
       ? `Nearby document context:\n${candidate.surroundingText}`
       : null,
     "",
     "Analyze this exact image for later retrieval.",
+    neighborContextEnabled
+      ? "If the before/after text materially disambiguates the image, add at most one short context sentence to the description."
+      : "Do not add context sentences from nearby document text unless they are directly visible in the image.",
+    "Keep the label image-focused and keep the description primarily about what is visible.",
     "Return exactly two lines:",
     "Label: ...",
     "Description: ...",
@@ -596,13 +644,30 @@ async function analyzeImageCandidate(
   options: DocumentProcessingOptions,
   resolvedModel: ResolvedImageAnalysisModel | null,
 ): Promise<ImageAnalysis> {
-  const canUseVisionModel =
-    Boolean(resolvedModel) &&
-    Boolean(resolvedModel?.supportsImageInput) &&
+  const imageAnalysisRequired = options.imageAnalysisRequired === true;
+  const hasImagePayload =
     Boolean(candidate.buffer) &&
     (candidate.mediaType?.startsWith("image/") ?? true);
 
-  if (!resolvedModel || !canUseVisionModel) {
+  if (!resolvedModel) {
+    if (imageAnalysisRequired) {
+      throw new Error(
+        "Knowledge image model is required for image analysis but is not configured or enabled",
+      );
+    }
+    return buildImageFallbackAnalysis(candidate);
+  }
+
+  if (!hasImagePayload) {
+    if (imageAnalysisRequired) {
+      throw new Error(
+        "Document image analysis requires extracted image bytes and an image media type",
+      );
+    }
+    return buildImageFallbackAnalysis(candidate);
+  }
+
+  if (!imageAnalysisRequired && resolvedModel.supportsImageInput === false) {
     return buildImageFallbackAnalysis(candidate);
   }
 
@@ -613,7 +678,9 @@ async function analyzeImageCandidate(
     > = [
       {
         type: "text",
-        text: buildImageAnalysisPrompt(candidate, options.documentTitle),
+        text: buildImageAnalysisPrompt(candidate, options.documentTitle, {
+          neighborContextEnabled: options.imageNeighborContextEnabled,
+        }),
       },
     ];
 
@@ -632,6 +699,11 @@ async function analyzeImageCandidate(
 
     return parseImageAnalysisResponse(text, candidate);
   } catch (error) {
+    if (imageAnalysisRequired) {
+      throw error instanceof Error
+        ? error
+        : new Error("Document image analysis failed");
+    }
     console.warn(
       `[ContextX] Failed to analyze image ${candidate.index} for "${options.documentTitle ?? "Untitled"}":`,
       error,
@@ -739,6 +811,11 @@ export async function generateContextImageArtifacts(
   if (candidates.length === 0) return [];
 
   const resolvedModel = await resolveImageAnalysisModel(options.imageAnalysis);
+  if (options.imageAnalysisRequired && !resolvedModel) {
+    throw new Error(
+      "Knowledge image model is required for image analysis but is not configured or enabled",
+    );
+  }
   const analyses = await processInBatches(
     candidates,
     IMAGE_ANALYSIS_CONCURRENCY,
@@ -759,8 +836,11 @@ export async function generateContextImageArtifacts(
     altText: candidates[index].altText ?? null,
     caption: candidates[index].caption ?? null,
     surroundingText: candidates[index].surroundingText ?? null,
+    precedingText: candidates[index].precedingText ?? null,
+    followingText: candidates[index].followingText ?? null,
     label: analysis.label,
     description: analysis.description,
+    anchor: candidates[index].anchor ?? null,
     headingPath: null,
     stepHint: null,
     isRenderable: Boolean(
@@ -812,8 +892,16 @@ export async function convertHtmlFragmentToProcessedDocument(
       altText: context.altText,
       caption: context.caption,
       surroundingText: context.surroundingText,
+      precedingText: context.precedingText,
+      followingText: context.followingText,
       width: Number.isFinite(width) ? width : null,
       height: Number.isFinite(height) ? height : null,
+      anchor: {
+        blockIndex: imageIndex - 1,
+        placement: "after",
+        source: "dom",
+        confidence: 1,
+      },
     });
 
     $img.replaceWith(` ${marker} `);

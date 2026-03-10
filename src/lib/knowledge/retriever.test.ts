@@ -415,4 +415,90 @@ describe("queryKnowledgeAsDocs", () => {
       ]),
     );
   });
+
+  it("uses before and after image context to recover relevant fallback images", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit(),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "Guide",
+        description: null,
+        metadata: { sectionGraphVersion: 1 },
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      {
+        id: "section-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        parentSectionId: null,
+        prevSectionId: null,
+        nextSectionId: null,
+        heading: "Authentication",
+        headingPath: "Guide > Authentication",
+        level: 2,
+        partIndex: 0,
+        partCount: 1,
+        content: "Matched authentication section content.",
+        summary: "Authentication section summary.",
+        tokenCount: 120,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearchImages).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.fullTextSearchImages).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.getDocumentImages).mockResolvedValue([
+      {
+        id: "image-4",
+        documentId: "doc-1",
+        groupId: "group-1",
+        versionId: "version-1",
+        kind: "embedded",
+        ordinal: 4,
+        marker: "CTX_IMAGE_4",
+        label: "Security screen",
+        description: "Screenshot of a security settings page.",
+        headingPath: "Guide > Authentication",
+        stepHint: "Open the security settings page.",
+        sourceUrl: "https://example.com/image-4.png",
+        storagePath: "knowledge-images/doc-1/version-1/image-4.png",
+        mediaType: "image/png",
+        pageNumber: 5,
+        width: 800,
+        height: 600,
+        altText: null,
+        caption: null,
+        surroundingText: null,
+        precedingText:
+          "Open Security Settings before starting passkey enrollment.",
+        followingText: "Use this screen to confirm the passkey setup flow.",
+        isRenderable: true,
+        manualLabel: false,
+        manualDescription: false,
+        embedding: null,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+
+    const docs = await queryKnowledgeAsDocs(group, "passkey setup", {
+      tokens: 5000,
+    });
+
+    expect(docs[0]?.matchedImages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "image-4",
+          label: "Security screen",
+        }),
+      ]),
+    );
+  });
 });

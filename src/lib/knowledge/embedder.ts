@@ -8,6 +8,16 @@ import { EmbeddingModel } from "ai";
 
 const embeddingCache = new Map<string, number[]>();
 
+type EmbeddingBatchResult = {
+  embeddings: number[][];
+  usageTokens: number;
+};
+
+type EmbeddingSingleResult = {
+  embedding: number[];
+  usageTokens: number;
+};
+
 // ─── Model Creation ────────────────────────────────────────────────────────────
 
 function createEmbeddingModel(
@@ -133,6 +143,15 @@ export async function embedTexts(
   provider: string,
   modelName: string,
 ): Promise<number[][]> {
+  const { embeddings } = await embedTextsWithUsage(texts, provider, modelName);
+  return embeddings;
+}
+
+export async function embedTextsWithUsage(
+  texts: string[],
+  provider: string,
+  modelName: string,
+): Promise<EmbeddingBatchResult> {
   const model = await getEmbeddingModelFromDb(provider, modelName);
   if (!model) {
     throw new Error(
@@ -144,6 +163,7 @@ export async function embedTexts(
   const preprocessed = texts.map(preprocessForEmbedding);
   const allEmbeddings: number[][] = new Array(preprocessed.length);
   const missing: Array<{ index: number; value: string; cacheKey: string }> = [];
+  let usageTokens = 0;
 
   preprocessed.forEach((value, index) => {
     const cacheKey = buildEmbeddingCacheKey(provider, modelName, value);
@@ -157,10 +177,13 @@ export async function embedTexts(
 
   for (let i = 0; i < missing.length; i += BATCH_SIZE) {
     const batch = missing.slice(i, i + BATCH_SIZE);
-    const { embeddings } = await embedMany({
+    const { embeddings, usage } = await embedMany({
       model,
       values: batch.map((entry) => entry.value),
     });
+    if (Number.isFinite(usage.tokens)) {
+      usageTokens += Number(usage.tokens);
+    }
 
     batch.forEach((entry, index) => {
       const embedding = embeddings[index] ?? [];
@@ -169,7 +192,10 @@ export async function embedTexts(
     });
   }
 
-  return allEmbeddings;
+  return {
+    embeddings: allEmbeddings,
+    usageTokens,
+  };
 }
 
 /**
@@ -180,6 +206,19 @@ export async function embedSingleText(
   provider: string,
   modelName: string,
 ): Promise<number[]> {
+  const { embedding } = await embedSingleTextWithUsage(
+    text,
+    provider,
+    modelName,
+  );
+  return embedding;
+}
+
+export async function embedSingleTextWithUsage(
+  text: string,
+  provider: string,
+  modelName: string,
+): Promise<EmbeddingSingleResult> {
   const model = await getEmbeddingModelFromDb(provider, modelName);
   if (!model) {
     throw new Error(
@@ -191,10 +230,16 @@ export async function embedSingleText(
   const cacheKey = buildEmbeddingCacheKey(provider, modelName, preprocessed);
   const cached = embeddingCache.get(cacheKey);
   if (cached) {
-    return cached;
+    return {
+      embedding: cached,
+      usageTokens: 0,
+    };
   }
 
-  const { embedding } = await embed({ model, value: preprocessed });
+  const { embedding, usage } = await embed({ model, value: preprocessed });
   embeddingCache.set(cacheKey, embedding);
-  return embedding;
+  return {
+    embedding,
+    usageTokens: Number.isFinite(usage.tokens) ? Number(usage.tokens) : 0,
+  };
 }

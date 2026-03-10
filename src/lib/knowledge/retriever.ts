@@ -30,9 +30,9 @@ type RetrievalScope = GroupForRetrieval & {
 // ─── Tuning Constants ──────────────────────────────────────────────────────────
 const RRF_K = 60;
 /** Per-search-arm candidate limit (increased for better recall) */
-const CANDIDATE_LIMIT = 50;
+const CANDIDATE_LIMIT = 60;
 /** Post-RRF, pre-rerank cap */
-const FINAL_BEFORE_RERANK = 25;
+const FINAL_BEFORE_RERANK = 30;
 /** Default final topN returned */
 const FINAL_AFTER_RERANK = 10;
 /** Minimum cosine similarity to keep a vector result (filters noise) */
@@ -1213,6 +1213,8 @@ function buildImageContextText(
     | "caption"
     | "altText"
     | "surroundingText"
+    | "precedingText"
+    | "followingText"
   >,
 ): string {
   return [
@@ -1223,10 +1225,53 @@ function buildImageContextText(
     image.caption,
     image.altText,
     image.surroundingText,
+    image.precedingText,
+    image.followingText,
   ]
     .filter(Boolean)
     .join(" ")
     .trim();
+}
+
+function buildWeightedImageFieldText(
+  image: Pick<
+    KnowledgeDocumentImage,
+    | "label"
+    | "description"
+    | "caption"
+    | "altText"
+    | "headingPath"
+    | "stepHint"
+    | "surroundingText"
+    | "precedingText"
+    | "followingText"
+  >,
+): {
+  visual: string;
+  structure: string;
+  neighbor: string;
+} {
+  return {
+    visual: [
+      image.label,
+      image.description,
+      image.caption,
+      image.altText,
+      image.label,
+      image.description,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim(),
+    structure: [image.headingPath, image.stepHint]
+      .filter(Boolean)
+      .join(" ")
+      .trim(),
+    neighbor: [image.precedingText, image.followingText, image.surroundingText]
+      .filter(Boolean)
+      .join(" ")
+      .trim(),
+  };
 }
 
 function scoreFallbackImageCandidate(input: {
@@ -1237,10 +1282,27 @@ function scoreFallbackImageCandidate(input: {
   docScore: number;
 }): number {
   const imageContext = buildImageContextText(input.image);
-  const queryOverlap = computeImageTextOverlap(input.queryTerms, imageContext);
-  const headingOverlap = computeImageTextOverlap(
-    input.matchedSectionTerms,
-    imageContext,
+  const weightedText = buildWeightedImageFieldText(input.image);
+  const queryOverlap =
+    computeImageTextOverlap(input.queryTerms, weightedText.visual) * 0.6 +
+    computeImageTextOverlap(input.queryTerms, weightedText.structure) * 0.25 +
+    computeImageTextOverlap(input.queryTerms, weightedText.neighbor) * 0.15;
+  const headingOverlap =
+    computeImageTextOverlap(input.matchedSectionTerms, weightedText.visual) *
+      0.25 +
+    computeImageTextOverlap(input.matchedSectionTerms, weightedText.structure) *
+      0.55 +
+    computeImageTextOverlap(input.matchedSectionTerms, weightedText.neighbor) *
+      0.2;
+  const neighborOverlap = Math.max(
+    computeImageTextOverlap(
+      input.queryTerms,
+      input.image.precedingText?.trim() ?? "",
+    ),
+    computeImageTextOverlap(
+      input.queryTerms,
+      input.image.followingText?.trim() ?? "",
+    ),
   );
   const normalizedContext = imageContext.toLowerCase();
   const exactHeadingBoost = input.matchedSectionHeadings.some((heading) => {
@@ -1256,9 +1318,10 @@ function scoreFallbackImageCandidate(input: {
     : 0;
 
   return (
-    input.docScore * 0.35 +
-    queryOverlap * 0.45 +
-    headingOverlap * 0.25 +
+    input.docScore * 0.3 +
+    queryOverlap * 0.4 +
+    headingOverlap * 0.2 +
+    neighborOverlap * 0.15 +
     exactHeadingBoost
   );
 }
@@ -1359,8 +1422,7 @@ async function findMatchedImagesForDocs(input: {
             score *= 1 + docScore * 0.25;
 
             const headings = matchedHeadingsByDoc.get(image.documentId) ?? [];
-            const imageContext =
-              `${image.headingPath ?? ""} ${image.stepHint ?? ""}`.toLowerCase();
+            const imageContext = buildImageContextText(image).toLowerCase();
             if (
               headings.some(
                 (heading) =>

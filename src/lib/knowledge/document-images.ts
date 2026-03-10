@@ -71,6 +71,8 @@ export function buildDocumentImageEmbeddingText(input: {
     | "caption"
     | "altText"
     | "surroundingText"
+    | "precedingText"
+    | "followingText"
     | "pageNumber"
   >;
 }): string {
@@ -90,6 +92,12 @@ export function buildDocumentImageEmbeddingText(input: {
     input.image.altText ? `alt: ${cleanInlineText(input.image.altText)}` : "",
     input.image.surroundingText
       ? `context: ${cleanInlineText(input.image.surroundingText)}`
+      : "",
+    input.image.precedingText
+      ? `before: ${cleanInlineText(input.image.precedingText)}`
+      : "",
+    input.image.followingText
+      ? `after: ${cleanInlineText(input.image.followingText)}`
       : "",
     input.image.pageNumber != null ? `page: ${input.image.pageNumber}` : "",
   ]

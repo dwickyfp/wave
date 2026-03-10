@@ -231,4 +231,146 @@ describe("image-markdown", () => {
     );
     expect(images[1].description).toContain("Extracted image index: 2.");
   });
+
+  it("includes explicit before and after text in the image prompt when neighbor context is enabled", async () => {
+    getProviderByNameMock.mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: null,
+    });
+    getModelForChatMock.mockResolvedValue({
+      apiName: "vision-model",
+      supportsImageInput: true,
+    });
+    generateTextMock.mockResolvedValue({
+      text: "Label: Passkey setup screen\nDescription: UI screenshot showing the passkey setup screen.",
+    });
+
+    await generateContextImageArtifacts(
+      [
+        {
+          index: 1,
+          marker: "CTX_IMAGE_1",
+          buffer: Buffer.from("image-one"),
+          mediaType: "image/png",
+          pageNumber: 4,
+          precedingText: "Open Security Settings before enabling passkeys.",
+          followingText: "Use this screen to confirm the passkey enrollment.",
+          surroundingText: "Security setup flow",
+        },
+      ],
+      {
+        documentTitle: "Security Guide",
+        imageAnalysis: {
+          provider: "openai",
+          model: "vision-model",
+        },
+        imageNeighborContextEnabled: true,
+      },
+    );
+
+    const promptText =
+      generateTextMock.mock.calls[0]?.[0]?.messages?.[0]?.content?.[0]?.text;
+    expect(promptText).toContain("Text immediately before image:");
+    expect(promptText).toContain(
+      "Open Security Settings before enabling passkeys.",
+    );
+    expect(promptText).toContain("Text immediately after image:");
+    expect(promptText).toContain(
+      "Use this screen to confirm the passkey enrollment.",
+    );
+    expect(promptText).toContain(
+      "add at most one short context sentence to the description",
+    );
+  });
+
+  it("omits before and after prompt sections when neighbor context is disabled", async () => {
+    getProviderByNameMock.mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: null,
+    });
+    getModelForChatMock.mockResolvedValue({
+      apiName: "vision-model",
+      supportsImageInput: true,
+    });
+    generateTextMock.mockResolvedValue({
+      text: "Label: Passkey setup screen\nDescription: UI screenshot showing the passkey setup screen.",
+    });
+
+    await generateContextImageArtifacts(
+      [
+        {
+          index: 1,
+          marker: "CTX_IMAGE_1",
+          buffer: Buffer.from("image-one"),
+          mediaType: "image/png",
+          pageNumber: 4,
+          precedingText: "Open Security Settings before enabling passkeys.",
+          followingText: "Use this screen to confirm the passkey enrollment.",
+          surroundingText: "Security setup flow",
+        },
+      ],
+      {
+        documentTitle: "Security Guide",
+        imageAnalysis: {
+          provider: "openai",
+          model: "vision-model",
+        },
+        imageNeighborContextEnabled: false,
+      },
+    );
+
+    const promptText =
+      generateTextMock.mock.calls[0]?.[0]?.messages?.[0]?.content?.[0]?.text;
+    expect(promptText).not.toContain("Text immediately before image:");
+    expect(promptText).not.toContain("Text immediately after image:");
+    expect(promptText).toContain(
+      "Do not add context sentences from nearby document text unless they are directly visible in the image.",
+    );
+  });
+
+  it("still attempts the vision call in required mode when model metadata says image input is unsupported", async () => {
+    getProviderByNameMock.mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: null,
+    });
+    getModelForChatMock.mockResolvedValue({
+      apiName: "vision-model",
+      supportsImageInput: false,
+    });
+    generateTextMock.mockResolvedValue({
+      text: "Label: Enrollment screen\nDescription: UI screenshot showing the passkey enrollment confirmation screen.",
+    });
+
+    const images = await generateContextImageArtifacts(
+      [
+        {
+          index: 1,
+          marker: "CTX_IMAGE_1",
+          buffer: Buffer.from("image-one"),
+          mediaType: "image/png",
+          altText: "Passkey enrollment",
+          pageNumber: 2,
+        },
+      ],
+      {
+        documentTitle: "Security Guide",
+        imageAnalysis: {
+          provider: "openai",
+          model: "vision-model",
+        },
+        imageAnalysisRequired: true,
+      },
+    );
+
+    expect(generateTextMock).toHaveBeenCalledTimes(1);
+    expect(images[0]).toMatchObject({
+      label: "Enrollment screen",
+    });
+  });
 });

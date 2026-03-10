@@ -20,6 +20,7 @@ import {
 import { toast } from "sonner";
 import { Button } from "ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
+import { Switch } from "ui/switch";
 import {
   makeModelValue,
   ModelSelector,
@@ -32,6 +33,8 @@ const PROVIDERS_KEY = "/api/settings/providers";
 const PARSE_MODEL_KEY = "/api/settings/knowledge-parse-model";
 const CONTEXT_MODEL_KEY = "/api/settings/knowledge-context-model";
 const IMAGE_MODEL_KEY = "/api/settings/knowledge-image-model";
+const IMAGE_NEIGHBOR_CONTEXT_KEY =
+  "/api/settings/knowledge-image-neighbor-context-enabled";
 const JUDGE_MODEL_KEY = "/api/settings/evaluation-judge-model";
 const EMBEDDING_MODEL_KEY = "/api/settings/self-learning-embedding-model";
 
@@ -153,6 +156,10 @@ export function EmmaModelSettingsButton() {
     IMAGE_MODEL_KEY,
     fetcher,
   );
+  const { data: imageNeighborContextEnabledConfig } = useSWR<boolean>(
+    IMAGE_NEIGHBOR_CONTEXT_KEY,
+    fetcher,
+  );
   const { data: judgeConfig } = useSWR<EvaluationJudgeModelConfig | null>(
     JUDGE_MODEL_KEY,
     fetcher,
@@ -166,6 +173,8 @@ export function EmmaModelSettingsButton() {
   const [parseValue, setParseValue] = useState(NONE_VALUE);
   const [contextValue, setContextValue] = useState(NONE_VALUE);
   const [imageValue, setImageValue] = useState(NONE_VALUE);
+  const [imageNeighborContextEnabled, setImageNeighborContextEnabled] =
+    useState(true);
   const [judgeValue, setJudgeValue] = useState(NONE_VALUE);
   const [embeddingValue, setEmbeddingValue] = useState(NONE_VALUE);
 
@@ -182,6 +191,10 @@ export function EmmaModelSettingsButton() {
   }, [imageConfig]);
 
   useEffect(() => {
+    setImageNeighborContextEnabled(imageNeighborContextEnabledConfig ?? true);
+  }, [imageNeighborContextEnabledConfig]);
+
+  useEffect(() => {
     setJudgeValue(getConfiguredValue(judgeConfig));
   }, [judgeConfig]);
 
@@ -195,6 +208,8 @@ export function EmmaModelSettingsButton() {
   const currentParseValue = getConfiguredValue(parseConfig);
   const currentContextValue = getConfiguredValue(contextConfig);
   const currentImageValue = getConfiguredValue(imageConfig);
+  const currentImageNeighborContextEnabled =
+    imageNeighborContextEnabledConfig ?? true;
   const currentJudgeValue = getConfiguredValue(judgeConfig);
   const currentEmbeddingValue = getConfiguredValue(embeddingConfig);
 
@@ -209,12 +224,14 @@ export function EmmaModelSettingsButton() {
     parseConfig === undefined ||
     contextConfig === undefined ||
     imageConfig === undefined ||
+    imageNeighborContextEnabledConfig === undefined ||
     judgeConfig === undefined ||
     embeddingConfig === undefined;
   const isDirty =
     parseValue !== currentParseValue ||
     contextValue !== currentContextValue ||
     imageValue !== currentImageValue ||
+    imageNeighborContextEnabled !== currentImageNeighborContextEnabled ||
     judgeValue !== currentJudgeValue ||
     embeddingValue !== currentEmbeddingValue;
 
@@ -239,6 +256,21 @@ export function EmmaModelSettingsButton() {
     }
   }
 
+  async function saveBooleanSetting(url: string, value: boolean) {
+    const response = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(value),
+    });
+
+    if (!response.ok) {
+      const data = await response
+        .json()
+        .catch(() => ({ error: "Failed to save setting" }));
+      throw new Error(data.error || "Failed to save setting");
+    }
+  }
+
   async function handleSaveAll() {
     setSaving(true);
 
@@ -247,37 +279,53 @@ export function EmmaModelSettingsButton() {
         label: "Knowledge parse",
         url: PARSE_MODEL_KEY,
         value: parseValue,
+        kind: "model" as const,
       },
       {
         label: "Knowledge context",
         url: CONTEXT_MODEL_KEY,
         value: contextValue,
+        kind: "model" as const,
       },
       {
         label: "Knowledge image",
         url: IMAGE_MODEL_KEY,
         value: imageValue,
+        kind: "model" as const,
+      },
+      {
+        label: "Image neighbor context",
+        url: IMAGE_NEIGHBOR_CONTEXT_KEY,
+        value: imageNeighborContextEnabled,
+        kind: "boolean" as const,
       },
       {
         label: "Evaluation judge",
         url: JUDGE_MODEL_KEY,
         value: judgeValue,
+        kind: "model" as const,
       },
       {
         label: "Self-learning embedding",
         url: EMBEDDING_MODEL_KEY,
         value: embeddingValue,
+        kind: "model" as const,
       },
     ];
 
     const results = await Promise.allSettled(
-      tasks.map((task) => saveSetting(task.url, task.value)),
+      tasks.map((task) =>
+        task.kind === "boolean"
+          ? saveBooleanSetting(task.url, task.value as boolean)
+          : saveSetting(task.url, task.value as string),
+      ),
     );
 
     await Promise.all([
       swrMutate(PARSE_MODEL_KEY),
       swrMutate(CONTEXT_MODEL_KEY),
       swrMutate(IMAGE_MODEL_KEY),
+      swrMutate(IMAGE_NEIGHBOR_CONTEXT_KEY),
       swrMutate(JUDGE_MODEL_KEY),
       swrMutate(EMBEDDING_MODEL_KEY),
     ]);
@@ -335,7 +383,10 @@ export function EmmaModelSettingsButton() {
             </p>
           </div>
 
-          <div className="space-y-3">
+          <div
+            className="max-h-[60vh] space-y-3 overflow-y-auto pr-1"
+            onWheel={(e) => e.stopPropagation()}
+          >
             <SettingCard
               title="Knowledge Parse"
               description="Used for readability-focused page repair when extraction quality is low."
@@ -356,13 +407,37 @@ export function EmmaModelSettingsButton() {
             />
             <SettingCard
               title="Knowledge Image"
-              description="Used for vision-based image analysis when image mode is set to eager processing."
+              description="Used for vision-based image analysis and image labeling during knowledge ingest."
               value={imageValue}
               onValueChange={setImageValue}
               providers={llmProviders}
               placeholder="Select image model"
               icon={ImageIcon}
             />
+            <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm">
+                    Image Neighbor Context
+                  </div>
+                  <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+                    Adds one short disambiguating sentence from the text
+                    immediately before or after the image when it improves
+                    retrieval relevance.
+                  </p>
+                </div>
+                <Switch
+                  checked={imageNeighborContextEnabled}
+                  onCheckedChange={setImageNeighborContextEnabled}
+                />
+              </div>
+              <p className="text-muted-foreground text-xs">
+                Current:{" "}
+                <span className="font-mono">
+                  {imageNeighborContextEnabled ? "enabled" : "disabled"}
+                </span>
+              </p>
+            </div>
             <SettingCard
               title="Evaluation Judge"
               description="Used to score conversations and propose reusable personalization memories."

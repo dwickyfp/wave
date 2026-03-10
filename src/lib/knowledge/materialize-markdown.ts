@@ -13,7 +13,7 @@ import {
   buildDocumentMetadataEmbeddingText,
   extractAutoDocumentMetadata,
 } from "./document-metadata";
-import { embedSingleText, embedTexts } from "./embedder";
+import { embedSingleTextWithUsage, embedTextsWithUsage } from "./embedder";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
 import {
   buildKnowledgeSectionGraph,
@@ -50,12 +50,23 @@ export type MaterializedKnowledgeImage = Omit<
   embedding?: number[] | null;
 };
 
+export type MaterializedEmbeddingUsage = {
+  totalTokens: number;
+  metadataTokens: number;
+  imageTokens: number;
+  chunkTokens: number;
+  provider: string;
+  model: string;
+};
+
 export type MaterializedDocumentState = {
   markdown: string;
   sections: MaterializedKnowledgeSection[];
   chunks: MaterializedKnowledgeChunk[];
   images: MaterializedKnowledgeImage[];
   totalTokens: number;
+  embeddingTokenCount: number;
+  embeddingUsage: MaterializedEmbeddingUsage;
   metadata: Record<string, unknown>;
   metadataEmbedding?: number[];
   resolvedTitle: string;
@@ -73,7 +84,12 @@ type MaterializationInput = {
   pages?: ProcessedDocumentPage[];
   contextMode?: KnowledgeContextMode;
   contextModel?: { provider: string; model: string } | null;
-  reportProgress?: (pct: number) => Promise<void> | void;
+  reportProgress?: (
+    pct: number,
+    processingState?: {
+      stage: "materializing" | "embedding";
+    },
+  ) => Promise<void> | void;
 };
 
 export async function materializeDocumentMarkdown({
@@ -91,13 +107,16 @@ export async function materializeDocumentMarkdown({
 }: MaterializationInput): Promise<MaterializedDocumentState> {
   const markdown = normalizeStructuredMarkdown(inputMarkdown);
 
-  await reportProgress?.(40);
+  await reportProgress?.(40, { stage: "materializing" });
   const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId);
   const autoMeta = extractAutoDocumentMetadata(markdown, documentTitle);
   const resolvedTitle = doc.titleManual ? doc.name : autoMeta.title;
   const resolvedDescription = doc.descriptionManual
     ? (doc.description ?? null)
     : autoMeta.description;
+  let metadataTokens = 0;
+  let imageTokens = 0;
+  let chunkTokens = 0;
 
   let metadataEmbedding: number[] | undefined;
   if (DOC_META_VECTOR_ENABLED) {
@@ -109,11 +128,13 @@ export async function materializeDocumentMarkdown({
     });
     if (metadataText) {
       try {
-        metadataEmbedding = await embedSingleText(
+        const result = await embedSingleTextWithUsage(
           metadataText,
           group.embeddingProvider,
           group.embeddingModel,
         );
+        metadataEmbedding = result.embedding;
+        metadataTokens = result.usageTokens;
       } catch (err) {
         console.warn(
           `[ContextX] Metadata embedding failed for document ${documentId}:`,
@@ -134,6 +155,9 @@ export async function materializeDocumentMarkdown({
       repairReason: page.repairReason ?? null,
     })),
   };
+  const existingIngestUsage =
+    ((doc.metadata as Record<string, unknown> | null | undefined)
+      ?.ingestUsage as Record<string, unknown> | undefined) ?? {};
 
   const imageEmbeddingTexts = (inputImages ?? [])
     .map((image) =>
@@ -146,11 +170,13 @@ export async function materializeDocumentMarkdown({
   let imageEmbeddings: number[][] = [];
   if (imageEmbeddingTexts.length > 0) {
     try {
-      imageEmbeddings = await embedTexts(
+      const result = await embedTextsWithUsage(
         imageEmbeddingTexts,
         group.embeddingProvider,
         group.embeddingModel,
       );
+      imageEmbeddings = result.embeddings;
+      imageTokens = result.usageTokens;
     } catch (err) {
       console.warn(
         `[ContextX] Image embedding failed for document ${documentId}:`,
@@ -159,13 +185,22 @@ export async function materializeDocumentMarkdown({
     }
   }
 
-  await reportProgress?.(50);
+  await reportProgress?.(50, { stage: "materializing" });
   const chunks = chunkKnowledgeSections(
     sections,
     group.chunkSize,
     group.chunkOverlapPercent,
   );
   if (chunks.length === 0) {
+    const embeddingUsage = {
+      totalTokens: metadataTokens + imageTokens,
+      metadataTokens,
+      imageTokens,
+      chunkTokens,
+      provider: group.embeddingProvider,
+      model: group.embeddingModel,
+    } satisfies MaterializedEmbeddingUsage;
+
     return {
       markdown,
       sections,
@@ -191,20 +226,30 @@ export async function materializeDocumentMarkdown({
         altText: image.altText ?? null,
         caption: image.caption ?? null,
         surroundingText: image.surroundingText ?? null,
+        precedingText: image.precedingText ?? null,
+        followingText: image.followingText ?? null,
         isRenderable: image.isRenderable ?? false,
         manualLabel: image.manualLabel ?? false,
         manualDescription: image.manualDescription ?? false,
         embedding: imageEmbeddings[index] ?? null,
       })),
       totalTokens: 0,
-      metadata,
+      embeddingTokenCount: embeddingUsage.totalTokens,
+      embeddingUsage,
+      metadata: {
+        ...metadata,
+        ingestUsage: {
+          ...existingIngestUsage,
+          embedding: embeddingUsage,
+        },
+      },
       metadataEmbedding,
       resolvedTitle,
       resolvedDescription,
     };
   }
 
-  await reportProgress?.(60);
+  await reportProgress?.(60, { stage: "materializing" });
   const enrichedChunks = await enrichChunksWithContext(
     chunks,
     autoMeta.title || documentTitle,
@@ -221,16 +266,26 @@ export async function materializeDocumentMarkdown({
     },
   );
 
-  await reportProgress?.(75);
-  const embeddings = await embedTexts(
+  await reportProgress?.(75, { stage: "embedding" });
+  const chunkEmbeddingResult = await embedTextsWithUsage(
     enrichedChunks.map((chunk) => chunk.embeddingText),
     group.embeddingProvider,
     group.embeddingModel,
   );
+  const embeddings = chunkEmbeddingResult.embeddings;
+  chunkTokens = chunkEmbeddingResult.usageTokens;
 
   const totalTokens = enrichedChunks.reduce((sum, chunk) => {
     return sum + chunk.tokenCount;
   }, 0);
+  const embeddingUsage = {
+    totalTokens: metadataTokens + imageTokens + chunkTokens,
+    metadataTokens,
+    imageTokens,
+    chunkTokens,
+    provider: group.embeddingProvider,
+    model: group.embeddingModel,
+  } satisfies MaterializedEmbeddingUsage;
 
   return {
     markdown,
@@ -268,13 +323,23 @@ export async function materializeDocumentMarkdown({
       altText: image.altText ?? null,
       caption: image.caption ?? null,
       surroundingText: image.surroundingText ?? null,
+      precedingText: image.precedingText ?? null,
+      followingText: image.followingText ?? null,
       isRenderable: image.isRenderable ?? false,
       manualLabel: image.manualLabel ?? false,
       manualDescription: image.manualDescription ?? false,
       embedding: imageEmbeddings[index] ?? null,
     })),
     totalTokens,
-    metadata,
+    embeddingTokenCount: embeddingUsage.totalTokens,
+    embeddingUsage,
+    metadata: {
+      ...metadata,
+      ingestUsage: {
+        ...existingIngestUsage,
+        embedding: embeddingUsage,
+      },
+    },
     metadataEmbedding,
     resolvedTitle,
     resolvedDescription,
