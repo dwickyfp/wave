@@ -83,6 +83,8 @@ interface ShareableActionsProps {
   isDeleteLoading?: boolean;
   renderActions?: () => React.ReactNode;
   disabled?: boolean;
+  editTestId?: string;
+  deleteTestId?: string;
 }
 
 export function ShareableActions({
@@ -100,6 +102,8 @@ export function ShareableActions({
   isBookmarkToggleLoading = false,
   isDeleteLoading = false,
   disabled = false,
+  editTestId,
+  deleteTestId,
 }: ShareableActionsProps) {
   const t = useTranslations();
   const router = useRouter();
@@ -235,6 +239,7 @@ export function ShareableActions({
               size="icon"
               className="size-8 text-muted-foreground hover:text-foreground"
               disabled={isAnyLoading || disabled}
+              data-testid={editTestId}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -260,6 +265,7 @@ export function ShareableActions({
               size="icon"
               className="size-8 text-muted-foreground hover:text-destructive"
               disabled={isAnyLoading || disabled}
+              data-testid={deleteTestId}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();

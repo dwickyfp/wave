@@ -1,6 +1,10 @@
 import { Agent } from "app-types/agent";
 import type { A2AAgentCard, A2AAgentConfig } from "app-types/a2a-agent";
-import { MCPServerConfig, MCPToolInfo } from "app-types/mcp";
+import {
+  MCPServerConfig,
+  MCPToolInfo,
+  type McpPublishAuthMode,
+} from "app-types/mcp";
 import type { ProviderSettings } from "app-types/settings";
 import { UserPreferences } from "app-types/user";
 import { sql } from "drizzle-orm";
@@ -401,6 +405,15 @@ export const McpServerTable = pgTable("mcp_server", {
   lastConnectionStatus: varchar("last_connection_status", {
     enum: ["connected", "error"],
   }),
+  publishEnabled: boolean("publish_enabled").notNull().default(false),
+  publishAuthMode: varchar("publish_auth_mode", {
+    enum: ["none", "bearer"],
+  })
+    .$type<McpPublishAuthMode>()
+    .notNull()
+    .default("none"),
+  publishApiKeyHash: text("publish_api_key_hash"),
+  publishApiKeyPreview: text("publish_api_key_preview"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),

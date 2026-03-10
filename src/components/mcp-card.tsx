@@ -1,45 +1,41 @@
 "use client";
-import {
-  ChevronRight,
-  FlaskConical,
-  ShieldAlertIcon,
-  Loader,
-  RotateCw,
-  Settings,
-  Settings2,
-  Wrench,
-} from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "ui/alert";
-import { Button } from "ui/button";
-import { Card, CardContent, CardHeader } from "ui/card";
-import JsonView from "ui/json-view";
-import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
-import { memo, useCallback, useMemo, useState } from "react";
-import Link from "next/link";
-import { useSWRConfig } from "swr";
-import { safe } from "ts-safe";
 
-import { handleErrorWithToast } from "ui/shared-toast";
 import {
   refreshMcpClientAction,
   removeMcpClientAction,
   shareMcpServerAction,
 } from "@/app/api/mcp/actions";
-import { ShareableActions, type Visibility } from "./shareable-actions";
-
-import type { MCPServerInfo, MCPToolInfo } from "app-types/mcp";
-
-import { ToolDetailPopup } from "./tool-detail-popup";
-import { useTranslations } from "next-intl";
-import { Separator } from "ui/separator";
-import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { appStore } from "@/app/store";
-import { isString } from "lib/utils";
+import type { MCPServerInfo } from "app-types/mcp";
+import type { BasicUser } from "app-types/user";
+import {
+  FlaskConical,
+  Loader2,
+  RefreshCw,
+  Settings2,
+  ShieldAlert,
+} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { memo, useCallback, useMemo, useState } from "react";
+import { useSWRConfig } from "swr";
+import { toast } from "sonner";
+import { Card } from "ui/card";
+import { Button } from "ui/button";
+import { Badge } from "ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
+import { handleErrorWithToast } from "ui/shared-toast";
+import { ShareableActions, type Visibility } from "./shareable-actions";
 import { redriectMcpOauth } from "lib/ai/mcp/oauth-redirect";
-import { BasicUser } from "app-types/user";
 import { canChangeVisibilityMCP } from "lib/auth/client-permissions";
+import { safe } from "ts-safe";
 
-// Main MCPCard component
+const STATUS_STYLES: Record<string, string> = {
+  connected: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20",
+  disconnected: "bg-muted text-muted-foreground border-border",
+  loading: "bg-amber-500/10 text-amber-600 border-amber-500/20",
+  authorizing: "bg-blue-500/10 text-blue-600 border-blue-500/20",
+};
+
 export const MCPCard = memo(function MCPCard({
   id,
   config,
@@ -53,338 +49,255 @@ export const MCPCard = memo(function MCPCard({
   user,
   userName,
   userAvatar,
+  publishEnabled,
 }: MCPServerInfo & { user: BasicUser }) {
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [visibilityChangeLoading, setVisibilityChangeLoading] = useState(false);
-  const t = useTranslations("MCP");
+  const router = useRouter();
   const appStoreMutate = appStore((state) => state.mutate);
   const { mutate } = useSWRConfig();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [visibilityChangeLoading, setVisibilityChangeLoading] = useState(false);
+
   const isOwner = userId === user?.id;
+  const canManage = isOwner || user?.role === "admin";
   const canChangeVisibility = useMemo(
     () => canChangeVisibilityMCP(user?.role),
     [user?.role],
   );
-
-  const isLoading = useMemo(() => {
-    return isProcessing || status === "loading";
-  }, [isProcessing, status]);
-
+  const isLoading = isProcessing || status === "loading";
   const needsAuthorization = status === "authorizing";
-  const isDisabled = isLoading || needsAuthorization;
-
-  // Check permissions (kept for potential future use)
 
   const errorMessage = useMemo(() => {
-    if (error) {
-      return isString(error) ? error : JSON.stringify(error);
+    if (!error) return null;
+    if (typeof error === "string") return error;
+    try {
+      return JSON.stringify(error, null, 2);
+    } catch {
+      return "Unknown MCP error";
     }
-    return null;
   }, [error]);
 
   const pipeProcessing = useCallback(
-    async (fn: () => Promise<any>) =>
+    async (action: () => Promise<unknown>) => {
       safe(() => setIsProcessing(true))
-        .ifOk(fn)
+        .map(action)
         .ifOk(() => mutate("/api/mcp/list"))
         .ifFail(handleErrorWithToast)
-        .watch(() => setIsProcessing(false)),
-    [],
+        .watch(() => setIsProcessing(false));
+    },
+    [mutate],
   );
 
-  const handleRefresh = useCallback(
-    () => pipeProcessing(() => refreshMcpClientAction(id)),
-    [id],
-  );
+  const handleRefresh = useCallback(async () => {
+    await pipeProcessing(() => refreshMcpClientAction(id));
+  }, [id, pipeProcessing]);
 
   const handleDelete = useCallback(async () => {
     await pipeProcessing(() => removeMcpClientAction(id));
-  }, [id]);
+  }, [id, pipeProcessing]);
 
-  const handleAuthorize = useCallback(
-    () => pipeProcessing(() => redriectMcpOauth(id)),
-    [id],
-  );
+  const handleAuthorize = useCallback(async () => {
+    try {
+      await redriectMcpOauth(id);
+      mutate("/api/mcp/list");
+      toast.success("MCP authorization complete");
+    } catch (authorizeError) {
+      handleErrorWithToast(
+        authorizeError instanceof Error
+          ? authorizeError
+          : new Error("Failed to authorize MCP server"),
+      );
+    }
+  }, [id, mutate]);
 
   const handleVisibilityChange = useCallback(
     async (newVisibility: Visibility) => {
-      // Map visibility for MCP (public becomes featured)
-      const mcpVisibility = newVisibility === "public" ? "public" : "private";
+      const mappedVisibility =
+        newVisibility === "public" ? "public" : "private";
+
       safe(() => setVisibilityChangeLoading(true))
-        .map(async () => shareMcpServerAction(id, mcpVisibility))
-        .ifOk(() => {
-          mutate("/api/mcp/list");
-        })
-        .ifFail((e) => {
-          handleErrorWithToast(e);
-        })
+        .map(() => shareMcpServerAction(id, mappedVisibility))
+        .ifOk(() => mutate("/api/mcp/list"))
+        .ifFail(handleErrorWithToast)
         .watch(() => setVisibilityChangeLoading(false));
     },
-    [id],
+    [id, mutate],
   );
 
   return (
-    <Card
-      key={`mcp-card-${id}-${status}`}
-      className="relative hover:border-foreground/20 transition-colors bg-secondary/40"
-      data-testid="mcp-server-card"
-      data-featured={visibility === "public"}
-    >
-      {isLoading && (
-        <div className="animate-pulse z-10 absolute inset-0 bg-background/50 flex items-center justify-center w-full h-full" />
-      )}
-      <CardHeader
-        key={`header-${status}-${needsAuthorization}`}
-        className="flex items-center gap-1 mb-2"
+    <div data-testid="mcp-card">
+      <Card
+        data-testid="mcp-server-card"
+        data-featured={visibility === "public" ? "true" : "false"}
+        className="cursor-pointer rounded-2xl border bg-card transition-colors hover:border-foreground/20"
+        onClick={() => router.push(`/mcp/${encodeURIComponent(id)}`)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            router.push(`/mcp/${encodeURIComponent(id)}`);
+          }
+        }}
+        role="button"
+        tabIndex={0}
       >
-        {isLoading && <Loader className="size-4 z-20 animate-spin mr-1" />}
-
-        <h4 className="font-bold text-xs sm:text-lg flex items-center gap-1">
-          {name}
-        </h4>
-
-        <div className="flex-1" />
-
-        {needsAuthorization && (
-          <>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleAuthorize}
-                  disabled={isProcessing}
+        <div className="flex flex-col gap-4 p-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="truncate text-lg font-semibold">{name}</h3>
+                <Badge
+                  variant="outline"
+                  className={
+                    STATUS_STYLES[status] || STATUS_STYLES.disconnected
+                  }
                 >
-                  <ShieldAlertIcon className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Authorize</p>
-              </TooltipContent>
-            </Tooltip>
-            <div className="h-4">
-              <Separator orientation="vertical" />
-            </div>
-          </>
-        )}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              disabled={isDisabled}
-              onClick={() =>
-                appStoreMutate({
-                  mcpCustomizationPopup: {
-                    id,
-                    name,
-                    config,
-                    status,
-                    toolInfo,
-                    error,
-                    visibility,
-                    enabled,
-                    userId,
-                  },
-                })
-              }
-            >
-              <Settings2 className="size-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>{t("mcpServerCustomization")}</p>
-          </TooltipContent>
-        </Tooltip>
-
-        <Tooltip>
-          <TooltipTrigger asChild>
-            {isDisabled ? (
-              <div className="cursor-pointer hidden sm:block">
-                <Button variant="ghost" size="icon" disabled>
-                  <FlaskConical className="size-3.5" />
-                </Button>
+                  {status}
+                </Badge>
+                <Badge variant="secondary">{toolInfo.length} tools</Badge>
+                {visibility === "public" ? (
+                  <Badge variant="secondary">Featured</Badge>
+                ) : null}
+                {canManage && publishEnabled ? (
+                  <Badge variant="secondary">Published</Badge>
+                ) : null}
               </div>
-            ) : (
-              <Link
-                href={`/mcp/test/${encodeURIComponent(id)}`}
-                className="cursor-pointer hidden sm:block"
-              >
-                <Button variant="ghost" size="icon">
-                  <FlaskConical className="size-3.5" />
-                </Button>
-              </Link>
-            )}
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>{t("toolsTest")}</p>
-          </TooltipContent>
-        </Tooltip>
-        <div className="h-4">
-          <Separator orientation="vertical" />
-        </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={handleRefresh}
-              disabled={isLoading}
-            >
-              <RotateCw className="size-3.5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>{t("refresh")}</p>
-          </TooltipContent>
-        </Tooltip>
-        {/* Add sharing actions for owners or visibility indicator for featured servers */}
-        <ShareableActions
-          type="mcp"
-          visibility={visibility === "public" ? "public" : "private"}
-          isOwner={isOwner}
-          canChangeVisibility={canChangeVisibility}
-          editHref={
-            isOwner ? `/mcp/modify/${encodeURIComponent(id)}` : undefined
-          }
-          onVisibilityChange={
-            canChangeVisibility ? handleVisibilityChange : undefined
-          }
-          onDelete={isOwner ? handleDelete : undefined}
-          isVisibilityChangeLoading={visibilityChangeLoading}
-          isDeleteLoading={isProcessing}
-          disabled={isLoading}
-          renderActions={() => null}
-        />
-        {/* Show user info for featured servers */}
-        {!isOwner && userName && (
-          <>
-            <div className="h-4">
-              <Separator orientation="vertical" />
-            </div>
-            <div className="flex items-center gap-1.5 ml-2">
-              <Avatar className="size-4 ring shrink-0 rounded-full">
-                <AvatarImage src={userAvatar || undefined} />
-                <AvatarFallback className="text-xs">
-                  {userName[0]?.toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
-              <span className="text-xs text-muted-foreground font-medium">
-                {userName}
-              </span>
-            </div>
-          </>
-        )}
-      </CardHeader>
 
-      {errorMessage && <ErrorAlert error={errorMessage} />}
+              <p className="text-sm text-muted-foreground">
+                {needsAuthorization
+                  ? "Owner authorization is required before the tools are ready."
+                  : errorMessage
+                    ? "This server has a connection issue. Open details for the current error and publish state."
+                    : "Open details to review configuration, tools, and publish settings."}
+              </p>
 
-      {needsAuthorization && (
-        <div className="px-6 pb-2">
-          <Alert
-            className="cursor-pointer hover:bg-accent/10 transition-colors"
-            onClick={handleAuthorize}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                handleAuthorize();
-              }
-            }}
-          >
-            <ShieldAlertIcon />
-            <AlertTitle>Authorization Required</AlertTitle>
-            <AlertDescription>
-              Click here to authorize this MCP server and access its tools.
-            </AlertDescription>
-          </Alert>
-        </div>
-      )}
-
-      <div className="relative hidden sm:flex w-full">
-        <CardContent className="flex min-w-0 w-full flex-row text-sm max-h-[320px] overflow-hidden border-r-0">
-          {/* Only show config to owners to prevent credential exposure */}
-          {isOwner && config && (
-            <div className="w-1/2 min-w-0 flex flex-col pr-2 border-r border-border">
-              <div className="flex items-center gap-2 mb-2 pt-2 pb-1 z-10">
-                <Settings size={14} className="text-muted-foreground" />
-                <h5 className="text-muted-foreground text-sm font-medium">
-                  {t("configuration")}
-                </h5>
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                <JsonView data={config} />
-              </div>
-            </div>
-          )}
-
-          <div
-            className={`${isOwner && config ? "w-1/2" : "w-full"} min-w-0 flex flex-col ${isOwner && config ? "pl-4" : ""}`}
-          >
-            <div className="flex items-center gap-2 mb-4 pt-2 pb-1 z-10">
-              <Wrench size={14} className="text-muted-foreground" />
-              <h5 className="text-muted-foreground text-sm font-medium">
-                {t("availableTools")}
-              </h5>
-            </div>
-
-            <div className="flex-1 overflow-y-auto">
-              {toolInfo.length > 0 ? (
-                <ToolsList tools={toolInfo} serverId={id} />
-              ) : (
-                <div className="bg-secondary/30 rounded-md p-3 text-center">
-                  <p className="text-sm text-muted-foreground">
-                    {t("noToolsAvailable")}
-                  </p>
+              {!isOwner && userName ? (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Avatar className="size-5 ring">
+                    <AvatarImage src={userAvatar || undefined} />
+                    <AvatarFallback>
+                      {userName[0]?.toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span>{userName}</span>
                 </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {needsAuthorization && canManage && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleAuthorize();
+                  }}
+                >
+                  <ShieldAlert className="size-4" />
+                  Authorize
+                </Button>
               )}
+
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    appStoreMutate({
+                      mcpCustomizationPopup: {
+                        id,
+                        name,
+                        config,
+                        status,
+                        toolInfo,
+                        error,
+                        visibility,
+                        enabled,
+                        userId,
+                        publishEnabled,
+                      },
+                    });
+                  }}
+                >
+                  <Settings2 className="size-4" />
+                  Customize
+                </Button>
+              )}
+
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    router.push(`/mcp/test/${encodeURIComponent(id)}`);
+                  }}
+                >
+                  <FlaskConical className="size-4" />
+                  Tool Test
+                </Button>
+              )}
+
+              {canManage && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    handleRefresh();
+                  }}
+                  disabled={isLoading}
+                >
+                  {isLoading ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="size-4" />
+                  )}
+                  Refresh
+                </Button>
+              )}
+
+              <ShareableActions
+                type="mcp"
+                visibility={visibility === "public" ? "public" : "private"}
+                isOwner={canManage}
+                canChangeVisibility={canChangeVisibility}
+                editHref={
+                  canManage
+                    ? `/mcp/modify/${encodeURIComponent(id)}`
+                    : undefined
+                }
+                onVisibilityChange={
+                  canManage && canChangeVisibility
+                    ? handleVisibilityChange
+                    : undefined
+                }
+                onDelete={canManage ? handleDelete : undefined}
+                isVisibilityChangeLoading={visibilityChangeLoading}
+                isDeleteLoading={isProcessing}
+                disabled={isLoading}
+                renderActions={() => null}
+                editTestId="edit-mcp-button"
+                deleteTestId="delete-mcp-button"
+              />
             </div>
           </div>
-        </CardContent>
-      </div>
-    </Card>
+
+          {errorMessage ? (
+            <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {errorMessage}
+            </div>
+          ) : null}
+        </div>
+      </Card>
+    </div>
   );
 });
-
-// Tools list component
-const ToolsList = memo(
-  ({ tools, serverId }: { tools: MCPToolInfo[]; serverId: string }) => (
-    <div className="space-y-2 pr-2">
-      {tools.map((tool) => (
-        <div
-          key={tool.name}
-          className="flex items-start gap-2 bg-secondary rounded-md p-2 hover:bg-input transition-colors"
-        >
-          <ToolDetailPopup tool={tool} serverId={serverId}>
-            <div className="flex-1 min-w-0 cursor-pointer">
-              <p className="font-medium text-sm mb-1 truncate">{tool.name}</p>
-              <p className="text-xs text-muted-foreground line-clamp-1">
-                {tool.description}
-              </p>
-            </div>
-          </ToolDetailPopup>
-
-          <div className="flex items-center px-1 justify-center self-stretch">
-            <ChevronRight size={16} />
-          </div>
-        </div>
-      ))}
-    </div>
-  ),
-);
-
-ToolsList.displayName = "ToolsList";
-
-// Error alert component
-const ErrorAlert = memo(({ error }: { error: string }) => (
-  <div className="px-6 pb-2">
-    <Alert variant="destructive" className="border-destructive">
-      <AlertTitle>Error</AlertTitle>
-      <AlertDescription className="whitespace-pre-wrap break-words">
-        {error}
-      </AlertDescription>
-    </Alert>
-  </div>
-));
-
-ErrorAlert.displayName = "ErrorAlert";

@@ -25,6 +25,10 @@ export const pgMcpRepository: MCPRepository = {
             name: server.name,
             config: server.config,
             visibility: server.visibility ?? existing.visibility,
+            publishEnabled:
+              server.publishEnabled ?? existing.publishEnabled ?? false,
+            publishAuthMode:
+              server.publishAuthMode ?? existing.publishAuthMode ?? "none",
             updatedAt: now,
           })
           .where(eq(McpServerTable.id, server.id))
@@ -43,6 +47,10 @@ export const pgMcpRepository: MCPRepository = {
         userId: server.userId,
         visibility: server.visibility ?? "private",
         enabled: true,
+        publishEnabled: server.publishEnabled ?? false,
+        publishAuthMode: server.publishAuthMode ?? "none",
+        publishApiKeyHash: server.publishApiKeyHash ?? null,
+        publishApiKeyPreview: server.publishApiKeyPreview ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -75,6 +83,9 @@ export const pgMcpRepository: MCPRepository = {
         userId: McpServerTable.userId,
         visibility: McpServerTable.visibility,
         lastConnectionStatus: McpServerTable.lastConnectionStatus,
+        publishEnabled: McpServerTable.publishEnabled,
+        publishAuthMode: McpServerTable.publishAuthMode,
+        publishApiKeyPreview: McpServerTable.publishApiKeyPreview,
         createdAt: McpServerTable.createdAt,
         updatedAt: McpServerTable.updatedAt,
         userName: UserTable.name,
@@ -126,6 +137,28 @@ export const pgMcpRepository: MCPRepository = {
       .update(McpServerTable)
       .set({
         lastConnectionStatus: status,
+        updatedAt: new Date(),
+      })
+      .where(eq(McpServerTable.id, id));
+  },
+
+  async updatePublishState(id, input) {
+    await db
+      .update(McpServerTable)
+      .set({
+        publishEnabled: input.enabled,
+        publishAuthMode: input.authMode,
+        updatedAt: new Date(),
+      })
+      .where(eq(McpServerTable.id, id));
+  },
+
+  async setPublishApiKey(id, keyHash, keyPreview) {
+    await db
+      .update(McpServerTable)
+      .set({
+        publishApiKeyHash: keyHash,
+        publishApiKeyPreview: keyPreview,
         updatedAt: new Date(),
       })
       .where(eq(McpServerTable.id, id));

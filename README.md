@@ -328,36 +328,122 @@ Emma Pilot is not just a chat widget. It is a **broker/orchestrator** on top of 
 
 **ContextX** is Emma's knowledge ingestion and retrieval system. It turns files and URLs into reusable, structured knowledge groups that agents can query during chat.
 
-It is more than simple file upload. ContextX builds a retrieval-ready knowledge index with document structure, contextual chunk summaries, embeddings, and reranking.
+It is more than simple file upload. ContextX builds a versioned, retrieval-ready knowledge index with document structure, metadata, section graphs, contextual chunk summaries, section embeddings, chunk embeddings, image embeddings, and calibrated retrieval.
 
-**Ingestion pipeline:**
+**Architecture at a glance:**
 
-1. Process a file or URL into markdown
-2. Optionally run LLM-based markdown parsing using the configured ContextX model
-3. Normalize the markdown structure
-4. Extract document metadata automatically
-5. Build a section graph from the document structure
-6. Chunk the content with semantic boundaries and overlap rules
-7. Enrich each chunk with contextual summaries
-8. Embed the enriched text
-9. Store the chunks, sections, metadata, and vectors
+- **Storage model**: PostgreSQL is the source of truth for documents, versions, sections, chunks, images, and retrieval settings.
+- **Semantic retrieval**: `pgvector` stores dense embeddings for document metadata, sections, chunks, and image text.
+- **Lexical retrieval**: PostgreSQL full-text search is combined with `pg_trgm` similarity so multilingual and imperfect keyword matches still have a path.
+- **LLM stages**: LLMs are used selectively for parse/repair, metadata extraction, contextual chunk enrichment, and image understanding.
+- **Reliability model**: reingest and cancel operate on a pending version and preserve the last good active version until a new version is successfully finalized.
 
-**Retrieval flow:**
+**What gets indexed:**
 
-1. Embed the query
-2. Run multiple retrieval arms:
-   - lexical search
-   - vector search
-   - document metadata search
-3. Merge candidates with weighted reciprocal-rank fusion
-4. Expand top results with neighboring chunks when useful
-5. Rerank the final candidate set with the configured reranking model
-6. Return grounded chunks and section context to the agent/runtime
+- **Document metadata**: title, summary-style metadata, and a metadata embedding used for document shortlisting.
+- **Sections**: heading path, summary, page span, and a section embedding used for hierarchical retrieval.
+- **Chunks**: chunk text plus contextual enrichment, overlap, and the main embedding searched at answer time.
+- **Images**: caption or extracted text, page references, and embeddings so screenshots/figures can be retrieved alongside text.
+
+#### Embedding + Ingestion Flow
+
+```mermaid
+flowchart TD
+  A["Upload / URL / Inline Markdown"] --> B["runIngestPipeline"]
+  B --> C["Extract file into markdown or page text"]
+  C --> D{"LLM parse / repair enabled?"}
+  D -->|Yes| E["Parse model rewrites into cleaner markdown"]
+  D -->|No| F["Use deterministic extracted markdown"]
+  E --> G["Normalize headings, pages, and links"]
+  F --> G
+  G --> H["Extract document metadata"]
+  H --> I["Build section graph"]
+  I --> J["Chunk content with overlap rules"]
+  J --> K["LLM context enrichment per chunk"]
+  I --> L["Prepare section embedding text"]
+  J --> M["Prepare chunk embedding text"]
+  G --> N["Prepare image OCR / caption text"]
+  H --> O["Embed metadata text"]
+  L --> P["Embed sections"]
+  M --> Q["Embed chunks"]
+  N --> R["Embed images"]
+  O --> S["Persist document row"]
+  P --> T["Persist section rows"]
+  Q --> U["Persist chunk rows"]
+  R --> V["Persist image rows"]
+  S --> W["Write version snapshot"]
+  T --> W
+  U --> W
+  V --> W
+  W --> X["Promote pending version to active version"]
+  X --> Y["Document remains ready for retrieval"]
+```
+
+**Ingestion notes:**
+
+- If the document is brand new, failure marks the document as `failed`.
+- If the document already has an active version, reingest failure or cancel only clears the pending processing state and keeps the live document `ready`.
+- Bulk ingest embeddings are computed in batches; only single query-time embeddings use the in-process LRU/TTL cache.
+
+#### Hierarchical Retrieval Flow
+
+```mermaid
+flowchart TD
+  A["User / Agent query"] --> B["Unicode-aware tokenization + conservative query expansion"]
+  B --> C["Embed query variants"]
+  C --> D["Document metadata retrieval"]
+  D --> D1["Lexical: tsvector + pg_trgm"]
+  D --> D2["Vector: pgvector metadata embedding"]
+  D1 --> E["Document shortlist"]
+  D2 --> E
+  E --> F["Section retrieval within shortlisted docs"]
+  F --> F1["Lexical: section heading / summary search"]
+  F --> F2["Vector: section embedding search"]
+  F1 --> G["Section shortlist"]
+  F2 --> G
+  G --> H["Chunk retrieval constrained to shortlisted sections"]
+  H --> H1["Lexical chunk search"]
+  H --> H2["Vector chunk search"]
+  G --> I{"No strong sections?"}
+  I -->|Yes| J["Fallback to doc-scoped chunk retrieval"]
+  I -->|No| K["Keep section-scoped chunk retrieval"]
+  J --> L["Fuse chunk candidates"]
+  K --> L
+  H1 --> L
+  H2 --> L
+  L --> M["Compute calibrated confidence score"]
+  M --> N{"Reranker configured?"}
+  N -->|Yes| O["LLM rerank on shortlisted chunks"]
+  N -->|No| P["Use calibrated score directly"]
+  O --> Q["Final top chunks"]
+  P --> Q
+  Q --> R["Attach inline previous / next neighbor context"]
+  Q --> S["Image retrieval inside matched docs"]
+  S --> S1["Image lexical + vector candidates"]
+  S1 --> S2["Rescore by section heading overlap + page proximity"]
+  R --> T["queryKnowledgeAsDocs / knowledge tool output"]
+  S2 --> T
+  T --> U["Grounded answer generation"]
+```
+
+**How the database participates:**
+
+- **`pgvector`** is used for cosine-similarity search over metadata, sections, chunks, and images.
+- **PostgreSQL full-text search** remains the precision-oriented lexical arm.
+- **`pg_trgm`** adds fuzzy similarity and multilingual fallback when stemming or exact tokenization would miss.
+- The retriever merges these signals into a calibrated confidence score instead of using only relative rank.
+
+**Ranking behavior:**
+
+- Retrieval is hierarchical: **document shortlist -> section shortlist -> chunk retrieval -> optional rerank**.
+- Recall depth adapts to the query size instead of using one fixed candidate count.
+- Neighbor chunks are no longer separate zero-score hits; they are attached as inline context to the winning chunks.
+- Image matches are tied back to the same section/page neighborhood so diagrams and screenshots stay aligned with the textual evidence.
 
 **How it works in the product:**
 
 - Knowledge is grouped into **ContextX groups**
-- Groups define embedding models, chunk sizes, overlap, thresholds, and reranking settings
+- Groups define embedding model, reranker, threshold, and linked source scopes
 - Agents can use those groups as private knowledge memory
 - The system can also expose knowledge groups through MCP-style access patterns for broader tool use
 
@@ -365,6 +451,7 @@ It is more than simple file upload. ContextX builds a retrieval-ready knowledge 
 
 - Produces cleaner retrieval than naive chunk-and-embed pipelines
 - Preserves structure from long documents instead of flattening everything into raw text blobs
+- Keeps live knowledge available during reingest instead of taking good documents offline
 - Gives Emma agents a durable knowledge layer for company docs, product docs, SOPs, manuals, and internal research
 
 ---
