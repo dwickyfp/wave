@@ -561,6 +561,7 @@ export function DocumentPreviewSheet({
   const processingLabel = formatKnowledgeDocumentProcessingState(
     doc?.processingState,
   );
+  const isProcessing = doc?.status === "processing" || !!doc?.processingState;
   const selectedVersion =
     previewData?.versions.find((version) => version.id === selectedVersionId) ??
     activeVersion ??
@@ -846,7 +847,7 @@ export function DocumentPreviewSheet({
                     </div>
                   )}
                 </div>
-                {doc?.status === "processing" ? (
+                {isProcessing ? (
                   <div className="mt-2 flex max-w-sm flex-col gap-1">
                     <div className="text-xs text-muted-foreground">
                       {processingLabel ?? "Processing document"}

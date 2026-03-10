@@ -8,6 +8,7 @@ import {
   StorageUploadPolicyError,
 } from "lib/file-storage/upload-policy";
 import { runIngestPipeline } from "lib/knowledge/ingest-pipeline";
+import { reconcileDocumentIngestFailure } from "lib/knowledge/versioning";
 import { enqueueIngestDocument } from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -164,9 +165,10 @@ async function enqueueOrProcessInline(
     // Fire-and-forget: don't block the HTTP response
     runIngestPipeline(docId, groupId, fileBuffer).catch(async (err) => {
       console.error("[ContextX] Inline ingest failed for document", docId, err);
-      await knowledgeRepository
-        .updateDocumentStatus(docId, "failed", { errorMessage: String(err) })
-        .catch(() => {});
+      await reconcileDocumentIngestFailure({
+        documentId: docId,
+        errorMessage: String(err),
+      }).catch(() => {});
     });
   }
 }
@@ -334,9 +336,10 @@ export async function POST(req: NextRequest, { params }: Params) {
         doc.id,
         err,
       );
-      await knowledgeRepository
-        .updateDocumentStatus(doc.id, "failed", { errorMessage: String(err) })
-        .catch(() => {});
+      await reconcileDocumentIngestFailure({
+        documentId: doc.id,
+        errorMessage: String(err),
+      }).catch(() => {});
     });
   } else {
     // Storage path is set — the worker can re-download from storage.

@@ -11,6 +11,8 @@ vi.mock("lib/db/repository", () => ({
     selectRetrievalScopes: vi.fn(),
     vectorSearch: vi.fn(),
     fullTextSearch: vi.fn(),
+    vectorSearchSections: vi.fn(),
+    fullTextSearchSections: vi.fn(),
     searchDocumentMetadata: vi.fn(),
     vectorSearchDocumentMetadata: vi.fn(),
     fullTextSearchImages: vi.fn(),
@@ -32,7 +34,8 @@ vi.mock("./embedder", () => ({
   embedSingleText: vi.fn(async () => [0.1, 0.2, 0.3]),
 }));
 
-const { queryKnowledgeAsDocs } = await import("./retriever");
+const { queryKnowledge, queryKnowledgeAsDocs, scoreRetrievedImageCandidate } =
+  await import("./retriever");
 const { knowledgeRepository } = await import("lib/db/repository");
 
 const group = {
@@ -73,7 +76,11 @@ describe("queryKnowledgeAsDocs", () => {
     vi.clearAllMocks();
     vi.mocked(knowledgeRepository.selectRetrievalScopes).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.fullTextSearch).mockResolvedValue([]);
-    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.fullTextSearchSections).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearchSections).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
     vi.mocked(
       knowledgeRepository.vectorSearchDocumentMetadata,
     ).mockResolvedValue([]);
@@ -85,6 +92,116 @@ describe("queryKnowledgeAsDocs", () => {
     vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue(null);
     vi.mocked(knowledgeRepository.insertUsageLog).mockResolvedValue(undefined);
+  });
+
+  it("rejects a weak top-ranked hit when calibrated confidence stays below the threshold", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({ score: 0.29 }),
+    ]);
+
+    const results = await queryKnowledge(
+      {
+        ...group,
+        retrievalThreshold: 0.7,
+      },
+      "authentication",
+      { topN: 3 },
+    );
+
+    expect(results).toEqual([]);
+  });
+
+  it("keeps neighbor context inline on the primary hit instead of returning extra zero-score rows", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({ chunk: { chunkIndex: 1 } }),
+    ]);
+    vi.mocked(knowledgeRepository.getAdjacentChunks).mockResolvedValue([
+      makeChunkHit({
+        chunk: {
+          id: "chunk-0",
+          chunkIndex: 0,
+          content: "Previous authentication context.",
+        },
+      }),
+      makeChunkHit({
+        chunk: {
+          id: "chunk-2",
+          chunkIndex: 2,
+          content: "Next authentication context.",
+        },
+      }),
+    ]);
+
+    const results = await queryKnowledge(group, "authentication", { topN: 1 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.neighborContext).toEqual({
+      previous: "Previous authentication context.",
+      next: "Next authentication context.",
+    });
+  });
+
+  it("constrains chunk retrieval to shortlisted sections when section matches are available", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
+    vi.mocked(knowledgeRepository.fullTextSearchSections).mockResolvedValue([
+      {
+        section: {
+          id: "section-1",
+          documentId: "doc-1",
+          groupId: "group-1",
+          parentSectionId: null,
+          prevSectionId: null,
+          nextSectionId: null,
+          heading: "Authentication",
+          headingPath: "Guide > Authentication",
+          level: 2,
+          partIndex: 0,
+          partCount: 1,
+          content: "Authentication section.",
+          summary: "Authentication summary.",
+          tokenCount: 100,
+          createdAt: new Date("2026-02-01T00:00:00Z"),
+        },
+        documentId: "doc-1",
+        documentName: "Guide",
+        score: 1.8,
+      },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit(),
+    ]);
+
+    await queryKnowledge(group, "authentication", { topN: 3 });
+
+    expect(knowledgeRepository.vectorSearch).toHaveBeenCalledWith(
+      "group-1",
+      [0.1, 0.2, 0.3],
+      expect.any(Number),
+      { sectionIds: ["section-1"] },
+    );
+  });
+
+  it("uses lexical-only multilingual matches when semantic search is empty", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.fullTextSearch).mockResolvedValue([
+      makeChunkHit({ score: 1.6 }),
+    ]);
+
+    const results = await queryKnowledge(group, "登录 设置", { topN: 3 });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]?.documentId).toBe("doc-1");
   });
 
   it("returns section-first bundles with parent and continuation context", async () => {
@@ -221,6 +338,9 @@ describe("queryKnowledgeAsDocs", () => {
   });
 
   it("attaches matched images scoped to the returned documents", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
     vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
       makeChunkHit(),
     ]);
@@ -304,6 +424,9 @@ describe("queryKnowledgeAsDocs", () => {
   });
 
   it("falls back to renderable doc images when hybrid image search misses", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
     vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
       makeChunkHit(),
     ]);
@@ -417,6 +540,9 @@ describe("queryKnowledgeAsDocs", () => {
   });
 
   it("uses before and after image context to recover relevant fallback images", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.9 },
+    ]);
     vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
       makeChunkHit(),
     ]);
@@ -500,5 +626,88 @@ describe("queryKnowledgeAsDocs", () => {
         }),
       ]),
     );
+  });
+
+  it("prefers same-section and same-page images over unrelated higher-scoring candidates", async () => {
+    const matchContext = {
+      matchedSectionHeadings: ["Guide > Authentication"],
+      matchedSectionTerms: ["guide", "authentication"],
+      matchedPages: [2],
+      hasAnchors: true,
+    };
+
+    const unrelatedScore = scoreRetrievedImageCandidate({
+      image: {
+        id: "image-unrelated",
+        documentId: "doc-1",
+        groupId: "group-1",
+        versionId: "version-1",
+        kind: "embedded",
+        ordinal: 2,
+        marker: "CTX_IMAGE_2",
+        label: "Company overview",
+        description: "Corporate overview slide.",
+        headingPath: "Guide > Overview",
+        stepHint: "Review the company background.",
+        sourceUrl: "https://example.com/image-2.png",
+        storagePath: "knowledge-images/doc-1/version-1/image-2.png",
+        mediaType: "image/png",
+        pageNumber: 8,
+        width: 800,
+        height: 600,
+        altText: null,
+        caption: null,
+        surroundingText: null,
+        precedingText: null,
+        followingText: null,
+        isRenderable: true,
+        manualLabel: false,
+        manualDescription: false,
+        embedding: null,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+        score: 0.98,
+      },
+      docScore: 0.8,
+      matchContext,
+    });
+
+    const relevantScore = scoreRetrievedImageCandidate({
+      image: {
+        id: "image-relevant",
+        documentId: "doc-1",
+        groupId: "group-1",
+        versionId: "version-1",
+        kind: "embedded",
+        ordinal: 1,
+        marker: "CTX_IMAGE_1",
+        label: "Authentication settings",
+        description: "Screenshot of the authentication settings panel.",
+        headingPath: "Guide > Authentication",
+        stepHint: "Open the authentication settings panel.",
+        sourceUrl: "https://example.com/image-1.png",
+        storagePath: "knowledge-images/doc-1/version-1/image-1.png",
+        mediaType: "image/png",
+        pageNumber: 2,
+        width: 800,
+        height: 600,
+        altText: null,
+        caption: null,
+        surroundingText: null,
+        precedingText: null,
+        followingText: null,
+        isRenderable: true,
+        manualLabel: false,
+        manualDescription: false,
+        embedding: null,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+        score: 0.9,
+      },
+      docScore: 0.8,
+      matchContext,
+    });
+
+    expect(relevantScore).toBeGreaterThan(unrelatedScore);
   });
 });

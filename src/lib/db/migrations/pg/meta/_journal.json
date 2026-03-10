@@ -351,6 +351,13 @@
       "when": 1775100000000,
       "tag": "0049_quality_first_ingest_and_image_neighbor_context",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775200000000,
+      "tag": "0050_knowledge_section_embeddings_trgm",
+      "breakpoints": true
     }
   ]
 }

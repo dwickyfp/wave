@@ -148,8 +148,18 @@ export async function POST(_req: NextRequest, { params }: Params) {
     );
   }
 
-  // Reset status to pending and re-queue
-  await knowledgeRepository.updateDocumentStatus(docId, "pending");
+  if (doc.activeVersionId) {
+    await knowledgeRepository.updateDocumentProcessing(docId, {
+      errorMessage: null,
+      processingProgress: 0,
+      processingState: { stage: "extracting" },
+    });
+  } else {
+    await knowledgeRepository.updateDocumentStatus(docId, "pending", {
+      processingProgress: null,
+      processingState: null,
+    });
+  }
   await enqueueIngestDocument(docId, groupId);
 
   return NextResponse.json({ success: true });
@@ -218,6 +228,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
           metadataText,
           group.embeddingProvider,
           group.embeddingModel,
+          { cache: false },
         );
       } catch (err) {
         console.warn(

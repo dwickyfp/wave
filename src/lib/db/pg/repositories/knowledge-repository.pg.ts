@@ -105,6 +105,30 @@ function readDocumentProcessingState(
   };
 }
 
+function buildProcessingMetadataUpdate(
+  processingState: KnowledgeDocumentProcessingState | null | undefined,
+  options: { clearWhenUndefined?: boolean } = {},
+) {
+  if (processingState !== undefined) {
+    return processingState
+      ? sql`(
+          COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) ||
+          jsonb_build_object('processingState', ${JSON.stringify(processingState)}::jsonb)
+        )::json`
+      : sql`(
+          COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) - 'processingState'
+        )::json`;
+  }
+
+  if (options.clearWhenUndefined) {
+    return sql`(
+      COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) - 'processingState'
+    )::json`;
+  }
+
+  return undefined;
+}
+
 type DocumentImageRow = Pick<
   KnowledgeDocumentImage,
   | "id"
@@ -246,6 +270,7 @@ function mapSection(
     parentSectionId: row.parentSectionId ?? null,
     prevSectionId: row.prevSectionId ?? null,
     nextSectionId: row.nextSectionId ?? null,
+    embedding: null,
   };
 }
 
@@ -280,34 +305,45 @@ function toPgVectorLiteral(embedding: number[] | null): string | null {
   return `[${safe.join(",")}]`;
 }
 
+function buildUuidFilterSql(columnName: string, ids?: string[]) {
+  if (!ids || ids.length === 0) {
+    return sql``;
+  }
+
+  return sql`AND ${sql.raw(columnName)} IN (${sql.join(
+    ids.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  )})`;
+}
+
 export const pgKnowledgeRepository: KnowledgeRepository = {
   // ─── Groups ─────────────────────────────────────────────────────────────────
 
   async insertGroup(data) {
-    const enforced = applyEnforcedKnowledgeIngestPolicy(data);
+    const enforcedPolicy = applyEnforcedKnowledgeIngestPolicy({});
     const [row] = await db
       .insert(KnowledgeGroupTable)
       .values({
         id: generateUUID(),
-        name: enforced.name,
-        description: enforced.description,
-        icon: enforced.icon,
-        userId: enforced.userId,
-        visibility: enforced.visibility ?? "private",
-        purpose: enforced.purpose ?? "default",
-        isSystemManaged: enforced.isSystemManaged ?? false,
-        embeddingModel: enforced.embeddingModel ?? "text-embedding-3-small",
-        embeddingProvider: enforced.embeddingProvider ?? "openai",
-        rerankingModel: enforced.rerankingModel ?? null,
-        rerankingProvider: enforced.rerankingProvider ?? null,
-        parseMode: enforced.parseMode,
-        parseRepairPolicy: enforced.parseRepairPolicy,
-        contextMode: enforced.contextMode,
-        imageMode: enforced.imageMode,
-        lazyRefinementEnabled: enforced.lazyRefinementEnabled ?? true,
+        name: data.name,
+        description: data.description,
+        icon: data.icon,
+        userId: data.userId,
+        visibility: data.visibility ?? "private",
+        purpose: data.purpose ?? "default",
+        isSystemManaged: data.isSystemManaged ?? false,
+        embeddingModel: data.embeddingModel ?? "text-embedding-3-small",
+        embeddingProvider: data.embeddingProvider ?? "openai",
+        rerankingModel: data.rerankingModel ?? null,
+        rerankingProvider: data.rerankingProvider ?? null,
+        parseMode: enforcedPolicy.parseMode,
+        parseRepairPolicy: enforcedPolicy.parseRepairPolicy,
+        contextMode: enforcedPolicy.contextMode,
+        imageMode: enforcedPolicy.imageMode,
+        lazyRefinementEnabled: true,
         mcpEnabled: false,
-        chunkSize: enforced.chunkSize ?? 768,
-        chunkOverlapPercent: enforced.chunkOverlapPercent ?? 10,
+        chunkSize: data.chunkSize ?? 768,
+        chunkOverlapPercent: data.chunkOverlapPercent ?? 10,
         createdAt: new Date(),
         updatedAt: new Date(),
       })
@@ -844,21 +880,10 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async updateDocumentStatus(id, status, extra) {
-    const metadataUpdate =
-      extra?.processingState !== undefined
-        ? extra.processingState
-          ? sql`(
-              COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) ||
-              jsonb_build_object('processingState', ${JSON.stringify(extra.processingState)}::jsonb)
-            )::json`
-          : sql`(
-              COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) - 'processingState'
-            )::json`
-        : status !== "processing"
-          ? sql`(
-              COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) - 'processingState'
-            )::json`
-          : undefined;
+    const metadataUpdate = buildProcessingMetadataUpdate(
+      extra?.processingState,
+      { clearWhenUndefined: status !== "processing" },
+    );
 
     await db
       .update(KnowledgeDocumentTable)
@@ -879,6 +904,25 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           : {}),
         ...(extra?.markdownContent !== undefined
           ? { markdownContent: extra.markdownContent }
+          : {}),
+        ...(metadataUpdate !== undefined ? { metadata: metadataUpdate } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(KnowledgeDocumentTable.id, id));
+  },
+
+  async updateDocumentProcessing(id, data) {
+    const metadataUpdate = buildProcessingMetadataUpdate(data.processingState);
+
+    await db
+      .update(KnowledgeDocumentTable)
+      .set({
+        ...(data.status !== undefined ? { status: data.status } : {}),
+        ...(data.errorMessage !== undefined
+          ? { errorMessage: data.errorMessage }
+          : {}),
+        ...(data.processingProgress !== undefined
+          ? { processingProgress: data.processingProgress }
           : {}),
         ...(metadataUpdate !== undefined ? { metadata: metadataUpdate } : {}),
         updatedAt: new Date(),
@@ -1182,7 +1226,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             websearch_to_tsquery('simple', ${query}) AS simple_q,
             websearch_to_tsquery('english', ${query}) AS english_q,
             phraseto_tsquery('simple', ${query}) AS phrase_q,
-            '%' || ${query} || '%' AS ilike_q
+            '%' || ${query} || '%' AS ilike_q,
+            lower(regexp_replace(${query}, '\s+', ' ', 'g')) AS normalized_q
         )
         SELECT
           kd.id AS document_id,
@@ -1221,6 +1266,20 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
               END
+            + 0.35 * similarity(
+                lower(
+                  regexp_replace(
+                    coalesce(kd.name, '') || ' ' ||
+                    coalesce(kd.description, '') || ' ' ||
+                    coalesce(kd.original_filename, '') || ' ' ||
+                    coalesce(kd.source_url, ''),
+                    '\s+',
+                    ' ',
+                    'g'
+                  )
+                ),
+                (SELECT normalized_q FROM q)
+              )
           ) AS score
         FROM knowledge_document kd
         WHERE kd.group_id = ${groupId}
@@ -1242,6 +1301,20 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             ) @@ (SELECT english_q FROM q)
             OR (coalesce(kd.name, '') || ' ' || coalesce(kd.description, ''))
               ILIKE (SELECT ilike_q FROM q)
+            OR similarity(
+              lower(
+                regexp_replace(
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
+                  coalesce(kd.source_url, ''),
+                  '\s+',
+                  ' ',
+                  'g'
+                )
+              ),
+              (SELECT normalized_q FROM q)
+            ) >= 0.12
           )
         ORDER BY score DESC, kd.updated_at DESC
         LIMIT ${limit}
@@ -1299,6 +1372,10 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           content: section.content,
           summary: section.summary,
           tokenCount: section.tokenCount,
+          embedding:
+            toPgVectorLiteral(section.embedding ?? null) === null
+              ? null
+              : sql`${toPgVectorLiteral(section.embedding ?? null)}::vector`,
           createdAt: new Date(),
         })),
       );
@@ -1358,6 +1435,262 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     return rows.map(mapSection);
   },
 
+  async fullTextSearchSections(groupId, query, limit, documentIds) {
+    const docFilter = buildUuidFilterSql("ks.document_id", documentIds);
+
+    const rows = await db.execute<{
+      id: string;
+      document_id: string;
+      group_id: string;
+      parent_section_id: string | null;
+      prev_section_id: string | null;
+      next_section_id: string | null;
+      heading: string;
+      heading_path: string;
+      level: number;
+      part_index: number;
+      part_count: number;
+      content: string;
+      summary: string;
+      token_count: number;
+      created_at: Date;
+      document_name: string;
+      score: number;
+    }>(
+      sql`
+        WITH q AS (
+          SELECT
+            websearch_to_tsquery('simple', ${query}) AS simple_q,
+            websearch_to_tsquery('english', ${query}) AS english_q,
+            phraseto_tsquery('simple', ${query}) AS phrase_q,
+            '%' || ${query} || '%' AS ilike_q,
+            lower(regexp_replace(${query}, '\s+', ' ', 'g')) AS normalized_q
+        )
+        SELECT
+          ks.id,
+          ks.document_id,
+          ks.group_id,
+          ks.parent_section_id,
+          ks.prev_section_id,
+          ks.next_section_id,
+          ks.heading,
+          ks.heading_path,
+          ks.level,
+          ks.part_index,
+          ks.part_count,
+          ks.content,
+          ks.summary,
+          ks.token_count,
+          ks.created_at,
+          kd.name AS document_name,
+          (
+            GREATEST(
+              ts_rank_cd(
+                to_tsvector(
+                  'english',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.summary, '') || ' ' ||
+                  coalesce(ks.content, '')
+                ),
+                (SELECT english_q FROM q)
+              ),
+              ts_rank_cd(
+                to_tsvector(
+                  'simple',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.summary, '') || ' ' ||
+                  coalesce(ks.content, '')
+                ),
+                (SELECT simple_q FROM q)
+              )
+            )
+            + 0.25 * ts_rank_cd(
+              to_tsvector(
+                'simple',
+                coalesce(ks.heading_path, '') || ' ' ||
+                coalesce(ks.summary, '')
+              ),
+              (SELECT phrase_q FROM q)
+            )
+            + CASE
+                WHEN (
+                  coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.summary, '') || ' ' ||
+                  coalesce(ks.content, '')
+                ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
+                ELSE 0
+              END
+            + 0.35 * similarity(
+                lower(
+                  regexp_replace(
+                    coalesce(kd.name, '') || ' ' ||
+                    coalesce(kd.description, '') || ' ' ||
+                    coalesce(ks.heading_path, '') || ' ' ||
+                    coalesce(ks.summary, '') || ' ' ||
+                    coalesce(ks.content, ''),
+                    '\s+',
+                    ' ',
+                    'g'
+                  )
+                ),
+                (SELECT normalized_q FROM q)
+              )
+          ) AS score
+        FROM knowledge_section ks
+        JOIN knowledge_document kd ON kd.id = ks.document_id
+        WHERE ks.group_id = ${groupId}
+          AND kd.status = 'ready'
+          ${docFilter}
+          AND (
+            to_tsvector(
+              'english',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(ks.heading_path, '') || ' ' ||
+              coalesce(ks.summary, '') || ' ' ||
+              coalesce(ks.content, '')
+            ) @@ (SELECT english_q FROM q)
+            OR to_tsvector(
+              'simple',
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(ks.heading_path, '') || ' ' ||
+              coalesce(ks.summary, '') || ' ' ||
+              coalesce(ks.content, '')
+            ) @@ (SELECT simple_q FROM q)
+            OR (
+              coalesce(ks.heading_path, '') || ' ' ||
+              coalesce(ks.summary, '') || ' ' ||
+              coalesce(ks.content, '')
+            ) ILIKE (SELECT ilike_q FROM q)
+            OR similarity(
+              lower(
+                regexp_replace(
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.summary, '') || ' ' ||
+                  coalesce(ks.content, ''),
+                  '\s+',
+                  ' ',
+                  'g'
+                )
+              ),
+              (SELECT normalized_q FROM q)
+            ) >= 0.12
+          )
+        ORDER BY score DESC, ks.created_at DESC
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((row) => ({
+      section: {
+        id: row.id,
+        documentId: row.document_id,
+        groupId: row.group_id,
+        parentSectionId: row.parent_section_id ?? null,
+        prevSectionId: row.prev_section_id ?? null,
+        nextSectionId: row.next_section_id ?? null,
+        heading: row.heading,
+        headingPath: row.heading_path,
+        level: row.level,
+        partIndex: row.part_index,
+        partCount: row.part_count,
+        content: row.content,
+        summary: row.summary,
+        tokenCount: row.token_count,
+        embedding: null,
+        createdAt: row.created_at,
+      } satisfies KnowledgeSection,
+      documentId: row.document_id,
+      documentName: row.document_name,
+      score: Number(row.score),
+    }));
+  },
+
+  async vectorSearchSections(groupId, embedding, limit, documentIds) {
+    const embeddingStr = `[${embedding.join(",")}]`;
+    const docFilter = buildUuidFilterSql("ks.document_id", documentIds);
+
+    const rows = await db.execute<{
+      id: string;
+      document_id: string;
+      group_id: string;
+      parent_section_id: string | null;
+      prev_section_id: string | null;
+      next_section_id: string | null;
+      heading: string;
+      heading_path: string;
+      level: number;
+      part_index: number;
+      part_count: number;
+      content: string;
+      summary: string;
+      token_count: number;
+      created_at: Date;
+      document_name: string;
+      score: number;
+    }>(
+      sql`
+        SELECT
+          ks.id,
+          ks.document_id,
+          ks.group_id,
+          ks.parent_section_id,
+          ks.prev_section_id,
+          ks.next_section_id,
+          ks.heading,
+          ks.heading_path,
+          ks.level,
+          ks.part_index,
+          ks.part_count,
+          ks.content,
+          ks.summary,
+          ks.token_count,
+          ks.created_at,
+          kd.name AS document_name,
+          1 - (ks.embedding <=> ${embeddingStr}::vector) AS score
+        FROM knowledge_section ks
+        JOIN knowledge_document kd ON kd.id = ks.document_id
+        WHERE ks.group_id = ${groupId}
+          AND ks.embedding IS NOT NULL
+          AND kd.status = 'ready'
+          ${docFilter}
+        ORDER BY ks.embedding <=> ${embeddingStr}::vector
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((row) => ({
+      section: {
+        id: row.id,
+        documentId: row.document_id,
+        groupId: row.group_id,
+        parentSectionId: row.parent_section_id ?? null,
+        prevSectionId: row.prev_section_id ?? null,
+        nextSectionId: row.next_section_id ?? null,
+        heading: row.heading,
+        headingPath: row.heading_path,
+        level: row.level,
+        partIndex: row.part_index,
+        partCount: row.part_count,
+        content: row.content,
+        summary: row.summary,
+        tokenCount: row.token_count,
+        embedding: null,
+        createdAt: row.created_at,
+      } satisfies KnowledgeSection,
+      documentId: row.document_id,
+      documentName: row.document_name,
+      score: Number(row.score),
+    }));
+  },
+
   // ─── Chunks ─────────────────────────────────────────────────────────────────
 
   async insertChunks(chunks) {
@@ -1397,8 +1730,16 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
   // ─── Hybrid Search ───────────────────────────────────────────────────────────
 
-  async vectorSearch(groupId, embedding, limit) {
+  async vectorSearch(groupId, embedding, limit, filters) {
     const embeddingStr = `[${embedding.join(",")}]`;
+    const documentFilter = buildUuidFilterSql(
+      "kc.document_id",
+      filters?.documentIds,
+    );
+    const sectionFilter = buildUuidFilterSql(
+      "kc.section_id",
+      filters?.sectionIds,
+    );
     const rows = await db.execute<{
       id: string;
       document_id: string;
@@ -1424,6 +1765,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         WHERE kc.group_id = ${groupId}
           AND kc.embedding IS NOT NULL
           AND kd.status = 'ready'
+          ${documentFilter}
+          ${sectionFilter}
         ORDER BY kc.embedding <=> ${embeddingStr}::vector
         LIMIT ${limit}
       `,
@@ -1448,7 +1791,15 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }));
   },
 
-  async fullTextSearch(groupId, query, limit) {
+  async fullTextSearch(groupId, query, limit, filters) {
+    const documentFilter = buildUuidFilterSql(
+      "kc.document_id",
+      filters?.documentIds,
+    );
+    const sectionFilter = buildUuidFilterSql(
+      "kc.section_id",
+      filters?.sectionIds,
+    );
     const rows = await db.execute<{
       id: string;
       document_id: string;
@@ -1469,7 +1820,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             websearch_to_tsquery('simple', ${query}) AS simple_q,
             websearch_to_tsquery('english', ${query}) AS english_q,
             phraseto_tsquery('simple', ${query}) AS phrase_q,
-            '%' || ${query} || '%' AS ilike_q
+            '%' || ${query} || '%' AS ilike_q,
+            lower(regexp_replace(${query}, '\s+', ' ', 'g')) AS normalized_q
         )
         SELECT
           kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
@@ -1539,11 +1891,29 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                 ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
               END
+            + 0.3 * similarity(
+                lower(
+                  regexp_replace(
+                    coalesce(kd.name, '') || ' ' ||
+                    coalesce(kd.description, '') || ' ' ||
+                    coalesce(kc.context_summary, '') || ' ' ||
+                    coalesce(kc.content, '') || ' ' ||
+                    coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                    coalesce(kc.metadata->>'section', ''),
+                    '\s+',
+                    ' ',
+                    'g'
+                  )
+                ),
+                (SELECT normalized_q FROM q)
+              )
           ) AS score
         FROM knowledge_chunk kc
         JOIN knowledge_document kd ON kd.id = kc.document_id
         WHERE kc.group_id = ${groupId}
           AND kd.status = 'ready'
+          ${documentFilter}
+          ${sectionFilter}
           AND (
             to_tsvector(
               'english',
@@ -1571,6 +1941,22 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kc.metadata->>'headingPath', '') || ' ' ||
               coalesce(kc.metadata->>'section', '')
             ) ILIKE (SELECT ilike_q FROM q)
+            OR similarity(
+              lower(
+                regexp_replace(
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kc.context_summary, '') || ' ' ||
+                  coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'headingPath', '') || ' ' ||
+                  coalesce(kc.metadata->>'section', ''),
+                  '\s+',
+                  ' ',
+                  'g'
+                )
+              ),
+              (SELECT normalized_q FROM q)
+            ) >= 0.1
           )
         ORDER BY score DESC, kc.created_at DESC
         LIMIT ${limit}
@@ -1597,13 +1983,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async fullTextSearchImages(groupId, query, limit, documentIds) {
-    const docFilter =
-      documentIds && documentIds.length > 0
-        ? sql`AND kdi.document_id IN (${sql.join(
-            documentIds.map((id) => sql`${id}::uuid`),
-            sql`, `,
-          )})`
-        : sql``;
+    const docFilter = buildUuidFilterSql("kdi.document_id", documentIds);
 
     const rows = await db.execute<{
       id: string;
@@ -1640,7 +2020,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           SELECT
             websearch_to_tsquery('simple', ${query}) AS simple_q,
             websearch_to_tsquery('english', ${query}) AS english_q,
-            '%' || ${query} || '%' AS ilike_q
+            '%' || ${query} || '%' AS ilike_q,
+            lower(regexp_replace(${query}, '\s+', ' ', 'g')) AS normalized_q
         )
         SELECT
           kdi.id,
@@ -1717,6 +2098,25 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                 ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
               END
+            + 0.3 * similarity(
+                lower(
+                  regexp_replace(
+                    coalesce(kdi.label, '') || ' ' ||
+                    coalesce(kdi.description, '') || ' ' ||
+                    coalesce(kdi.heading_path, '') || ' ' ||
+                    coalesce(kdi.step_hint, '') || ' ' ||
+                    coalesce(kdi.caption, '') || ' ' ||
+                    coalesce(kdi.alt_text, '') || ' ' ||
+                    coalesce(kdi.preceding_text, '') || ' ' ||
+                    coalesce(kdi.following_text, '') || ' ' ||
+                    coalesce(kdi.surrounding_text, ''),
+                    '\s+',
+                    ' ',
+                    'g'
+                  )
+                ),
+                (SELECT normalized_q FROM q)
+              )
           ) AS score
         FROM knowledge_document_image kdi
         WHERE kdi.group_id = ${groupId}
@@ -1758,6 +2158,25 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kdi.following_text, '') || ' ' ||
               coalesce(kdi.surrounding_text, '')
             ) ILIKE (SELECT ilike_q FROM q)
+            OR similarity(
+              lower(
+                regexp_replace(
+                  coalesce(kdi.label, '') || ' ' ||
+                  coalesce(kdi.description, '') || ' ' ||
+                  coalesce(kdi.heading_path, '') || ' ' ||
+                  coalesce(kdi.step_hint, '') || ' ' ||
+                  coalesce(kdi.caption, '') || ' ' ||
+                  coalesce(kdi.alt_text, '') || ' ' ||
+                  coalesce(kdi.preceding_text, '') || ' ' ||
+                  coalesce(kdi.following_text, '') || ' ' ||
+                  coalesce(kdi.surrounding_text, ''),
+                  '\s+',
+                  ' ',
+                  'g'
+                )
+              ),
+              (SELECT normalized_q FROM q)
+            ) >= 0.1
           )
         ORDER BY score DESC, kdi.updated_at DESC
         LIMIT ${limit}

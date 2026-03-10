@@ -31,8 +31,6 @@ type RetrievalScope = GroupForRetrieval & {
 const RRF_K = 60;
 /** Per-search-arm candidate limit (increased for better recall) */
 const CANDIDATE_LIMIT = 60;
-/** Post-RRF, pre-rerank cap */
-const FINAL_BEFORE_RERANK = 30;
 /** Default final topN returned */
 const FINAL_AFTER_RERANK = 10;
 /** Minimum cosine similarity to keep a vector result (filters noise) */
@@ -49,11 +47,6 @@ const MAX_MATCHED_IMAGES_PER_DOC = 2;
 const DOC_META_BOOST_MAX = 0.35;
 /** Whether doc-level metadata vector scoring is enabled. */
 const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
-/** Freshness share in final doc ranking: effective = (1-w)*relevance + w*freshness */
-const DOC_META_RERANK_WEIGHT = Math.min(
-  0.5,
-  Math.max(0, Number(process.env.DOC_META_RERANK_WEIGHT ?? "0.1")),
-);
 const IMAGE_FALLBACK_STOP_WORDS = new Set([
   "the",
   "and",
@@ -140,40 +133,23 @@ function buildDocumentSignalMap(
   return out;
 }
 
-function applyDocumentBoost(
-  merged: KnowledgeQueryResult[],
-  docSignalMap: Map<string, number>,
-): KnowledgeQueryResult[] {
-  if (merged.length === 0 || docSignalMap.size === 0) return merged;
-
-  const boosted = merged.map((r) => {
-    const docSignal = docSignalMap.get(r.documentId) ?? 0;
-    const boostedScore = r.score * (1 + DOC_META_BOOST_MAX * docSignal);
-    return { ...r, score: boostedScore };
-  });
-
-  boosted.sort((a, b) => b.score - a.score);
-  const maxScore = boosted[0]?.score ?? 0;
-  if (maxScore <= 0) return boosted;
-  return boosted.map((r) => ({ ...r, score: r.score / maxScore }));
-}
-
 async function getDocumentMetadataSignals(
   groupId: string,
   query: string,
   queryEmbedding?: number[],
+  limit = CANDIDATE_LIMIT,
 ): Promise<Map<string, number>> {
   const lexicalPromise = knowledgeRepository.searchDocumentMetadata(
     groupId,
     query,
-    CANDIDATE_LIMIT,
+    limit,
   );
   const semanticPromise =
     DOC_META_VECTOR_ENABLED && queryEmbedding
       ? knowledgeRepository.vectorSearchDocumentMetadata(
           groupId,
           queryEmbedding,
-          CANDIDATE_LIMIT,
+          limit,
         )
       : Promise.resolve([]);
 
@@ -187,23 +163,38 @@ async function getDocumentMetadataSignals(
 
 // ─── Query Expansion ───────────────────────────────────────────────────────────
 
-/**
- * Generates alternative query formulations to improve recall.
- * Uses lightweight text transforms (no LLM call) — fast and free.
- *
- * Strategies:
- * 1. Keyword extraction — strip stop words and question phrasing
- * 2. Hypothetical answer prefix — "The answer is about:" + query keywords
- * 3. Contextual rewrite — rephrase as a declarative statement
- */
-function expandQuery(query: string): string[] {
-  const variants: string[] = [];
-  const trimmed = query.trim();
+type RetrievalResultMode = "section-first" | "full-doc";
+type RecallProfile = {
+  docCandidates: number;
+  sectionCandidates: number;
+  chunkCandidates: number;
+};
 
-  // Skip expansion for very short or very long queries
-  if (trimmed.length < 8 || trimmed.length > 500) return variants;
+function isLikelyLatinQuery(query: string): boolean {
+  const letters = Array.from(query).filter((char) => /\p{L}/u.test(char));
+  if (letters.length === 0) return true;
 
-  // 1. Keyword extraction: strip common question words and stopwords
+  const latinLetters = letters.filter((char) => /\p{Script=Latin}/u.test(char));
+  return latinLetters.length / letters.length >= 0.8;
+}
+
+function extractSignificantQueryTerms(query: string): string[] {
+  const terms = Array.from(
+    new Set(
+      query
+        .normalize("NFKC")
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .split(/\s+/)
+        .map((term) => term.trim())
+        .filter((term) => term.length >= 2),
+    ),
+  );
+
+  if (!isLikelyLatinQuery(query)) {
+    return terms;
+  }
+
   const stopWords = new Set([
     "what",
     "how",
@@ -252,11 +243,59 @@ function expandQuery(query: string): string[] {
     "explain",
     "describe",
   ]);
-  const keywords = trimmed
-    .toLowerCase()
-    .replace(/[?!.,;:'"()[\]{}]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2 && !stopWords.has(w));
+
+  return terms.filter((term) => !stopWords.has(term));
+}
+
+function getRecallProfile(
+  query: string,
+  resultMode: RetrievalResultMode,
+): RecallProfile {
+  const significantTerms = extractSignificantQueryTerms(query);
+  const count = significantTerms.length;
+
+  if (resultMode === "full-doc" || count >= 9) {
+    return {
+      docCandidates: 28,
+      sectionCandidates: 112,
+      chunkCandidates: 160,
+    };
+  }
+
+  if (count >= 4) {
+    return {
+      docCandidates: 20,
+      sectionCandidates: 80,
+      chunkCandidates: 120,
+    };
+  }
+
+  return {
+    docCandidates: 12,
+    sectionCandidates: 48,
+    chunkCandidates: 72,
+  };
+}
+
+/**
+ * Generates alternative query formulations to improve recall.
+ * Uses lightweight text transforms (no LLM call) — fast and free.
+ *
+ * Strategies:
+ * 1. Keyword extraction — strip stop words and question phrasing
+ * 2. Hypothetical answer prefix — "The answer is about:" + query keywords
+ * 3. Contextual rewrite — rephrase as a declarative statement
+ */
+function expandQuery(query: string): string[] {
+  const variants: string[] = [];
+  const trimmed = query.trim();
+
+  // Skip expansion for very short or very long queries
+  if (trimmed.length < 8 || trimmed.length > 500) return variants;
+
+  const keywords = extractSignificantQueryTerms(trimmed).filter(
+    (word) => word.length > 2,
+  );
 
   if (keywords.length >= 2 && keywords.length < 20) {
     variants.push(keywords.join(" "));
@@ -265,7 +304,7 @@ function expandQuery(query: string): string[] {
   // 2. Hypothetical document prefix (lightweight HyDE)
   // Wrapping the query as if it's the beginning of an answer
   // helps embed closer to actual answer content
-  if (keywords.length >= 2) {
+  if (keywords.length >= 2 && isLikelyLatinQuery(trimmed)) {
     variants.push(`Information about ${keywords.slice(0, 8).join(" ")}`);
   }
 
@@ -273,47 +312,6 @@ function expandQuery(query: string): string[] {
 }
 
 // ─── RRF Merge ─────────────────────────────────────────────────────────────────
-
-/**
- * Weighted Reciprocal Rank Fusion.
- * Merges multiple ranked lists into a single list. Each source can have
- * a weight multiplier applied to its RRF score contributions.
- */
-function weightedRrfMerge(
-  rankedLists: Array<{ results: KnowledgeQueryResult[]; weight: number }>,
-): KnowledgeQueryResult[] {
-  const scores = new Map<
-    string,
-    { result: KnowledgeQueryResult; score: number }
-  >();
-
-  for (const { results, weight } of rankedLists) {
-    results.forEach((r, rank) => {
-      const rrfScore = (weight * 1) / (RRF_K + rank + 1);
-      const existing = scores.get(r.chunk.id);
-      if (existing) {
-        existing.score += rrfScore;
-        // Keep the result with the higher original score
-        if (r.score > existing.result.score) {
-          existing.result = r;
-        }
-      } else {
-        scores.set(r.chunk.id, { result: r, score: rrfScore });
-      }
-    });
-  }
-
-  const merged = Array.from(scores.values())
-    .sort((a, b) => b.score - a.score)
-    .map(({ result, score }) => ({ ...result, score }));
-
-  // Normalize to 0-1 so retrievalThreshold behaves intuitively in UI.
-  // Raw RRF scores are very small (~0.01), which makes threshold filtering
-  // overly aggressive even for strong matches.
-  const topScore = merged[0]?.score ?? 0;
-  if (topScore <= 0) return merged;
-  return merged.map((r) => ({ ...r, score: r.score / topScore }));
-}
 
 function weightedImageRrfMerge(
   rankedLists: Array<{
@@ -353,73 +351,310 @@ function weightedImageRrfMerge(
   }));
 }
 
-// ─── Neighbor Chunk Expansion ──────────────────────────────────────────────────
+type RankedChunkCandidate = {
+  result: KnowledgeQueryResult;
+  fusionScore: number;
+  semanticScore: number;
+  lexicalScore: number;
+  lexicalConfidence: number;
+  docSignal: number;
+  confidenceScore: number;
+  rerankScore?: number;
+};
 
-/**
- * For the top N results, fetch adjacent chunks (±1) from the same document.
- * This provides surrounding context that often contains critical information
- * that was split during chunking.
- */
-async function expandWithNeighborChunks(
+type RankedSectionCandidate = {
+  section: KnowledgeSection;
+  documentId: string;
+  documentName: string;
+  fusionScore: number;
+  semanticScore: number;
+  lexicalScore: number;
+  lexicalConfidence: number;
+  docSignal: number;
+  confidenceScore: number;
+};
+
+function toLexicalConfidence(rawScore: number): number {
+  if (rawScore <= 0) return 0;
+  return 1 - Math.exp(-rawScore / 2);
+}
+
+function computeConfidenceScore(input: {
+  semanticScore: number;
+  lexicalScore: number;
+  docSignal: number;
+  rerankScore?: number;
+}) {
+  const lexicalConfidence = toLexicalConfidence(input.lexicalScore);
+  const confidence =
+    input.rerankScore !== undefined
+      ? 0.65 * input.rerankScore +
+        0.2 * input.semanticScore +
+        0.1 * lexicalConfidence +
+        0.05 * input.docSignal
+      : 0.6 * input.semanticScore +
+        0.25 * lexicalConfidence +
+        0.15 * input.docSignal;
+
+  return {
+    lexicalConfidence,
+    confidenceScore: Math.max(0, Math.min(1, confidence)),
+  };
+}
+
+function passesHardInclusionFloor(input: {
+  semanticScore: number;
+  lexicalConfidence: number;
+  rerankScore?: number;
+}) {
+  return (
+    input.semanticScore >= 0.28 ||
+    input.lexicalConfidence >= 0.55 ||
+    (input.rerankScore ?? 0) >= 0.2
+  );
+}
+
+function compareRankedChunkCandidates(
+  left: RankedChunkCandidate,
+  right: RankedChunkCandidate,
+) {
+  const leftScore = left.rerankScore ?? left.confidenceScore;
+  const rightScore = right.rerankScore ?? right.confidenceScore;
+  const delta = rightScore - leftScore;
+  if (Math.abs(delta) >= 0.03) {
+    return delta;
+  }
+
+  return (
+    right.result.chunk.createdAt.getTime() -
+    left.result.chunk.createdAt.getTime()
+  );
+}
+
+function mergeChunkCandidates(input: {
+  vectorLists: KnowledgeQueryResult[][];
+  textResults: KnowledgeQueryResult[];
+  docSignalMap: Map<string, number>;
+}) {
+  const candidates = new Map<string, RankedChunkCandidate>();
+
+  const upsert = (
+    result: KnowledgeQueryResult,
+    rank: number,
+    weight: number,
+    kind: "semantic" | "lexical",
+  ) => {
+    const key = result.chunk.id;
+    const existing =
+      candidates.get(key) ??
+      ({
+        result,
+        fusionScore: 0,
+        semanticScore: 0,
+        lexicalScore: 0,
+        lexicalConfidence: 0,
+        docSignal: 0,
+        confidenceScore: 0,
+      } satisfies RankedChunkCandidate);
+
+    existing.fusionScore += weight / (RRF_K + rank + 1);
+    if (kind === "semantic") {
+      existing.semanticScore = Math.max(existing.semanticScore, result.score);
+    } else {
+      existing.lexicalScore = Math.max(existing.lexicalScore, result.score);
+    }
+    if (result.score > existing.result.score) {
+      existing.result = result;
+    }
+    candidates.set(key, existing);
+  };
+
+  input.vectorLists.forEach((results, index) => {
+    const weight = index === 0 ? VECTOR_RRF_WEIGHT : VECTOR_RRF_WEIGHT * 0.75;
+    results.forEach((result, rank) => upsert(result, rank, weight, "semantic"));
+  });
+  input.textResults.forEach((result, rank) =>
+    upsert(result, rank, 1, "lexical"),
+  );
+
+  return Array.from(candidates.values())
+    .map((candidate) => {
+      candidate.docSignal =
+        input.docSignalMap.get(candidate.result.documentId) ?? 0;
+      candidate.fusionScore *= 1 + DOC_META_BOOST_MAX * candidate.docSignal;
+      const { lexicalConfidence, confidenceScore } = computeConfidenceScore({
+        semanticScore: candidate.semanticScore,
+        lexicalScore: candidate.lexicalScore,
+        docSignal: candidate.docSignal,
+      });
+      candidate.lexicalConfidence = lexicalConfidence;
+      candidate.confidenceScore = confidenceScore;
+      return candidate;
+    })
+    .sort((a, b) => b.fusionScore - a.fusionScore);
+}
+
+function mergeSectionCandidates(input: {
+  vectorLists: Array<
+    Array<{
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+      score: number;
+    }>
+  >;
+  textResults: Array<{
+    section: KnowledgeSection;
+    documentId: string;
+    documentName: string;
+    score: number;
+  }>;
+  docSignalMap: Map<string, number>;
+}) {
+  const candidates = new Map<string, RankedSectionCandidate>();
+
+  const upsert = (
+    result: {
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+      score: number;
+    },
+    rank: number,
+    weight: number,
+    kind: "semantic" | "lexical",
+  ) => {
+    const key = result.section.id;
+    const existing =
+      candidates.get(key) ??
+      ({
+        section: result.section,
+        documentId: result.documentId,
+        documentName: result.documentName,
+        fusionScore: 0,
+        semanticScore: 0,
+        lexicalScore: 0,
+        lexicalConfidence: 0,
+        docSignal: 0,
+        confidenceScore: 0,
+      } satisfies RankedSectionCandidate);
+
+    existing.fusionScore += weight / (RRF_K + rank + 1);
+    if (kind === "semantic") {
+      existing.semanticScore = Math.max(existing.semanticScore, result.score);
+    } else {
+      existing.lexicalScore = Math.max(existing.lexicalScore, result.score);
+    }
+    candidates.set(key, existing);
+  };
+
+  input.vectorLists.forEach((results, index) => {
+    const weight = index === 0 ? VECTOR_RRF_WEIGHT : VECTOR_RRF_WEIGHT * 0.75;
+    results.forEach((result, rank) => upsert(result, rank, weight, "semantic"));
+  });
+  input.textResults.forEach((result, rank) =>
+    upsert(result, rank, 1, "lexical"),
+  );
+
+  return Array.from(candidates.values())
+    .map((candidate) => {
+      candidate.docSignal = input.docSignalMap.get(candidate.documentId) ?? 0;
+      candidate.fusionScore *= 1 + DOC_META_BOOST_MAX * candidate.docSignal;
+      const { lexicalConfidence, confidenceScore } = computeConfidenceScore({
+        semanticScore: candidate.semanticScore,
+        lexicalScore: candidate.lexicalScore,
+        docSignal: candidate.docSignal,
+      });
+      candidate.lexicalConfidence = lexicalConfidence;
+      candidate.confidenceScore = confidenceScore;
+      return candidate;
+    })
+    .filter((candidate) =>
+      passesHardInclusionFloor({
+        semanticScore: candidate.semanticScore,
+        lexicalConfidence: candidate.lexicalConfidence,
+      }),
+    )
+    .sort((a, b) => {
+      if (b.confidenceScore !== a.confidenceScore) {
+        return b.confidenceScore - a.confidenceScore;
+      }
+      return b.fusionScore - a.fusionScore;
+    });
+}
+
+function trimNeighborContext(text?: string | null) {
+  if (!text?.trim()) return undefined;
+  const trimmed = trimTextToTokenBudget(text.trim(), 140);
+  return trimmed || undefined;
+}
+
+async function attachNeighborContext(
   results: KnowledgeQueryResult[],
   groupId: string,
 ): Promise<KnowledgeQueryResult[]> {
   if (results.length === 0) return results;
 
-  const topResults = results.slice(0, NEIGHBOR_EXPAND_TOP);
-  const existingIds = new Set(results.map((r) => r.chunk.id));
+  const topResults = results.slice(
+    0,
+    Math.min(NEIGHBOR_EXPAND_TOP, results.length),
+  );
+  const requests: Array<{ documentId: string; chunkIndex: number }> = [];
 
-  // Collect neighbor chunk requests
-  const neighborRequests: Array<{
-    documentId: string;
-    chunkIndex: number;
-  }> = [];
-
-  for (const r of topResults) {
-    if (r.chunk.chunkIndex > 0) {
-      neighborRequests.push({
-        documentId: r.chunk.documentId,
-        chunkIndex: r.chunk.chunkIndex - 1,
+  for (const result of topResults) {
+    if (result.chunk.chunkIndex > 0) {
+      requests.push({
+        documentId: result.chunk.documentId,
+        chunkIndex: result.chunk.chunkIndex - 1,
       });
     }
-    neighborRequests.push({
-      documentId: r.chunk.documentId,
-      chunkIndex: r.chunk.chunkIndex + 1,
+    requests.push({
+      documentId: result.chunk.documentId,
+      chunkIndex: result.chunk.chunkIndex + 1,
     });
   }
 
-  if (neighborRequests.length === 0) return results;
+  if (requests.length === 0) return results;
 
   try {
     const neighbors = await knowledgeRepository.getAdjacentChunks(
       groupId,
-      neighborRequests,
+      requests,
+    );
+    const neighborMap = new Map(
+      neighbors.map((neighbor) => [
+        `${neighbor.chunk.documentId}:${neighbor.chunk.chunkIndex}`,
+        neighbor.chunk.content,
+      ]),
     );
 
-    // Build a map of existing results by documentId + chunkIndex for dedup
-    const resultKey = (docId: string, idx: number) => `${docId}:${idx}`;
-    const existingKeys = new Set(
-      results.map((r) => resultKey(r.chunk.documentId, r.chunk.chunkIndex)),
-    );
+    return results.map((result, index) => {
+      if (index >= topResults.length) return result;
 
-    // Insert neighbor chunks after their source chunk
-    const expanded = [...results];
-    for (const neighbor of neighbors) {
-      const key = resultKey(
-        neighbor.chunk.documentId,
-        neighbor.chunk.chunkIndex,
+      const previous = trimNeighborContext(
+        neighborMap.get(
+          `${result.chunk.documentId}:${result.chunk.chunkIndex - 1}`,
+        ),
       );
-      if (!existingIds.has(neighbor.chunk.id) && !existingKeys.has(key)) {
-        existingIds.add(neighbor.chunk.id);
-        existingKeys.add(key);
-        // Give neighbor chunks a slightly lower score to keep them ranked after their source
-        expanded.push({ ...neighbor, score: 0 });
-      }
-    }
+      const next = trimNeighborContext(
+        neighborMap.get(
+          `${result.chunk.documentId}:${result.chunk.chunkIndex + 1}`,
+        ),
+      );
 
-    return expanded;
+      if (!previous && !next) {
+        return result;
+      }
+
+      return {
+        ...result,
+        neighborContext: {
+          ...(previous ? { previous } : {}),
+          ...(next ? { next } : {}),
+        },
+      };
+    });
   } catch {
-    // If neighbor expansion fails, just return original results
     return results;
   }
 }
@@ -428,6 +663,7 @@ async function expandWithNeighborChunks(
 
 export interface QueryKnowledgeOptions {
   topN?: number;
+  resultMode?: RetrievalResultMode;
   userId?: string | null;
   source?: "chat" | "agent" | "mcp";
   skipLogging?: boolean;
@@ -437,12 +673,12 @@ async function queryKnowledgeSingleScope(
   scope: RetrievalScope,
   query: string,
   topN: number,
+  resultMode: RetrievalResultMode,
 ): Promise<KnowledgeQueryResult[]> {
-  // ── Step 1: Query expansion ──────────────────────────────────────────────
   const queryVariants = expandQuery(query);
   const allQueries = [query, ...queryVariants];
+  const recallProfile = getRecallProfile(query, resultMode);
 
-  // ── Step 2: Embed all query variants in parallel ─────────────────────────
   let embeddings: number[][] = [];
   try {
     embeddings = await Promise.all(
@@ -457,74 +693,93 @@ async function queryKnowledgeSingleScope(
     );
   }
 
-  // ── Step 3: Multi-arm retrieval ──────────────────────────────────────────
-  // Run vector search for each query variant + full-text search
-  const vectorSearches = embeddings.map((emb) =>
-    knowledgeRepository.vectorSearch(scope.id, emb, CANDIDATE_LIMIT),
-  );
-  const textSearch = knowledgeRepository.fullTextSearch(
-    scope.id,
-    query,
-    CANDIDATE_LIMIT,
-  );
   const docSignalPromise = getDocumentMetadataSignals(
     scope.id,
     query,
     embeddings[0],
+    recallProfile.docCandidates,
   );
+  const docSignalMap = await docSignalPromise;
 
-  const [searchResults, docSignalMap] = await Promise.all([
-    Promise.all([...vectorSearches, textSearch]),
-    docSignalPromise,
-  ]);
+  const shortlistedDocIds = Array.from(docSignalMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, recallProfile.docCandidates)
+    .map(([documentId]) => documentId);
 
-  // Last result is full-text, rest are vector searches
-  const textResults = searchResults[searchResults.length - 1];
-  const allVectorResults = searchResults.slice(0, -1);
-
-  // ── Step 4: Filter low-score vector results ──────────────────────────────
-  const filteredVectorResults = allVectorResults.map((results) =>
-    results.filter((r) => r.score >= MIN_VECTOR_SCORE),
-  );
-
-  // ── Step 5: Weighted RRF merge ───────────────────────────────────────────
-  const rankedLists: Array<{
-    results: KnowledgeQueryResult[];
-    weight: number;
-  }> = [];
-
-  // Primary vector search (original query) gets highest weight
-  if (filteredVectorResults[0]) {
-    rankedLists.push({
-      results: filteredVectorResults[0],
-      weight: VECTOR_RRF_WEIGHT,
-    });
-  }
-
-  // Expanded query vectors get slightly less weight
-  for (let i = 1; i < filteredVectorResults.length; i++) {
-    rankedLists.push({
-      results: filteredVectorResults[i],
-      weight: VECTOR_RRF_WEIGHT * 0.75,
-    });
-  }
-
-  // Full-text search with standard weight
-  rankedLists.push({ results: textResults, weight: 1.0 });
-
-  const merged = applyDocumentBoost(
-    weightedRrfMerge(rankedLists),
-    docSignalMap,
-  ).slice(0, FINAL_BEFORE_RERANK);
-
-  if (merged.length === 0) {
+  if (shortlistedDocIds.length === 0) {
     return [];
   }
 
-  // ── Step 6: Rerank if configured ─────────────────────────────────────────
-  let finalResults = merged;
+  const [sectionSearchResults, textSectionResults] = await Promise.all([
+    Promise.all(
+      embeddings.map((embedding) =>
+        knowledgeRepository.vectorSearchSections(
+          scope.id,
+          embedding,
+          recallProfile.sectionCandidates,
+          shortlistedDocIds,
+        ),
+      ),
+    ),
+    knowledgeRepository.fullTextSearchSections(
+      scope.id,
+      query,
+      recallProfile.sectionCandidates,
+      shortlistedDocIds,
+    ),
+  ]);
 
-  if (scope.rerankingProvider && scope.rerankingModel && merged.length > topN) {
+  const shortlistedSectionIds = mergeSectionCandidates({
+    vectorLists: sectionSearchResults.map((results) =>
+      results.filter((result) => result.score >= MIN_VECTOR_SCORE),
+    ),
+    textResults: textSectionResults,
+    docSignalMap,
+  })
+    .slice(0, recallProfile.sectionCandidates)
+    .map((candidate) => candidate.section.id);
+
+  const searchFilters =
+    shortlistedSectionIds.length > 0
+      ? { sectionIds: shortlistedSectionIds }
+      : { documentIds: shortlistedDocIds };
+
+  const [vectorResults, textResults] = await Promise.all([
+    Promise.all(
+      embeddings.map((embedding) =>
+        knowledgeRepository.vectorSearch(
+          scope.id,
+          embedding,
+          recallProfile.chunkCandidates,
+          searchFilters,
+        ),
+      ),
+    ),
+    knowledgeRepository.fullTextSearch(
+      scope.id,
+      query,
+      recallProfile.chunkCandidates,
+      searchFilters,
+    ),
+  ]);
+
+  let chunkCandidates = mergeChunkCandidates({
+    vectorLists: vectorResults.map((results) =>
+      results.filter((result) => result.score >= MIN_VECTOR_SCORE),
+    ),
+    textResults,
+    docSignalMap,
+  }).slice(0, recallProfile.chunkCandidates);
+
+  if (chunkCandidates.length === 0) {
+    return [];
+  }
+
+  if (
+    scope.rerankingProvider &&
+    scope.rerankingModel &&
+    chunkCandidates.length > 1
+  ) {
     try {
       const providerConfig = await settingsRepository.getProviderByName(
         scope.rerankingProvider,
@@ -538,50 +793,96 @@ async function queryKnowledgeSingleScope(
         : null;
 
       if (rerankModel) {
-        // Use context_summary + content for richer reranking signal
-        const documents = merged.map((r) => {
+        const documents = chunkCandidates.map((candidate) => {
           const parts: string[] = [];
-          if (r.chunk.contextSummary) parts.push(r.chunk.contextSummary);
-          parts.push(r.chunk.content);
+          if (candidate.result.chunk.contextSummary) {
+            parts.push(candidate.result.chunk.contextSummary);
+          }
+          parts.push(candidate.result.chunk.content);
           return parts.join("\n\n");
         });
 
-        const { rerankedDocuments, ranking } = await rerank({
+        const { ranking } = await rerank({
           model: rerankModel,
           query,
           documents,
-          topN,
+          topN: documents.length,
         });
 
-        finalResults = rerankedDocuments.map((_, idx) => {
-          const originalIdx = ranking[idx].originalIndex;
+        const rerankByIndex = new Map(
+          ranking.map((entry) => [entry.originalIndex, entry.score]),
+        );
+
+        chunkCandidates = chunkCandidates.map((candidate, index) => {
+          const rerankScore = rerankByIndex.get(index);
+          const { lexicalConfidence, confidenceScore } = computeConfidenceScore(
+            {
+              semanticScore: candidate.semanticScore,
+              lexicalScore: candidate.lexicalScore,
+              docSignal: candidate.docSignal,
+              rerankScore,
+            },
+          );
+
           return {
-            ...merged[originalIdx],
-            rerankScore: ranking[idx].score,
+            ...candidate,
+            rerankScore,
+            lexicalConfidence,
+            confidenceScore,
           };
         });
       }
     } catch (err) {
-      console.warn("[ContextX] Reranking failed, using RRF results:", err);
-      finalResults = merged.slice(0, topN);
+      console.warn(
+        "[ContextX] Reranking failed, using calibrated scores:",
+        err,
+      );
     }
-  } else {
-    finalResults = merged.slice(0, topN);
   }
 
-  // ── Step 7: Apply retrieval threshold ────────────────────────────────────
   const threshold = scope.retrievalThreshold ?? 0;
-  if (threshold > 0) {
-    finalResults = finalResults.filter(
-      (r) => (r.rerankScore ?? r.score) >= threshold,
-    );
-  }
+  let finalResults: KnowledgeQueryResult[] = chunkCandidates
+    .filter((candidate) =>
+      passesHardInclusionFloor({
+        semanticScore: candidate.semanticScore,
+        lexicalConfidence: candidate.lexicalConfidence,
+        rerankScore: candidate.rerankScore,
+      }),
+    )
+    .filter((candidate) =>
+      threshold > 0 ? candidate.confidenceScore >= threshold : true,
+    )
+    .sort(compareRankedChunkCandidates)
+    .slice(0, topN)
+    .map((candidate) => ({
+      ...candidate.result,
+      score: candidate.confidenceScore,
+      confidenceScore: candidate.confidenceScore,
+      semanticScore: candidate.semanticScore,
+      lexicalScore: candidate.lexicalScore,
+      docSignal: candidate.docSignal,
+      ...(candidate.rerankScore !== undefined
+        ? { rerankScore: candidate.rerankScore }
+        : {}),
+    }));
 
-  // ── Step 8: Neighbor chunk expansion ─────────────────────────────────────
-  // After ranking, expand top results with adjacent chunks for richer context
-  finalResults = await expandWithNeighborChunks(finalResults, scope.id);
+  finalResults = await attachNeighborContext(finalResults, scope.id);
 
   return finalResults;
+}
+
+function compareKnowledgeResults(
+  left: KnowledgeQueryResult,
+  right: KnowledgeQueryResult,
+) {
+  const leftScore = left.rerankScore ?? left.confidenceScore ?? left.score;
+  const rightScore = right.rerankScore ?? right.confidenceScore ?? right.score;
+  const delta = rightScore - leftScore;
+  if (Math.abs(delta) >= 0.03) {
+    return delta;
+  }
+
+  return right.chunk.createdAt.getTime() - left.chunk.createdAt.getTime();
 }
 
 export async function queryKnowledge(
@@ -591,6 +892,7 @@ export async function queryKnowledge(
 ): Promise<KnowledgeQueryResult[]> {
   const {
     topN = FINAL_AFTER_RERANK,
+    resultMode = "section-first",
     userId,
     source = "chat",
     skipLogging = false,
@@ -603,7 +905,8 @@ export async function queryKnowledge(
       queryKnowledgeSingleScope(
         scope,
         query,
-        Math.max(topN * 2, FINAL_AFTER_RERANK),
+        Math.max(topN, FINAL_AFTER_RERANK),
+        resultMode,
       ).catch(() => []),
     ),
   );
@@ -626,9 +929,10 @@ export async function queryKnowledge(
       };
 
       const existing = mergedByChunk.get(enriched.chunk.id);
-      const enrichedScore = enriched.rerankScore ?? enriched.score;
+      const enrichedScore =
+        enriched.rerankScore ?? enriched.confidenceScore ?? enriched.score;
       const existingScore = existing
-        ? (existing.rerankScore ?? existing.score)
+        ? (existing.rerankScore ?? existing.confidenceScore ?? existing.score)
         : -Infinity;
       if (!existing || enrichedScore > existingScore) {
         mergedByChunk.set(enriched.chunk.id, enriched);
@@ -637,7 +941,7 @@ export async function queryKnowledge(
   }
 
   const merged = Array.from(mergedByChunk.values())
-    .sort((a, b) => (b.rerankScore ?? b.score) - (a.rerankScore ?? a.score))
+    .sort(compareKnowledgeResults)
     .slice(0, topN);
 
   if (!skipLogging) {
@@ -675,7 +979,20 @@ export async function queryKnowledgeAsText(
       const summary = r.chunk.contextSummary
         ? `\n*Context: ${r.chunk.contextSummary}*`
         : "";
-      return `[${i + 1}] ${docLink} (relevance: ${(r.rerankScore ?? r.score).toFixed(2)})${summary}\n\n${r.chunk.content}`;
+      const neighborBlocks = [
+        r.neighborContext?.previous
+          ? `Previous context:\n${r.neighborContext.previous}`
+          : "",
+        r.neighborContext?.next
+          ? `Next context:\n${r.neighborContext.next}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      const content = neighborBlocks
+        ? `${r.chunk.content}\n\n${neighborBlocks}`
+        : r.chunk.content;
+      return `[${i + 1}] ${docLink} (relevance: ${(r.rerankScore ?? r.confidenceScore ?? r.score).toFixed(2)})${summary}\n\n${content}`;
     })
     .join("\n\n---\n\n");
 
@@ -696,15 +1013,7 @@ function estimateTokens(text: string): number {
 }
 
 function tokenizeQueryTerms(query: string): string[] {
-  return Array.from(
-    new Set(
-      query
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
-        .split(/\s+/)
-        .filter((w) => w.length >= 3),
-    ),
-  );
+  return extractSignificantQueryTerms(query).filter((term) => term.length >= 3);
 }
 
 type MarkdownSection = {
@@ -913,6 +1222,7 @@ type RankedDocCandidate = Omit<
   "markdown" | "matchedSections"
 > & {
   sectionGraphVersion: number | null;
+  freshnessScore?: number;
 };
 
 type SectionBundleCandidate = {
@@ -1185,7 +1495,7 @@ function extractImageMatchTerms(value: string): string[] {
     new Set(
       value
         .toLowerCase()
-        .replace(/[^a-z0-9\s]+/g, " ")
+        .replace(/[^\p{L}\p{N}\s]+/gu, " ")
         .split(/\s+/)
         .map((term) => term.trim())
         .filter(
@@ -1274,13 +1584,109 @@ function buildWeightedImageFieldText(
   };
 }
 
+type ImageMatchContext = {
+  matchedSectionHeadings: string[];
+  matchedSectionTerms: string[];
+  matchedPages: number[];
+  hasAnchors: boolean;
+};
+
+function buildImageMatchContext(
+  doc: DocRetrievalResult,
+  matches: KnowledgeQueryResult[],
+): ImageMatchContext {
+  const matchedSectionHeadings = Array.from(
+    new Set(
+      [
+        ...(doc.matchedSections ?? []).map((section) => section.heading),
+        ...matches
+          .map(
+            (match) =>
+              match.chunk.metadata?.headingPath ??
+              match.chunk.metadata?.section,
+          )
+          .filter((value): value is string => typeof value === "string"),
+      ].filter(Boolean),
+    ),
+  );
+  const matchedPages = Array.from(
+    new Set(
+      matches.flatMap((match) => {
+        const start =
+          match.chunk.metadata?.pageStart ?? match.chunk.metadata?.pageNumber;
+        const end =
+          match.chunk.metadata?.pageEnd ?? match.chunk.metadata?.pageNumber;
+        if (!start) return [];
+        if (!end || end === start) return [start];
+        return Array.from(
+          { length: end - start + 1 },
+          (_, index) => start + index,
+        );
+      }),
+    ),
+  );
+
+  return {
+    matchedSectionHeadings,
+    matchedSectionTerms: extractImageMatchTerms(
+      matchedSectionHeadings.join(" "),
+    ),
+    matchedPages,
+    hasAnchors: matchedSectionHeadings.length > 0 || matchedPages.length > 0,
+  };
+}
+
+function computeImagePageProximity(
+  matchedPages: number[],
+  pageNumber?: number | null,
+) {
+  if (!pageNumber || matchedPages.length === 0) return 0;
+  if (matchedPages.includes(pageNumber)) return 1;
+  if (matchedPages.some((page) => Math.abs(page - pageNumber) === 1))
+    return 0.7;
+  return 0;
+}
+
+export function scoreRetrievedImageCandidate(input: {
+  image: KnowledgeDocumentImage & { score: number };
+  docScore: number;
+  matchContext: ImageMatchContext;
+}): number {
+  const weightedText = buildWeightedImageFieldText(input.image);
+  const headingOverlap =
+    computeImageTextOverlap(
+      input.matchContext.matchedSectionTerms,
+      weightedText.structure,
+    ) *
+      0.65 +
+    computeImageTextOverlap(
+      input.matchContext.matchedSectionTerms,
+      weightedText.visual,
+    ) *
+      0.35;
+  const pageProximity = computeImagePageProximity(
+    input.matchContext.matchedPages,
+    input.image.pageNumber,
+  );
+
+  return Math.max(
+    0,
+    Math.min(
+      1,
+      input.image.score * 0.55 +
+        input.docScore * 0.15 +
+        headingOverlap * 0.2 +
+        pageProximity * 0.1,
+    ),
+  );
+}
+
 function scoreFallbackImageCandidate(input: {
   image: KnowledgeDocumentImage;
   queryTerms: string[];
-  matchedSectionTerms: string[];
-  matchedSectionHeadings: string[];
+  matchContext: ImageMatchContext;
   docScore: number;
-}): number {
+}) {
   const imageContext = buildImageContextText(input.image);
   const weightedText = buildWeightedImageFieldText(input.image);
   const queryOverlap =
@@ -1288,11 +1694,20 @@ function scoreFallbackImageCandidate(input: {
     computeImageTextOverlap(input.queryTerms, weightedText.structure) * 0.25 +
     computeImageTextOverlap(input.queryTerms, weightedText.neighbor) * 0.15;
   const headingOverlap =
-    computeImageTextOverlap(input.matchedSectionTerms, weightedText.visual) *
+    computeImageTextOverlap(
+      input.matchContext.matchedSectionTerms,
+      weightedText.visual,
+    ) *
       0.25 +
-    computeImageTextOverlap(input.matchedSectionTerms, weightedText.structure) *
+    computeImageTextOverlap(
+      input.matchContext.matchedSectionTerms,
+      weightedText.structure,
+    ) *
       0.55 +
-    computeImageTextOverlap(input.matchedSectionTerms, weightedText.neighbor) *
+    computeImageTextOverlap(
+      input.matchContext.matchedSectionTerms,
+      weightedText.neighbor,
+    ) *
       0.2;
   const neighborOverlap = Math.max(
     computeImageTextOverlap(
@@ -1304,32 +1719,54 @@ function scoreFallbackImageCandidate(input: {
       input.image.followingText?.trim() ?? "",
     ),
   );
+  const pageProximity = computeImagePageProximity(
+    input.matchContext.matchedPages,
+    input.image.pageNumber,
+  );
   const normalizedContext = imageContext.toLowerCase();
-  const exactHeadingBoost = input.matchedSectionHeadings.some((heading) => {
-    const normalizedHeading = heading.trim().toLowerCase();
-    return (
-      normalizedHeading.length > 0 &&
-      normalizedContext.length > 0 &&
-      (normalizedContext.includes(normalizedHeading) ||
-        normalizedHeading.includes(normalizedContext))
-    );
-  })
+  const exactHeadingBoost = input.matchContext.matchedSectionHeadings.some(
+    (heading) => {
+      const normalizedHeading = heading.trim().toLowerCase();
+      return (
+        normalizedHeading.length > 0 &&
+        normalizedContext.length > 0 &&
+        (normalizedContext.includes(normalizedHeading) ||
+          normalizedHeading.includes(normalizedContext))
+      );
+    },
+  )
     ? 0.2
     : 0;
 
-  return (
-    input.docScore * 0.3 +
+  const score =
+    input.docScore * 0.25 +
     queryOverlap * 0.4 +
     headingOverlap * 0.2 +
-    neighborOverlap * 0.15 +
-    exactHeadingBoost
-  );
+    neighborOverlap * 0.1 +
+    pageProximity * 0.1 +
+    exactHeadingBoost;
+
+  return {
+    score,
+    headingOverlap,
+    pageProximity,
+  };
 }
 
 async function findMatchedImagesForDocs(input: {
   query: string;
   docs: DocRetrievalResult[];
   scopeById: Map<string, RetrievalScope>;
+  chunkStats: Map<
+    string,
+    {
+      name: string;
+      chunkHits: number;
+      sumScore: number;
+      maxScore: number;
+      matches: KnowledgeQueryResult[];
+    }
+  >;
 }): Promise<Map<string, RetrievedKnowledgeImage[]>> {
   if (input.docs.length === 0) return new Map();
 
@@ -1404,11 +1841,12 @@ async function findMatchedImagesForDocs(input: {
   const docScoreMap = new Map(
     input.docs.map((doc) => [doc.documentId, doc.relevanceScore]),
   );
-  const matchedHeadingsByDoc = new Map(
+  const matchContextByDoc = new Map(
     input.docs.map((doc) => [
       doc.documentId,
-      (doc.matchedSections ?? []).map((section) =>
-        section.heading.toLowerCase(),
+      buildImageMatchContext(
+        doc,
+        input.chunkStats.get(doc.documentId)?.matches ?? [],
       ),
     ]),
   );
@@ -1417,24 +1855,18 @@ async function findMatchedImagesForDocs(input: {
     rankedLists.length > 0
       ? weightedImageRrfMerge(rankedLists)
           .map((image) => {
-            let score = image.score;
             const docScore = docScoreMap.get(image.documentId) ?? 0;
-            score *= 1 + docScore * 0.25;
-
-            const headings = matchedHeadingsByDoc.get(image.documentId) ?? [];
-            const imageContext = buildImageContextText(image).toLowerCase();
-            if (
-              headings.some(
-                (heading) =>
-                  heading.length > 0 &&
-                  imageContext.length > 0 &&
-                  (imageContext.includes(heading) ||
-                    heading.includes(imageContext)),
-              )
-            ) {
-              score *= 1.15;
-            }
-
+            const matchContext = matchContextByDoc.get(image.documentId) ?? {
+              matchedSectionHeadings: [],
+              matchedSectionTerms: [],
+              matchedPages: [],
+              hasAnchors: false,
+            };
+            const score = scoreRetrievedImageCandidate({
+              image,
+              docScore,
+              matchContext,
+            });
             return { ...image, score };
           })
           .sort((a, b) => b.score - a.score)
@@ -1458,6 +1890,21 @@ async function findMatchedImagesForDocs(input: {
 
     const currentDocCount = perDocCounts.get(image.documentId) ?? 0;
     if (currentDocCount >= MAX_MATCHED_IMAGES_PER_DOC) continue;
+
+    const matchContext = matchContextByDoc.get(image.documentId);
+    if (matchContext?.hasAnchors) {
+      const headingOverlap = computeImageTextOverlap(
+        matchContext.matchedSectionTerms,
+        buildWeightedImageFieldText(image).structure,
+      );
+      const pageProximity = computeImagePageProximity(
+        matchContext.matchedPages,
+        image.pageNumber,
+      );
+      if (headingOverlap === 0 && pageProximity === 0 && image.score < 0.55) {
+        continue;
+      }
+    }
 
     const imageKey = `${image.documentId}:${image.id}:${image.versionId ?? "live"}`;
     selected.push({
@@ -1496,30 +1943,46 @@ async function findMatchedImagesForDocs(input: {
 
     const fallbackCandidates = fallbackImageGroups
       .flatMap(({ doc, images }) => {
-        const matchedSectionHeadings = (doc.matchedSections ?? []).map(
-          (section) => section.heading,
-        );
-        const matchedSectionTerms = extractImageMatchTerms(
-          matchedSectionHeadings.join(" "),
-        );
+        const matchContext = matchContextByDoc.get(doc.documentId) ?? {
+          matchedSectionHeadings: [],
+          matchedSectionTerms: [],
+          matchedPages: [],
+          hasAnchors: false,
+        };
 
         return images
           .filter((image) => {
             const imageKey = `${image.documentId}:${image.id}:${image.versionId ?? "live"}`;
             return !selectedImageKeys.has(imageKey);
           })
-          .map((image) => ({
-            image,
-            score: scoreFallbackImageCandidate({
+          .map((image) => {
+            const candidate = scoreFallbackImageCandidate({
               image,
               queryTerms,
-              matchedSectionTerms,
-              matchedSectionHeadings,
+              matchContext,
               docScore: doc.relevanceScore,
-            }),
-            docScore: doc.relevanceScore,
-          }))
-          .filter((candidate) => candidate.score > 0.18);
+            });
+            return {
+              image,
+              score: candidate.score,
+              headingOverlap: candidate.headingOverlap,
+              pageProximity: candidate.pageProximity,
+              hasAnchors: matchContext.hasAnchors,
+              docScore: doc.relevanceScore,
+            };
+          })
+          .filter((candidate) => {
+            if (candidate.score <= 0.18) return false;
+            if (
+              candidate.hasAnchors &&
+              candidate.headingOverlap === 0 &&
+              candidate.pageProximity === 0 &&
+              candidate.score < 0.55
+            ) {
+              return false;
+            }
+            return true;
+          });
       })
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
@@ -1677,7 +2140,10 @@ async function assembleSectionFirstResults(input: {
       const sectionId = match.chunk.sectionId;
       if (!sectionId) continue;
 
-      const score = Math.max(0, match.rerankScore ?? match.score);
+      const score = Math.max(
+        0,
+        match.rerankScore ?? match.confidenceScore ?? match.score,
+      );
       const existing = sectionCandidates.get(sectionId);
       if (existing) {
         existing.matches.push(match);
@@ -1825,13 +2291,15 @@ export async function queryKnowledgeAsDocs(
     Math.max(options.maxDocs ?? (resultMode === "section-first" ? 8 : 50), 1),
     50,
   );
+  const recallProfile = getRecallProfile(query, resultMode);
   const start = Date.now();
   const scopes = await resolveRetrievalScopes(group);
   const scopeById = new Map(scopes.map((scope) => [scope.id, scope]));
 
   // ── Step 1: Gather chunk-level and document-level signals ───────────────
   const chunkResults = await queryKnowledge(group, query, {
-    topN: FINAL_BEFORE_RERANK,
+    topN: Math.min(recallProfile.chunkCandidates, Math.max(maxDocs * 12, 24)),
+    resultMode,
     skipLogging: true,
   });
 
@@ -1847,7 +2315,12 @@ export async function queryKnowledgeAsDocs(
           .then((v) => v)
           .catch(() => undefined);
       }
-      return getDocumentMetadataSignals(scope.id, query, queryEmbedding);
+      return getDocumentMetadataSignals(
+        scope.id,
+        query,
+        queryEmbedding,
+        recallProfile.docCandidates,
+      );
     }),
   );
 
@@ -1882,7 +2355,7 @@ export async function queryKnowledgeAsDocs(
   >();
 
   for (const r of scopedChunkResults) {
-    const score = Math.max(0, r.rerankScore ?? r.score);
+    const score = Math.max(0, r.confidenceScore ?? r.score);
     const hitIncrement = score > 0 ? 1 : 0;
     const existing = chunkStats.get(r.documentId);
     if (existing) {
@@ -1906,7 +2379,7 @@ export async function queryKnowledgeAsDocs(
       ? []
       : Array.from(docSignalMap.entries())
           .sort((a, b) => b[1] - a[1])
-          .slice(0, CANDIDATE_LIMIT)
+          .slice(0, recallProfile.docCandidates)
           .map(([docId]) => docId);
 
   const candidateDocIds = Array.from(
@@ -1926,39 +2399,26 @@ export async function queryKnowledgeAsDocs(
   );
   if (candidateDocMetaInScope.length === 0) return [];
 
-  const rawChunkScores = candidateDocMetaInScope.map((doc) => {
-    const stats = chunkStats.get(doc.documentId);
-    if (!stats) return 0;
-    const hitBoost = Math.min(1, stats.chunkHits / 5);
-    return stats.sumScore + stats.maxScore * 0.5 + hitBoost * 0.2;
-  });
-  const maxRawChunkScore = Math.max(...rawChunkScores, 0);
-
   const now = Date.now();
   const rankedDocs = candidateDocMetaInScope
     .map((doc) => {
       const stats = chunkStats.get(doc.documentId);
       const metadataSignal = docSignalMap.get(doc.documentId) ?? 0;
-      const rawChunkScore = stats
-        ? stats.sumScore +
-          stats.maxScore * 0.5 +
-          Math.min(1, stats.chunkHits / 5) * 0.2
-        : 0;
-      const chunkRelevance =
-        maxRawChunkScore > 0 ? rawChunkScore / maxRawChunkScore : 0;
+      const avgChunkScore =
+        stats && stats.chunkHits > 0 ? stats.sumScore / stats.chunkHits : 0;
+      const maxChunkScore = stats?.maxScore ?? 0;
+      const hitScore = Math.min(1, (stats?.chunkHits ?? 0) / 5);
       const relevanceScore =
-        maxRawChunkScore > 0
-          ? chunkRelevance * 0.8 + metadataSignal * 0.2
-          : metadataSignal;
+        maxChunkScore * 0.65 +
+        avgChunkScore * 0.2 +
+        hitScore * 0.05 +
+        metadataSignal * 0.1;
 
       const ageDays = Math.max(
         0,
         (now - new Date(doc.updatedAt).getTime()) / (1000 * 60 * 60 * 24),
       );
       const freshnessScore = Math.exp(-ageDays / 90);
-      const effectiveScore =
-        relevanceScore * (1 - DOC_META_RERANK_WEIGHT) +
-        freshnessScore * DOC_META_RERANK_WEIGHT;
       const sourceScope = scopeById.get(doc.groupId);
 
       return {
@@ -1968,34 +2428,30 @@ export async function queryKnowledgeAsDocs(
         sourceGroupName: sourceScope?.name ?? null,
         isInherited: doc.groupId !== group.id,
         chunkHits: stats?.chunkHits ?? 0,
-        relevanceScore: effectiveScore,
+        relevanceScore,
+        freshnessScore,
         sectionGraphVersion: getSectionGraphVersion(doc.metadata),
       };
     })
-    .sort((a, b) => b.relevanceScore - a.relevanceScore);
-
-  const maxEffective = rankedDocs[0]?.relevanceScore ?? 0;
-  const normalizedRankedDocs =
-    maxEffective > 0
-      ? rankedDocs.map((d) => ({
-          ...d,
-          relevanceScore: d.relevanceScore / maxEffective,
-        }))
-      : rankedDocs;
+    .sort((a, b) => {
+      const delta = b.relevanceScore - a.relevanceScore;
+      if (Math.abs(delta) >= 0.03) return delta;
+      return b.freshnessScore - a.freshnessScore;
+    });
 
   // Thresholds were already enforced per scope in queryKnowledge().
   const threshold = scopes.length > 1 ? 0 : (group.retrievalThreshold ?? 0);
   const filteredDocs =
     threshold > 0
-      ? normalizedRankedDocs.filter((d) => d.relevanceScore >= threshold)
-      : normalizedRankedDocs;
+      ? rankedDocs.filter((d) => d.relevanceScore >= threshold)
+      : rankedDocs;
   if (filteredDocs.length === 0) return [];
   const docsToAssemble =
     resultMode === "section-first"
       ? filteredDocs
           .filter(
             (d) =>
-              d.chunkHits > 0 && d.relevanceScore >= Math.max(threshold, 0.2),
+              d.chunkHits > 0 && d.relevanceScore >= Math.max(threshold, 0.24),
           )
           .slice(0, maxDocs)
       : filteredDocs.slice(0, maxDocs);
@@ -2048,6 +2504,7 @@ export async function queryKnowledgeAsDocs(
     query,
     docs: results,
     scopeById,
+    chunkStats,
   });
   results = results.map((result) => ({
     ...result,

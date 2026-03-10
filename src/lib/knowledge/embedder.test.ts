@@ -56,7 +56,7 @@ describe("embedder usage accounting", () => {
     }));
   });
 
-  it("counts provider usage tokens for uncached batch embeddings only", async () => {
+  it("does not cache batch embeddings across calls", async () => {
     embedManyMock.mockResolvedValue({
       embeddings: [
         [0.1, 0.2],
@@ -77,8 +77,8 @@ describe("embedder usage accounting", () => {
     );
 
     expect(first.usageTokens).toBe(42);
-    expect(second.usageTokens).toBe(0);
-    expect(embedManyMock).toHaveBeenCalledTimes(1);
+    expect(second.usageTokens).toBe(42);
+    expect(embedManyMock).toHaveBeenCalledTimes(2);
   });
 
   it("returns zero usage for cached single-text embeddings", async () => {

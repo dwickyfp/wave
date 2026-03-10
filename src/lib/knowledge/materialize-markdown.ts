@@ -26,9 +26,13 @@ import type {
 
 const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
 
-export type MaterializedKnowledgeSection = ReturnType<
+type SectionGraphSection = ReturnType<
   typeof buildKnowledgeSectionGraph
 >[number];
+
+export type MaterializedKnowledgeSection = SectionGraphSection & {
+  embedding?: number[] | null;
+};
 
 export type MaterializedKnowledgeChunk = {
   id: string;
@@ -54,6 +58,7 @@ export type MaterializedEmbeddingUsage = {
   totalTokens: number;
   metadataTokens: number;
   imageTokens: number;
+  sectionTokens: number;
   chunkTokens: number;
   provider: string;
   model: string;
@@ -92,6 +97,29 @@ type MaterializationInput = {
   ) => Promise<void> | void;
 };
 
+function formatSectionPageSpan(section: {
+  pageStart?: number;
+  pageEnd?: number;
+}) {
+  const start = section.pageStart;
+  const end = section.pageEnd;
+  if (!start) return "";
+  if (!end || end === start) return `Page ${start}`;
+  return `Pages ${start}-${end}`;
+}
+
+function buildSectionEmbeddingText(section: SectionGraphSection): string {
+  const excerpt = section.content.trim().slice(0, 1200);
+  return [
+    `Section path: ${section.headingPath}`,
+    section.summary ? `Summary: ${section.summary}` : "",
+    excerpt ? `Excerpt: ${excerpt}` : "",
+    formatSectionPageSpan(section),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export async function materializeDocumentMarkdown({
   documentId,
   groupId,
@@ -116,6 +144,7 @@ export async function materializeDocumentMarkdown({
     : autoMeta.description;
   let metadataTokens = 0;
   let imageTokens = 0;
+  let sectionTokens = 0;
   let chunkTokens = 0;
 
   let metadataEmbedding: number[] | undefined;
@@ -132,6 +161,7 @@ export async function materializeDocumentMarkdown({
           metadataText,
           group.embeddingProvider,
           group.embeddingModel,
+          { cache: false },
         );
         metadataEmbedding = result.embedding;
         metadataTokens = result.usageTokens;
@@ -158,6 +188,24 @@ export async function materializeDocumentMarkdown({
   const existingIngestUsage =
     ((doc.metadata as Record<string, unknown> | null | undefined)
       ?.ingestUsage as Record<string, unknown> | undefined) ?? {};
+
+  let sectionEmbeddings: number[][] = [];
+  if (sections.length > 0) {
+    try {
+      const result = await embedTextsWithUsage(
+        sections.map(buildSectionEmbeddingText),
+        group.embeddingProvider,
+        group.embeddingModel,
+      );
+      sectionEmbeddings = result.embeddings;
+      sectionTokens = result.usageTokens;
+    } catch (err) {
+      console.warn(
+        `[ContextX] Section embedding failed for document ${documentId}:`,
+        err,
+      );
+    }
+  }
 
   const imageEmbeddingTexts = (inputImages ?? [])
     .map((image) =>
@@ -193,9 +241,10 @@ export async function materializeDocumentMarkdown({
   );
   if (chunks.length === 0) {
     const embeddingUsage = {
-      totalTokens: metadataTokens + imageTokens,
+      totalTokens: metadataTokens + imageTokens + sectionTokens,
       metadataTokens,
       imageTokens,
+      sectionTokens,
       chunkTokens,
       provider: group.embeddingProvider,
       model: group.embeddingModel,
@@ -203,7 +252,10 @@ export async function materializeDocumentMarkdown({
 
     return {
       markdown,
-      sections,
+      sections: sections.map((section, index) => ({
+        ...section,
+        embedding: sectionEmbeddings[index] ?? null,
+      })),
       chunks: [],
       images: (inputImages ?? []).map((image, index) => ({
         id: generateUUID(),
@@ -279,9 +331,10 @@ export async function materializeDocumentMarkdown({
     return sum + chunk.tokenCount;
   }, 0);
   const embeddingUsage = {
-    totalTokens: metadataTokens + imageTokens + chunkTokens,
+    totalTokens: metadataTokens + imageTokens + sectionTokens + chunkTokens,
     metadataTokens,
     imageTokens,
+    sectionTokens,
     chunkTokens,
     provider: group.embeddingProvider,
     model: group.embeddingModel,
@@ -289,7 +342,10 @@ export async function materializeDocumentMarkdown({
 
   return {
     markdown,
-    sections,
+    sections: sections.map((section, index) => ({
+      ...section,
+      embedding: sectionEmbeddings[index] ?? null,
+    })),
     chunks: enrichedChunks.map((chunk, index) => ({
       id: generateUUID(),
       documentId,

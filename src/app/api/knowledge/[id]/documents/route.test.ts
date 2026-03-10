@@ -31,6 +31,10 @@ vi.mock("lib/knowledge/ingest-pipeline", () => ({
   runIngestPipeline: vi.fn(),
 }));
 
+vi.mock("lib/knowledge/versioning", () => ({
+  reconcileDocumentIngestFailure: vi.fn(),
+}));
+
 const { getSession } = await import("auth/server");
 const { knowledgeRepository } = await import("lib/db/repository");
 const { serverFileStorage } = await import("lib/file-storage");

@@ -11,8 +11,11 @@ vi.mock("lib/db/repository", () => ({
     selectGroupById: vi.fn(),
     selectDocumentById: vi.fn(),
     selectGroupSources: vi.fn(),
-    updateDocumentStatus: vi.fn(),
   },
+}));
+
+vi.mock("lib/knowledge/versioning", () => ({
+  cancelDocumentVersionProcessing: vi.fn(),
 }));
 
 vi.mock("lib/knowledge/worker-client", () => ({
@@ -21,6 +24,9 @@ vi.mock("lib/knowledge/worker-client", () => ({
 
 const { getSession } = await import("auth/server");
 const { knowledgeRepository } = await import("lib/db/repository");
+const { cancelDocumentVersionProcessing } = await import(
+  "lib/knowledge/versioning"
+);
 const { cancelIngestDocument } = await import("lib/knowledge/worker-client");
 const { POST } = await import("./route");
 
@@ -64,6 +70,12 @@ describe("knowledge document cancel route", () => {
       removed: 1,
       active: 0,
     });
+    vi.mocked(cancelDocumentVersionProcessing).mockResolvedValue({
+      id: "doc-1",
+      status: "failed",
+      errorMessage: "Canceled by user",
+      processingProgress: null,
+    } as any);
 
     const response = await POST(
       new Request(
@@ -76,14 +88,11 @@ describe("knowledge document cancel route", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(knowledgeRepository.updateDocumentStatus).toHaveBeenCalledWith(
-      "doc-1",
-      "failed",
-      {
-        errorMessage: "Canceled by user",
-      },
-    );
     expect(cancelIngestDocument).toHaveBeenCalledWith("doc-1");
+    expect(cancelDocumentVersionProcessing).toHaveBeenCalledWith({
+      documentId: "doc-1",
+      errorMessage: "Canceled by user",
+    });
     await expect(response.json()).resolves.toMatchObject({
       success: true,
       queueCancellation: {
@@ -95,6 +104,52 @@ describe("knowledge document cancel route", () => {
         status: "failed",
         errorMessage: "Canceled by user",
         processingProgress: null,
+      },
+    });
+  });
+
+  it("keeps a live document ready when canceling a reingest", async () => {
+    vi.mocked(knowledgeRepository.selectDocumentById).mockResolvedValue({
+      id: "doc-1",
+      groupId: "group-1",
+      userId: "user-1",
+      status: "ready",
+      activeVersionId: "version-live",
+      processingState: { stage: "embedding" },
+    } as any);
+    vi.mocked(cancelIngestDocument).mockResolvedValue({
+      removed: 0,
+      active: 1,
+    });
+    vi.mocked(cancelDocumentVersionProcessing).mockResolvedValue({
+      id: "doc-1",
+      status: "ready",
+      errorMessage: "Canceled by user",
+      processingProgress: null,
+      processingState: null,
+    } as any);
+
+    const response = await POST(
+      new Request(
+        "http://localhost/api/knowledge/group-1/documents/doc-1/cancel",
+        {
+          method: "POST",
+        },
+      ) as any,
+      withParams("group-1", "doc-1"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(cancelDocumentVersionProcessing).toHaveBeenCalledWith({
+      documentId: "doc-1",
+      errorMessage: "Canceled by user",
+    });
+    await expect(response.json()).resolves.toMatchObject({
+      doc: {
+        id: "doc-1",
+        status: "ready",
+        errorMessage: "Canceled by user",
+        processingState: null,
       },
     });
   });
@@ -118,7 +173,7 @@ describe("knowledge document cancel route", () => {
     );
 
     expect(response.status).toBe(409);
-    expect(knowledgeRepository.updateDocumentStatus).not.toHaveBeenCalled();
+    expect(cancelDocumentVersionProcessing).not.toHaveBeenCalled();
     expect(cancelIngestDocument).not.toHaveBeenCalled();
   });
 });

@@ -24,6 +24,7 @@ import {
   completeSourceDocumentVersion,
   markDocumentVersionFailed,
   prepareSourceDocumentVersion,
+  reconcileDocumentIngestFailure,
 } from "./versioning";
 import { materializeDocumentMarkdown } from "./materialize-markdown";
 import { parseDocumentToMarkdown } from "./markdown-parser";
@@ -61,10 +62,7 @@ function isCanceledDocumentState(input: {
   status?: string | null;
   errorMessage?: string | null;
 }): boolean {
-  return (
-    input.status === "failed" &&
-    (input.errorMessage ?? null) === KNOWLEDGE_INGEST_CANCELED_MESSAGE
-  );
+  return (input.errorMessage ?? null) === KNOWLEDGE_INGEST_CANCELED_MESSAGE;
 }
 
 async function assertDocumentIngestNotCanceled(
@@ -201,6 +199,14 @@ export async function runIngestPipeline(
   groupId: string,
   fileBuffer?: Buffer,
 ): Promise<"completed" | "skipped"> {
+  const doc = await knowledgeRepository.selectDocumentById(documentId);
+  if (!doc) {
+    return "skipped";
+  }
+  if (isCanceledDocumentState(doc)) {
+    return "skipped";
+  }
+
   /** Helper to update progress percentage (0–100) on the document row. */
   const reportProgress = async (
     pct: number,
@@ -217,19 +223,21 @@ export async function runIngestPipeline(
     } | null,
   ) => {
     await assertDocumentIngestNotCanceled(documentId);
+    const progress = Math.min(100, Math.max(0, Math.round(pct)));
+    if (doc.activeVersionId) {
+      await knowledgeRepository.updateDocumentProcessing(documentId, {
+        errorMessage: null,
+        processingProgress: progress,
+        ...(processingState !== undefined ? { processingState } : {}),
+      });
+      return;
+    }
+
     await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
-      processingProgress: Math.min(100, Math.max(0, Math.round(pct))),
+      processingProgress: progress,
       ...(processingState !== undefined ? { processingState } : {}),
     });
   };
-
-  const doc = await knowledgeRepository.selectDocumentById(documentId);
-  if (!doc) {
-    return "skipped";
-  }
-  if (isCanceledDocumentState(doc)) {
-    return "skipped";
-  }
 
   const group = await knowledgeRepository.selectGroupById(groupId, doc.userId);
   if (!group) {
@@ -360,6 +368,11 @@ export async function runIngestPipeline(
         versionId: pendingVersion.id,
         errorMessage: message,
         updateDocumentStatus: true,
+      });
+    } else {
+      await reconcileDocumentIngestFailure({
+        documentId,
+        errorMessage: message,
       });
     }
     if (error instanceof KnowledgeIngestSkippedError) {

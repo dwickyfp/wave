@@ -71,6 +71,7 @@ export function DocumentCard({
   const processingLabel = formatKnowledgeDocumentProcessingState(
     doc.processingState,
   );
+  const isProcessing = doc.status === "processing" || !!doc.processingState;
 
   const handleReEmbed = async () => {
     setReembedding(true);
@@ -114,9 +115,10 @@ export function DocumentCard({
       onDocumentUpdated?.(
         data.doc ?? {
           ...doc,
-          status: "failed",
+          status: doc.activeVersionId ? "ready" : "failed",
           errorMessage: "Canceled by user",
           processingProgress: null,
+          processingState: null,
         },
       );
       toast.success("Document processing canceled");
@@ -171,7 +173,7 @@ export function DocumentCard({
 
         {!isInherited && (
           <div className="flex items-center gap-0.5">
-            {doc.status === "processing" && (
+            {isProcessing && (
               <Button
                 variant="ghost"
                 size="icon"
@@ -199,7 +201,7 @@ export function DocumentCard({
                 e.stopPropagation();
                 handleReEmbed();
               }}
-              disabled={reembedding || canceling || doc.status === "processing"}
+              disabled={reembedding || canceling || isProcessing}
               title="Reprocess for new structure and embeddings"
             >
               {reembedding ? (
@@ -239,11 +241,16 @@ export function DocumentCard({
             variant="outline"
             className={cn("text-xs px-1.5 py-0", STATUS_COLORS[doc.status])}
           >
-            {doc.status === "processing" && (
+            {isProcessing && doc.status === "processing" && (
               <Loader2Icon className="size-2.5 animate-spin mr-1" />
             )}
             {doc.status}
           </Badge>
+          {isProcessing && doc.status === "ready" && (
+            <Badge variant="secondary" className="text-xs px-1.5 py-0">
+              Updating
+            </Badge>
+          )}
           {isInherited && (
             <Badge variant="secondary" className="text-xs px-1.5 py-0">
               From {doc.sourceGroupName ?? "linked group"}
@@ -262,7 +269,7 @@ export function DocumentCard({
         </div>
       </div>
 
-      {doc.status === "processing" && (
+      {isProcessing && (
         <div className="flex w-full flex-col gap-1.5">
           {processingLabel ? (
             <div className="text-[11px] text-muted-foreground">

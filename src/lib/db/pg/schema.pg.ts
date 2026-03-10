@@ -1067,6 +1067,7 @@ export const KnowledgeSectionTable = pgTable(
     content: text("content").notNull(),
     summary: text("summary").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
+    embedding: vector("embedding"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -1218,6 +1219,7 @@ export const KnowledgeSectionVersionTable = pgTable(
     content: text("content").notNull(),
     summary: text("summary").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
+    embedding: vector("embedding"),
     sourcePath: text("source_path"),
     libraryId: text("library_id"),
     libraryVersion: text("library_version"),

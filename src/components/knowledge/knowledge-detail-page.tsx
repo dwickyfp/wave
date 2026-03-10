@@ -3,23 +3,13 @@
 import { mutateKnowledge, useKnowledge } from "@/hooks/queries/use-knowledge";
 import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
 import {
-  KnowledgeContextMode,
   KnowledgeDocument,
   KnowledgeGroup,
   KnowledgeGroupSource,
-  KnowledgeImageMode,
-  KnowledgeParseMode,
-  KnowledgeParseRepairPolicy,
   KnowledgeVisibility,
 } from "app-types/knowledge";
 import { format } from "date-fns";
 import { notify } from "lib/notify";
-import {
-  ENFORCED_CONTEXT_MODE,
-  ENFORCED_IMAGE_MODE,
-  ENFORCED_PARSE_MODE,
-  ENFORCED_PARSE_REPAIR_POLICY,
-} from "lib/knowledge/quality-ingest-policy";
 import { cn } from "lib/utils";
 import {
   BrainIcon,
@@ -217,18 +207,6 @@ export function KnowledgeDetailPage({
   const [threshold, setThreshold] = useState(group.retrievalThreshold ?? 0);
   const [embeddingValue, setEmbeddingValue] = useState(initialEmbeddingValue);
   const [rerankingValue, setRerankingValue] = useState(initialRerankingValue);
-  const [parseMode, setParseMode] =
-    useState<KnowledgeParseMode>(ENFORCED_PARSE_MODE);
-  const [parseRepairPolicy, setParseRepairPolicy] =
-    useState<KnowledgeParseRepairPolicy>(ENFORCED_PARSE_REPAIR_POLICY);
-  const [contextMode, setContextMode] = useState<KnowledgeContextMode>(
-    ENFORCED_CONTEXT_MODE,
-  );
-  const [imageMode, setImageMode] =
-    useState<KnowledgeImageMode>(ENFORCED_IMAGE_MODE);
-  const [lazyRefinementEnabled, setLazyRefinementEnabled] = useState(
-    group.lazyRefinementEnabled,
-  );
   const [savedThreshold, setSavedThreshold] = useState(
     group.retrievalThreshold ?? 0,
   );
@@ -237,17 +215,6 @@ export function KnowledgeDetailPage({
   );
   const [savedRerankingValue, setSavedRerankingValue] = useState(
     initialRerankingValue,
-  );
-  const [savedParseMode, setSavedParseMode] = useState(ENFORCED_PARSE_MODE);
-  const [savedParseRepairPolicy, setSavedParseRepairPolicy] = useState(
-    ENFORCED_PARSE_REPAIR_POLICY,
-  );
-  const [savedContextMode, setSavedContextMode] = useState(
-    ENFORCED_CONTEXT_MODE,
-  );
-  const [savedImageMode, setSavedImageMode] = useState(ENFORCED_IMAGE_MODE);
-  const [savedLazyRefinementEnabled, setSavedLazyRefinementEnabled] = useState(
-    group.lazyRefinementEnabled,
   );
   const [sourceGroupIds, setSourceGroupIds] = useState<string[]>(
     initialSourceGroups.map((s) => s.sourceGroupId),
@@ -310,12 +277,7 @@ export function KnowledgeDetailPage({
   const hasSettingsChanges =
     threshold !== savedThreshold ||
     embeddingValue !== savedEmbeddingValue ||
-    rerankingValue !== savedRerankingValue ||
-    parseMode !== savedParseMode ||
-    parseRepairPolicy !== savedParseRepairPolicy ||
-    contextMode !== savedContextMode ||
-    imageMode !== savedImageMode ||
-    lazyRefinementEnabled !== savedLazyRefinementEnabled;
+    rerankingValue !== savedRerankingValue;
 
   const handleSaveSettings = async () => {
     const embedding = parseModelValue(embeddingValue);
@@ -338,22 +300,12 @@ export function KnowledgeDetailPage({
           embeddingModel: embedding.apiName,
           rerankingProvider: reranking?.provider ?? null,
           rerankingModel: reranking?.apiName ?? null,
-          parseMode,
-          parseRepairPolicy,
-          contextMode,
-          imageMode,
-          lazyRefinementEnabled,
         }),
       });
       if (!res.ok) throw new Error();
       setSavedThreshold(threshold);
       setSavedEmbeddingValue(embeddingValue);
       setSavedRerankingValue(rerankingValue);
-      setSavedParseMode(parseMode);
-      setSavedParseRepairPolicy(parseRepairPolicy);
-      setSavedContextMode(contextMode);
-      setSavedImageMode(imageMode);
-      setSavedLazyRefinementEnabled(lazyRefinementEnabled);
       void mutateKnowledge();
       toast.success(
         embeddingChanged
@@ -763,108 +715,6 @@ export function KnowledgeDetailPage({
                     Optional second-pass ranking after hybrid search.
                   </p>
                 </div>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
-                  <Label className="text-sm font-medium">Parse Mode</Label>
-                  <select
-                    value={parseMode}
-                    onChange={(e) =>
-                      setParseMode(e.target.value as KnowledgeParseMode)
-                    }
-                    disabled
-                    className="h-9 rounded-md border bg-background px-3 text-sm"
-                  >
-                    <option value="off">off</option>
-                    <option value="auto">auto</option>
-                    <option value="always">always</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    Locked globally. Knowledge ingest always uses page-first LLM
-                    parsing for every page.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
-                  <Label className="text-sm font-medium">
-                    Parse Repair Policy
-                  </Label>
-                  <select
-                    value={parseRepairPolicy}
-                    onChange={(e) =>
-                      setParseRepairPolicy(
-                        e.target.value as KnowledgeParseRepairPolicy,
-                      )
-                    }
-                    disabled
-                    className="h-9 rounded-md border bg-background px-3 text-sm"
-                  >
-                    <option value="strict">strict</option>
-                    <option value="section-safe-reorder">
-                      section-safe-reorder
-                    </option>
-                    <option value="aggressive">aggressive</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    Locked globally. Local repair preserves the original
-                    section, list, table, and figure structure.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
-                  <Label className="text-sm font-medium">Context Mode</Label>
-                  <select
-                    value={contextMode}
-                    onChange={(e) =>
-                      setContextMode(e.target.value as KnowledgeContextMode)
-                    }
-                    disabled
-                    className="h-9 rounded-md border bg-background px-3 text-sm"
-                  >
-                    <option value="deterministic">deterministic</option>
-                    <option value="auto-llm">auto-llm</option>
-                    <option value="always-llm">always-llm</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    Locked globally. LLM context generation runs for all chunks
-                    before embedding.
-                  </p>
-                </div>
-
-                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
-                  <Label className="text-sm font-medium">Image Mode</Label>
-                  <select
-                    value={imageMode}
-                    onChange={(e) =>
-                      setImageMode(e.target.value as KnowledgeImageMode)
-                    }
-                    disabled
-                    className="h-9 rounded-md border bg-background px-3 text-sm"
-                  >
-                    <option value="off">off</option>
-                    <option value="auto">auto</option>
-                    <option value="always">always</option>
-                  </select>
-                  <p className="text-xs text-muted-foreground">
-                    Locked globally. Extracted images always use LLM-based
-                    labeling and description.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/30">
-                <div>
-                  <Label className="text-sm font-medium">Lazy Refinement</Label>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    Allow follow-up page repair during difficult retrieval
-                    flows.
-                  </p>
-                </div>
-                <Switch
-                  checked={lazyRefinementEnabled}
-                  onCheckedChange={setLazyRefinementEnabled}
-                />
               </div>
 
               {/* Retrieval Threshold */}

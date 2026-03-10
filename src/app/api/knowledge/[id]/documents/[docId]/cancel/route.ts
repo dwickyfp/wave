@@ -1,6 +1,7 @@
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { KNOWLEDGE_INGEST_CANCELED_MESSAGE } from "lib/knowledge/ingest-pipeline";
+import { cancelDocumentVersionProcessing } from "lib/knowledge/versioning";
 import { cancelIngestDocument } from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -40,16 +41,12 @@ export async function POST(_req: NextRequest, { params }: Params) {
       { status: isInherited ? 403 : 404 },
     );
   }
-  if (doc.status !== "processing") {
+  if (doc.status !== "processing" && !doc.processingState) {
     return NextResponse.json(
       { error: "Only processing documents can be canceled" },
       { status: 409 },
     );
   }
-
-  await knowledgeRepository.updateDocumentStatus(docId, "failed", {
-    errorMessage: KNOWLEDGE_INGEST_CANCELED_MESSAGE,
-  });
 
   let queueCancellation = { removed: 0, active: 0 };
   try {
@@ -61,14 +58,22 @@ export async function POST(_req: NextRequest, { params }: Params) {
     );
   }
 
+  const updatedDoc = await cancelDocumentVersionProcessing({
+    documentId: docId,
+    errorMessage: KNOWLEDGE_INGEST_CANCELED_MESSAGE,
+  });
+
   return NextResponse.json({
     success: true,
     queueCancellation,
-    doc: {
-      ...doc,
-      status: "failed",
-      errorMessage: KNOWLEDGE_INGEST_CANCELED_MESSAGE,
-      processingProgress: null,
-    },
+    doc:
+      updatedDoc ??
+      ({
+        ...doc,
+        status: doc.activeVersionId ? "ready" : "failed",
+        errorMessage: KNOWLEDGE_INGEST_CANCELED_MESSAGE,
+        processingProgress: null,
+        processingState: null,
+      } as typeof doc),
   });
 }

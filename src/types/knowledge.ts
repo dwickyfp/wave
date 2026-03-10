@@ -205,6 +205,7 @@ export interface KnowledgeSection {
   content: string;
   summary: string;
   tokenCount: number;
+  embedding?: number[] | null;
   createdAt: Date;
 }
 
@@ -368,7 +369,15 @@ export interface KnowledgeQueryResult {
   documentName: string;
   documentId: string;
   score: number;
+  confidenceScore?: number;
+  semanticScore?: number;
+  lexicalScore?: number;
+  docSignal?: number;
   rerankScore?: number;
+  neighborContext?: {
+    previous?: string;
+    next?: string;
+  };
 }
 
 export interface KnowledgeUsageStats {
@@ -419,15 +428,6 @@ export const createKnowledgeGroupSchema = z.object({
   rerankingProvider: z.string().optional().nullable(),
   parsingModel: z.string().optional().nullable(),
   parsingProvider: z.string().optional().nullable(),
-  parseMode: z.enum(["off", "auto", "always"]).default("always"),
-  parseRepairPolicy: z
-    .enum(["strict", "section-safe-reorder", "aggressive"])
-    .default("section-safe-reorder"),
-  contextMode: z
-    .enum(["deterministic", "auto-llm", "always-llm"])
-    .default("always-llm"),
-  imageMode: z.enum(["off", "auto", "always"]).default("always"),
-  lazyRefinementEnabled: z.boolean().default(true),
   retrievalThreshold: z.number().min(0).max(1).default(0.0),
   chunkSize: z.number().int().min(128).max(2048).default(768),
   chunkOverlapPercent: z.number().int().min(0).max(50).default(10),
@@ -518,6 +518,15 @@ export interface KnowledgeRepository {
       tokenCount?: number;
       embeddingTokenCount?: number;
       markdownContent?: string;
+      processingProgress?: number | null;
+      processingState?: KnowledgeDocumentProcessingState | null;
+    },
+  ): Promise<void>;
+  updateDocumentProcessing(
+    id: string,
+    data: {
+      status?: DocumentStatus;
+      errorMessage?: string | null;
       processingProgress?: number | null;
       processingState?: KnowledgeDocumentProcessingState | null;
     },
@@ -622,12 +631,46 @@ export interface KnowledgeRepository {
     groupId: string,
     embedding: number[],
     limit: number,
+    filters?: {
+      documentIds?: string[];
+      sectionIds?: string[];
+    },
   ): Promise<Array<KnowledgeQueryResult>>;
   fullTextSearch(
     groupId: string,
     query: string,
     limit: number,
+    filters?: {
+      documentIds?: string[];
+      sectionIds?: string[];
+    },
   ): Promise<Array<KnowledgeQueryResult>>;
+  fullTextSearchSections(
+    groupId: string,
+    query: string,
+    limit: number,
+    documentIds?: string[],
+  ): Promise<
+    Array<{
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+      score: number;
+    }>
+  >;
+  vectorSearchSections(
+    groupId: string,
+    embedding: number[],
+    limit: number,
+    documentIds?: string[],
+  ): Promise<
+    Array<{
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+      score: number;
+    }>
+  >;
   fullTextSearchImages(
     groupId: string,
     query: string,

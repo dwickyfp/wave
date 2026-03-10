@@ -6,7 +6,44 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { settingsRepository } from "lib/db/repository";
 import { EmbeddingModel } from "ai";
 
-const embeddingCache = new Map<string, number[]>();
+const EMBEDDING_CACHE_MAX_ENTRIES = 500;
+const EMBEDDING_CACHE_TTL_MS = 15 * 60 * 1000;
+
+class EmbeddingLruCache {
+  private readonly entries = new Map<
+    string,
+    { embedding: number[]; expiresAt: number }
+  >();
+
+  get(key: string): number[] | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.embedding;
+  }
+
+  set(key: string, embedding: number[]) {
+    this.entries.delete(key);
+    this.entries.set(key, {
+      embedding,
+      expiresAt: Date.now() + EMBEDDING_CACHE_TTL_MS,
+    });
+
+    while (this.entries.size > EMBEDDING_CACHE_MAX_ENTRIES) {
+      const oldest = this.entries.keys().next().value;
+      if (!oldest) break;
+      this.entries.delete(oldest);
+    }
+  }
+}
+
+const embeddingCache = new EmbeddingLruCache();
 
 type EmbeddingBatchResult = {
   embeddings: number[][];
@@ -16,6 +53,10 @@ type EmbeddingBatchResult = {
 type EmbeddingSingleResult = {
   embedding: number[];
   usageTokens: number;
+};
+
+type SingleEmbeddingOptions = {
+  cache?: boolean;
 };
 
 // ─── Model Creation ────────────────────────────────────────────────────────────
@@ -161,35 +202,20 @@ export async function embedTextsWithUsage(
 
   // Preprocess all texts
   const preprocessed = texts.map(preprocessForEmbedding);
-  const allEmbeddings: number[][] = new Array(preprocessed.length);
-  const missing: Array<{ index: number; value: string; cacheKey: string }> = [];
   let usageTokens = 0;
+  const allEmbeddings: number[][] = [];
 
-  preprocessed.forEach((value, index) => {
-    const cacheKey = buildEmbeddingCacheKey(provider, modelName, value);
-    const cached = embeddingCache.get(cacheKey);
-    if (cached) {
-      allEmbeddings[index] = cached;
-      return;
-    }
-    missing.push({ index, value, cacheKey });
-  });
-
-  for (let i = 0; i < missing.length; i += BATCH_SIZE) {
-    const batch = missing.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < preprocessed.length; i += BATCH_SIZE) {
+    const batch = preprocessed.slice(i, i + BATCH_SIZE);
     const { embeddings, usage } = await embedMany({
       model,
-      values: batch.map((entry) => entry.value),
+      values: batch,
     });
     if (Number.isFinite(usage.tokens)) {
       usageTokens += Number(usage.tokens);
     }
 
-    batch.forEach((entry, index) => {
-      const embedding = embeddings[index] ?? [];
-      embeddingCache.set(entry.cacheKey, embedding);
-      allEmbeddings[entry.index] = embedding;
-    });
+    allEmbeddings.push(...embeddings.map((embedding) => embedding ?? []));
   }
 
   return {
@@ -205,11 +231,13 @@ export async function embedSingleText(
   text: string,
   provider: string,
   modelName: string,
+  options: SingleEmbeddingOptions = {},
 ): Promise<number[]> {
   const { embedding } = await embedSingleTextWithUsage(
     text,
     provider,
     modelName,
+    options,
   );
   return embedding;
 }
@@ -218,6 +246,7 @@ export async function embedSingleTextWithUsage(
   text: string,
   provider: string,
   modelName: string,
+  options: SingleEmbeddingOptions = {},
 ): Promise<EmbeddingSingleResult> {
   const model = await getEmbeddingModelFromDb(provider, modelName);
   if (!model) {
@@ -228,16 +257,20 @@ export async function embedSingleTextWithUsage(
 
   const preprocessed = preprocessForEmbedding(text);
   const cacheKey = buildEmbeddingCacheKey(provider, modelName, preprocessed);
-  const cached = embeddingCache.get(cacheKey);
-  if (cached) {
-    return {
-      embedding: cached,
-      usageTokens: 0,
-    };
+  if (options.cache !== false) {
+    const cached = embeddingCache.get(cacheKey);
+    if (cached) {
+      return {
+        embedding: cached,
+        usageTokens: 0,
+      };
+    }
   }
 
   const { embedding, usage } = await embed({ model, value: preprocessed });
-  embeddingCache.set(cacheKey, embedding);
+  if (options.cache !== false) {
+    embeddingCache.set(cacheKey, embedding);
+  }
   return {
     embedding,
     usageTokens: Number.isFinite(usage.tokens) ? Number(usage.tokens) : 0,

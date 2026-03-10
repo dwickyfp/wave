@@ -7,7 +7,7 @@ import type {
   KnowledgeDocumentVersionSummary,
   KnowledgeGroup,
 } from "app-types/knowledge";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { knowledgeRepository } from "lib/db/repository";
 import { pgDb as db } from "lib/db/pg/db.pg";
 import {
@@ -64,6 +64,7 @@ type VersionSnapshotSection = {
   content: string;
   summary: string;
   tokenCount: number;
+  embedding?: number[] | null;
   sourcePath?: string | null;
   libraryId?: string | null;
   libraryVersion?: string | null;
@@ -283,6 +284,29 @@ export function getNextReservedVersionNumber(input: {
       input.maxExistingVersionNumber ?? 0,
     ) + 1
   );
+}
+
+export function resolveKnowledgeDocumentFailureOutcome(input: {
+  activeVersionId?: string | null;
+  errorMessage: string;
+}) {
+  if (input.activeVersionId) {
+    return {
+      status: "ready" as const,
+      errorMessage: input.errorMessage,
+    };
+  }
+
+  return {
+    status: "failed" as const,
+    errorMessage: input.errorMessage,
+  };
+}
+
+function clearDocumentProcessingMetadata() {
+  return sql`(
+    COALESCE(${KnowledgeDocumentTable.metadata}::jsonb, '{}'::jsonb) - 'processingState'
+  )::json`;
 }
 
 function mapDocumentVersion(
@@ -567,32 +591,75 @@ async function selectVersionRow(versionId: string) {
   return row as VersionRowWithVector | undefined;
 }
 
+async function selectLatestProcessingVersionRow(documentId: string) {
+  const [row] = await db
+    .select(documentVersionSelection)
+    .from(KnowledgeDocumentVersionTable)
+    .where(
+      sql`${KnowledgeDocumentVersionTable.documentId} = ${documentId}::uuid AND ${KnowledgeDocumentVersionTable.status} = 'processing'`,
+    )
+    .orderBy(
+      desc(KnowledgeDocumentVersionTable.versionNumber),
+      desc(KnowledgeDocumentVersionTable.updatedAt),
+    )
+    .limit(1);
+
+  return row as VersionRowWithVector | undefined;
+}
+
 async function selectLiveSections(
   documentId: string,
 ): Promise<VersionSnapshotSection[]> {
-  const rows = await db
-    .select()
-    .from(KnowledgeSectionTable)
-    .where(eq(KnowledgeSectionTable.documentId, documentId))
-    .orderBy(
-      asc(KnowledgeSectionTable.createdAt),
-      asc(KnowledgeSectionTable.partIndex),
-      asc(KnowledgeSectionTable.id),
-    );
+  const rows = await db.execute<{
+    id: string;
+    parent_section_id: string | null;
+    prev_section_id: string | null;
+    next_section_id: string | null;
+    heading: string;
+    heading_path: string;
+    level: number;
+    part_index: number;
+    part_count: number;
+    content: string;
+    summary: string;
+    token_count: number;
+    embedding_text: string | null;
+  }>(
+    sql`
+      SELECT
+        id,
+        parent_section_id,
+        prev_section_id,
+        next_section_id,
+        heading,
+        heading_path,
+        level,
+        part_index,
+        part_count,
+        content,
+        summary,
+        token_count,
+        embedding::text AS embedding_text
+      FROM knowledge_section
+      WHERE document_id = ${documentId}::uuid
+      ORDER BY created_at ASC, part_index ASC, id ASC
+    `,
+  );
 
-  return rows.map((row) => ({
+  return rows.rows.map((row) => ({
     id: row.id,
-    parentSectionId: row.parentSectionId ?? null,
-    prevSectionId: row.prevSectionId ?? null,
-    nextSectionId: row.nextSectionId ?? null,
+    parentSectionId: row.parent_section_id ?? null,
+    prevSectionId: row.prev_section_id ?? null,
+    nextSectionId: row.next_section_id ?? null,
     heading: row.heading,
-    headingPath: row.headingPath,
+    headingPath: row.heading_path,
     level: row.level,
-    partIndex: row.partIndex,
-    partCount: row.partCount,
+    partIndex: row.part_index,
+    partCount: row.part_count,
     content: row.content,
     summary: row.summary,
-    tokenCount: row.tokenCount,
+    tokenCount: row.token_count,
+    embedding: parsePgVectorLiteral(row.embedding_text),
     sourcePath: null,
     libraryId: null,
     libraryVersion: null,
@@ -739,32 +806,68 @@ async function selectLiveImages(
 async function selectVersionSections(
   versionId: string,
 ): Promise<VersionSnapshotSection[]> {
-  const rows = await db
-    .select()
-    .from(KnowledgeSectionVersionTable)
-    .where(eq(KnowledgeSectionVersionTable.versionId, versionId))
-    .orderBy(
-      asc(KnowledgeSectionVersionTable.position),
-      asc(KnowledgeSectionVersionTable.id),
-    );
+  const rows = await db.execute<{
+    id: string;
+    parent_section_id: string | null;
+    prev_section_id: string | null;
+    next_section_id: string | null;
+    heading: string;
+    heading_path: string;
+    level: number;
+    part_index: number;
+    part_count: number;
+    content: string;
+    summary: string;
+    token_count: number;
+    embedding_text: string | null;
+    source_path: string | null;
+    library_id: string | null;
+    library_version: string | null;
+    include_heading_in_chunk_content: boolean | null;
+  }>(
+    sql`
+      SELECT
+        id,
+        parent_section_id,
+        prev_section_id,
+        next_section_id,
+        heading,
+        heading_path,
+        level,
+        part_index,
+        part_count,
+        content,
+        summary,
+        token_count,
+        embedding::text AS embedding_text,
+        source_path,
+        library_id,
+        library_version,
+        include_heading_in_chunk_content
+      FROM knowledge_section_version
+      WHERE version_id = ${versionId}::uuid
+      ORDER BY position ASC, id ASC
+    `,
+  );
 
-  return rows.map((row) => ({
+  return rows.rows.map((row) => ({
     id: row.id,
-    parentSectionId: row.parentSectionId ?? null,
-    prevSectionId: row.prevSectionId ?? null,
-    nextSectionId: row.nextSectionId ?? null,
+    parentSectionId: row.parent_section_id ?? null,
+    prevSectionId: row.prev_section_id ?? null,
+    nextSectionId: row.next_section_id ?? null,
     heading: row.heading,
-    headingPath: row.headingPath,
+    headingPath: row.heading_path,
     level: row.level,
-    partIndex: row.partIndex,
-    partCount: row.partCount,
+    partIndex: row.part_index,
+    partCount: row.part_count,
     content: row.content,
     summary: row.summary,
-    tokenCount: row.tokenCount,
-    sourcePath: row.sourcePath ?? null,
-    libraryId: row.libraryId ?? null,
-    libraryVersion: row.libraryVersion ?? null,
-    includeHeadingInChunkContent: row.includeHeadingInChunkContent ?? false,
+    tokenCount: row.token_count,
+    embedding: parsePgVectorLiteral(row.embedding_text),
+    sourcePath: row.source_path ?? null,
+    libraryId: row.library_id ?? null,
+    libraryVersion: row.library_version ?? null,
+    includeHeadingInChunkContent: row.include_heading_in_chunk_content ?? false,
   }));
 }
 
@@ -997,6 +1100,7 @@ async function insertSectionSnapshots(
         content: section.content,
         summary: section.summary,
         tokenCount: section.tokenCount,
+        embedding: toPgVectorExpression(section.embedding ?? null),
         sourcePath: section.sourcePath ?? null,
         libraryId: section.libraryId ?? null,
         libraryVersion: section.libraryVersion ?? null,
@@ -1121,6 +1225,7 @@ async function replaceLiveMaterialization(
           content: section.content,
           summary: section.summary,
           tokenCount: section.tokenCount,
+          embedding: toPgVectorExpression(section.embedding ?? null),
           createdAt: new Date(),
         })),
       );
@@ -1765,6 +1870,7 @@ export async function completeSourceDocumentVersion(args: {
       content: section.content,
       summary: section.summary,
       tokenCount: section.tokenCount,
+      embedding: section.embedding ?? null,
       sourcePath: section.sourcePath ?? null,
       libraryId: section.libraryId ?? null,
       libraryVersion: section.libraryVersion ?? null,
@@ -1849,6 +1955,7 @@ export async function runMarkdownEditVersion(args: {
       content: section.content,
       summary: section.summary,
       tokenCount: section.tokenCount,
+      embedding: section.embedding ?? null,
       sourcePath: section.sourcePath ?? null,
       libraryId: section.libraryId ?? null,
       libraryVersion: section.libraryVersion ?? null,
@@ -1984,12 +2091,24 @@ export async function markDocumentVersionFailed(args: {
       .where(eq(KnowledgeDocumentVersionTable.id, args.versionId));
 
     if (args.updateDocumentStatus) {
+      const [currentDoc] = await tx
+        .select({
+          activeVersionId: KnowledgeDocumentTable.activeVersionId,
+        })
+        .from(KnowledgeDocumentTable)
+        .where(eq(KnowledgeDocumentTable.id, version.documentId));
+      const outcome = resolveKnowledgeDocumentFailureOutcome({
+        activeVersionId: currentDoc?.activeVersionId ?? null,
+        errorMessage: args.errorMessage,
+      });
+
       await tx
         .update(KnowledgeDocumentTable)
         .set({
-          status: "failed",
-          errorMessage: args.errorMessage,
+          status: outcome.status,
+          errorMessage: outcome.errorMessage,
           processingProgress: null,
+          metadata: clearDocumentProcessingMetadata(),
           updatedAt: new Date(),
         })
         .where(eq(KnowledgeDocumentTable.id, version.documentId));
@@ -2008,6 +2127,86 @@ export async function markDocumentVersionFailed(args: {
       },
     });
   });
+}
+
+export async function reconcileDocumentIngestFailure(args: {
+  documentId: string;
+  errorMessage: string;
+}) {
+  const document = await knowledgeRepository.selectDocumentById(
+    args.documentId,
+  );
+  if (!document) {
+    return;
+  }
+
+  const outcome = resolveKnowledgeDocumentFailureOutcome({
+    activeVersionId: document.activeVersionId ?? null,
+    errorMessage: args.errorMessage,
+  });
+
+  await knowledgeRepository.updateDocumentProcessing(args.documentId, {
+    status: outcome.status,
+    errorMessage: outcome.errorMessage,
+    processingProgress: null,
+    processingState: null,
+  });
+}
+
+export async function cancelDocumentVersionProcessing(args: {
+  documentId: string;
+  errorMessage: string;
+}) {
+  const [document, version] = await Promise.all([
+    knowledgeRepository.selectDocumentById(args.documentId),
+    selectLatestProcessingVersionRow(args.documentId),
+  ]);
+  if (!document || !version) {
+    return null;
+  }
+
+  const outcome = resolveKnowledgeDocumentFailureOutcome({
+    activeVersionId: document.activeVersionId ?? null,
+    errorMessage: args.errorMessage,
+  });
+
+  await db.transaction(async (tx) => {
+    await tx
+      .update(KnowledgeDocumentVersionTable)
+      .set({
+        status: "failed",
+        errorMessage: args.errorMessage,
+        updatedAt: new Date(),
+      })
+      .where(eq(KnowledgeDocumentVersionTable.id, version.id));
+
+    await tx
+      .update(KnowledgeDocumentTable)
+      .set({
+        status: outcome.status,
+        errorMessage: outcome.errorMessage,
+        processingProgress: null,
+        metadata: clearDocumentProcessingMetadata(),
+        updatedAt: new Date(),
+      })
+      .where(eq(KnowledgeDocumentTable.id, args.documentId));
+
+    await insertHistoryEvent(tx, {
+      documentId: version.documentId,
+      groupId: version.groupId,
+      userId: version.userId,
+      actorUserId: version.createdByUserId ?? version.userId,
+      eventType: "failed",
+      fromVersionId: version.sourceVersionId ?? null,
+      toVersionId: version.id,
+      details: {
+        errorMessage: args.errorMessage,
+        canceled: true,
+      },
+    });
+  });
+
+  return knowledgeRepository.selectDocumentById(args.documentId);
 }
 
 export function isKnowledgeVersionConflictError(error: unknown) {

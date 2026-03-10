@@ -10,6 +10,7 @@ import { knowledgeRepository } from "lib/db/repository";
 import { runIngestPipeline } from "./ingest-pipeline";
 import { getRedisUrl } from "./redis-url";
 import {
+  reconcileDocumentIngestFailure,
   markDocumentVersionFailed,
   runMarkdownEditVersion,
   runRollbackVersion,
@@ -30,7 +31,8 @@ async function handleReembedGroup(groupId: string): Promise<void> {
         `[ContextX Worker] Failed to re-embed document ${doc.id}:`,
         err,
       );
-      await knowledgeRepository.updateDocumentStatus(doc.id, "failed", {
+      await reconcileDocumentIngestFailure({
+        documentId: doc.id,
         errorMessage: String(err),
       });
     }
@@ -82,11 +84,10 @@ async function main() {
   worker.on("failed", async (job, err) => {
     console.error(`[ContextX Worker] Job ${job?.id} failed:`, err);
     if (job?.data?.type === "ingest-document") {
-      await knowledgeRepository
-        .updateDocumentStatus((job.data as any).documentId, "failed", {
-          errorMessage: String(err),
-        })
-        .catch(() => {});
+      await reconcileDocumentIngestFailure({
+        documentId: (job.data as any).documentId,
+        errorMessage: String(err),
+      }).catch(() => {});
     } else if (
       job?.data?.type === "materialize-document-version" ||
       job?.data?.type === "rollback-document-version"
