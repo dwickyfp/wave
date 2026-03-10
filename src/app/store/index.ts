@@ -75,6 +75,8 @@ export interface AppState {
     groupId: string;
     documentName: string;
     fileType?: string;
+    imageId?: string | null;
+    versionId?: string | null;
   } | null;
 }
 

@@ -13,6 +13,9 @@ vi.mock("lib/db/repository", () => ({
     fullTextSearch: vi.fn(),
     searchDocumentMetadata: vi.fn(),
     vectorSearchDocumentMetadata: vi.fn(),
+    fullTextSearchImages: vi.fn(),
+    vectorSearchImages: vi.fn(),
+    getDocumentImages: vi.fn(),
     getAdjacentChunks: vi.fn(),
     getDocumentMetadataByIdsAcrossGroups: vi.fn(),
     getSectionsByIds: vi.fn(),
@@ -75,6 +78,9 @@ describe("queryKnowledgeAsDocs", () => {
       knowledgeRepository.vectorSearchDocumentMetadata,
     ).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getAdjacentChunks).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.fullTextSearchImages).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearchImages).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.getDocumentImages).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue(null);
@@ -211,6 +217,202 @@ describe("queryKnowledgeAsDocs", () => {
           fallbackUsed: true,
         }),
       }),
+    );
+  });
+
+  it("attaches matched images scoped to the returned documents", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit(),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "Guide",
+        description: null,
+        metadata: { sectionGraphVersion: 1 },
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      {
+        id: "section-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        parentSectionId: null,
+        prevSectionId: null,
+        nextSectionId: null,
+        heading: "Authentication",
+        headingPath: "Guide > Authentication",
+        level: 2,
+        partIndex: 0,
+        partCount: 1,
+        content: "Matched authentication section content.",
+        summary: "Authentication section summary.",
+        tokenCount: 120,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearchImages).mockResolvedValue([
+      {
+        id: "image-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        versionId: "version-1",
+        kind: "embedded",
+        ordinal: 1,
+        marker: "CTX_IMAGE_1",
+        label: "Authentication settings",
+        description: "Screenshot of the authentication settings panel.",
+        headingPath: "Guide > Authentication",
+        stepHint: "Open the authentication settings panel.",
+        sourceUrl: "https://example.com/image-1.png",
+        storagePath: "knowledge-images/doc-1/version-1/image-1.png",
+        mediaType: "image/png",
+        pageNumber: 2,
+        width: 800,
+        height: 600,
+        altText: null,
+        caption: null,
+        surroundingText: null,
+        isRenderable: true,
+        manualLabel: false,
+        manualDescription: false,
+        embedding: null,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+        score: 0.91,
+      },
+    ]);
+
+    const docs = await queryKnowledgeAsDocs(group, "auth setup", {
+      tokens: 5000,
+    });
+
+    expect(docs[0]?.matchedImages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "image-1",
+          label: "Authentication settings",
+          headingPath: "Guide > Authentication",
+        }),
+      ]),
+    );
+  });
+
+  it("falls back to renderable doc images when hybrid image search misses", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit(),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "Guide",
+        description: null,
+        metadata: { sectionGraphVersion: 1 },
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      {
+        id: "section-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        parentSectionId: null,
+        prevSectionId: null,
+        nextSectionId: null,
+        heading: "Authentication",
+        headingPath: "Guide > Authentication",
+        level: 2,
+        partIndex: 0,
+        partCount: 1,
+        content: "Matched authentication section content.",
+        summary: "Authentication section summary.",
+        tokenCount: 120,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearchImages).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.fullTextSearchImages).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.getDocumentImages).mockResolvedValue([
+      {
+        id: "image-2",
+        documentId: "doc-1",
+        groupId: "group-1",
+        versionId: "version-1",
+        kind: "embedded",
+        ordinal: 2,
+        marker: "CTX_IMAGE_2",
+        label: "Authentication setup screen",
+        description:
+          "Screenshot showing the authentication configuration form.",
+        headingPath: "Guide > Authentication",
+        stepHint: "Configure authentication settings.",
+        sourceUrl: "https://example.com/image-2.png",
+        storagePath: "knowledge-images/doc-1/version-1/image-2.png",
+        mediaType: "image/png",
+        pageNumber: 3,
+        width: 800,
+        height: 600,
+        altText: null,
+        caption: null,
+        surroundingText: "Use this screen during authentication setup.",
+        isRenderable: true,
+        manualLabel: true,
+        manualDescription: true,
+        embedding: null,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+      {
+        id: "image-3",
+        documentId: "doc-1",
+        groupId: "group-1",
+        versionId: "version-1",
+        kind: "embedded",
+        ordinal: 3,
+        marker: "CTX_IMAGE_3",
+        label: "Company overview",
+        description: "Corporate overview slide.",
+        headingPath: "Guide > Overview",
+        stepHint: "Review the company background.",
+        sourceUrl: "https://example.com/image-3.png",
+        storagePath: "knowledge-images/doc-1/version-1/image-3.png",
+        mediaType: "image/png",
+        pageNumber: 4,
+        width: 800,
+        height: 600,
+        altText: null,
+        caption: null,
+        surroundingText: null,
+        isRenderable: true,
+        manualLabel: false,
+        manualDescription: false,
+        embedding: null,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+
+    const docs = await queryKnowledgeAsDocs(group, "auth setup", {
+      tokens: 5000,
+    });
+
+    expect(docs[0]?.matchedImages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "image-2",
+          label: "Authentication setup screen",
+          headingPath: "Guide > Authentication",
+        }),
+      ]),
     );
   });
 });

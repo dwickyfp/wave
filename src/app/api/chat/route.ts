@@ -93,9 +93,13 @@ import {
   ensureUserChatThread,
 } from "lib/chat/chat-session";
 import {
+  buildChatKnowledgeImages,
   buildChatKnowledgeSources,
+  dedupeChatKnowledgeImages,
   dedupeChatKnowledgeSources,
+  mergeChatKnowledgeMetadata,
 } from "lib/chat/knowledge-sources";
+import type { DocRetrievalResult } from "lib/knowledge/retriever";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -713,6 +717,51 @@ export async function POST(request: Request) {
       toolCount: 0,
       chatModel: chatModel,
     };
+    const toolRetrievedKnowledgeGroups = new Map<
+      string,
+      {
+        groupName: string;
+        docs: DocRetrievalResult[];
+      }
+    >();
+    const recordToolRetrievedKnowledge = (payload: {
+      groupId: string;
+      groupName: string;
+      docs: DocRetrievalResult[];
+    }) => {
+      if (!payload.docs.length) return;
+
+      const existing = toolRetrievedKnowledgeGroups.get(payload.groupId);
+      if (existing) {
+        existing.docs.push(...payload.docs);
+        return;
+      }
+
+      toolRetrievedKnowledgeGroups.set(payload.groupId, {
+        groupName: payload.groupName,
+        docs: [...payload.docs],
+      });
+    };
+    const syncCapturedKnowledgeMetadata = () => {
+      if (toolRetrievedKnowledgeGroups.size === 0) return metadata;
+
+      const merged = mergeChatKnowledgeMetadata({
+        existingSources: metadata.knowledgeSources,
+        existingImages: metadata.knowledgeImages,
+        retrievedGroups: Array.from(toolRetrievedKnowledgeGroups.entries()).map(
+          ([groupId, value]) => ({
+            groupId,
+            groupName: value.groupName,
+            docs: value.docs,
+          }),
+        ),
+        maxImages: 4,
+      });
+
+      metadata.knowledgeSources = merged.knowledgeSources;
+      metadata.knowledgeImages = merged.knowledgeImages;
+      return metadata;
+    };
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
@@ -727,6 +776,7 @@ export async function POST(request: Request) {
           chatModel: chatModel!,
           source: "agent",
           isToolCallAllowed,
+          onKnowledgeDocsRetrieved: recordToolRetrievedKnowledge,
         });
 
         const inProgressToolParts = extractInProgressToolPart(message);
@@ -769,6 +819,7 @@ export async function POST(request: Request) {
             Promise<{
               contexts: string[];
               sources: ChatKnowledgeSource[];
+              images: NonNullable<ChatMetadata["knowledgeImages"]>;
             }>
           >();
 
@@ -781,6 +832,7 @@ export async function POST(request: Request) {
               return {
                 contexts: [],
                 sources: [],
+                images: [],
               };
             }
 
@@ -790,6 +842,8 @@ export async function POST(request: Request) {
                 (async () => {
                   const contexts: string[] = [];
                   const sources: ChatKnowledgeSource[] = [];
+                  const images: NonNullable<ChatMetadata["knowledgeImages"]> =
+                    [];
                   let remainingKnowledgeBudget = totalBudget;
 
                   for (const [
@@ -833,6 +887,13 @@ export async function POST(request: Request) {
                           docs,
                         }),
                       );
+                      images.push(
+                        ...buildChatKnowledgeImages({
+                          groupId: group.id,
+                          groupName: group.name,
+                          docs,
+                        }),
+                      );
                       remainingKnowledgeBudget = Math.max(
                         0,
                         remainingKnowledgeBudget -
@@ -844,6 +905,7 @@ export async function POST(request: Request) {
                   return {
                     contexts,
                     sources: dedupeChatKnowledgeSources(sources),
+                    images: dedupeChatKnowledgeImages(images),
                   };
                 })(),
               );
@@ -865,12 +927,16 @@ export async function POST(request: Request) {
         const buildSystemPromptForKnowledgeBudget = async (
           knowledgeBudget: number,
         ) => {
-          const { contexts: knowledgeContexts, sources: knowledgeSources } =
-            await buildKnowledgeContextsForBudget(knowledgeBudget);
+          const {
+            contexts: knowledgeContexts,
+            sources: knowledgeSources,
+            images: knowledgeImages,
+          } = await buildKnowledgeContextsForBudget(knowledgeBudget);
 
           return {
             knowledgeContexts,
             knowledgeSources,
+            knowledgeImages,
             systemPrompt: buildWaveAgentSystemPrompt({
               user: session.user,
               userPreferences,
@@ -1088,6 +1154,9 @@ export async function POST(request: Request) {
               );
               metadata.knowledgeSources = promptContext.knowledgeSources.length
                 ? promptContext.knowledgeSources
+                : undefined;
+              metadata.knowledgeImages = promptContext.knowledgeImages.length
+                ? promptContext.knowledgeImages
                 : undefined;
               const assembly = await buildCompactionAssembly({
                 persistedMessages: stripAttachmentPreviews
@@ -1388,7 +1457,7 @@ export async function POST(request: Request) {
             messageMetadata: ({ part }) => {
               if (part.type == "finish") {
                 metadata.usage = attachUsageCost(part.totalUsage as ChatUsage);
-                return metadata;
+                return syncCapturedKnowledgeMetadata();
               }
             },
           }),
@@ -1400,6 +1469,7 @@ export async function POST(request: Request) {
         const finalResponseMessage = isAborted
           ? appendAbortedResponseNotice(responseMessage)
           : responseMessage;
+        syncCapturedKnowledgeMetadata();
 
         if (finalResponseMessage.id == message.id) {
           await chatRepository.upsertMessage({

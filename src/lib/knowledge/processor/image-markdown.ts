@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
 import { LanguageModel, generateText } from "ai";
@@ -7,6 +8,7 @@ import type {
   ContextImageBlock,
   DocumentProcessingOptions,
   ProcessedDocument,
+  ProcessedDocumentImage,
 } from "./types";
 
 const turndown = new TurndownService({
@@ -17,20 +19,21 @@ const turndown = new TurndownService({
 
 const IMAGE_MARKER_PREFIX = "CTX_IMAGE_";
 const IMAGE_CONTEXT_MAX_CHARS = 1_200;
-const IMAGE_DESCRIPTION_CONCURRENCY = 3;
+const IMAGE_ANALYSIS_CONCURRENCY = 1;
 
-const IMAGE_DESCRIPTION_SYSTEM_PROMPT = `You describe document images for retrieval in a knowledge base.
+const IMAGE_ANALYSIS_SYSTEM_PROMPT = `You analyze exactly one extracted document image at a time for a knowledge base.
 
 Requirements:
+- Focus only on the current image, never on other images from the same document
 - Be factual and specific
-- Output plain text only, no markdown
-- Mention the important visible details, not generic filler
+- Use only details that are visible in the image itself; nearby document text is only for disambiguation
+- If the exact visual contents are unclear, say that directly instead of guessing
 - If the image is a chart, diagram, or table-like visual, identify the chart type, axes, labels, legend, series, units, and the main relationship or trend
 - If the image is a photo or object image, identify the main subjects, actions, environment, notable text, and distinctive details
 - If the image is a UI screenshot, identify the product/page, visible sections, controls, labels, statuses, and any important numbers or messages
-- Use nearby document context only to disambiguate what is shown
-- If something is unclear, say that directly instead of guessing
-- Keep the description detailed but compact, usually 2-4 sentences`;
+- Return exactly two lines in plain text:
+Label: <short specific label, 4-12 words>
+Description: <1-3 sentences about this exact image>`;
 
 type ImageCandidate = {
   index: number;
@@ -45,6 +48,16 @@ type ImageCandidate = {
   width?: number | null;
   height?: number | null;
 };
+
+type ImageAnalysis = {
+  label: string;
+  description: string;
+};
+
+type ResolvedImageContext = Pick<
+  ProcessedDocumentImage,
+  "headingPath" | "stepHint"
+>;
 
 type ResolvedImageAnalysisModel = {
   model: LanguageModel;
@@ -297,13 +310,41 @@ function buildImageFallbackDescription(candidate: ImageCandidate): string {
   return parts.join(" ").trim();
 }
 
-function buildImageDescriptionPrompt(
+function buildImageFallbackLabel(candidate: ImageCandidate): string {
+  const preferred = cleanInlineText(candidate.caption || candidate.altText);
+  if (preferred) {
+    return normalizeGeneratedLabel(shortenLabel(preferred));
+  }
+
+  if (candidate.pageNumber != null) {
+    return `Embedded image ${candidate.index} on page ${candidate.pageNumber}`;
+  }
+
+  return `Embedded image ${candidate.index}`;
+}
+
+function buildImageFallbackAnalysis(
+  candidate: ImageCandidate,
+  options: { includeIdentity?: boolean } = {},
+): ImageAnalysis {
+  let description = buildImageFallbackDescription(candidate);
+  if (options.includeIdentity) {
+    description = `${description} Extracted image index: ${candidate.index}.`;
+  }
+
+  return {
+    label: buildImageFallbackLabel(candidate),
+    description,
+  };
+}
+
+function buildImageAnalysisPrompt(
   candidate: ImageCandidate,
   documentTitle?: string,
 ): string {
   const parts = [
     documentTitle ? `Document title: ${documentTitle}` : null,
-    `Image index: ${candidate.index}`,
+    `Image index in document: ${candidate.index}`,
     candidate.pageNumber != null
       ? `Page number: ${candidate.pageNumber}`
       : null,
@@ -317,8 +358,10 @@ function buildImageDescriptionPrompt(
       ? `Nearby document context:\n${candidate.surroundingText}`
       : null,
     "",
-    "Describe this image so it can be stored in markdown and later retrieved as document context.",
-    "Write one compact paragraph. Output only the description.",
+    "Analyze this exact image for later retrieval.",
+    "Return exactly two lines:",
+    "Label: ...",
+    "Description: ...",
   ];
 
   return parts.filter(Boolean).join("\n");
@@ -332,13 +375,235 @@ function normalizeGeneratedDescription(description: string): string {
     .trim();
 }
 
-async function describeImageCandidate(
+function normalizeGeneratedLabel(label: string): string {
+  return label
+    .replace(/^label\s*:\s*/i, "")
+    .replace(/\s*\n\s*/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function shortenLabel(value: string, maxChars = 90): string {
+  const cleaned = cleanInlineText(value);
+  if (!cleaned) return "";
+  if (cleaned.length <= maxChars) return cleaned;
+  const clipped = cleaned.slice(0, maxChars);
+  const lastSpace = clipped.lastIndexOf(" ");
+  return (lastSpace > maxChars * 0.6 ? clipped.slice(0, lastSpace) : clipped)
+    .trim()
+    .replace(/[.,;:!?-]+$/g, "")
+    .concat("...");
+}
+
+function deriveImageLabel(
+  candidate: ImageCandidate,
+  description: string,
+): string {
+  const preferred =
+    candidate.caption ||
+    candidate.altText ||
+    description.split(/[.!?]/)[0] ||
+    `Image ${candidate.index}`;
+  return (
+    normalizeGeneratedLabel(shortenLabel(preferred)) ||
+    `Image ${candidate.index}`
+  );
+}
+
+function parseImageAnalysisResponse(
+  text: string,
+  candidate: ImageCandidate,
+): ImageAnalysis {
+  const cleaned = text.trim();
+  if (!cleaned) {
+    return buildImageFallbackAnalysis(candidate);
+  }
+
+  const labelMatch = cleaned.match(/^label\s*:\s*(.+)$/im);
+  const descriptionMatch = cleaned.match(/^description\s*:\s*([\s\S]+)$/im);
+  const label = normalizeGeneratedLabel(labelMatch?.[1] ?? "");
+  const description = normalizeGeneratedDescription(
+    descriptionMatch?.[1] ?? "",
+  );
+
+  if (label && description) {
+    return {
+      label: shortenLabel(label),
+      description,
+    };
+  }
+
+  const lines = cleaned
+    .split("\n")
+    .map((line) => cleanInlineText(line))
+    .filter(Boolean);
+  const inferredLabel = normalizeGeneratedLabel(lines[0] ?? "");
+  const inferredDescription = normalizeGeneratedDescription(
+    lines.slice(1).join(" "),
+  );
+
+  if (inferredLabel && inferredDescription) {
+    return {
+      label: shortenLabel(inferredLabel),
+      description: inferredDescription,
+    };
+  }
+
+  if (inferredDescription) {
+    return {
+      label: deriveImageLabel(candidate, inferredDescription),
+      description: inferredDescription,
+    };
+  }
+
+  return buildImageFallbackAnalysis(candidate);
+}
+
+function buildImageCandidateFingerprint(candidate: ImageCandidate): string {
+  const hash = createHash("sha1");
+  if (candidate.buffer?.length) {
+    hash.update(candidate.buffer);
+  } else {
+    hash.update(candidate.sourceUrl ?? "");
+  }
+  hash.update(
+    `:${candidate.pageNumber ?? ""}:${candidate.width ?? ""}:${candidate.height ?? ""}`,
+  );
+  return hash.digest("hex");
+}
+
+function normalizeImageAnalysisSignature(analysis: ImageAnalysis): string {
+  return `${cleanInlineText(analysis.label).toLowerCase()}|${cleanInlineText(
+    analysis.description,
+  ).toLowerCase()}`;
+}
+
+function ensureDistinctImageAnalyses(
+  candidates: ImageCandidate[],
+  analyses: ImageAnalysis[],
+): ImageAnalysis[] {
+  const seen = new Map<string, { fingerprint: string; index: number }>();
+
+  return analyses.map((analysis, index) => {
+    const candidate = candidates[index];
+    const signature = normalizeImageAnalysisSignature(analysis);
+    const fingerprint = buildImageCandidateFingerprint(candidate);
+    const existing = seen.get(signature);
+
+    if (!existing) {
+      seen.set(signature, { fingerprint, index });
+      return analysis;
+    }
+
+    if (existing.fingerprint === fingerprint) {
+      return analysis;
+    }
+
+    const fallback = buildImageFallbackAnalysis(candidate, {
+      includeIdentity: true,
+    });
+    seen.set(normalizeImageAnalysisSignature(fallback), {
+      fingerprint,
+      index,
+    });
+    return fallback;
+  });
+}
+
+function extractNearestStepHint(
+  lines: string[],
+  markerLineIndex: number,
+): string {
+  const candidates: string[] = [];
+
+  for (
+    let index = Math.max(0, markerLineIndex - 3);
+    index <= Math.min(lines.length - 1, markerLineIndex + 3);
+    index += 1
+  ) {
+    if (index === markerLineIndex) continue;
+    const line = cleanInlineText(lines[index]);
+    if (!line) continue;
+    if (/^#{1,6}\s+/.test(line)) continue;
+    if (/^(CTX_IMAGE_\d+|\[image\s+\d+\])$/i.test(line)) continue;
+    if (/^(Label|Description|Step)\s*:/i.test(line)) continue;
+    candidates.push(line);
+  }
+
+  const stepped =
+    candidates.find((line) =>
+      /^(\d+[.)]\s+|[-*+]\s+|\[[ xX]\]\s+)/.test(line),
+    ) ?? candidates[0];
+
+  return stepped ? clipText(stepped, 180) : "";
+}
+
+export function resolveContextImageLocations(
+  markdown: string,
+  images: ProcessedDocumentImage[] | undefined,
+): ProcessedDocumentImage[] {
+  if (!images?.length) return images ?? [];
+
+  const lines = markdown.split("\n");
+  const headingStack: Array<{ level: number; text: string }> = [];
+  const markerContext = new Map<string, ResolvedImageContext>();
+  let inCodeFence = false;
+
+  lines.forEach((line, index) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("```")) {
+      inCodeFence = !inCodeFence;
+      return;
+    }
+    if (!inCodeFence) {
+      const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
+      if (headingMatch) {
+        const level = headingMatch[1].length;
+        const text = cleanInlineText(headingMatch[2]);
+        while (
+          headingStack.length > 0 &&
+          headingStack[headingStack.length - 1].level >= level
+        ) {
+          headingStack.pop();
+        }
+        headingStack.push({ level, text });
+      }
+    }
+
+    const markerMatch = trimmed.match(/^(CTX_IMAGE_\d+)$/);
+    if (!markerMatch) return;
+
+    markerContext.set(markerMatch[1], {
+      headingPath: headingStack.map((entry) => entry.text).join(" > ") || null,
+      stepHint: extractNearestStepHint(lines, index) || null,
+    });
+  });
+
+  return images.map((image) => {
+    const resolved = markerContext.get(image.marker);
+    return resolved
+      ? {
+          ...image,
+          headingPath: image.headingPath ?? resolved.headingPath ?? null,
+          stepHint: image.stepHint ?? resolved.stepHint ?? null,
+        }
+      : image;
+  });
+}
+
+async function analyzeImageCandidate(
   candidate: ImageCandidate,
   options: DocumentProcessingOptions,
   resolvedModel: ResolvedImageAnalysisModel | null,
-): Promise<string> {
-  if (!resolvedModel) {
-    return buildImageFallbackDescription(candidate);
+): Promise<ImageAnalysis> {
+  const canUseVisionModel =
+    Boolean(resolvedModel) &&
+    Boolean(resolvedModel?.supportsImageInput) &&
+    Boolean(candidate.buffer) &&
+    (candidate.mediaType?.startsWith("image/") ?? true);
+
+  if (!resolvedModel || !canUseVisionModel) {
+    return buildImageFallbackAnalysis(candidate);
   }
 
   try {
@@ -348,41 +613,30 @@ async function describeImageCandidate(
     > = [
       {
         type: "text",
-        text: buildImageDescriptionPrompt(candidate, options.documentTitle),
+        text: buildImageAnalysisPrompt(candidate, options.documentTitle),
       },
     ];
 
-    if (
-      resolvedModel.supportsImageInput &&
-      candidate.buffer &&
-      (candidate.mediaType?.startsWith("image/") ?? true)
-    ) {
-      content.push({
-        type: "image",
-        image: candidate.buffer,
-        ...(candidate.mediaType ? { mediaType: candidate.mediaType } : {}),
-      });
-    }
+    content.push({
+      type: "image",
+      image: candidate.buffer as Buffer,
+      ...(candidate.mediaType ? { mediaType: candidate.mediaType } : {}),
+    });
 
     const { text } = await generateText({
       model: resolvedModel.model,
-      system: IMAGE_DESCRIPTION_SYSTEM_PROMPT,
+      system: IMAGE_ANALYSIS_SYSTEM_PROMPT,
       messages: [{ role: "user", content }],
       temperature: 0,
     });
 
-    const description = normalizeGeneratedDescription(text);
-    if (!description) {
-      return buildImageFallbackDescription(candidate);
-    }
-
-    return description;
+    return parseImageAnalysisResponse(text, candidate);
   } catch (error) {
     console.warn(
-      `[ContextX] Failed to describe image ${candidate.index} for "${options.documentTitle ?? "Untitled"}":`,
+      `[ContextX] Failed to analyze image ${candidate.index} for "${options.documentTitle ?? "Untitled"}":`,
       error,
     );
-    return buildImageFallbackDescription(candidate);
+    return buildImageFallbackAnalysis(candidate);
   }
 }
 
@@ -415,8 +669,20 @@ export function createContextImageMarker(index: number): string {
 export function buildContextImageMarkdownBlock(
   index: number,
   description: string,
+  options: {
+    label?: string | null;
+    stepHint?: string | null;
+  } = {},
 ): string {
-  return `[image ${index}]\nDescription : ${normalizeGeneratedDescription(description)}`;
+  const lines = [`[image ${index}]`];
+  if (options.label) {
+    lines.push(`Label : ${normalizeGeneratedLabel(options.label)}`);
+  }
+  lines.push(`Description : ${normalizeGeneratedDescription(description)}`);
+  if (options.stepHint) {
+    lines.push(`Step : ${cleanInlineText(options.stepHint)}`);
+  }
+  return lines.join("\n");
 }
 
 export function applyContextImageBlocks(
@@ -448,25 +714,61 @@ export function applyContextImageBlocks(
 }
 
 export async function generateContextImageBlocks(
-  candidates: ImageCandidate[],
-  options: DocumentProcessingOptions,
+  candidates: ProcessedDocumentImage[],
 ): Promise<ContextImageBlock[]> {
   if (candidates.length === 0) return [];
 
-  const resolvedModel = await resolveImageAnalysisModel(options.imageAnalysis);
-  const descriptions = await processInBatches(
-    candidates,
-    IMAGE_DESCRIPTION_CONCURRENCY,
-    (candidate) => describeImageCandidate(candidate, options, resolvedModel),
-  );
+  return candidates.map((candidate) => ({
+    marker: candidate.marker,
+    index: candidate.index,
+    markdown: buildContextImageMarkdownBlock(
+      candidate.index,
+      candidate.description,
+      {
+        label: candidate.label,
+        stepHint: candidate.stepHint,
+      },
+    ),
+  }));
+}
 
-  return descriptions.map((description, index) => ({
+export async function generateContextImageArtifacts(
+  candidates: ImageCandidate[],
+  options: DocumentProcessingOptions,
+): Promise<ProcessedDocumentImage[]> {
+  if (candidates.length === 0) return [];
+
+  const resolvedModel = await resolveImageAnalysisModel(options.imageAnalysis);
+  const analyses = await processInBatches(
+    candidates,
+    IMAGE_ANALYSIS_CONCURRENCY,
+    (candidate) => analyzeImageCandidate(candidate, options, resolvedModel),
+  );
+  const distinctAnalyses = ensureDistinctImageAnalyses(candidates, analyses);
+
+  return distinctAnalyses.map((analysis, index) => ({
+    kind: "embedded",
     marker: candidates[index].marker,
     index: candidates[index].index,
-    markdown: buildContextImageMarkdownBlock(
-      candidates[index].index,
-      description,
+    buffer: candidates[index].buffer ?? null,
+    mediaType: candidates[index].mediaType ?? null,
+    sourceUrl: candidates[index].sourceUrl ?? null,
+    pageNumber: candidates[index].pageNumber ?? null,
+    width: candidates[index].width ?? null,
+    height: candidates[index].height ?? null,
+    altText: candidates[index].altText ?? null,
+    caption: candidates[index].caption ?? null,
+    surroundingText: candidates[index].surroundingText ?? null,
+    label: analysis.label,
+    description: analysis.description,
+    headingPath: null,
+    stepHint: null,
+    isRenderable: Boolean(
+      candidates[index].sourceUrl ||
+        (candidates[index].buffer && candidates[index].mediaType),
     ),
+    manualLabel: false,
+    manualDescription: false,
   }));
 }
 
@@ -521,11 +823,13 @@ export async function convertHtmlFragmentToProcessedDocument(
   const markdown = turndown.turndown(
     $("body").html() ?? $.root().html() ?? html,
   );
-  const imageBlocks = await generateContextImageBlocks(candidates, options);
+  const images = await generateContextImageArtifacts(candidates, options);
+  const imageBlocks = await generateContextImageBlocks(images);
 
   return {
     markdown,
     imageBlocks,
+    images,
   };
 }
 

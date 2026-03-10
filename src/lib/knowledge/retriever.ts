@@ -1,7 +1,11 @@
 import "server-only";
 
 import { rerank } from "ai";
-import { KnowledgeQueryResult, KnowledgeSection } from "app-types/knowledge";
+import {
+  KnowledgeDocumentImage,
+  KnowledgeQueryResult,
+  KnowledgeSection,
+} from "app-types/knowledge";
 import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { knowledgeRepository } from "lib/db/repository";
 import { settingsRepository } from "lib/db/repository";
@@ -35,8 +39,12 @@ const FINAL_AFTER_RERANK = 10;
 const MIN_VECTOR_SCORE = 0.25;
 /** Vector search results get a weight boost in RRF (semantic > keyword) */
 const VECTOR_RRF_WEIGHT = 1.5;
+const IMAGE_VECTOR_RRF_WEIGHT = 1.35;
 /** How many top results to expand with neighbor chunks */
 const NEIGHBOR_EXPAND_TOP = 3;
+const IMAGE_MIN_VECTOR_SCORE = 0.2;
+const MAX_MATCHED_IMAGES = 4;
+const MAX_MATCHED_IMAGES_PER_DOC = 2;
 /** Maximum multiplicative boost from document metadata relevance. */
 const DOC_META_BOOST_MAX = 0.35;
 /** Whether doc-level metadata vector scoring is enabled. */
@@ -46,6 +54,38 @@ const DOC_META_RERANK_WEIGHT = Math.min(
   0.5,
   Math.max(0, Number(process.env.DOC_META_RERANK_WEIGHT ?? "0.1")),
 );
+const IMAGE_FALLBACK_STOP_WORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "that",
+  "this",
+  "into",
+  "your",
+  "you",
+  "are",
+  "was",
+  "were",
+  "have",
+  "has",
+  "had",
+  "what",
+  "when",
+  "where",
+  "which",
+  "show",
+  "need",
+  "want",
+  "about",
+  "page",
+  "step",
+  "guide",
+  "docs",
+  "document",
+  "image",
+]);
 
 async function resolveRetrievalScopes(
   group: GroupForRetrieval,
@@ -273,6 +313,44 @@ function weightedRrfMerge(
   const topScore = merged[0]?.score ?? 0;
   if (topScore <= 0) return merged;
   return merged.map((r) => ({ ...r, score: r.score / topScore }));
+}
+
+function weightedImageRrfMerge(
+  rankedLists: Array<{
+    results: Array<KnowledgeDocumentImage & { score: number }>;
+    weight: number;
+  }>,
+): Array<KnowledgeDocumentImage & { score: number }> {
+  const scores = new Map<
+    string,
+    { result: KnowledgeDocumentImage & { score: number }; score: number }
+  >();
+
+  for (const { results, weight } of rankedLists) {
+    results.forEach((result, rank) => {
+      const rrfScore = weight / (RRF_K + rank + 1);
+      const existing = scores.get(result.id);
+      if (existing) {
+        existing.score += rrfScore;
+        if (result.score > existing.result.score) {
+          existing.result = result;
+        }
+      } else {
+        scores.set(result.id, { result, score: rrfScore });
+      }
+    });
+  }
+
+  const merged = Array.from(scores.values())
+    .sort((a, b) => b.score - a.score)
+    .map(({ result, score }) => ({ ...result, score }));
+
+  const topScore = merged[0]?.score ?? 0;
+  if (topScore <= 0) return merged;
+  return merged.map((result) => ({
+    ...result,
+    score: result.score / topScore,
+  }));
 }
 
 // ─── Neighbor Chunk Expansion ──────────────────────────────────────────────────
@@ -1078,6 +1156,354 @@ export interface DocRetrievalResult {
     heading: string;
     score: number;
   }>;
+  matchedImages?: RetrievedKnowledgeImage[];
+}
+
+export interface RetrievedKnowledgeImage
+  extends Pick<
+    KnowledgeDocumentImage,
+    | "id"
+    | "documentId"
+    | "groupId"
+    | "versionId"
+    | "ordinal"
+    | "label"
+    | "description"
+    | "headingPath"
+    | "stepHint"
+    | "pageNumber"
+    | "mediaType"
+    | "sourceUrl"
+    | "storagePath"
+    | "isRenderable"
+  > {
+  relevanceScore: number;
+}
+
+function extractImageMatchTerms(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]+/g, " ")
+        .split(/\s+/)
+        .map((term) => term.trim())
+        .filter(
+          (term) => term.length >= 3 && !IMAGE_FALLBACK_STOP_WORDS.has(term),
+        ),
+    ),
+  );
+}
+
+function computeImageTextOverlap(terms: string[], text: string): number {
+  if (!terms.length || !text.trim()) return 0;
+
+  const haystack = text.toLowerCase();
+  const matched = terms.filter((term) => haystack.includes(term)).length;
+  return matched / terms.length;
+}
+
+function buildImageContextText(
+  image: Pick<
+    KnowledgeDocumentImage,
+    | "label"
+    | "description"
+    | "headingPath"
+    | "stepHint"
+    | "caption"
+    | "altText"
+    | "surroundingText"
+  >,
+): string {
+  return [
+    image.label,
+    image.description,
+    image.headingPath,
+    image.stepHint,
+    image.caption,
+    image.altText,
+    image.surroundingText,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+function scoreFallbackImageCandidate(input: {
+  image: KnowledgeDocumentImage;
+  queryTerms: string[];
+  matchedSectionTerms: string[];
+  matchedSectionHeadings: string[];
+  docScore: number;
+}): number {
+  const imageContext = buildImageContextText(input.image);
+  const queryOverlap = computeImageTextOverlap(input.queryTerms, imageContext);
+  const headingOverlap = computeImageTextOverlap(
+    input.matchedSectionTerms,
+    imageContext,
+  );
+  const normalizedContext = imageContext.toLowerCase();
+  const exactHeadingBoost = input.matchedSectionHeadings.some((heading) => {
+    const normalizedHeading = heading.trim().toLowerCase();
+    return (
+      normalizedHeading.length > 0 &&
+      normalizedContext.length > 0 &&
+      (normalizedContext.includes(normalizedHeading) ||
+        normalizedHeading.includes(normalizedContext))
+    );
+  })
+    ? 0.2
+    : 0;
+
+  return (
+    input.docScore * 0.35 +
+    queryOverlap * 0.45 +
+    headingOverlap * 0.25 +
+    exactHeadingBoost
+  );
+}
+
+async function findMatchedImagesForDocs(input: {
+  query: string;
+  docs: DocRetrievalResult[];
+  scopeById: Map<string, RetrievalScope>;
+}): Promise<Map<string, RetrievedKnowledgeImage[]>> {
+  if (input.docs.length === 0) return new Map();
+
+  const docIdsByScope = new Map<string, string[]>();
+  for (const doc of input.docs) {
+    const scopeId = doc.sourceGroupId ?? null;
+    if (!scopeId) continue;
+    const list = docIdsByScope.get(scopeId) ?? [];
+    list.push(doc.documentId);
+    docIdsByScope.set(scopeId, list);
+  }
+
+  const rankedLists: Array<{
+    results: Array<KnowledgeDocumentImage & { score: number }>;
+    weight: number;
+  }> = [];
+
+  await Promise.all(
+    Array.from(docIdsByScope.entries()).map(async ([scopeId, documentIds]) => {
+      const scope = input.scopeById.get(scopeId);
+      if (!scope) return;
+
+      let queryEmbedding: number[] | undefined;
+      try {
+        queryEmbedding = await embedSingleText(
+          input.query,
+          scope.embeddingProvider,
+          scope.embeddingModel,
+        );
+      } catch {
+        queryEmbedding = undefined;
+      }
+
+      const [textResults, vectorResults] = await Promise.all([
+        knowledgeRepository
+          .fullTextSearchImages(
+            scopeId,
+            input.query,
+            CANDIDATE_LIMIT,
+            documentIds,
+          )
+          .catch(() => []),
+        queryEmbedding
+          ? knowledgeRepository
+              .vectorSearchImages(
+                scopeId,
+                queryEmbedding,
+                CANDIDATE_LIMIT,
+                documentIds,
+              )
+              .then((results) =>
+                results.filter(
+                  (result) => result.score >= IMAGE_MIN_VECTOR_SCORE,
+                ),
+              )
+              .catch(() => [])
+          : Promise.resolve([]),
+      ]);
+
+      if (vectorResults.length > 0) {
+        rankedLists.push({
+          results: vectorResults,
+          weight: IMAGE_VECTOR_RRF_WEIGHT,
+        });
+      }
+      if (textResults.length > 0) {
+        rankedLists.push({ results: textResults, weight: 1 });
+      }
+    }),
+  );
+
+  const docScoreMap = new Map(
+    input.docs.map((doc) => [doc.documentId, doc.relevanceScore]),
+  );
+  const matchedHeadingsByDoc = new Map(
+    input.docs.map((doc) => [
+      doc.documentId,
+      (doc.matchedSections ?? []).map((section) =>
+        section.heading.toLowerCase(),
+      ),
+    ]),
+  );
+
+  const merged =
+    rankedLists.length > 0
+      ? weightedImageRrfMerge(rankedLists)
+          .map((image) => {
+            let score = image.score;
+            const docScore = docScoreMap.get(image.documentId) ?? 0;
+            score *= 1 + docScore * 0.25;
+
+            const headings = matchedHeadingsByDoc.get(image.documentId) ?? [];
+            const imageContext =
+              `${image.headingPath ?? ""} ${image.stepHint ?? ""}`.toLowerCase();
+            if (
+              headings.some(
+                (heading) =>
+                  heading.length > 0 &&
+                  imageContext.length > 0 &&
+                  (imageContext.includes(heading) ||
+                    heading.includes(imageContext)),
+              )
+            ) {
+              score *= 1.15;
+            }
+
+            return { ...image, score };
+          })
+          .sort((a, b) => b.score - a.score)
+      : [];
+
+  const topScore = merged[0]?.score ?? 0;
+  const normalized =
+    topScore > 0
+      ? merged.map((image) => ({
+          ...image,
+          score: image.score / topScore,
+        }))
+      : merged;
+
+  const selected: RetrievedKnowledgeImage[] = [];
+  const perDocCounts = new Map<string, number>();
+  const selectedImageKeys = new Set<string>();
+
+  for (const image of normalized) {
+    if (selected.length >= MAX_MATCHED_IMAGES) break;
+
+    const currentDocCount = perDocCounts.get(image.documentId) ?? 0;
+    if (currentDocCount >= MAX_MATCHED_IMAGES_PER_DOC) continue;
+
+    const imageKey = `${image.documentId}:${image.id}:${image.versionId ?? "live"}`;
+    selected.push({
+      id: image.id,
+      documentId: image.documentId,
+      groupId: image.groupId,
+      versionId: image.versionId ?? null,
+      ordinal: image.ordinal,
+      label: image.label,
+      description: image.description,
+      headingPath: image.headingPath ?? null,
+      stepHint: image.stepHint ?? null,
+      pageNumber: image.pageNumber ?? null,
+      mediaType: image.mediaType ?? null,
+      sourceUrl: image.sourceUrl ?? null,
+      storagePath: image.storagePath ?? null,
+      isRenderable: image.isRenderable,
+      relevanceScore: image.score,
+    });
+    perDocCounts.set(image.documentId, currentDocCount + 1);
+    selectedImageKeys.add(imageKey);
+  }
+
+  if (selected.length < MAX_MATCHED_IMAGES) {
+    const queryTerms = extractImageMatchTerms(input.query);
+    const fallbackImageGroups = await Promise.all(
+      input.docs.map(async (doc) => ({
+        doc,
+        images: (
+          await knowledgeRepository
+            .getDocumentImages(doc.documentId)
+            .catch(() => [])
+        ).filter((image) => image.isRenderable),
+      })),
+    );
+
+    const fallbackCandidates = fallbackImageGroups
+      .flatMap(({ doc, images }) => {
+        const matchedSectionHeadings = (doc.matchedSections ?? []).map(
+          (section) => section.heading,
+        );
+        const matchedSectionTerms = extractImageMatchTerms(
+          matchedSectionHeadings.join(" "),
+        );
+
+        return images
+          .filter((image) => {
+            const imageKey = `${image.documentId}:${image.id}:${image.versionId ?? "live"}`;
+            return !selectedImageKeys.has(imageKey);
+          })
+          .map((image) => ({
+            image,
+            score: scoreFallbackImageCandidate({
+              image,
+              queryTerms,
+              matchedSectionTerms,
+              matchedSectionHeadings,
+              docScore: doc.relevanceScore,
+            }),
+            docScore: doc.relevanceScore,
+          }))
+          .filter((candidate) => candidate.score > 0.18);
+      })
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (b.docScore !== a.docScore) return b.docScore - a.docScore;
+        return a.image.ordinal - b.image.ordinal;
+      });
+
+    for (const candidate of fallbackCandidates) {
+      if (selected.length >= MAX_MATCHED_IMAGES) break;
+
+      const currentDocCount = perDocCounts.get(candidate.image.documentId) ?? 0;
+      if (currentDocCount >= MAX_MATCHED_IMAGES_PER_DOC) continue;
+
+      const imageKey = `${candidate.image.documentId}:${candidate.image.id}:${candidate.image.versionId ?? "live"}`;
+      if (selectedImageKeys.has(imageKey)) continue;
+
+      selected.push({
+        id: candidate.image.id,
+        documentId: candidate.image.documentId,
+        groupId: candidate.image.groupId,
+        versionId: candidate.image.versionId ?? null,
+        ordinal: candidate.image.ordinal,
+        label: candidate.image.label,
+        description: candidate.image.description,
+        headingPath: candidate.image.headingPath ?? null,
+        stepHint: candidate.image.stepHint ?? null,
+        pageNumber: candidate.image.pageNumber ?? null,
+        mediaType: candidate.image.mediaType ?? null,
+        sourceUrl: candidate.image.sourceUrl ?? null,
+        storagePath: candidate.image.storagePath ?? null,
+        isRenderable: candidate.image.isRenderable,
+        relevanceScore: candidate.score,
+      });
+      perDocCounts.set(candidate.image.documentId, currentDocCount + 1);
+      selectedImageKeys.add(imageKey);
+    }
+  }
+
+  const imagesByDocId = new Map<string, RetrievedKnowledgeImage[]>();
+  for (const image of selected) {
+    const list = imagesByDocId.get(image.documentId) ?? [];
+    list.push(image);
+    imagesByDocId.set(image.documentId, list);
+  }
+
+  return imagesByDocId;
 }
 
 async function assembleFullDocResults(input: {
@@ -1555,6 +1981,16 @@ export async function queryKnowledgeAsDocs(
     results = assembled.results;
     tokensUsed = assembled.tokensUsed;
   }
+
+  const matchedImagesByDocId = await findMatchedImagesForDocs({
+    query,
+    docs: results,
+    scopeById,
+  });
+  results = results.map((result) => ({
+    ...result,
+    matchedImages: matchedImagesByDocId.get(result.documentId) ?? [],
+  }));
 
   const docVersions = new Map(
     filteredDocs.map((doc) => [doc.documentId, doc.sectionGraphVersion]),

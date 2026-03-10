@@ -61,6 +61,20 @@ function getKnowledgeQueue(): Promise<Queue> {
   return _queuePromise;
 }
 
+function isMatchingIngestDocumentJob(
+  job: {
+    name?: string;
+    data?: Partial<IngestDocumentJob> | null;
+  },
+  documentId: string,
+): boolean {
+  return (
+    job.name === "ingest-document" &&
+    job.data?.type === "ingest-document" &&
+    job.data.documentId === documentId
+  );
+}
+
 export async function enqueueIngestDocument(
   documentId: string,
   groupId: string,
@@ -71,6 +85,42 @@ export async function enqueueIngestDocument(
     { type: "ingest-document", documentId, groupId } satisfies KnowledgeJob,
     { jobId: `ingest-${documentId}-${Date.now()}` },
   );
+}
+
+export async function cancelIngestDocument(documentId: string): Promise<{
+  removed: number;
+  active: number;
+}> {
+  const queue = await getKnowledgeQueue();
+  const removableJobs = await queue.getJobs([
+    "waiting",
+    "delayed",
+    "prioritized",
+    "paused",
+  ]);
+  const matchingRemovableJobs = removableJobs.filter((job) =>
+    isMatchingIngestDocumentJob(job as any, documentId),
+  );
+  await Promise.all(
+    matchingRemovableJobs.map((job) =>
+      job.remove().catch((error) => {
+        console.warn(
+          `[ContextX Queue] Failed to remove ingest job ${job.id} for document ${documentId}:`,
+          error,
+        );
+      }),
+    ),
+  );
+
+  const activeJobs = await queue.getJobs(["active"]);
+  const active = activeJobs.filter((job) =>
+    isMatchingIngestDocumentJob(job as any, documentId),
+  ).length;
+
+  return {
+    removed: matchingRemovableJobs.length,
+    active,
+  };
 }
 
 export async function enqueueReembedGroup(groupId: string): Promise<void> {

@@ -73,6 +73,7 @@ export function KnowledgeDocumentsTab({
                 onDelete={handleDelete}
                 onPreview={setPreviewDoc}
                 onReEmbed={handleReEmbed}
+                onDocumentUpdated={handleDocumentUpdated}
               />
             ))}
           </div>

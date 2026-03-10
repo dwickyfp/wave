@@ -51,7 +51,7 @@ async function main() {
       const data = job.data;
 
       if (data.type === "ingest-document") {
-        await runIngestPipeline(data.documentId, data.groupId);
+        return runIngestPipeline(data.documentId, data.groupId);
       } else if (data.type === "reembed-group") {
         await handleReembedGroup(data.groupId);
       } else if (data.type === "materialize-document-version") {
@@ -72,7 +72,10 @@ async function main() {
     },
   );
 
-  worker.on("completed", (job) => {
+  worker.on("completed", (job, result) => {
+    if (result === "skipped") {
+      return;
+    }
     console.log(`[ContextX Worker] Job ${job.id} completed`);
   });
 

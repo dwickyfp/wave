@@ -31,6 +31,7 @@ import JsonView from "ui/json-view";
 import { Textarea } from "ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { Markdown } from "./markdown";
+import { KnowledgeImageGallery } from "./knowledge-image-gallery";
 import { MessageEditor } from "./message-editor";
 
 import {
@@ -402,6 +403,7 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   const ref = useRef<HTMLDivElement>(null);
   const metadata = message.metadata as ChatMetadata | undefined;
   const knowledgeSources = metadata?.knowledgeSources ?? [];
+  const knowledgeImages = metadata?.knowledgeImages ?? [];
 
   const [feedback, setFeedback] = useState<ChatFeedbackType | null>(null);
   const [isCling, setIsCling] = useState(false);
@@ -578,6 +580,11 @@ export const AssistMessagePart = memo(function AssistMessagePart({
           {part.text}
         </Markdown>
       </div>
+      {knowledgeImages.length > 0 && (
+        <div className="px-2">
+          <KnowledgeImageGallery images={knowledgeImages} />
+        </div>
+      )}
       {showActions && (
         <div className="flex flex-col gap-1 w-full">
           <div className="flex w-full flex-wrap items-center gap-1">

@@ -3,7 +3,10 @@ import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { buildDocumentMetadataEmbeddingText } from "lib/knowledge/document-metadata";
 import { embedSingleText } from "lib/knowledge/embedder";
-import { enqueueIngestDocument } from "lib/knowledge/worker-client";
+import {
+  cancelIngestDocument,
+  enqueueIngestDocument,
+} from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -96,6 +99,19 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   if (doc.storagePath) {
     await serverFileStorage.delete(doc.storagePath).catch(() => {});
   }
+  await cancelIngestDocument(docId).catch((error) => {
+    console.warn(
+      `[ContextX] Failed to cancel ingest jobs before deleting document ${docId}:`,
+      error,
+    );
+  });
+  const imageStoragePaths =
+    await knowledgeRepository.listDocumentImageStoragePaths(docId);
+  await Promise.all(
+    imageStoragePaths.map((path) =>
+      serverFileStorage.delete(path).catch(() => {}),
+    ),
+  );
 
   // Cascade deletes chunks too
   await knowledgeRepository.deleteDocument(docId);

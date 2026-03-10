@@ -201,11 +201,14 @@ const MarkdownTable = memo(({ node }: { node?: any }) => {
 
       {/* Table */}
       <div className="overflow-x-auto">
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
               {headerCells.map((th: any, i: number) => (
-                <TableHead key={i}>
+                <TableHead
+                  key={i}
+                  className="whitespace-normal break-words align-top [overflow-wrap:anywhere]"
+                >
                   <WordByWordFadeIn>
                     {th.children?.map((c: any, j: number) => (
                       <Fragment key={j}>{renderHastNode(c)}</Fragment>
@@ -222,7 +225,10 @@ const MarkdownTable = memo(({ node }: { node?: any }) => {
               return (
                 <TableRow key={rowIdx}>
                   {cells.map((td: any, cellIdx: number) => (
-                    <TableCell key={cellIdx}>
+                    <TableCell
+                      key={cellIdx}
+                      className="whitespace-normal break-words align-top [overflow-wrap:anywhere]"
+                    >
                       <WordByWordFadeIn>
                         {td.children?.map((c: any, j: number) => (
                           <Fragment key={j}>{renderHastNode(c)}</Fragment>
@@ -516,7 +522,7 @@ const NonMemoizedMarkdown = ({
   const activeComponents =
     variant === "snowflake" ? snowflakeComponents : components;
   return (
-    <article className="w-full h-full relative">
+    <article className="relative h-full w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere]">
       {isJson(children) ? (
         <JsonView data={children} />
       ) : (

@@ -109,6 +109,21 @@ export type ChatKnowledgeSource = {
   matchedSections?: string[];
 };
 
+export type ChatKnowledgeImage = {
+  groupId: string;
+  groupName: string;
+  documentId: string;
+  documentName: string;
+  imageId: string;
+  versionId?: string | null;
+  label: string;
+  description: string;
+  headingPath?: string | null;
+  stepHint?: string | null;
+  pageNumber?: number | null;
+  assetUrl: string | null;
+};
+
 export type ChatMetadata = {
   usage?: ChatUsage;
   chatModel?: ChatModel;
@@ -125,6 +140,7 @@ export type ChatMetadata = {
   pilotVisualCaptureCount?: number;
   compaction?: ChatCompactionMetadata;
   knowledgeSources?: ChatKnowledgeSource[];
+  knowledgeImages?: ChatKnowledgeImage[];
 };
 
 export type ChatFeedbackType = "like" | "dislike";

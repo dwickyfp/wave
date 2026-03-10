@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { DocumentFileType } from "app-types/knowledge";
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
@@ -26,6 +27,108 @@ const MIME_TO_TYPE: Record<string, DocumentFileType> = {
   "text/markdown": "md",
   "text/html": "html",
 };
+
+function buildSha256Fingerprint(
+  input: Buffer | string,
+  prefix: string,
+): string {
+  return createHash("sha256")
+    .update(prefix)
+    .update(":")
+    .update(input)
+    .digest("hex");
+}
+
+function normalizeSourceUrl(sourceUrl: string): string {
+  const url = new URL(sourceUrl);
+  url.hash = "";
+  url.protocol = url.protocol.toLowerCase();
+  url.hostname = url.hostname.toLowerCase();
+
+  const sorted = Array.from(url.searchParams.entries()).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  url.search = "";
+  for (const [key, value] of sorted) {
+    url.searchParams.append(key, value);
+  }
+
+  if (url.pathname !== "/" && url.pathname.endsWith("/")) {
+    url.pathname = url.pathname.replace(/\/+$/, "");
+  }
+
+  return url.toString();
+}
+
+function tryNormalizeSourceUrl(sourceUrl: string): string | null {
+  try {
+    return normalizeSourceUrl(sourceUrl);
+  } catch {
+    return null;
+  }
+}
+
+async function findExistingDocumentByFingerprint(
+  groupId: string,
+  fingerprint: string,
+) {
+  return knowledgeRepository.selectDocumentByFingerprint(groupId, fingerprint);
+}
+
+async function findExistingUrlDocument(
+  groupId: string,
+  sourceUrl: string,
+  fingerprint: string,
+) {
+  const byFingerprint = await findExistingDocumentByFingerprint(
+    groupId,
+    fingerprint,
+  );
+  if (byFingerprint) {
+    return byFingerprint;
+  }
+
+  const normalizedSourceUrl = normalizeSourceUrl(sourceUrl);
+  const docs = await knowledgeRepository.selectDocumentsByGroupId(groupId);
+  return (
+    docs.find((doc) => {
+      if (doc.fileType !== "url" || !doc.sourceUrl) return false;
+      try {
+        return normalizeSourceUrl(doc.sourceUrl) === normalizedSourceUrl;
+      } catch {
+        return doc.sourceUrl === sourceUrl;
+      }
+    }) ?? null
+  );
+}
+
+async function findExistingFileDocument(input: {
+  groupId: string;
+  fingerprint: string;
+  originalFilename: string;
+  fileType: DocumentFileType;
+  fileSize: number;
+}) {
+  const byFingerprint = await findExistingDocumentByFingerprint(
+    input.groupId,
+    input.fingerprint,
+  );
+  if (byFingerprint) {
+    return byFingerprint;
+  }
+
+  const docs = await knowledgeRepository.selectDocumentsByGroupId(
+    input.groupId,
+  );
+  return (
+    docs.find(
+      (doc) =>
+        doc.fileType === input.fileType &&
+        (doc.fileSize ?? null) === input.fileSize &&
+        doc.originalFilename === input.originalFilename,
+    ) ?? null
+  );
+}
 
 export async function GET(_req: NextRequest, { params }: Params) {
   const session = await getSession();
@@ -101,6 +204,19 @@ export async function POST(req: NextRequest, { params }: Params) {
         { status: 400 },
       );
     }
+    const normalizedSourceUrl = tryNormalizeSourceUrl(sourceUrl);
+    if (!normalizedSourceUrl) {
+      return NextResponse.json({ error: "Invalid sourceUrl" }, { status: 400 });
+    }
+    const fingerprint = buildSha256Fingerprint(normalizedSourceUrl, "url");
+    const existing = await findExistingUrlDocument(
+      groupId,
+      sourceUrl,
+      fingerprint,
+    );
+    if (existing) {
+      return NextResponse.json({ ...existing, duplicate: true });
+    }
     const doc = await knowledgeRepository.insertDocument({
       groupId,
       userId: session.user.id,
@@ -108,6 +224,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       originalFilename: sourceUrl,
       fileType: "url",
       sourceUrl,
+      fingerprint,
     });
     await enqueueOrProcessInline(doc.id, groupId);
     return NextResponse.json(doc, { status: 201 });
@@ -119,6 +236,19 @@ export async function POST(req: NextRequest, { params }: Params) {
   const sourceUrl = (formData.get("sourceUrl") as string | null)?.trim();
   if (sourceUrl) {
     const name = ((formData.get("name") as string) || "").trim();
+    const normalizedSourceUrl = tryNormalizeSourceUrl(sourceUrl);
+    if (!normalizedSourceUrl) {
+      return NextResponse.json({ error: "Invalid sourceUrl" }, { status: 400 });
+    }
+    const fingerprint = buildSha256Fingerprint(normalizedSourceUrl, "url");
+    const existing = await findExistingUrlDocument(
+      groupId,
+      sourceUrl,
+      fingerprint,
+    );
+    if (existing) {
+      return NextResponse.json({ ...existing, duplicate: true });
+    }
     const doc = await knowledgeRepository.insertDocument({
       groupId,
       userId: session.user.id,
@@ -126,6 +256,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       originalFilename: sourceUrl,
       fileType: "url",
       sourceUrl,
+      fingerprint,
     });
     await enqueueOrProcessInline(doc.id, groupId);
     return NextResponse.json(doc, { status: 201 });
@@ -153,13 +284,25 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   const fileType = MIME_TO_TYPE[file.type] ?? "txt";
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const fingerprint = buildSha256Fingerprint(buffer, "file");
+  const existing = await findExistingFileDocument({
+    groupId,
+    fingerprint,
+    originalFilename: file.name,
+    fileType,
+    fileSize: file.size,
+  });
+  if (existing) {
+    return NextResponse.json({ ...existing, duplicate: true });
+  }
 
   // Try to persist the file to object storage.
   // If storage is not configured or not reachable, fall back to inline
   // processing (the file is kept in memory for the pipeline).
   let storagePath: string | undefined;
   try {
-    const uploadResult = await serverFileStorage.upload(file.stream(), {
+    const uploadResult = await serverFileStorage.upload(buffer, {
       filename: `knowledge/${groupId}/${Date.now()}-${file.name}`,
       contentType: file.type || "application/octet-stream",
     });
@@ -179,10 +322,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     fileType,
     fileSize: file.size,
     storagePath,
+    fingerprint,
   });
 
   if (!storagePath) {
-    const buffer = Buffer.from(await file.arrayBuffer());
     // Storage upload failed — buffer is the only source. Never enqueue because
     // the worker process has no access to this in-memory buffer; always process inline.
     runIngestPipeline(doc.id, groupId, buffer).catch(async (err) => {

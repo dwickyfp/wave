@@ -1,6 +1,8 @@
 import {
   KnowledgeChunk,
   KnowledgeDocument,
+  KnowledgeDocumentImage,
+  KnowledgeDocumentImageVersion,
   KnowledgeGroup,
   KnowledgeGroupSource,
   KnowledgeRepository,
@@ -10,11 +12,14 @@ import {
   UsageSource,
 } from "app-types/knowledge";
 import { and, count, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { sanitizeImageStepHint } from "lib/knowledge/document-images";
 import { generateUUID } from "lib/utils";
 import { pgDb as db } from "../db.pg";
 import {
   KnowledgeChunkTable,
   KnowledgeDocumentTable,
+  KnowledgeDocumentImageTable,
+  KnowledgeDocumentImageVersionTable,
   KnowledgeGroupAgentTable,
   KnowledgeGroupSourceTable,
   KnowledgeSectionTable,
@@ -51,12 +56,57 @@ function mapDocument(
     fileSize: row.fileSize ?? null,
     storagePath: row.storagePath ?? null,
     sourceUrl: row.sourceUrl ?? null,
+    fingerprint: row.fingerprint ?? null,
     errorMessage: row.errorMessage ?? null,
     processingProgress: row.processingProgress ?? null,
     metadata: (row.metadata as Record<string, unknown>) ?? null,
     markdownContent: row.markdownContent ?? null,
     activeVersionId: row.activeVersionId ?? null,
     latestVersionNumber: row.latestVersionNumber ?? 0,
+  };
+}
+
+function mapDocumentImage(
+  row:
+    | typeof KnowledgeDocumentImageTable.$inferSelect
+    | typeof KnowledgeDocumentImageVersionTable.$inferSelect,
+): KnowledgeDocumentImage {
+  return {
+    id: row.id,
+    documentId: row.documentId,
+    groupId: row.groupId,
+    versionId: "versionId" in row ? (row.versionId ?? null) : null,
+    kind: row.kind,
+    ordinal: row.ordinal,
+    marker: row.marker,
+    label: row.label,
+    description: row.description,
+    headingPath: row.headingPath ?? null,
+    stepHint: sanitizeImageStepHint(row.stepHint),
+    sourceUrl: row.sourceUrl ?? null,
+    storagePath: row.storagePath ?? null,
+    mediaType: row.mediaType ?? null,
+    pageNumber: row.pageNumber ?? null,
+    width: row.width ?? null,
+    height: row.height ?? null,
+    altText: row.altText ?? null,
+    caption: row.caption ?? null,
+    surroundingText: row.surroundingText ?? null,
+    isRenderable: row.isRenderable ?? false,
+    manualLabel: row.manualLabel ?? false,
+    manualDescription: row.manualDescription ?? false,
+    embedding: null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function mapVersionedDocumentImage(
+  row: typeof KnowledgeDocumentImageVersionTable.$inferSelect,
+): KnowledgeDocumentImageVersion {
+  return {
+    ...mapDocumentImage(row),
+    versionId: row.versionId,
   };
 }
 
@@ -541,6 +591,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         fileSize: data.fileSize ?? null,
         storagePath: data.storagePath ?? null,
         sourceUrl: data.sourceUrl ?? null,
+        fingerprint: data.fingerprint ?? null,
         status: (data as any).status ?? "pending",
         chunkCount: 0,
         tokenCount: 0,
@@ -548,8 +599,28 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         createdAt: new Date(),
         updatedAt: new Date(),
       })
+      .onConflictDoNothing({
+        target: [
+          KnowledgeDocumentTable.groupId,
+          KnowledgeDocumentTable.fingerprint,
+        ],
+      })
       .returning();
-    return mapDocument(row);
+    if (row) {
+      return mapDocument(row);
+    }
+
+    if (data.fingerprint) {
+      const existing = await pgKnowledgeRepository.selectDocumentByFingerprint(
+        data.groupId,
+        data.fingerprint,
+      );
+      if (existing) {
+        return existing;
+      }
+    }
+
+    throw new Error("Failed to insert document");
   },
 
   async selectDocumentsByGroupId(groupId) {
@@ -604,6 +675,20 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       .select()
       .from(KnowledgeDocumentTable)
       .where(eq(KnowledgeDocumentTable.id, id));
+    if (!row) return null;
+    return mapDocument(row);
+  },
+
+  async selectDocumentByFingerprint(groupId, fingerprint) {
+    const [row] = await db
+      .select()
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.groupId, groupId),
+          eq(KnowledgeDocumentTable.fingerprint, fingerprint),
+        ),
+      );
     if (!row) return null;
     return mapDocument(row);
   },
@@ -709,6 +794,85 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     await db
       .delete(KnowledgeDocumentTable)
       .where(eq(KnowledgeDocumentTable.id, id));
+  },
+
+  async getDocumentImages(documentId) {
+    const rows = await db
+      .select()
+      .from(KnowledgeDocumentImageTable)
+      .where(eq(KnowledgeDocumentImageTable.documentId, documentId))
+      .orderBy(
+        KnowledgeDocumentImageTable.ordinal,
+        KnowledgeDocumentImageTable.createdAt,
+      );
+    return rows.map(mapDocumentImage);
+  },
+
+  async getDocumentImagesByVersion(documentId, versionId) {
+    const rows = await db
+      .select()
+      .from(KnowledgeDocumentImageVersionTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentImageVersionTable.documentId, documentId),
+          eq(KnowledgeDocumentImageVersionTable.versionId, versionId),
+        ),
+      )
+      .orderBy(
+        KnowledgeDocumentImageVersionTable.ordinal,
+        KnowledgeDocumentImageVersionTable.createdAt,
+      );
+    return rows.map(mapVersionedDocumentImage);
+  },
+
+  async getDocumentImageById(documentId, imageId) {
+    const [row] = await db
+      .select()
+      .from(KnowledgeDocumentImageTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentImageTable.documentId, documentId),
+          eq(KnowledgeDocumentImageTable.id, imageId),
+        ),
+      );
+    return row ? mapDocumentImage(row) : null;
+  },
+
+  async getDocumentImageByIdFromVersion(documentId, versionId, imageId) {
+    const [row] = await db
+      .select()
+      .from(KnowledgeDocumentImageVersionTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentImageVersionTable.documentId, documentId),
+          eq(KnowledgeDocumentImageVersionTable.versionId, versionId),
+          eq(KnowledgeDocumentImageVersionTable.id, imageId),
+        ),
+      );
+    return row ? mapVersionedDocumentImage(row) : null;
+  },
+
+  async listDocumentImageStoragePaths(documentId) {
+    const liveRows = await db
+      .select({
+        storagePath: KnowledgeDocumentImageTable.storagePath,
+      })
+      .from(KnowledgeDocumentImageTable)
+      .where(eq(KnowledgeDocumentImageTable.documentId, documentId));
+    const versionRows = await db
+      .select({
+        storagePath: KnowledgeDocumentImageVersionTable.storagePath,
+      })
+      .from(KnowledgeDocumentImageVersionTable)
+      .where(eq(KnowledgeDocumentImageVersionTable.documentId, documentId));
+
+    return Array.from(
+      new Set(
+        [...liveRows, ...versionRows]
+          .map((row) => row.storagePath ?? null)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
   },
 
   // ─── Document Markdown (Context7-style) ─────────────────────────────────────
@@ -1259,6 +1423,300 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       documentName: r.document_name,
       documentId: r.document_id,
       score: Number(r.score),
+    }));
+  },
+
+  async fullTextSearchImages(groupId, query, limit, documentIds) {
+    const docFilter =
+      documentIds && documentIds.length > 0
+        ? sql`AND kdi.document_id IN (${sql.join(
+            documentIds.map((id) => sql`${id}::uuid`),
+            sql`, `,
+          )})`
+        : sql``;
+
+    const rows = await db.execute<{
+      id: string;
+      document_id: string;
+      group_id: string;
+      version_id: string | null;
+      kind: "embedded" | "region";
+      ordinal: number;
+      marker: string;
+      label: string;
+      description: string;
+      heading_path: string | null;
+      step_hint: string | null;
+      storage_path: string | null;
+      source_url: string | null;
+      media_type: string | null;
+      page_number: number | null;
+      width: number | null;
+      height: number | null;
+      alt_text: string | null;
+      caption: string | null;
+      surrounding_text: string | null;
+      is_renderable: boolean;
+      manual_label: boolean;
+      manual_description: boolean;
+      created_at: Date;
+      updated_at: Date;
+      score: number;
+    }>(
+      sql`
+        WITH q AS (
+          SELECT
+            websearch_to_tsquery('simple', ${query}) AS simple_q,
+            websearch_to_tsquery('english', ${query}) AS english_q,
+            '%' || ${query} || '%' AS ilike_q
+        )
+        SELECT
+          kdi.id,
+          kdi.document_id,
+          kdi.group_id,
+          kdi.version_id,
+          kdi.kind,
+          kdi.ordinal,
+          kdi.marker,
+          kdi.label,
+          kdi.description,
+          kdi.heading_path,
+          kdi.step_hint,
+          kdi.storage_path,
+          kdi.source_url,
+          kdi.media_type,
+          kdi.page_number,
+          kdi.width,
+          kdi.height,
+          kdi.alt_text,
+          kdi.caption,
+          kdi.surrounding_text,
+          kdi.is_renderable,
+          kdi.manual_label,
+          kdi.manual_description,
+          kdi.created_at,
+          kdi.updated_at,
+          (
+            GREATEST(
+              ts_rank_cd(
+                to_tsvector(
+                  'english',
+                  coalesce(kdi.label, '') || ' ' ||
+                  coalesce(kdi.description, '') || ' ' ||
+                  coalesce(kdi.heading_path, '') || ' ' ||
+                  coalesce(kdi.step_hint, '') || ' ' ||
+                  coalesce(kdi.caption, '') || ' ' ||
+                  coalesce(kdi.alt_text, '') || ' ' ||
+                  coalesce(kdi.surrounding_text, '')
+                ),
+                (SELECT english_q FROM q)
+              ),
+              ts_rank_cd(
+                to_tsvector(
+                  'simple',
+                  coalesce(kdi.label, '') || ' ' ||
+                  coalesce(kdi.description, '') || ' ' ||
+                  coalesce(kdi.heading_path, '') || ' ' ||
+                  coalesce(kdi.step_hint, '') || ' ' ||
+                  coalesce(kdi.caption, '') || ' ' ||
+                  coalesce(kdi.alt_text, '') || ' ' ||
+                  coalesce(kdi.surrounding_text, '')
+                ),
+                (SELECT simple_q FROM q)
+              )
+            )
+            + CASE
+                WHEN (
+                  coalesce(kdi.label, '') || ' ' ||
+                  coalesce(kdi.description, '') || ' ' ||
+                  coalesce(kdi.heading_path, '') || ' ' ||
+                  coalesce(kdi.step_hint, '') || ' ' ||
+                  coalesce(kdi.caption, '') || ' ' ||
+                  coalesce(kdi.alt_text, '') || ' ' ||
+                  coalesce(kdi.surrounding_text, '')
+                ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
+                ELSE 0
+              END
+          ) AS score
+        FROM knowledge_document_image kdi
+        WHERE kdi.group_id = ${groupId}
+          AND kdi.is_renderable = true
+          ${docFilter}
+          AND (
+            to_tsvector(
+              'english',
+              coalesce(kdi.label, '') || ' ' ||
+              coalesce(kdi.description, '') || ' ' ||
+              coalesce(kdi.heading_path, '') || ' ' ||
+              coalesce(kdi.step_hint, '') || ' ' ||
+              coalesce(kdi.caption, '') || ' ' ||
+              coalesce(kdi.alt_text, '') || ' ' ||
+              coalesce(kdi.surrounding_text, '')
+            ) @@ (SELECT english_q FROM q)
+            OR to_tsvector(
+              'simple',
+              coalesce(kdi.label, '') || ' ' ||
+              coalesce(kdi.description, '') || ' ' ||
+              coalesce(kdi.heading_path, '') || ' ' ||
+              coalesce(kdi.step_hint, '') || ' ' ||
+              coalesce(kdi.caption, '') || ' ' ||
+              coalesce(kdi.alt_text, '') || ' ' ||
+              coalesce(kdi.surrounding_text, '')
+            ) @@ (SELECT simple_q FROM q)
+            OR (
+              coalesce(kdi.label, '') || ' ' ||
+              coalesce(kdi.description, '') || ' ' ||
+              coalesce(kdi.heading_path, '') || ' ' ||
+              coalesce(kdi.step_hint, '') || ' ' ||
+              coalesce(kdi.caption, '') || ' ' ||
+              coalesce(kdi.alt_text, '') || ' ' ||
+              coalesce(kdi.surrounding_text, '')
+            ) ILIKE (SELECT ilike_q FROM q)
+          )
+        ORDER BY score DESC, kdi.updated_at DESC
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((row) => ({
+      ...mapDocumentImage({
+        id: row.id,
+        documentId: row.document_id,
+        groupId: row.group_id,
+        versionId: row.version_id,
+        kind: row.kind,
+        ordinal: row.ordinal,
+        marker: row.marker,
+        label: row.label,
+        description: row.description,
+        headingPath: row.heading_path,
+        stepHint: row.step_hint,
+        storagePath: row.storage_path,
+        sourceUrl: row.source_url,
+        mediaType: row.media_type,
+        pageNumber: row.page_number,
+        width: row.width,
+        height: row.height,
+        altText: row.alt_text,
+        caption: row.caption,
+        surroundingText: row.surrounding_text,
+        isRenderable: row.is_renderable,
+        manualLabel: row.manual_label,
+        manualDescription: row.manual_description,
+        embedding: null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      } as typeof KnowledgeDocumentImageTable.$inferSelect),
+      score: Number(row.score),
+    }));
+  },
+
+  async vectorSearchImages(groupId, embedding, limit, documentIds) {
+    const embeddingStr = `[${embedding.join(",")}]`;
+    const docFilter =
+      documentIds && documentIds.length > 0
+        ? sql`AND kdi.document_id IN (${sql.join(
+            documentIds.map((id) => sql`${id}::uuid`),
+            sql`, `,
+          )})`
+        : sql``;
+
+    const rows = await db.execute<{
+      id: string;
+      document_id: string;
+      group_id: string;
+      version_id: string | null;
+      kind: "embedded" | "region";
+      ordinal: number;
+      marker: string;
+      label: string;
+      description: string;
+      heading_path: string | null;
+      step_hint: string | null;
+      storage_path: string | null;
+      source_url: string | null;
+      media_type: string | null;
+      page_number: number | null;
+      width: number | null;
+      height: number | null;
+      alt_text: string | null;
+      caption: string | null;
+      surrounding_text: string | null;
+      is_renderable: boolean;
+      manual_label: boolean;
+      manual_description: boolean;
+      created_at: Date;
+      updated_at: Date;
+      score: number;
+    }>(
+      sql`
+        SELECT
+          kdi.id,
+          kdi.document_id,
+          kdi.group_id,
+          kdi.version_id,
+          kdi.kind,
+          kdi.ordinal,
+          kdi.marker,
+          kdi.label,
+          kdi.description,
+          kdi.heading_path,
+          kdi.step_hint,
+          kdi.storage_path,
+          kdi.source_url,
+          kdi.media_type,
+          kdi.page_number,
+          kdi.width,
+          kdi.height,
+          kdi.alt_text,
+          kdi.caption,
+          kdi.surrounding_text,
+          kdi.is_renderable,
+          kdi.manual_label,
+          kdi.manual_description,
+          kdi.created_at,
+          kdi.updated_at,
+          1 - (kdi.embedding <=> ${embeddingStr}::vector) AS score
+        FROM knowledge_document_image kdi
+        WHERE kdi.group_id = ${groupId}
+          AND kdi.is_renderable = true
+          AND kdi.embedding IS NOT NULL
+          ${docFilter}
+        ORDER BY kdi.embedding <=> ${embeddingStr}::vector
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((row) => ({
+      ...mapDocumentImage({
+        id: row.id,
+        documentId: row.document_id,
+        groupId: row.group_id,
+        versionId: row.version_id,
+        kind: row.kind,
+        ordinal: row.ordinal,
+        marker: row.marker,
+        label: row.label,
+        description: row.description,
+        headingPath: row.heading_path,
+        stepHint: row.step_hint,
+        storagePath: row.storage_path,
+        sourceUrl: row.source_url,
+        mediaType: row.media_type,
+        pageNumber: row.page_number,
+        width: row.width,
+        height: row.height,
+        altText: row.alt_text,
+        caption: row.caption,
+        surroundingText: row.surrounding_text,
+        isRenderable: row.is_renderable,
+        manualLabel: row.manual_label,
+        manualDescription: row.manual_description,
+        embedding: null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      } as typeof KnowledgeDocumentImageTable.$inferSelect),
+      score: Number(row.score),
     }));
   },
 

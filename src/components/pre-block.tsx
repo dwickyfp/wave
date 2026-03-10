@@ -17,28 +17,7 @@ import {
 import { safe } from "ts-safe";
 import { Button } from "ui/button";
 import JsonView from "ui/json-view";
-
-// Dynamically import MermaidDiagram component
-const MermaidDiagram = dynamic(
-  () => import("./mermaid-diagram").then((mod) => mod.MermaidDiagram),
-  {
-    loading: () => (
-      <div className="text-sm flex bg-accent/30 flex-col rounded-2xl relative my-4 overflow-hidden border">
-        <div className="w-full flex z-20 py-2 px-4 items-center">
-          <span className="text-sm text-muted-foreground">mermaid</span>
-        </div>
-        <div className="relative overflow-x-auto px-6 pb-6">
-          <div className="h-20 w-full flex items-center justify-center">
-            <span className="text-muted-foreground">
-              Loading Mermaid renderer...
-            </span>
-          </div>
-        </div>
-      </div>
-    ),
-    ssr: false,
-  },
-);
+import { MermaidDiagram } from "./mermaid-diagram";
 
 // Dynamically import VegaLiteChart component
 const VegaLiteChart = dynamic(

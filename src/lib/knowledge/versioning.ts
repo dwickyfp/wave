@@ -1,6 +1,7 @@
 import type {
   KnowledgeChunkMetadata,
   KnowledgeDocument,
+  KnowledgeDocumentImage,
   KnowledgeDocumentHistoryEvent,
   KnowledgeDocumentVersion,
   KnowledgeDocumentVersionSummary,
@@ -13,6 +14,8 @@ import {
   KnowledgeChunkTable,
   KnowledgeChunkVersionTable,
   KnowledgeDocumentHistoryEventTable,
+  KnowledgeDocumentImageTable,
+  KnowledgeDocumentImageVersionTable,
   KnowledgeDocumentTable,
   KnowledgeDocumentVersionTable,
   KnowledgeGroupTable,
@@ -20,6 +23,8 @@ import {
   KnowledgeSectionVersionTable,
 } from "lib/db/pg/schema.pg";
 import { materializeDocumentMarkdown } from "lib/knowledge/materialize-markdown";
+import { sanitizeImageStepHint } from "lib/knowledge/document-images";
+import type { ProcessedDocumentImage } from "lib/knowledge/processor/types";
 import { generateUUID } from "lib/utils";
 
 const VERSION_BATCH_SIZE = 100;
@@ -76,6 +81,11 @@ type VersionSnapshotChunk = {
   metadata?: KnowledgeChunkMetadata | null;
 };
 
+type VersionSnapshotImage = Omit<
+  KnowledgeDocumentImage,
+  "createdAt" | "updatedAt"
+>;
+
 type MaterializedCommitInput = {
   versionId: string;
   versionNumber: number;
@@ -92,6 +102,7 @@ type MaterializedCommitInput = {
   metadataEmbedding?: number[] | null;
   sections: VersionSnapshotSection[];
   chunks: VersionSnapshotChunk[];
+  images: VersionSnapshotImage[];
   totalTokens: number;
 };
 
@@ -142,6 +153,43 @@ class VersionNotFoundError extends Error {
   constructor() {
     super("version_not_found");
   }
+}
+
+type PendingImageOverride = {
+  imageId: string;
+  label?: string | null;
+  description?: string | null;
+  stepHint?: string | null;
+};
+
+function readPendingImageOverrides(
+  metadata: Record<string, unknown> | null | undefined,
+): PendingImageOverride[] {
+  const raw = metadata?.contextImageOverrides;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(
+      (entry): entry is PendingImageOverride =>
+        !!entry &&
+        typeof entry === "object" &&
+        "imageId" in entry &&
+        typeof (entry as { imageId?: unknown }).imageId === "string",
+    )
+    .map((entry) => ({
+      imageId: entry.imageId,
+      label:
+        typeof entry.label === "string" || entry.label === null
+          ? entry.label
+          : undefined,
+      description:
+        typeof entry.description === "string" || entry.description === null
+          ? entry.description
+          : undefined,
+      stepHint:
+        typeof entry.stepHint === "string" || entry.stepHint === null
+          ? entry.stepHint
+          : undefined,
+    }));
 }
 
 function parsePgVectorLiteral(
@@ -326,6 +374,95 @@ async function selectLiveChunks(
   }));
 }
 
+async function selectLiveImages(
+  documentId: string,
+): Promise<VersionSnapshotImage[]> {
+  const rows = await db.execute<{
+    id: string;
+    document_id: string;
+    group_id: string;
+    version_id: string | null;
+    kind: "embedded" | "region";
+    ordinal: number;
+    marker: string;
+    label: string;
+    description: string;
+    heading_path: string | null;
+    step_hint: string | null;
+    storage_path: string | null;
+    source_url: string | null;
+    media_type: string | null;
+    page_number: number | null;
+    width: number | null;
+    height: number | null;
+    alt_text: string | null;
+    caption: string | null;
+    surrounding_text: string | null;
+    is_renderable: boolean;
+    manual_label: boolean;
+    manual_description: boolean;
+    embedding_text: string | null;
+  }>(
+    sql`
+      SELECT
+        id,
+        document_id,
+        group_id,
+        version_id,
+        kind,
+        ordinal,
+        marker,
+        label,
+        description,
+        heading_path,
+        step_hint,
+        storage_path,
+        source_url,
+        media_type,
+        page_number,
+        width,
+        height,
+        alt_text,
+        caption,
+        surrounding_text,
+        is_renderable,
+        manual_label,
+        manual_description,
+        embedding::text AS embedding_text
+      FROM knowledge_document_image
+      WHERE document_id = ${documentId}::uuid
+      ORDER BY ordinal ASC, created_at ASC
+    `,
+  );
+
+  return rows.rows.map((row) => ({
+    id: row.id,
+    documentId: row.document_id,
+    groupId: row.group_id,
+    versionId: row.version_id ?? null,
+    kind: row.kind,
+    ordinal: row.ordinal,
+    marker: row.marker,
+    label: row.label,
+    description: row.description,
+    headingPath: row.heading_path ?? null,
+    stepHint: sanitizeImageStepHint(row.step_hint),
+    sourceUrl: row.source_url ?? null,
+    storagePath: row.storage_path ?? null,
+    mediaType: row.media_type ?? null,
+    pageNumber: row.page_number ?? null,
+    width: row.width ?? null,
+    height: row.height ?? null,
+    altText: row.alt_text ?? null,
+    caption: row.caption ?? null,
+    surroundingText: row.surrounding_text ?? null,
+    isRenderable: row.is_renderable,
+    manualLabel: row.manual_label,
+    manualDescription: row.manual_description,
+    embedding: parsePgVectorLiteral(row.embedding_text),
+  }));
+}
+
 async function selectVersionSections(
   versionId: string,
 ): Promise<VersionSnapshotSection[]> {
@@ -399,6 +536,157 @@ async function selectVersionChunks(
   }));
 }
 
+async function selectVersionImages(
+  versionId: string,
+): Promise<VersionSnapshotImage[]> {
+  const rows = await db.execute<{
+    id: string;
+    version_id: string;
+    document_id: string;
+    group_id: string;
+    kind: "embedded" | "region";
+    ordinal: number;
+    marker: string;
+    label: string;
+    description: string;
+    heading_path: string | null;
+    step_hint: string | null;
+    storage_path: string | null;
+    source_url: string | null;
+    media_type: string | null;
+    page_number: number | null;
+    width: number | null;
+    height: number | null;
+    alt_text: string | null;
+    caption: string | null;
+    surrounding_text: string | null;
+    is_renderable: boolean;
+    manual_label: boolean;
+    manual_description: boolean;
+    embedding_text: string | null;
+  }>(
+    sql`
+      SELECT
+        id,
+        version_id,
+        document_id,
+        group_id,
+        kind,
+        ordinal,
+        marker,
+        label,
+        description,
+        heading_path,
+        step_hint,
+        storage_path,
+        source_url,
+        media_type,
+        page_number,
+        width,
+        height,
+        alt_text,
+        caption,
+        surrounding_text,
+        is_renderable,
+        manual_label,
+        manual_description,
+        embedding::text AS embedding_text
+      FROM knowledge_document_image_version
+      WHERE version_id = ${versionId}::uuid
+      ORDER BY ordinal ASC, created_at ASC
+    `,
+  );
+
+  return rows.rows.map((row) => ({
+    id: row.id,
+    documentId: row.document_id,
+    groupId: row.group_id,
+    versionId: row.version_id,
+    kind: row.kind,
+    ordinal: row.ordinal,
+    marker: row.marker,
+    label: row.label,
+    description: row.description,
+    headingPath: row.heading_path ?? null,
+    stepHint: sanitizeImageStepHint(row.step_hint),
+    sourceUrl: row.source_url ?? null,
+    storagePath: row.storage_path ?? null,
+    mediaType: row.media_type ?? null,
+    pageNumber: row.page_number ?? null,
+    width: row.width ?? null,
+    height: row.height ?? null,
+    altText: row.alt_text ?? null,
+    caption: row.caption ?? null,
+    surroundingText: row.surrounding_text ?? null,
+    isRenderable: row.is_renderable,
+    manualLabel: row.manual_label,
+    manualDescription: row.manual_description,
+    embedding: parsePgVectorLiteral(row.embedding_text),
+  }));
+}
+
+function applyImageOverrides(
+  images: VersionSnapshotImage[],
+  overrides: PendingImageOverride[],
+): VersionSnapshotImage[] {
+  if (overrides.length === 0) return images;
+  const overrideById = new Map(
+    overrides.map((override) => [override.imageId, override]),
+  );
+  return images.map((image) => {
+    const override = overrideById.get(image.id);
+    if (!override) return image;
+    return {
+      ...image,
+      label:
+        override.label !== undefined && override.label !== null
+          ? override.label
+          : image.label,
+      description:
+        override.description !== undefined && override.description !== null
+          ? override.description
+          : image.description,
+      stepHint:
+        override.stepHint !== undefined ? override.stepHint : image.stepHint,
+      manualLabel:
+        override.label !== undefined
+          ? Boolean(override.label?.trim())
+          : image.manualLabel,
+      manualDescription:
+        override.description !== undefined
+          ? Boolean(override.description?.trim())
+          : image.manualDescription,
+    };
+  });
+}
+
+function toProcessedDocumentImages(
+  images: VersionSnapshotImage[],
+): ProcessedDocumentImage[] {
+  return images.map((image, index) => ({
+    kind: image.kind,
+    marker: image.marker,
+    index: image.ordinal ?? index,
+    mediaType: image.mediaType ?? null,
+    sourceUrl: image.sourceUrl ?? null,
+    storagePath: image.storagePath ?? null,
+    pageNumber: image.pageNumber ?? null,
+    width: image.width ?? null,
+    height: image.height ?? null,
+    altText: image.altText ?? null,
+    caption: image.caption ?? null,
+    surroundingText: image.surroundingText ?? null,
+    headingPath: image.headingPath ?? null,
+    stepHint: image.stepHint ?? null,
+    label: image.label,
+    description: image.description,
+    isRenderable: image.isRenderable,
+    manualLabel: image.manualLabel,
+    manualDescription: image.manualDescription,
+    embedding: image.embedding ?? null,
+  }));
+}
+
 async function insertSectionSnapshots(
   tx: any,
   versionId: string,
@@ -469,13 +757,61 @@ async function insertChunkSnapshots(
   }
 }
 
+async function insertImageSnapshots(
+  tx: any,
+  versionId: string,
+  documentId: string,
+  groupId: string,
+  images: VersionSnapshotImage[],
+) {
+  if (images.length === 0) return;
+
+  for (let index = 0; index < images.length; index += VERSION_BATCH_SIZE) {
+    const batch = images.slice(index, index + VERSION_BATCH_SIZE);
+    await tx.insert(KnowledgeDocumentImageVersionTable).values(
+      batch.map((image) => ({
+        id: image.id,
+        versionId,
+        documentId,
+        groupId,
+        kind: image.kind,
+        ordinal: image.ordinal,
+        marker: image.marker,
+        label: image.label,
+        description: image.description,
+        headingPath: image.headingPath ?? null,
+        stepHint: image.stepHint ?? null,
+        storagePath: image.storagePath ?? null,
+        sourceUrl: image.sourceUrl ?? null,
+        mediaType: image.mediaType ?? null,
+        pageNumber: image.pageNumber ?? null,
+        width: image.width ?? null,
+        height: image.height ?? null,
+        altText: image.altText ?? null,
+        caption: image.caption ?? null,
+        surroundingText: image.surroundingText ?? null,
+        isRenderable: image.isRenderable,
+        manualLabel: image.manualLabel,
+        manualDescription: image.manualDescription,
+        embedding: image.embedding ?? null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })),
+    );
+  }
+}
+
 async function replaceLiveMaterialization(
   tx: any,
   documentId: string,
   groupId: string,
   sections: VersionSnapshotSection[],
   chunks: VersionSnapshotChunk[],
+  images: VersionSnapshotImage[],
 ) {
+  await tx
+    .delete(KnowledgeDocumentImageTable)
+    .where(eq(KnowledgeDocumentImageTable.documentId, documentId));
   await tx
     .delete(KnowledgeChunkTable)
     .where(eq(KnowledgeChunkTable.documentId, documentId));
@@ -524,6 +860,42 @@ async function replaceLiveMaterialization(
           tokenCount: chunk.tokenCount,
           metadata: chunk.metadata ?? null,
           createdAt: new Date(),
+        })),
+      );
+    }
+  }
+
+  if (images.length > 0) {
+    for (let index = 0; index < images.length; index += VERSION_BATCH_SIZE) {
+      const batch = images.slice(index, index + VERSION_BATCH_SIZE);
+      await tx.insert(KnowledgeDocumentImageTable).values(
+        batch.map((image) => ({
+          id: image.id,
+          documentId,
+          groupId,
+          versionId: image.versionId ?? null,
+          kind: image.kind,
+          ordinal: image.ordinal,
+          marker: image.marker,
+          label: image.label,
+          description: image.description,
+          headingPath: image.headingPath ?? null,
+          stepHint: image.stepHint ?? null,
+          storagePath: image.storagePath ?? null,
+          sourceUrl: image.sourceUrl ?? null,
+          mediaType: image.mediaType ?? null,
+          pageNumber: image.pageNumber ?? null,
+          width: image.width ?? null,
+          height: image.height ?? null,
+          altText: image.altText ?? null,
+          caption: image.caption ?? null,
+          surroundingText: image.surroundingText ?? null,
+          isRenderable: image.isRenderable,
+          manualLabel: image.manualLabel,
+          manualDescription: image.manualDescription,
+          embedding: image.embedding ?? null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
         })),
       );
     }
@@ -588,6 +960,7 @@ async function finalizeMaterializedVersion({
   metadataEmbedding,
   sections,
   chunks,
+  images,
   totalTokens,
 }: MaterializedCommitInput) {
   await db.transaction(async (tx) => {
@@ -615,12 +988,26 @@ async function finalizeMaterializedVersion({
       .delete(KnowledgeChunkVersionTable)
       .where(eq(KnowledgeChunkVersionTable.versionId, versionId));
     await tx
+      .delete(KnowledgeDocumentImageVersionTable)
+      .where(eq(KnowledgeDocumentImageVersionTable.versionId, versionId));
+    await tx
       .delete(KnowledgeSectionVersionTable)
       .where(eq(KnowledgeSectionVersionTable.versionId, versionId));
 
     await insertSectionSnapshots(tx, versionId, doc.id, group.id, sections);
     await insertChunkSnapshots(tx, versionId, doc.id, group.id, chunks);
-    await replaceLiveMaterialization(tx, doc.id, group.id, sections, chunks);
+    await insertImageSnapshots(tx, versionId, doc.id, group.id, images);
+    await replaceLiveMaterialization(
+      tx,
+      doc.id,
+      group.id,
+      sections,
+      chunks,
+      images.map((image) => ({
+        ...image,
+        versionId,
+      })),
+    );
 
     await tx
       .update(KnowledgeDocumentVersionTable)
@@ -671,6 +1058,7 @@ async function finalizeMaterializedVersion({
       details: {
         chunkCount: chunks.length,
         tokenCount: totalTokens,
+        imageCount: images.length,
       },
     });
   });
@@ -714,6 +1102,7 @@ export async function ensureDocumentVersionBootstrap(documentId: string) {
 
     const liveSections = await selectLiveSections(documentId);
     const liveChunks = await selectLiveChunks(documentId);
+    const liveImages = await selectLiveImages(documentId);
     const [version] = await tx
       .insert(KnowledgeDocumentVersionTable)
       .values({
@@ -758,6 +1147,16 @@ export async function ensureDocumentVersionBootstrap(documentId: string) {
       selectedDoc.groupId,
       liveChunks,
     );
+    await insertImageSnapshots(
+      tx,
+      version.id,
+      documentId,
+      selectedDoc.groupId,
+      liveImages.map((image) => ({
+        ...image,
+        versionId: version.id,
+      })),
+    );
 
     await tx
       .update(KnowledgeDocumentTable)
@@ -777,6 +1176,7 @@ export async function ensureDocumentVersionBootstrap(documentId: string) {
       toVersionId: version.id,
       details: {
         chunkCount: liveChunks.length,
+        imageCount: liveImages.length,
       },
     });
   });
@@ -978,6 +1378,59 @@ export async function createMarkdownEditVersion(args: {
   return mapDocumentVersion(version as VersionRowWithVector);
 }
 
+export async function createImageAnnotationEditVersion(args: {
+  documentId: string;
+  actorUserId: string;
+  markdownContent: string;
+  imageOverrides: PendingImageOverride[];
+  expectedActiveVersionId?: string | null;
+}) {
+  await ensureDocumentVersionBootstrap(args.documentId);
+
+  const docRow = await selectDocumentRow(args.documentId);
+  if (!docRow) {
+    throw new VersionNotFoundError();
+  }
+
+  if (
+    (docRow.activeVersionId ?? null) !== (args.expectedActiveVersionId ?? null)
+  ) {
+    throw new VersionConflictError();
+  }
+
+  const [version] = await db
+    .insert(KnowledgeDocumentVersionTable)
+    .values({
+      id: generateUUID(),
+      documentId: docRow.id,
+      groupId: docRow.groupId,
+      userId: docRow.userId,
+      versionNumber: (docRow.latestVersionNumber ?? 0) + 1,
+      status: "processing",
+      changeType: "edit",
+      markdownContent: args.markdownContent,
+      resolvedTitle: docRow.name,
+      resolvedDescription: docRow.description ?? null,
+      metadata: {
+        ...(docRow.metadata ?? {}),
+        contextImageOverrides: args.imageOverrides,
+      },
+      metadataEmbedding: sql`NULL::vector`,
+      embeddingProvider: docRow.embeddingProvider,
+      embeddingModel: docRow.embeddingModel,
+      chunkCount: 0,
+      tokenCount: 0,
+      sourceVersionId: docRow.activeVersionId ?? null,
+      createdByUserId: args.actorUserId,
+      errorMessage: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as any)
+    .returning(documentVersionSelection);
+
+  return mapDocumentVersion(version as VersionRowWithVector);
+}
+
 export async function createRollbackVersion(args: {
   documentId: string;
   actorUserId: string;
@@ -1086,6 +1539,7 @@ export async function completeSourceDocumentVersion(args: {
         section.includeHeadingInChunkContent ?? false,
     })),
     chunks: args.materialized.chunks,
+    images: args.materialized.images,
     totalTokens: args.materialized.totalTokens,
   });
 }
@@ -1110,6 +1564,20 @@ export async function runMarkdownEditVersion(args: {
     throw new VersionNotFoundError();
   }
 
+  const pendingOverrides = readPendingImageOverrides(
+    (version.metadata as Record<string, unknown> | null) ?? null,
+  );
+  const sourceImages = version.sourceVersionId
+    ? await selectVersionImages(version.sourceVersionId)
+    : await selectLiveImages(doc.id);
+  const images = applyImageOverrides(
+    sourceImages.map((image) => ({
+      ...image,
+      versionId: null,
+    })),
+    pendingOverrides,
+  );
+
   const materialized = await materializeDocumentMarkdown({
     documentId: doc.id,
     groupId: group.id,
@@ -1117,6 +1585,7 @@ export async function runMarkdownEditVersion(args: {
     doc,
     group,
     markdown: version.markdownContent ?? "",
+    images: toProcessedDocumentImages(images),
   });
 
   await finalizeMaterializedVersion({
@@ -1153,6 +1622,7 @@ export async function runMarkdownEditVersion(args: {
         section.includeHeadingInChunkContent ?? false,
     })),
     chunks: materialized.chunks,
+    images: materialized.images,
     totalTokens: materialized.totalTokens,
   });
 }
@@ -1192,6 +1662,7 @@ export async function runRollbackVersion(args: {
 
   const sourceSections = await selectVersionSections(sourceVersionId);
   const sourceChunks = await selectVersionChunks(sourceVersionId);
+  const sourceImages = await selectVersionImages(sourceVersionId);
   const sectionIdMap = new Map<string, string>();
   const duplicatedSections = sourceSections.map((section) => {
     const newId = generateUUID();
@@ -1226,6 +1697,12 @@ export async function runRollbackVersion(args: {
       : null,
     embedding: chunk.embedding ?? null,
   }));
+  const duplicatedImages = sourceImages.map((image) => ({
+    ...image,
+    id: generateUUID(),
+    versionId: null,
+    embedding: image.embedding ?? null,
+  }));
 
   await finalizeMaterializedVersion({
     versionId: version.id,
@@ -1245,6 +1722,7 @@ export async function runRollbackVersion(args: {
     ),
     sections: remappedSections,
     chunks: duplicatedChunks,
+    images: duplicatedImages,
     totalTokens: sourceVersion.tokenCount ?? 0,
   });
 }

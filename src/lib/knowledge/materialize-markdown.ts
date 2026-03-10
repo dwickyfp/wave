@@ -1,11 +1,13 @@
 import type {
   KnowledgeChunkMetadata,
   KnowledgeDocument,
+  KnowledgeDocumentImage,
   KnowledgeGroup,
 } from "app-types/knowledge";
 import { generateUUID } from "lib/utils";
 import { chunkKnowledgeSections } from "./chunker";
 import { enrichChunksWithContext } from "./context-enricher";
+import { buildDocumentImageEmbeddingText } from "./document-images";
 import {
   buildDocumentMetadataEmbeddingText,
   extractAutoDocumentMetadata,
@@ -16,6 +18,7 @@ import {
   buildKnowledgeSectionGraph,
   SECTION_GRAPH_VERSION,
 } from "./section-graph";
+import type { ProcessedDocumentImage } from "./processor/types";
 
 const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
 
@@ -36,10 +39,18 @@ export type MaterializedKnowledgeChunk = {
   embedding: number[];
 };
 
+export type MaterializedKnowledgeImage = Omit<
+  KnowledgeDocumentImage,
+  "createdAt" | "updatedAt"
+> & {
+  embedding?: number[] | null;
+};
+
 export type MaterializedDocumentState = {
   markdown: string;
   sections: MaterializedKnowledgeSection[];
   chunks: MaterializedKnowledgeChunk[];
+  images: MaterializedKnowledgeImage[];
   totalTokens: number;
   metadata: Record<string, unknown>;
   metadataEmbedding?: number[];
@@ -54,6 +65,7 @@ type MaterializationInput = {
   doc: KnowledgeDocument;
   group: KnowledgeGroup;
   markdown: string;
+  images?: ProcessedDocumentImage[];
   reportProgress?: (pct: number) => Promise<void> | void;
 };
 
@@ -64,6 +76,7 @@ export async function materializeDocumentMarkdown({
   doc,
   group,
   markdown: inputMarkdown,
+  images: inputImages,
   reportProgress,
 }: MaterializationInput): Promise<MaterializedDocumentState> {
   const markdown = normalizeStructuredMarkdown(inputMarkdown);
@@ -105,6 +118,30 @@ export async function materializeDocumentMarkdown({
     sectionGraphVersion: SECTION_GRAPH_VERSION,
   };
 
+  const imageEmbeddingTexts = (inputImages ?? [])
+    .map((image) =>
+      buildDocumentImageEmbeddingText({
+        documentTitle: resolvedTitle,
+        image,
+      }),
+    )
+    .filter(Boolean);
+  let imageEmbeddings: number[][] = [];
+  if (imageEmbeddingTexts.length > 0) {
+    try {
+      imageEmbeddings = await embedTexts(
+        imageEmbeddingTexts,
+        group.embeddingProvider,
+        group.embeddingModel,
+      );
+    } catch (err) {
+      console.warn(
+        `[ContextX] Image embedding failed for document ${documentId}:`,
+        err,
+      );
+    }
+  }
+
   await reportProgress?.(50);
   const chunks = chunkKnowledgeSections(
     sections,
@@ -116,6 +153,32 @@ export async function materializeDocumentMarkdown({
       markdown,
       sections,
       chunks: [],
+      images: (inputImages ?? []).map((image, index) => ({
+        id: generateUUID(),
+        documentId,
+        groupId,
+        versionId: null,
+        kind: image.kind,
+        ordinal: image.index,
+        marker: image.marker,
+        label: image.label,
+        description: image.description,
+        headingPath: image.headingPath ?? null,
+        stepHint: image.stepHint ?? null,
+        sourceUrl: image.sourceUrl ?? null,
+        storagePath: image.storagePath ?? null,
+        mediaType: image.mediaType ?? null,
+        pageNumber: image.pageNumber ?? null,
+        width: image.width ?? null,
+        height: image.height ?? null,
+        altText: image.altText ?? null,
+        caption: image.caption ?? null,
+        surroundingText: image.surroundingText ?? null,
+        isRenderable: image.isRenderable ?? false,
+        manualLabel: image.manualLabel ?? false,
+        manualDescription: image.manualDescription ?? false,
+        embedding: imageEmbeddings[index] ?? null,
+      })),
       totalTokens: 0,
       metadata,
       metadataEmbedding,
@@ -162,6 +225,32 @@ export async function materializeDocumentMarkdown({
       tokenCount: chunk.tokenCount,
       metadata: chunk.metadata,
       embedding: embeddings[index] ?? [],
+    })),
+    images: (inputImages ?? []).map((image, index) => ({
+      id: generateUUID(),
+      documentId,
+      groupId,
+      versionId: null,
+      kind: image.kind,
+      ordinal: image.index,
+      marker: image.marker,
+      label: image.label,
+      description: image.description,
+      headingPath: image.headingPath ?? null,
+      stepHint: image.stepHint ?? null,
+      sourceUrl: image.sourceUrl ?? null,
+      storagePath: image.storagePath ?? null,
+      mediaType: image.mediaType ?? null,
+      pageNumber: image.pageNumber ?? null,
+      width: image.width ?? null,
+      height: image.height ?? null,
+      altText: image.altText ?? null,
+      caption: image.caption ?? null,
+      surroundingText: image.surroundingText ?? null,
+      isRenderable: image.isRenderable ?? false,
+      manualLabel: image.manualLabel ?? false,
+      manualDescription: image.manualDescription ?? false,
+      embedding: imageEmbeddings[index] ?? null,
     })),
     totalTokens,
     metadata,

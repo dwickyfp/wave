@@ -12,6 +12,7 @@ import {
   RefreshCwIcon,
   TableIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -50,6 +51,7 @@ interface Props {
   onDelete: (docId: string) => void;
   onPreview?: (doc: KnowledgeDocument) => void;
   onReEmbed?: (docId: string) => void;
+  onDocumentUpdated?: (doc: KnowledgeDocument) => void;
 }
 
 export function DocumentCard({
@@ -58,9 +60,11 @@ export function DocumentCard({
   onDelete,
   onPreview,
   onReEmbed,
+  onDocumentUpdated,
 }: Props) {
   const [deleting, setDeleting] = useState(false);
   const [reembedding, setReembedding] = useState(false);
+  const [canceling, setCanceling] = useState(false);
   const isInherited = !!doc.isInherited;
   const FileIconComp = FILE_ICONS[doc.fileType] ?? FileIcon;
 
@@ -77,6 +81,47 @@ export function DocumentCard({
       toast.error("Failed to start re-embedding");
     } finally {
       setReembedding(false);
+    }
+  };
+
+  const handleCancelProcessing = async () => {
+    const ok = await notify.confirm({
+      title: "Cancel Processing",
+      description: `Cancel processing for "${doc.name}"?`,
+    });
+    if (!ok) return;
+
+    setCanceling(true);
+    try {
+      const res = await fetch(
+        `/api/knowledge/${groupId}/documents/${doc.id}/cancel`,
+        {
+          method: "POST",
+        },
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        doc?: KnowledgeDocument;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to cancel processing");
+      }
+
+      onDocumentUpdated?.(
+        data.doc ?? {
+          ...doc,
+          status: "failed",
+          errorMessage: "Canceled by user",
+          processingProgress: null,
+        },
+      );
+      toast.success("Document processing canceled");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to cancel processing",
+      );
+    } finally {
+      setCanceling(false);
     }
   };
 
@@ -122,6 +167,26 @@ export function DocumentCard({
 
         {!isInherited && (
           <div className="flex items-center gap-0.5">
+            {doc.status === "processing" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleCancelProcessing();
+                }}
+                disabled={canceling || deleting}
+                title="Cancel processing"
+              >
+                {canceling ? (
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                ) : (
+                  <XIcon className="size-3.5" />
+                )}
+              </Button>
+            )}
+
             <Button
               variant="ghost"
               size="icon"
@@ -130,7 +195,7 @@ export function DocumentCard({
                 e.stopPropagation();
                 handleReEmbed();
               }}
-              disabled={reembedding || doc.status === "processing"}
+              disabled={reembedding || canceling || doc.status === "processing"}
               title="Reprocess for new structure and embeddings"
             >
               {reembedding ? (
@@ -148,7 +213,7 @@ export function DocumentCard({
                 e.stopPropagation();
                 handleDelete();
               }}
-              disabled={deleting}
+              disabled={deleting || canceling}
               title="Delete document"
             >
               {deleting ? (

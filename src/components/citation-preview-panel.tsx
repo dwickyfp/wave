@@ -49,6 +49,14 @@ interface PreviewData {
   sourceUrl: string | null;
   content: string | null;
   isUrlOnly: boolean;
+  images?: Array<{
+    id: string;
+    label: string;
+    description: string;
+    headingPath?: string | null;
+    stepHint?: string | null;
+    assetUrl: string | null;
+  }>;
 }
 
 export function CitationPreviewPanel() {
@@ -81,7 +89,26 @@ export function CitationPreviewPanel() {
       `/api/knowledge/${citationPreview.groupId}/documents/${citationPreview.documentId}/preview`,
       { signal: controller.signal },
     )
-      .then((r) => r.json())
+      .then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || "Failed to load preview");
+
+        if (citationPreview.imageId && citationPreview.versionId) {
+          const imageResponse = await fetch(
+            `/api/knowledge/${citationPreview.groupId}/documents/${citationPreview.documentId}/images?versionId=${encodeURIComponent(citationPreview.versionId)}`,
+            {
+              signal: controller.signal,
+              cache: "no-store",
+            },
+          );
+          const imageData = await imageResponse.json();
+          if (imageResponse.ok && Array.isArray(imageData.images)) {
+            data.images = imageData.images;
+          }
+        }
+
+        return data;
+      })
       .then((data) => {
         if (
           controller.signal.aborted ||
@@ -89,7 +116,6 @@ export function CitationPreviewPanel() {
         ) {
           return;
         }
-        if (data.error) throw new Error(data.error);
         setPreviewData(data);
       })
       .catch((e) => {
@@ -213,6 +239,7 @@ export function CitationPreviewPanel() {
                     <PanelPreviewContent
                       key={`${citationPreview.groupId}:${citationPreview.documentId}`}
                       data={previewData}
+                      selectedImageId={citationPreview.imageId ?? null}
                     />
                   </div>
                 </div>
@@ -225,9 +252,17 @@ export function CitationPreviewPanel() {
   );
 }
 
-function PanelPreviewContent({ data }: { data: PreviewData }) {
-  const { doc, previewUrl, sourceUrl, content, isUrlOnly } = data;
+function PanelPreviewContent({
+  data,
+  selectedImageId,
+}: {
+  data: PreviewData;
+  selectedImageId?: string | null;
+}) {
+  const { doc, previewUrl, sourceUrl, content, isUrlOnly, images = [] } = data;
   const url = previewUrl ?? sourceUrl;
+  const selectedImage =
+    images.find((image) => image.id === selectedImageId) ?? null;
 
   if (isUrlOnly) {
     return (
@@ -245,6 +280,32 @@ function PanelPreviewContent({ data }: { data: PreviewData }) {
           </Button>
         )}
       </div>
+    );
+  }
+
+  if (selectedImage?.assetUrl) {
+    return (
+      <ScrollArea className="h-full">
+        <div className="flex flex-col gap-4 p-4">
+          <div className="overflow-hidden rounded-2xl border border-border/60 bg-muted/20">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={selectedImage.assetUrl}
+              alt={selectedImage.label}
+              className="max-h-[420px] w-full object-contain"
+            />
+          </div>
+          <div className="space-y-1">
+            <div className="text-sm font-medium">{selectedImage.label}</div>
+            <div className="text-xs leading-relaxed text-muted-foreground">
+              {selectedImage.description}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {selectedImage.headingPath || selectedImage.stepHint || doc.name}
+            </div>
+          </div>
+        </div>
+      </ScrollArea>
     );
   }
 

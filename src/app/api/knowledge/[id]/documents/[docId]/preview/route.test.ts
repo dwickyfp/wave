@@ -9,6 +9,8 @@ vi.mock("lib/db/repository", () => ({
     selectGroupById: vi.fn(),
     selectDocumentById: vi.fn(),
     selectGroupSources: vi.fn(),
+    getDocumentImages: vi.fn(),
+    getDocumentImagesByVersion: vi.fn(),
   },
 }));
 
@@ -89,6 +91,38 @@ describe("knowledge document preview route", () => {
         rollbackBlockedReason: null,
       },
     ]);
+    vi.mocked(knowledgeRepository.getDocumentImagesByVersion).mockResolvedValue(
+      [
+        {
+          id: "image-1",
+          documentId: "doc-1",
+          groupId: "group-1",
+          versionId: "version-2",
+          kind: "embedded",
+          ordinal: 1,
+          marker: "CTX_IMAGE_1",
+          label: "Legal clause screenshot",
+          description: "Screenshot for the legal clause walkthrough.",
+          headingPath: "Draft > Clause review",
+          stepHint: "Review the legal clause screenshot.",
+          sourceUrl: "https://example.com/image-1.png",
+          storagePath: "knowledge-images/doc-1/version-2/image-1.png",
+          mediaType: "image/png",
+          pageNumber: 1,
+          width: 640,
+          height: 480,
+          altText: null,
+          caption: null,
+          surroundingText: null,
+          isRenderable: true,
+          manualLabel: false,
+          manualDescription: false,
+          embedding: null,
+          createdAt: new Date("2026-03-09T08:00:00.000Z"),
+          updatedAt: new Date("2026-03-09T08:00:00.000Z"),
+        },
+      ] as any,
+    );
 
     const response = await GET(
       new Request(
@@ -106,6 +140,14 @@ describe("knowledge document preview route", () => {
           id: "version-2",
           versionNumber: 2,
           isActive: true,
+        },
+      ],
+      images: [
+        {
+          id: "image-1",
+          label: "Legal clause screenshot",
+          assetUrl:
+            "/api/knowledge/group-1/documents/doc-1/images/image-1/asset?versionId=version-2",
         },
       ],
       doc: {

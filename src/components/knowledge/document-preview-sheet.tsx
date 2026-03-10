@@ -2,6 +2,7 @@
 
 import type {
   KnowledgeDocument,
+  KnowledgeDocumentImagePreview,
   KnowledgeDocumentHistoryEvent,
   KnowledgeDocumentPreview,
   KnowledgeDocumentVersionSummary,
@@ -55,6 +56,23 @@ const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   md: FileTextIcon,
   html: FileTextIcon,
 };
+
+type MainTab = "configuration" | "original" | "images" | "markdown" | "history";
+type MarkdownTab = "result" | "source";
+
+function isMainTab(value: string): value is MainTab {
+  return (
+    value === "configuration" ||
+    value === "original" ||
+    value === "images" ||
+    value === "markdown" ||
+    value === "history"
+  );
+}
+
+function isMarkdownTab(value: string): value is MarkdownTab {
+  return value === "result" || value === "source";
+}
 
 function formatBytes(bytes?: number | null): string {
   if (!bytes) return "";
@@ -204,8 +222,9 @@ export function DocumentPreviewSheet({
   const [description, setDescription] = useState("");
   const [savingConfig, setSavingConfig] = useState(false);
   const [savingVersion, setSavingVersion] = useState(false);
-  const [mainTab, setMainTab] = useState("configuration");
-  const [markdownTab, setMarkdownTab] = useState("result");
+  const [savingImages, setSavingImages] = useState(false);
+  const [mainTab, setMainTab] = useState<MainTab>("configuration");
+  const [markdownTab, setMarkdownTab] = useState<MarkdownTab>("result");
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
     null,
   );
@@ -213,6 +232,13 @@ export function DocumentPreviewSheet({
     null,
   );
   const [draftMarkdown, setDraftMarkdown] = useState("");
+  const [documentImages, setDocumentImages] = useState<
+    KnowledgeDocumentImagePreview[]
+  >([]);
+  const [draftImages, setDraftImages] = useState<
+    KnowledgeDocumentImagePreview[]
+  >([]);
+  const [imagesLoading, setImagesLoading] = useState(false);
   const [isEditingMarkdown, setIsEditingMarkdown] = useState(false);
   const [pendingSourceOffset, setPendingSourceOffset] = useState<number | null>(
     null,
@@ -294,6 +320,49 @@ export function DocumentPreviewSheet({
     },
   );
 
+  const loadImages = useEffectEvent(
+    async (
+      documentId: string,
+      versionId?: string | null,
+      { silent = false }: { silent?: boolean } = {},
+    ) => {
+      if (!silent) {
+        setImagesLoading(true);
+      }
+      try {
+        const search = versionId
+          ? `?versionId=${encodeURIComponent(versionId)}`
+          : "";
+        const response = await fetch(
+          `/api/knowledge/${groupId}/documents/${documentId}/images${search}`,
+          {
+            cache: "no-store",
+          },
+        );
+        const data = (await response.json()) as {
+          images?: KnowledgeDocumentImagePreview[];
+          error?: string;
+        };
+        if (!response.ok || data.error) {
+          throw new Error(data.error || "Failed to load images");
+        }
+        setDocumentImages(data.images ?? []);
+      } catch (imagesError) {
+        if (!silent) {
+          toast.error(
+            imagesError instanceof Error
+              ? imagesError.message
+              : "Failed to load images",
+          );
+        }
+      } finally {
+        if (!silent) {
+          setImagesLoading(false);
+        }
+      }
+    },
+  );
+
   useEffect(() => {
     if (!open || !doc) {
       setPreviewData(null);
@@ -302,6 +371,8 @@ export function DocumentPreviewSheet({
       setSelectedVersionId(null);
       setPreferredVersionId(null);
       setDraftMarkdown("");
+      setDocumentImages([]);
+      setDraftImages([]);
       setIsEditingMarkdown(false);
       setPendingSourceOffset(null);
       setMainTab("configuration");
@@ -326,7 +397,10 @@ export function DocumentPreviewSheet({
     if (mainTab === "history" && previewData?.doc?.id) {
       void loadHistory(previewData.doc.id);
     }
-  }, [mainTab, previewData?.doc?.id, groupId]);
+    if (mainTab === "images" && previewData?.doc?.id) {
+      void loadImages(previewData.doc.id, selectedVersionId ?? null);
+    }
+  }, [mainTab, previewData?.doc?.id, groupId, selectedVersionId]);
 
   const hasPendingVersionJob =
     previewData?.versions.some((version) => version.status === "processing") ??
@@ -394,6 +468,10 @@ export function DocumentPreviewSheet({
   }, [previewData, selectedVersionId]);
 
   useEffect(() => {
+    setDraftImages(documentImages);
+  }, [documentImages]);
+
+  useEffect(() => {
     if (
       !isEditingMarkdown ||
       markdownTab !== "source" ||
@@ -447,6 +525,19 @@ export function DocumentPreviewSheet({
     selectedVersion.id === (previewData?.activeVersionId ?? null);
   const canEditMarkdown =
     !isInherited && isActiveVersionSelected && mainTab === "markdown";
+  const canEditImages =
+    !isInherited && isActiveVersionSelected && mainTab === "images";
+  const hasImageDraftChanges =
+    draftImages.length !== documentImages.length ||
+    draftImages.some((image, index) => {
+      const baseline = documentImages[index];
+      if (!baseline) return true;
+      return (
+        image.label !== baseline.label ||
+        image.description !== baseline.description ||
+        (image.stepHint ?? "") !== (baseline.stepHint ?? "")
+      );
+    });
 
   const handleSaveConfiguration = async () => {
     if (!doc || !previewData?.doc) return;
@@ -585,6 +676,52 @@ export function DocumentPreviewSheet({
     }
   };
 
+  const handleSaveImageAnnotations = async () => {
+    if (!doc || !previewData || !canEditImages) return;
+
+    setSavingImages(true);
+    try {
+      const response = await fetch(
+        `/api/knowledge/${groupId}/documents/${doc.id}/images/annotations`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            expectedActiveVersionId: previewData.activeVersionId,
+            images: draftImages.map((image) => ({
+              imageId: image.id,
+              label: image.label,
+              description: image.description,
+              stepHint: image.stepHint ?? null,
+            })),
+          }),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to save image annotations");
+      }
+
+      const queuedVersionId =
+        typeof data.version?.id === "string" ? data.version.id : null;
+      if (queuedVersionId) {
+        setPreferredVersionId(queuedVersionId);
+        setSelectedVersionId(queuedVersionId);
+      }
+      toast.success("Image annotation edit queued for re-embedding");
+      await loadPreview();
+      await loadImages(doc.id, queuedVersionId ?? previewData.activeVersionId);
+    } catch (saveError) {
+      toast.error(
+        saveError instanceof Error
+          ? saveError.message
+          : "Failed to save image annotations",
+      );
+    } finally {
+      setSavingImages(false);
+    }
+  };
+
   const handleSelectVersion = (value: string) => {
     setSelectedVersionId(value);
     setIsEditingMarkdown(false);
@@ -616,11 +753,15 @@ export function DocumentPreviewSheet({
     <Sheet open={open} onOpenChange={(value) => !value && onClose()}>
       <SheetContent
         side="right"
-        className="flex w-full flex-col gap-0 p-0 sm:max-w-2xl"
+        className="flex w-full flex-col gap-0 p-0 sm:max-w-[min(96vw,90rem)]"
       >
         <Tabs
           value={mainTab}
-          onValueChange={setMainTab}
+          onValueChange={(value) => {
+            if (isMainTab(value)) {
+              setMainTab(value);
+            }
+          }}
           className="flex min-h-0 flex-1 flex-col"
         >
           <SheetHeader className="shrink-0 border-b px-6 py-4">
@@ -662,6 +803,9 @@ export function DocumentPreviewSheet({
                 </TabsTrigger>
                 <TabsTrigger value="original" className="h-7 text-xs">
                   Real Docs
+                </TabsTrigger>
+                <TabsTrigger value="images" className="h-7 text-xs">
+                  Images
                 </TabsTrigger>
                 <TabsTrigger
                   value="markdown"
@@ -790,6 +934,144 @@ export function DocumentPreviewSheet({
                   <PreviewContent data={previewData} />
                 </TabsContent>
 
+                <TabsContent value="images" className="mt-0 h-full">
+                  <ScrollArea className="h-full">
+                    <div className="flex flex-col gap-4 p-6">
+                      {imagesLoading ? (
+                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <Loader2Icon className="size-4 animate-spin" />
+                          Loading images...
+                        </div>
+                      ) : draftImages.length === 0 ? (
+                        <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+                          No extracted images for this document version.
+                        </div>
+                      ) : (
+                        draftImages.map((image, index) => (
+                          <div
+                            key={image.id}
+                            className="grid gap-4 rounded-2xl border border-border/70 bg-background/60 p-4 lg:grid-cols-[200px_minmax(0,1fr)]"
+                          >
+                            <div className="overflow-hidden rounded-xl border border-border/60 bg-muted/20">
+                              {image.assetUrl ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img
+                                  src={image.assetUrl}
+                                  alt={image.label}
+                                  className="h-full max-h-60 w-full object-contain"
+                                />
+                              ) : (
+                                <div className="flex h-48 items-center justify-center text-xs text-muted-foreground">
+                                  Preview unavailable
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex min-w-0 flex-col gap-3">
+                              <div className="text-xs text-muted-foreground">
+                                Image {index + 1}
+                                {image.pageNumber != null
+                                  ? ` • page ${image.pageNumber}`
+                                  : ""}
+                              </div>
+
+                              <div className="flex flex-col gap-1.5">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                                  Label
+                                </Label>
+                                <Input
+                                  value={image.label}
+                                  onChange={(event) =>
+                                    setDraftImages((current) =>
+                                      current.map((entry) =>
+                                        entry.id === image.id
+                                          ? {
+                                              ...entry,
+                                              label: event.target.value,
+                                            }
+                                          : entry,
+                                      ),
+                                    )
+                                  }
+                                  disabled={!canEditImages}
+                                />
+                              </div>
+
+                              <div className="flex flex-col gap-1.5">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                                  Description
+                                </Label>
+                                <Textarea
+                                  value={image.description}
+                                  onChange={(event) =>
+                                    setDraftImages((current) =>
+                                      current.map((entry) =>
+                                        entry.id === image.id
+                                          ? {
+                                              ...entry,
+                                              description: event.target.value,
+                                            }
+                                          : entry,
+                                      ),
+                                    )
+                                  }
+                                  className="min-h-[120px] resize-y text-sm"
+                                  disabled={!canEditImages}
+                                />
+                              </div>
+
+                              <div className="flex flex-col gap-1.5">
+                                <Label className="text-xs uppercase tracking-wide text-muted-foreground">
+                                  Step Hint
+                                </Label>
+                                <Input
+                                  value={image.stepHint ?? ""}
+                                  onChange={(event) =>
+                                    setDraftImages((current) =>
+                                      current.map((entry) =>
+                                        entry.id === image.id
+                                          ? {
+                                              ...entry,
+                                              stepHint: event.target.value,
+                                            }
+                                          : entry,
+                                      ),
+                                    )
+                                  }
+                                  disabled={!canEditImages}
+                                />
+                              </div>
+
+                              <div className="text-xs text-muted-foreground">
+                                {image.headingPath || "No heading association"}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+
+                      {canEditImages && draftImages.length > 0 ? (
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            className="gap-1.5"
+                            onClick={handleSaveImageAnnotations}
+                            disabled={savingImages || !hasImageDraftChanges}
+                          >
+                            <SaveIcon
+                              className={cn(
+                                "size-3.5",
+                                savingImages && "animate-pulse",
+                              )}
+                            />
+                            Save image annotations
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </ScrollArea>
+                </TabsContent>
+
                 <TabsContent value="markdown" className="mt-0 h-full">
                   {previewData.markdownContent ? (
                     <div className="flex h-full min-h-0 flex-col">
@@ -797,7 +1079,11 @@ export function DocumentPreviewSheet({
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <Tabs
                             value={markdownTab}
-                            onValueChange={setMarkdownTab}
+                            onValueChange={(value) => {
+                              if (isMarkdownTab(value)) {
+                                setMarkdownTab(value);
+                              }
+                            }}
                             className="w-fit"
                           >
                             <TabsList className="h-8">
@@ -883,7 +1169,7 @@ export function DocumentPreviewSheet({
                           <ScrollArea className="h-full">
                             <div
                               className={cn(
-                                "p-6 pb-10",
+                                "min-w-0 max-w-full p-6 pb-10",
                                 canEditMarkdown && "cursor-text",
                               )}
                               onDoubleClick={handleResultDoubleClick}

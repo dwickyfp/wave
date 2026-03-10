@@ -932,6 +932,7 @@ export const KnowledgeDocumentTable = pgTable(
     fileSize: bigint("file_size", { mode: "number" }),
     storagePath: text("storage_path"),
     sourceUrl: text("source_url"),
+    fingerprint: text("fingerprint"),
     status: varchar("status", {
       enum: ["pending", "processing", "ready", "failed"],
     })
@@ -955,7 +956,13 @@ export const KnowledgeDocumentTable = pgTable(
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
-  (t) => [index("knowledge_document_group_id_idx").on(t.groupId)],
+  (t) => [
+    index("knowledge_document_group_id_idx").on(t.groupId),
+    unique("knowledge_document_group_fingerprint_unique").on(
+      t.groupId,
+      t.fingerprint,
+    ),
+  ],
 );
 
 export const KnowledgeDocumentVersionTable = pgTable(
@@ -1094,6 +1101,64 @@ export const KnowledgeChunkTable = pgTable(
   ],
 );
 
+export const KnowledgeDocumentImageTable = pgTable(
+  "knowledge_document_image",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    versionId: uuid("version_id").references(
+      () => KnowledgeDocumentVersionTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    kind: varchar("kind", {
+      enum: ["embedded", "region"],
+    })
+      .notNull()
+      .default("embedded"),
+    ordinal: integer("ordinal").notNull(),
+    marker: text("marker").notNull(),
+    label: text("label").notNull(),
+    description: text("description").notNull(),
+    headingPath: text("heading_path"),
+    stepHint: text("step_hint"),
+    storagePath: text("storage_path"),
+    sourceUrl: text("source_url"),
+    mediaType: text("media_type"),
+    pageNumber: integer("page_number"),
+    width: integer("width"),
+    height: integer("height"),
+    altText: text("alt_text"),
+    caption: text("caption"),
+    surroundingText: text("surrounding_text"),
+    isRenderable: boolean("is_renderable").notNull().default(false),
+    manualLabel: boolean("manual_label").notNull().default(false),
+    manualDescription: boolean("manual_description").notNull().default(false),
+    embedding: vector("embedding"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_document_image_group_id_idx").on(t.groupId),
+    index("knowledge_document_image_document_id_idx").on(t.documentId),
+    index("knowledge_document_image_version_id_idx").on(t.versionId),
+    index("knowledge_document_image_document_ordinal_idx").on(
+      t.documentId,
+      t.ordinal,
+    ),
+  ],
+);
+
 export const KnowledgeSectionVersionTable = pgTable(
   "knowledge_section_version",
   {
@@ -1191,6 +1256,62 @@ export const KnowledgeChunkVersionTable = pgTable(
     index("knowledge_chunk_version_document_id_idx").on(t.documentId),
     index("knowledge_chunk_version_section_version_id_idx").on(
       t.sectionVersionId,
+    ),
+  ],
+);
+
+export const KnowledgeDocumentImageVersionTable = pgTable(
+  "knowledge_document_image_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => KnowledgeDocumentVersionTable.id, {
+        onDelete: "cascade",
+      }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    kind: varchar("kind", {
+      enum: ["embedded", "region"],
+    })
+      .notNull()
+      .default("embedded"),
+    ordinal: integer("ordinal").notNull(),
+    marker: text("marker").notNull(),
+    label: text("label").notNull(),
+    description: text("description").notNull(),
+    headingPath: text("heading_path"),
+    stepHint: text("step_hint"),
+    storagePath: text("storage_path"),
+    sourceUrl: text("source_url"),
+    mediaType: text("media_type"),
+    pageNumber: integer("page_number"),
+    width: integer("width"),
+    height: integer("height"),
+    altText: text("alt_text"),
+    caption: text("caption"),
+    surroundingText: text("surrounding_text"),
+    isRenderable: boolean("is_renderable").notNull().default(false),
+    manualLabel: boolean("manual_label").notNull().default(false),
+    manualDescription: boolean("manual_description").notNull().default(false),
+    embedding: vector("embedding"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_document_image_version_version_id_idx").on(t.versionId),
+    index("knowledge_document_image_version_document_id_idx").on(t.documentId),
+    index("knowledge_document_image_version_document_ordinal_idx").on(
+      t.documentId,
+      t.ordinal,
     ),
   ],
 );

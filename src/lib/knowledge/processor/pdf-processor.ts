@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import {
   createContextImageMarker,
+  generateContextImageArtifacts,
   generateContextImageBlocks,
   type ImageCandidate,
 } from "./image-markdown";
@@ -97,10 +98,11 @@ export async function processPdf(
       }
     }
 
-    const imageBlocks = await generateContextImageBlocks(
+    const images = await generateContextImageArtifacts(
       imageCandidates,
       options,
     );
+    const imageBlocks = await generateContextImageBlocks(images);
 
     const output: string[] = [];
     for (const page of textResult.pages) {
@@ -124,6 +126,7 @@ export async function processPdf(
     return {
       markdown: output.join("\n\n").trim(),
       imageBlocks,
+      images,
     };
   } finally {
     await parser.destroy().catch(() => {});

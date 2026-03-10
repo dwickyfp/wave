@@ -13,6 +13,7 @@ export type KnowledgeDocumentVersionChangeType =
   | "edit"
   | "rollback"
   | "reingest";
+export type KnowledgeDocumentImageKind = "embedded" | "region";
 export type KnowledgeDocumentHistoryEventType =
   | "created"
   | "edited"
@@ -129,6 +130,7 @@ export interface KnowledgeDocument {
   fileSize?: number | null;
   storagePath?: string | null;
   sourceUrl?: string | null;
+  fingerprint?: string | null;
   status: DocumentStatus;
   /** Ingestion progress percentage 0–100. Null when not processing. */
   processingProgress?: number | null;
@@ -184,6 +186,43 @@ export interface KnowledgeChunk {
 
 export interface KnowledgeChunkSnapshot extends KnowledgeChunk {
   embedding?: number[] | null;
+}
+
+export interface KnowledgeDocumentImage {
+  id: string;
+  documentId: string;
+  groupId: string;
+  versionId?: string | null;
+  kind: KnowledgeDocumentImageKind;
+  ordinal: number;
+  marker: string;
+  label: string;
+  description: string;
+  headingPath?: string | null;
+  stepHint?: string | null;
+  sourceUrl?: string | null;
+  storagePath?: string | null;
+  mediaType?: string | null;
+  pageNumber?: number | null;
+  width?: number | null;
+  height?: number | null;
+  altText?: string | null;
+  caption?: string | null;
+  surroundingText?: string | null;
+  isRenderable: boolean;
+  manualLabel: boolean;
+  manualDescription: boolean;
+  embedding?: number[] | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface KnowledgeDocumentImageVersion extends KnowledgeDocumentImage {
+  versionId: string;
+}
+
+export interface KnowledgeDocumentImagePreview extends KnowledgeDocumentImage {
+  assetUrl: string | null;
 }
 
 export interface KnowledgeDocumentVersion {
@@ -274,6 +313,7 @@ export interface KnowledgeDocumentPreview {
   activeVersionId: string | null;
   activeVersionNumber: number | null;
   versions: KnowledgeDocumentVersionSummary[];
+  images: KnowledgeDocumentImagePreview[];
 }
 
 export interface KnowledgeQueryResult {
@@ -398,6 +438,10 @@ export interface KnowledgeRepository {
   selectDocumentsByGroupId(groupId: string): Promise<KnowledgeDocument[]>;
   selectDocumentsByGroupScope(groupId: string): Promise<KnowledgeDocument[]>;
   selectDocumentById(id: string): Promise<KnowledgeDocument | null>;
+  selectDocumentByFingerprint(
+    groupId: string,
+    fingerprint: string,
+  ): Promise<KnowledgeDocument | null>;
   updateDocumentStatus(
     id: string,
     status: DocumentStatus,
@@ -429,6 +473,21 @@ export interface KnowledgeRepository {
     },
   ): Promise<void>;
   deleteDocument(id: string): Promise<void>;
+  getDocumentImages(documentId: string): Promise<KnowledgeDocumentImage[]>;
+  getDocumentImagesByVersion(
+    documentId: string,
+    versionId: string,
+  ): Promise<KnowledgeDocumentImageVersion[]>;
+  getDocumentImageById(
+    documentId: string,
+    imageId: string,
+  ): Promise<KnowledgeDocumentImage | null>;
+  getDocumentImageByIdFromVersion(
+    documentId: string,
+    versionId: string,
+    imageId: string,
+  ): Promise<KnowledgeDocumentImageVersion | null>;
+  listDocumentImageStoragePaths(documentId: string): Promise<string[]>;
 
   // Document markdown (Context7-style full-doc retrieval)
   getDocumentMarkdown(documentId: string): Promise<{
@@ -500,6 +559,18 @@ export interface KnowledgeRepository {
     query: string,
     limit: number,
   ): Promise<Array<KnowledgeQueryResult>>;
+  fullTextSearchImages(
+    groupId: string,
+    query: string,
+    limit: number,
+    documentIds?: string[],
+  ): Promise<Array<KnowledgeDocumentImage & { score: number }>>;
+  vectorSearchImages(
+    groupId: string,
+    embedding: number[],
+    limit: number,
+    documentIds?: string[],
+  ): Promise<Array<KnowledgeDocumentImage & { score: number }>>;
 
   // Adjacent chunks (for neighbor expansion)
   getAdjacentChunks(

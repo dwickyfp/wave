@@ -4,6 +4,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { KnowledgeSummary } from "app-types/knowledge";
 import {
+  DocRetrievalResult,
   queryKnowledgeAsDocs,
   formatDocsAsText,
   QueryKnowledgeDocsOptions,
@@ -11,10 +12,23 @@ import {
 
 const DEFAULT_AGENT_KNOWLEDGE_TOKENS = 5000;
 
+export type KnowledgeDocsRetrievedPayload = {
+  groupId: string;
+  groupName: string;
+  query: string;
+  docs: DocRetrievalResult[];
+};
+
 export function createKnowledgeDocsTool(
   group: KnowledgeSummary,
-  options: Pick<QueryKnowledgeDocsOptions, "userId" | "source"> = {},
+  options: Pick<QueryKnowledgeDocsOptions, "userId" | "source"> & {
+    onRetrieved?: (
+      payload: KnowledgeDocsRetrievedPayload,
+    ) => void | Promise<void>;
+  } = {},
 ) {
+  const { onRetrieved, ...queryOptions } = options;
+
   return tool({
     description: `Search the "${group.name}" knowledge base${group.description ? `: ${group.description}` : ""}. By default, return section-first context: the most relevant sections plus their parent or continuation context. Use mode="full-doc" only when the user explicitly needs the whole document or a complete document-wide summary.`,
     inputSchema: z.object({
@@ -34,11 +48,19 @@ export function createKnowledgeDocsTool(
     }),
     execute: async ({ query, tokens, mode }) => {
       const docs = await queryKnowledgeAsDocs(group, query, {
-        ...options,
-        source: options.source ?? "agent",
+        ...queryOptions,
+        source: queryOptions.source ?? "agent",
         tokens: tokens ?? DEFAULT_AGENT_KNOWLEDGE_TOKENS,
         resultMode: mode ?? "section-first",
       });
+      await Promise.resolve(
+        onRetrieved?.({
+          groupId: group.id,
+          groupName: group.name,
+          query,
+          docs,
+        }),
+      ).catch(() => {});
       return formatDocsAsText(group.name, docs, query);
     },
   });

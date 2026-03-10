@@ -1,6 +1,7 @@
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import { withKnowledgeImageAssetUrl } from "lib/knowledge/document-images";
 import { listDocumentVersions } from "lib/knowledge/versioning";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -47,6 +48,12 @@ export async function GET(_req: NextRequest, { params }: Params) {
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const versions = await listDocumentVersions(docId);
   const activeVersion = versions.find((version) => version.isActive) ?? null;
+  const activeImages = activeVersion?.id
+    ? await knowledgeRepository.getDocumentImagesByVersion(
+        docId,
+        activeVersion.id,
+      )
+    : await knowledgeRepository.getDocumentImages(docId);
 
   let sourceMeta: {
     id: string;
@@ -106,6 +113,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
       activeVersionNumber:
         activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,
       versions,
+      images: withKnowledgeImageAssetUrl(groupId, activeImages),
     });
   }
 
@@ -161,6 +169,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
       activeVersionNumber:
         activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,
       versions,
+      images: withKnowledgeImageAssetUrl(groupId, activeImages),
     });
   } catch {
     return NextResponse.json(
