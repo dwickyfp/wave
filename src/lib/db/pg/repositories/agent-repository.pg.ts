@@ -10,6 +10,7 @@ function toAgentRecord(result: any): Agent {
     description: result.description ?? undefined,
     icon: result.icon ?? undefined,
     instructions: result.instructions ?? {},
+    chatPersonalizationEnabled: result.chatPersonalizationEnabled ?? true,
     mcpApiKeyHash: result.mcpApiKeyHash ?? null,
     mcpApiKeyPreview: result.mcpApiKeyPreview ?? null,
     mcpModelProvider: result.mcpModelProvider ?? null,
@@ -54,6 +55,7 @@ export const pgAgentRepository: AgentRepository = {
         instructions: agent.instructions,
         visibility: agent.visibility || "private",
         subAgentsEnabled: agent.subAgentsEnabled ?? false,
+        chatPersonalizationEnabled: agent.chatPersonalizationEnabled ?? true,
         agentType: (agent as any).agentType ?? "standard",
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -74,6 +76,7 @@ export const pgAgentRepository: AgentRepository = {
         instructions: AgentTable.instructions,
         visibility: AgentTable.visibility,
         subAgentsEnabled: AgentTable.subAgentsEnabled,
+        chatPersonalizationEnabled: AgentTable.chatPersonalizationEnabled,
         agentType: AgentTable.agentType,
         mcpEnabled: AgentTable.mcpEnabled,
         mcpApiKeyHash: AgentTable.mcpApiKeyHash,
@@ -127,6 +130,7 @@ export const pgAgentRepository: AgentRepository = {
         instructions: AgentTable.instructions,
         visibility: AgentTable.visibility,
         subAgentsEnabled: AgentTable.subAgentsEnabled,
+        chatPersonalizationEnabled: AgentTable.chatPersonalizationEnabled,
         agentType: AgentTable.agentType,
         mcpEnabled: AgentTable.mcpEnabled,
         mcpApiKeyHash: AgentTable.mcpApiKeyHash,
@@ -161,6 +165,7 @@ export const pgAgentRepository: AgentRepository = {
         userId: AgentTable.userId,
         instructions: AgentTable.instructions,
         visibility: AgentTable.visibility,
+        chatPersonalizationEnabled: AgentTable.chatPersonalizationEnabled,
         agentType: AgentTable.agentType,
         mcpEnabled: AgentTable.mcpEnabled,
         mcpApiKeyHash: AgentTable.mcpApiKeyHash,
@@ -345,6 +350,16 @@ export const pgAgentRepository: AgentRepository = {
       .update(AgentTable)
       .set({
         mcpEnabled: enabled,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
+  },
+
+  async setChatPersonalizationEnabled(id, userId, enabled) {
+    await db
+      .update(AgentTable)
+      .set({
+        chatPersonalizationEnabled: enabled,
         updatedAt: new Date(),
       })
       .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));

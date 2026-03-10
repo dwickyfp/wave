@@ -81,6 +81,10 @@ vi.mock("lib/ai/prompts", () => ({
   buildUserSystemPrompt: vi.fn(() => "base"),
 }));
 
+vi.mock("lib/self-learning/runtime", () => ({
+  getLearnedPersonalizationPromptForUser: vi.fn(async () => "learned prompt"),
+}));
+
 function makeAsyncStream(parts: any[]) {
   return {
     async *[Symbol.asyncIterator]() {
@@ -116,6 +120,9 @@ const { GET: GET_MODELS } = await import("../../models/route");
 const { compare } = await import("bcrypt-ts");
 const { streamText } = await import("ai");
 const { getDbModel } = await import("lib/ai/provider-factory");
+const { getLearnedPersonalizationPromptForUser } = await import(
+  "lib/self-learning/runtime"
+);
 const {
   agentRepository,
   agentAnalyticsRepository,
@@ -363,6 +370,26 @@ describe("agent continue/openai route", () => {
     ).toHaveBeenCalledOnce();
     const callArgs = vi.mocked(streamText).mock.calls.at(-1)?.[0] as any;
     expect(callArgs.tools.read_file.description).toBe("Read a workspace file");
+  });
+
+  it("does not load learned personalization for continue/openai external access", async () => {
+    const res = (await POST(
+      makeNextRequest(
+        "http://localhost/api/agent/agent-1/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            model: "codex-agent_one",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        },
+      ) as any,
+      withParams("agent-1"),
+    )) as Response;
+
+    expect(res.status).toBe(200);
+    expect(getLearnedPersonalizationPromptForUser).not.toHaveBeenCalled();
   });
 
   it("maps tool follow-up messages into model messages", async () => {

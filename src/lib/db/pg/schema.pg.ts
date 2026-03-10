@@ -262,6 +262,9 @@ export const AgentTable = pgTable("agent", {
   })
     .notNull()
     .default("standard"),
+  chatPersonalizationEnabled: boolean("chat_personalization_enabled")
+    .notNull()
+    .default(true),
   mcpEnabled: boolean("mcp_enabled").notNull().default(false),
   mcpApiKeyHash: text("mcp_api_key_hash"),
   mcpApiKeyPreview: text("mcp_api_key_preview"),

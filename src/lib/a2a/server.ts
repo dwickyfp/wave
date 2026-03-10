@@ -37,7 +37,6 @@ import {
   a2aAgentRepository,
   snowflakeAgentRepository,
 } from "lib/db/repository";
-import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 import {
   callSnowflakeCortexStream,
   createSnowflakeThread,
@@ -323,17 +322,12 @@ async function streamStandardAgentRun(input: {
     provider: chatModel.provider,
     tools,
   });
-  const learnedPersonalizationPrompt =
-    await getLearnedPersonalizationPromptForUser(input.agent.userId);
   const run = streamText({
     model,
     system: buildEmmaAgentSystemPrompt({
       agent: input.agent,
       subAgents: toolset.subAgents,
       attachedSkills: toolset.attachedSkills,
-      extraPrompts: learnedPersonalizationPrompt
-        ? [learnedPersonalizationPrompt]
-        : [],
     }),
     messages: compatibleMessages.messages,
     stopWhen: stepCountIs(10),

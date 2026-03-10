@@ -77,6 +77,10 @@ vi.mock("lib/ai/prompts", () => ({
   buildUserSystemPrompt: vi.fn(() => "base"),
 }));
 
+vi.mock("lib/self-learning/runtime", () => ({
+  getLearnedPersonalizationPromptForUser: vi.fn(async () => "learned prompt"),
+}));
+
 vi.mock("ai", () => ({
   streamText: vi.fn((_options: any) => ({
     text: Promise.resolve("def add(a, b):\n    return a + b\n"),
@@ -101,6 +105,9 @@ vi.mock("ai", () => ({
 const { POST } = await import("./route");
 const { compare } = await import("bcrypt-ts");
 const { getDbModel } = await import("lib/ai/provider-factory");
+const { getLearnedPersonalizationPromptForUser } = await import(
+  "lib/self-learning/runtime"
+);
 const { agentRepository, agentAnalyticsRepository, settingsRepository } =
   await import("lib/db/repository");
 
@@ -258,5 +265,25 @@ describe("agent continue/openai completions route", () => {
     expect(
       vi.mocked(agentAnalyticsRepository.recordContinueAutocompleteUsage),
     ).toHaveBeenCalledOnce();
+  });
+
+  it("does not load learned personalization for continue autocomplete", async () => {
+    const res = (await POST(
+      makeNextRequest(
+        "http://localhost/api/agent/agent-1/openai/v1/completions",
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            model: "codex-agent_one_autocomplete",
+            prompt: "def add(a, b):\n    ",
+          }),
+        },
+      ) as any,
+      withParams("agent-1"),
+    )) as Response;
+
+    expect(res.status).toBe(200);
+    expect(getLearnedPersonalizationPromptForUser).not.toHaveBeenCalled();
   });
 });

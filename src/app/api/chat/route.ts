@@ -78,7 +78,7 @@ import {
   rememberMcpServerCustomizationsAction,
 } from "./actions";
 import { recordSelfLearningSignal } from "lib/self-learning/service";
-import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
+import { resolveAgentPersonalizationPrompt } from "lib/ai/agent/personalization";
 import {
   convertToSavePart,
   excludeToolExecution,
@@ -915,14 +915,16 @@ export async function POST(request: Request) {
           };
         })();
         const learnedPersonalizationPrompt: string | false =
-          await getLearnedPersonalizationPromptForUser(session.user.id).catch(
-            (error) => {
-              logger.warn(
-                `[Chat Route] Failed to load learned personalization for user ${session.user.id}: ${error}`,
-              );
-              return false as const;
-            },
-          );
+          await resolveAgentPersonalizationPrompt({
+            surface: "platform_chat",
+            platformUserId: session.user.id,
+            agent,
+          }).catch((error) => {
+            logger.warn(
+              `[Chat Route] Failed to load learned personalization for user ${session.user.id}: ${error}`,
+            );
+            return false as const;
+          });
 
         const buildSystemPromptForKnowledgeBudget = async (
           knowledgeBudget: number,

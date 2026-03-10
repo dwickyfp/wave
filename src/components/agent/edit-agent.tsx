@@ -93,6 +93,7 @@ const defaultConfig = (): PartialBy<
   return {
     name: "",
     description: "",
+    chatPersonalizationEnabled: true,
     icon: {
       type: "emoji",
       value:
@@ -183,6 +184,8 @@ export default function EditAgent({
   const [agentMcpEnabled, setAgentMcpEnabled] = useState(
     initialAgent?.mcpEnabled ?? false,
   );
+  const [agentChatPersonalizationEnabled, setAgentChatPersonalizationEnabled] =
+    useState(initialAgent?.chatPersonalizationEnabled ?? true);
   const [agentMcpApiKey, setAgentMcpApiKey] = useState<string | null>(null);
   const [agentMcpKeyPreview, setAgentMcpKeyPreview] = useState(
     initialAgent?.mcpApiKeyPreview ?? initialAgent?.a2aApiKeyPreview ?? null,
@@ -198,6 +201,10 @@ export default function EditAgent({
   const [
     isAgentContinueUpdatingAutocompleteModel,
     setIsAgentContinueUpdatingAutocompleteModel,
+  ] = useState(false);
+  const [
+    isAgentChatPersonalizationUpdating,
+    setIsAgentChatPersonalizationUpdating,
   ] = useState(false);
   const [
     isAgentMcpUpdatingPresentationMode,
@@ -843,6 +850,40 @@ export default function EditAgent({
     [initialAgent?.id, t],
   );
 
+  const handleToggleAgentChatPersonalization = useCallback(
+    async (enabled: boolean) => {
+      if (!initialAgent?.id) return;
+
+      setIsAgentChatPersonalizationUpdating(true);
+      try {
+        const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chatPersonalizationEnabled: enabled,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to update chat personalization");
+        }
+
+        setAgentChatPersonalizationEnabled(enabled);
+        setAgent({ chatPersonalizationEnabled: enabled });
+        toast.success(
+          enabled
+            ? t("Agent.agentChatPersonalizationEnabled")
+            : t("Agent.agentChatPersonalizationDisabled"),
+        );
+      } catch {
+        toast.error(t("Agent.agentChatPersonalizationUpdateFailed"));
+      } finally {
+        setIsAgentChatPersonalizationUpdating(false);
+      }
+    },
+    [initialAgent?.id, setAgent, t],
+  );
+
   const handleChangeAgentAutocompleteModel = useCallback(
     async (value: string) => {
       if (!initialAgent?.id) return;
@@ -1075,6 +1116,7 @@ export default function EditAgent({
       isAgentMcpRevokingKey ||
       isAgentMcpToggling ||
       isAgentMcpUpdatingModel ||
+      isAgentChatPersonalizationUpdating ||
       isAgentContinueUpdatingCodingMode ||
       isAgentContinueUpdatingAutocompleteModel ||
       isAgentMcpUpdatingPresentationMode,
@@ -1083,6 +1125,7 @@ export default function EditAgent({
       isAgentMcpRevokingKey,
       isAgentMcpToggling,
       isAgentMcpUpdatingModel,
+      isAgentChatPersonalizationUpdating,
       isAgentContinueUpdatingCodingMode,
       isAgentContinueUpdatingAutocompleteModel,
       isAgentMcpUpdatingPresentationMode,
@@ -1521,6 +1564,22 @@ export default function EditAgent({
                               ? t("Agent.agentMcpModelDescription")
                               : t("Agent.agentMcpModelNotFound")}
                       </p>
+                    </div>
+
+                    <div className="flex items-start justify-between gap-4 rounded-lg border bg-secondary/30 p-3">
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium">
+                          {t("Agent.agentChatPersonalizationLabel")}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {t("Agent.agentChatPersonalizationDescription")}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={agentChatPersonalizationEnabled}
+                        onCheckedChange={handleToggleAgentChatPersonalization}
+                        disabled={isAgentMcpBusy}
+                      />
                     </div>
 
                     <div className="space-y-2">

@@ -38,6 +38,7 @@ export const AgentCreateSchema = z
     instructions: AgentInstructionsSchema,
     visibility: VisibilitySchema.optional().default("private"),
     subAgentsEnabled: z.boolean().optional().default(false),
+    chatPersonalizationEnabled: z.boolean().optional(),
     agentType: AgentTypeSchema.optional().default("standard"),
   })
   .strip();
@@ -55,6 +56,7 @@ export const AgentUpdateSchema = z
     instructions: AgentInstructionsSchema.optional(),
     visibility: VisibilitySchema.optional(),
     subAgentsEnabled: z.boolean().optional(),
+    chatPersonalizationEnabled: z.boolean().optional(),
   })
   .strip();
 
@@ -91,6 +93,7 @@ export type AgentSummary = {
   userAvatar?: string;
   isBookmarked?: boolean;
   subAgentsEnabled?: boolean;
+  chatPersonalizationEnabled?: boolean;
   agentType?: z.infer<typeof AgentTypeSchema>;
 };
 
@@ -137,6 +140,12 @@ export type AgentRepository = {
   ): Promise<void>;
 
   setMcpEnabled(id: string, userId: string, enabled: boolean): Promise<void>;
+
+  setChatPersonalizationEnabled(
+    id: string,
+    userId: string,
+    enabled: boolean,
+  ): Promise<void>;
 
   setMcpModel(
     id: string,

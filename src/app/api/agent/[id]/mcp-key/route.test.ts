@@ -11,6 +11,7 @@ vi.mock("lib/db/repository", () => ({
     setA2aApiKey: vi.fn(),
     setA2aEnabled: vi.fn(),
     setMcpEnabled: vi.fn(),
+    setChatPersonalizationEnabled: vi.fn(),
     setMcpModel: vi.fn(),
     setMcpCodingMode: vi.fn(),
     setMcpAutocompleteModel: vi.fn(),
@@ -238,6 +239,28 @@ describe("agent mcp key route", () => {
       "u1",
       true,
     );
+  });
+
+  it("updates platform chat personalization flag", async () => {
+    vi.mocked(getSession).mockResolvedValue({ user: { id: "u1" } } as any);
+    vi.mocked(agentRepository.selectAgentById).mockResolvedValue({
+      id: "a1",
+      userId: "u1",
+      agentType: "standard",
+    } as any);
+
+    const res = await PUT(
+      new Request("http://localhost/api/agent/a1/mcp-key", {
+        method: "PUT",
+        body: JSON.stringify({ chatPersonalizationEnabled: false }),
+      }) as any,
+      withParams("a1"),
+    );
+
+    expect(res.status).toBe(200);
+    expect(
+      vi.mocked(agentRepository.setChatPersonalizationEnabled),
+    ).toHaveBeenCalledWith("a1", "u1", false);
   });
 
   it("returns 400 on invalid payload", async () => {
