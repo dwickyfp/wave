@@ -7,6 +7,13 @@ export type KnowledgeGroupIcon = {
 
 export type KnowledgeVisibility = "public" | "private" | "readonly";
 export type KnowledgePurpose = "default" | "personalization";
+export type KnowledgeParseMode = "off" | "auto" | "always";
+export type KnowledgeParseRepairPolicy =
+  | "strict"
+  | "section-safe-reorder"
+  | "aggressive";
+export type KnowledgeContextMode = "deterministic" | "auto-llm" | "always-llm";
+export type KnowledgeImageMode = "off" | "auto" | "always";
 export type KnowledgeDocumentVersionStatus = "processing" | "ready" | "failed";
 export type KnowledgeDocumentVersionChangeType =
   | "initial_ingest"
@@ -51,6 +58,11 @@ export type KnowledgeChunkMetadata = {
   libraryVersion?: string;
   hasStructuredContent?: boolean;
   pageNumber?: number;
+  pageStart?: number;
+  pageEnd?: number;
+  extractionMode?: "raw" | "normalized" | "refined";
+  qualityScore?: number;
+  repairReason?: string;
   sheetName?: string;
   sourceGroupId?: string;
   sourceGroupName?: string;
@@ -71,6 +83,11 @@ export interface KnowledgeGroup {
   rerankingProvider?: string | null;
   parsingModel?: string | null;
   parsingProvider?: string | null;
+  parseMode: KnowledgeParseMode;
+  parseRepairPolicy: KnowledgeParseRepairPolicy;
+  contextMode: KnowledgeContextMode;
+  imageMode: KnowledgeImageMode;
+  lazyRefinementEnabled: boolean;
   retrievalThreshold: number;
   mcpEnabled: boolean;
   mcpApiKeyHash?: string | null;
@@ -107,6 +124,11 @@ export interface KnowledgeSummary {
   rerankingProvider?: string | null;
   parsingModel?: string | null;
   parsingProvider?: string | null;
+  parseMode: KnowledgeParseMode;
+  parseRepairPolicy: KnowledgeParseRepairPolicy;
+  contextMode: KnowledgeContextMode;
+  imageMode: KnowledgeImageMode;
+  lazyRefinementEnabled: boolean;
   retrievalThreshold: number;
   mcpEnabled: boolean;
   documentCount: number;
@@ -362,9 +384,18 @@ export const createKnowledgeGroupSchema = z.object({
   rerankingProvider: z.string().optional().nullable(),
   parsingModel: z.string().optional().nullable(),
   parsingProvider: z.string().optional().nullable(),
+  parseMode: z.enum(["off", "auto", "always"]).default("auto"),
+  parseRepairPolicy: z
+    .enum(["strict", "section-safe-reorder", "aggressive"])
+    .default("section-safe-reorder"),
+  contextMode: z
+    .enum(["deterministic", "auto-llm", "always-llm"])
+    .default("deterministic"),
+  imageMode: z.enum(["off", "auto", "always"]).default("auto"),
+  lazyRefinementEnabled: z.boolean().default(true),
   retrievalThreshold: z.number().min(0).max(1).default(0.0),
-  chunkSize: z.number().int().min(128).max(2048).default(512),
-  chunkOverlapPercent: z.number().int().min(0).max(50).default(20),
+  chunkSize: z.number().int().min(128).max(2048).default(768),
+  chunkOverlapPercent: z.number().int().min(0).max(50).default(10),
   sourceGroupIds: z.array(z.string().uuid()).max(50).optional(),
 });
 

@@ -22,6 +22,12 @@ export interface TextChunk {
     libraryVersion?: string;
     /** Whether this chunk contains a table or code block */
     hasStructuredContent?: boolean;
+    pageNumber?: number;
+    pageStart?: number;
+    pageEnd?: number;
+    extractionMode?: "raw" | "normalized" | "refined";
+    qualityScore?: number;
+    repairReason?: string;
   };
 }
 
@@ -36,6 +42,11 @@ export interface ChunkableKnowledgeSection {
   libraryId?: string;
   libraryVersion?: string;
   includeHeadingInChunkContent?: boolean;
+  pageStart?: number;
+  pageEnd?: number;
+  extractionMode?: "raw" | "normalized" | "refined";
+  qualityScore?: number;
+  repairReason?: string;
 }
 
 // ─── Token Estimation ──────────────────────────────────────────────────────────
@@ -624,8 +635,8 @@ function deduplicateChunks(chunks: TextChunk[]): TextChunk[] {
  */
 export function chunkMarkdown(
   markdown: string,
-  chunkSize = 512,
-  overlapPercent = 20,
+  chunkSize = 768,
+  overlapPercent = 10,
 ): TextChunk[] {
   // Step 1: Clean & normalize
   const cleaned = cleanText(markdown);
@@ -697,8 +708,8 @@ export function chunkMarkdown(
 
 export function chunkKnowledgeSections(
   sections: ChunkableKnowledgeSection[],
-  chunkSize = 512,
-  overlapPercent = 20,
+  chunkSize = 768,
+  overlapPercent = 10,
 ): TextChunk[] {
   if (sections.length === 0) return [];
 
@@ -725,6 +736,13 @@ export function chunkKnowledgeSections(
         sourcePath: section.sourcePath,
         libraryId: section.libraryId,
         libraryVersion: section.libraryVersion,
+        pageStart: section.pageStart,
+        pageEnd: section.pageEnd,
+        pageNumber:
+          section.pageStart === section.pageEnd ? section.pageStart : undefined,
+        extractionMode: section.extractionMode,
+        qualityScore: section.qualityScore,
+        repairReason: section.repairReason,
       },
       allChunks.length,
     ).map((chunk) => ({

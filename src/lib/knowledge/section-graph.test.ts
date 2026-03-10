@@ -91,4 +91,29 @@ Advanced nested guidance.
     expect(sections[1]?.heading).toBe("Part 2");
     expect(sections[1]?.prevSectionId).toBe(sections[0]?.id);
   });
+
+  it("tracks page spans from hidden page markers", () => {
+    const markdown = `
+<!--CTX_PAGE:1-->
+# Guide
+
+Intro content.
+
+<!--CTX_PAGE:2-->
+## Setup
+
+Step one.
+`.trim();
+
+    const sections = buildKnowledgeSectionGraph(markdown, "doc-3", "group-1");
+    const guide = sections.find((section) => section.headingPath === "Guide");
+    const setup = sections.find(
+      (section) => section.headingPath === "Guide > Setup",
+    );
+
+    expect(guide?.pageStart).toBe(1);
+    expect(guide?.pageEnd).toBe(1);
+    expect(setup?.pageStart).toBe(2);
+    expect(setup?.pageEnd).toBe(2);
+  });
 });

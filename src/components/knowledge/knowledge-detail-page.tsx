@@ -3,9 +3,13 @@
 import { mutateKnowledge, useKnowledge } from "@/hooks/queries/use-knowledge";
 import { useKnowledgeModels } from "@/hooks/queries/use-knowledge-models";
 import {
+  KnowledgeContextMode,
   KnowledgeDocument,
   KnowledgeGroup,
   KnowledgeGroupSource,
+  KnowledgeImageMode,
+  KnowledgeParseMode,
+  KnowledgeParseRepairPolicy,
   KnowledgeVisibility,
 } from "app-types/knowledge";
 import { format } from "date-fns";
@@ -52,7 +56,11 @@ interface Props {
   initialDocuments: KnowledgeDocument[];
   initialSourceGroups: KnowledgeGroupSource[];
   userId: string;
-  contextxModel: { provider: string; model: string } | null;
+  knowledgeModels: {
+    parse: { provider: string; model: string } | null;
+    context: { provider: string; model: string } | null;
+    image: { provider: string; model: string } | null;
+  };
 }
 
 type McpToolParam = {
@@ -181,7 +189,7 @@ export function KnowledgeDetailPage({
   initialDocuments,
   initialSourceGroups,
   userId,
-  contextxModel,
+  knowledgeModels,
 }: Props) {
   const router = useRouter();
   const isOwner = group.userId === userId;
@@ -203,6 +211,20 @@ export function KnowledgeDetailPage({
   const [threshold, setThreshold] = useState(group.retrievalThreshold ?? 0);
   const [embeddingValue, setEmbeddingValue] = useState(initialEmbeddingValue);
   const [rerankingValue, setRerankingValue] = useState(initialRerankingValue);
+  const [parseMode, setParseMode] = useState<KnowledgeParseMode>(
+    group.parseMode,
+  );
+  const [parseRepairPolicy, setParseRepairPolicy] =
+    useState<KnowledgeParseRepairPolicy>(group.parseRepairPolicy);
+  const [contextMode, setContextMode] = useState<KnowledgeContextMode>(
+    group.contextMode,
+  );
+  const [imageMode, setImageMode] = useState<KnowledgeImageMode>(
+    group.imageMode,
+  );
+  const [lazyRefinementEnabled, setLazyRefinementEnabled] = useState(
+    group.lazyRefinementEnabled,
+  );
   const [savedThreshold, setSavedThreshold] = useState(
     group.retrievalThreshold ?? 0,
   );
@@ -211,6 +233,15 @@ export function KnowledgeDetailPage({
   );
   const [savedRerankingValue, setSavedRerankingValue] = useState(
     initialRerankingValue,
+  );
+  const [savedParseMode, setSavedParseMode] = useState(group.parseMode);
+  const [savedParseRepairPolicy, setSavedParseRepairPolicy] = useState(
+    group.parseRepairPolicy,
+  );
+  const [savedContextMode, setSavedContextMode] = useState(group.contextMode);
+  const [savedImageMode, setSavedImageMode] = useState(group.imageMode);
+  const [savedLazyRefinementEnabled, setSavedLazyRefinementEnabled] = useState(
+    group.lazyRefinementEnabled,
   );
   const [sourceGroupIds, setSourceGroupIds] = useState<string[]>(
     initialSourceGroups.map((s) => s.sourceGroupId),
@@ -273,7 +304,12 @@ export function KnowledgeDetailPage({
   const hasSettingsChanges =
     threshold !== savedThreshold ||
     embeddingValue !== savedEmbeddingValue ||
-    rerankingValue !== savedRerankingValue;
+    rerankingValue !== savedRerankingValue ||
+    parseMode !== savedParseMode ||
+    parseRepairPolicy !== savedParseRepairPolicy ||
+    contextMode !== savedContextMode ||
+    imageMode !== savedImageMode ||
+    lazyRefinementEnabled !== savedLazyRefinementEnabled;
 
   const handleSaveSettings = async () => {
     const embedding = parseModelValue(embeddingValue);
@@ -296,12 +332,22 @@ export function KnowledgeDetailPage({
           embeddingModel: embedding.apiName,
           rerankingProvider: reranking?.provider ?? null,
           rerankingModel: reranking?.apiName ?? null,
+          parseMode,
+          parseRepairPolicy,
+          contextMode,
+          imageMode,
+          lazyRefinementEnabled,
         }),
       });
       if (!res.ok) throw new Error();
       setSavedThreshold(threshold);
       setSavedEmbeddingValue(embeddingValue);
       setSavedRerankingValue(rerankingValue);
+      setSavedParseMode(parseMode);
+      setSavedParseRepairPolicy(parseRepairPolicy);
+      setSavedContextMode(contextMode);
+      setSavedImageMode(imageMode);
+      setSavedLazyRefinementEnabled(lazyRefinementEnabled);
       void mutateKnowledge();
       toast.success(
         embeddingChanged
@@ -610,9 +656,14 @@ export function KnowledgeDetailPage({
             <div className="flex items-center gap-2">
               <SlidersHorizontalIcon className="size-4 text-primary" />
               <span className="text-sm font-medium">Settings</span>
-              {contextxModel && (
+              {knowledgeModels.parse && (
                 <Badge variant="secondary" className="text-xs px-1.5 py-0">
-                  LLM: {contextxModel.model}
+                  parse: {knowledgeModels.parse.model}
+                </Badge>
+              )}
+              {knowledgeModels.context && (
+                <Badge variant="secondary" className="text-xs px-1.5 py-0">
+                  context: {knowledgeModels.context.model}
                 </Badge>
               )}
               {savedThreshold > 0 && (
@@ -630,21 +681,48 @@ export function KnowledgeDetailPage({
 
           {settingsOpen && (
             <div className="px-4 pb-4 flex flex-col gap-4 border-t">
-              {/* Parsing LLM — global setting (read-only) */}
-              <div className="flex flex-col gap-1.5 pt-3">
-                <Label className="text-sm font-medium">Parsing LLM</Label>
-                {contextxModel ? (
-                  <div className="flex items-center gap-2">
+              <div className="grid gap-3 pt-3 md:grid-cols-3">
+                <div className="flex flex-col gap-1.5 rounded-lg border bg-muted/30 p-3">
+                  <Label className="text-sm font-medium">Parse Model</Label>
+                  {knowledgeModels.parse ? (
                     <span className="text-sm font-mono bg-secondary/50 border rounded px-2 py-1">
-                      {contextxModel.provider}/{contextxModel.model}
+                      {knowledgeModels.parse.provider}/
+                      {knowledgeModels.parse.model}
                     </span>
-                  </div>
-                ) : (
-                  <p className="text-xs text-amber-600">
-                    No ContextX model configured. Set one in Settings → ContextX
-                    Model to enable document parsing.
-                  </p>
-                )}
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Not configured. `parseMode=off` or `auto` will stay
+                      deterministic.
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5 rounded-lg border bg-muted/30 p-3">
+                  <Label className="text-sm font-medium">Context Model</Label>
+                  {knowledgeModels.context ? (
+                    <span className="text-sm font-mono bg-secondary/50 border rounded px-2 py-1">
+                      {knowledgeModels.context.provider}/
+                      {knowledgeModels.context.model}
+                    </span>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Not configured. Context falls back to deterministic
+                      summaries.
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-col gap-1.5 rounded-lg border bg-muted/30 p-3">
+                  <Label className="text-sm font-medium">Image Model</Label>
+                  {knowledgeModels.image ? (
+                    <span className="text-sm font-mono bg-secondary/50 border rounded px-2 py-1">
+                      {knowledgeModels.image.provider}/
+                      {knowledgeModels.image.model}
+                    </span>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      Not configured. Image analysis stays caption-based.
+                    </p>
+                  )}
+                </div>
               </div>
 
               {/* Retrieval Models */}
@@ -677,6 +755,104 @@ export function KnowledgeDetailPage({
                     Optional second-pass ranking after hybrid search.
                   </p>
                 </div>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
+                  <Label className="text-sm font-medium">Parse Mode</Label>
+                  <select
+                    value={parseMode}
+                    onChange={(e) =>
+                      setParseMode(e.target.value as KnowledgeParseMode)
+                    }
+                    className="h-9 rounded-md border bg-background px-3 text-sm"
+                  >
+                    <option value="off">off</option>
+                    <option value="auto">auto</option>
+                    <option value="always">always</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    `auto` repairs only low-quality pages. `always` repairs
+                    every page.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
+                  <Label className="text-sm font-medium">
+                    Parse Repair Policy
+                  </Label>
+                  <select
+                    value={parseRepairPolicy}
+                    onChange={(e) =>
+                      setParseRepairPolicy(
+                        e.target.value as KnowledgeParseRepairPolicy,
+                      )
+                    }
+                    className="h-9 rounded-md border bg-background px-3 text-sm"
+                  >
+                    <option value="strict">strict</option>
+                    <option value="section-safe-reorder">
+                      section-safe-reorder
+                    </option>
+                    <option value="aggressive">aggressive</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    `section-safe-reorder` keeps local reconstruction readable
+                    without crossing major sections.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
+                  <Label className="text-sm font-medium">Context Mode</Label>
+                  <select
+                    value={contextMode}
+                    onChange={(e) =>
+                      setContextMode(e.target.value as KnowledgeContextMode)
+                    }
+                    className="h-9 rounded-md border bg-background px-3 text-sm"
+                  >
+                    <option value="deterministic">deterministic</option>
+                    <option value="auto-llm">auto-llm</option>
+                    <option value="always-llm">always-llm</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    Deterministic is cheapest. `auto-llm` only enhances weak
+                    chunks.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-1.5 rounded-lg border p-3 bg-muted/30">
+                  <Label className="text-sm font-medium">Image Mode</Label>
+                  <select
+                    value={imageMode}
+                    onChange={(e) =>
+                      setImageMode(e.target.value as KnowledgeImageMode)
+                    }
+                    className="h-9 rounded-md border bg-background px-3 text-sm"
+                  >
+                    <option value="off">off</option>
+                    <option value="auto">auto</option>
+                    <option value="always">always</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    `auto` keeps ingest cheap; eager image vision runs only in
+                    `always`.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/30">
+                <div>
+                  <Label className="text-sm font-medium">Lazy Refinement</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Allow follow-up page repair during difficult retrieval
+                    flows.
+                  </p>
+                </div>
+                <Switch
+                  checked={lazyRefinementEnabled}
+                  onCheckedChange={setLazyRefinementEnabled}
+                />
               </div>
 
               {/* Retrieval Threshold */}
@@ -1199,9 +1375,7 @@ export function KnowledgeDetailPage({
             uploadDisabledMessage={
               !isOwner
                 ? "Only the group owner can upload documents to this group."
-                : !contextxModel
-                  ? "Configure a ContextX Model in Settings before uploading documents."
-                  : undefined
+                : undefined
             }
           />
         </TabsContent>

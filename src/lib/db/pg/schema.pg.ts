@@ -874,11 +874,34 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
   embeddingProvider: text("embedding_provider").notNull().default("openai"),
   rerankingModel: text("reranking_model"),
   rerankingProvider: text("reranking_provider"),
+  parseMode: varchar("parse_mode", {
+    enum: ["off", "auto", "always"],
+  })
+    .notNull()
+    .default("auto"),
+  parseRepairPolicy: varchar("parse_repair_policy", {
+    enum: ["strict", "section-safe-reorder", "aggressive"],
+  })
+    .notNull()
+    .default("section-safe-reorder"),
+  contextMode: varchar("context_mode", {
+    enum: ["deterministic", "auto-llm", "always-llm"],
+  })
+    .notNull()
+    .default("deterministic"),
+  imageMode: varchar("image_mode", {
+    enum: ["off", "auto", "always"],
+  })
+    .notNull()
+    .default("auto"),
+  lazyRefinementEnabled: boolean("lazy_refinement_enabled")
+    .notNull()
+    .default(true),
   mcpEnabled: boolean("mcp_enabled").notNull().default(false),
   mcpApiKeyHash: text("mcp_api_key_hash"),
   mcpApiKeyPreview: text("mcp_api_key_preview"),
-  chunkSize: integer("chunk_size").notNull().default(512),
-  chunkOverlapPercent: integer("chunk_overlap_percent").notNull().default(20),
+  chunkSize: integer("chunk_size").notNull().default(768),
+  chunkOverlapPercent: integer("chunk_overlap_percent").notNull().default(10),
   parsingModel: text("parsing_model"),
   parsingProvider: text("parsing_provider"),
   retrievalThreshold: real("retrieval_threshold").notNull().default(0.0),
@@ -1088,6 +1111,11 @@ export const KnowledgeChunkTable = pgTable(
       libraryId?: string;
       libraryVersion?: string;
       pageNumber?: number;
+      pageStart?: number;
+      pageEnd?: number;
+      extractionMode?: "raw" | "normalized" | "refined";
+      qualityScore?: number;
+      repairReason?: string;
       sheetName?: string;
     }>(),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -1245,6 +1273,11 @@ export const KnowledgeChunkVersionTable = pgTable(
       libraryId?: string;
       libraryVersion?: string;
       pageNumber?: number;
+      pageStart?: number;
+      pageEnd?: number;
+      extractionMode?: "raw" | "normalized" | "refined";
+      qualityScore?: number;
+      repairReason?: string;
       sheetName?: string;
     }>(),
     createdAt: timestamp("created_at", { withTimezone: true })

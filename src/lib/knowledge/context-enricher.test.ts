@@ -29,6 +29,8 @@ describe("context-enricher", () => {
           tokenCount: 20,
           metadata: {
             headingPath: "Guide > Tail Section",
+            pageStart: 9,
+            pageEnd: 10,
           },
         },
       ],
@@ -56,6 +58,7 @@ describe("context-enricher", () => {
     expect(enriched[0]?.contextSummary).toContain(
       "Section: Guide > Tail Section.",
     );
+    expect(enriched[0]?.contextSummary).toContain("Pages: 9-10.");
     expect(enriched[0]?.contextSummary).toContain("Guide parent summary.");
     expect(enriched[0]?.embeddingText).toContain(enriched[0]?.contextSummary);
   });

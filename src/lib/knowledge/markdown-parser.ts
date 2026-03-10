@@ -1,47 +1,61 @@
 /**
- * LLM-based Markdown Parser
+ * LLM-based markdown repair for low-quality extracted pages.
  *
- * Converts raw extracted text into clean, well-structured markdown before
- * chunking and embedding.
+ * The parser operates page-by-page so ContextX can keep ingest cheap on clean
+ * documents and only spend LLM cost where layout repair materially helps.
  */
+import { createHash } from "node:crypto";
 import { LanguageModel, generateText } from "ai";
+import type {
+  KnowledgeParseMode,
+  KnowledgeParseRepairPolicy,
+} from "app-types/knowledge";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
+import { createPageMarker } from "./page-markers";
+import type { ProcessedDocumentPage } from "./processor/types";
 
-const PARSE_SYSTEM_PROMPT = `You are a document formatting expert. Your task is to convert raw document text into clean, well-structured markdown.
+const PARSE_SYSTEM_PROMPT = `You are a document reconstruction expert. Your task is to convert raw extracted document text into clean, readable markdown.
 
-Rules:
-- Preserve ALL information from the original text; do not summarize or omit content
-- Use proper markdown headings (# ## ###) only for genuine section titles and major document divisions
-- Keep related items together instead of turning each line into a heading
-- Format lists as compact markdown lists with no blank lines between related items
+Primary goal:
+- Reconstruct the most likely local reading order when extraction is visibly broken
+- Prefer local page/section repair over exact raw line order
+- Improve readability without changing the document's facts
+
+Non-negotiable rules:
+- Preserve ALL factual information from the original text
+- Do not summarize, invent, or omit content
+- Do not move content across major sections or unrelated page regions
+- When layout is ambiguous, keep the original local grouping instead of guessing
+- Output only markdown content
+
+Allowed repairs:
+- Reorder text within the same local section to repair columns and broken reading order
+- Merge wrapped lines back into paragraphs
+- Repair split list items, headings, and table rows
+- Keep captions close to the nearest table, chart, image marker, or related paragraph
+- Remove repeated headers, footers, page numbers, and watermark artifacts
+
+Markdown rules:
+- Use headings (# ## ###) only for real section titles
+- Keep related items together instead of turning every short line into a heading
+- Format lists compactly
+- Convert tabular data into markdown tables when the structure is clear
 - Never output horizontal rules (--- or ***)
-- Use a single blank line between sections and never emit multiple consecutive blank lines
+- Use a single blank line between sections
 
-Code:
-- Wrap code samples in fenced code blocks with the language identifier when clear
-- Keep related code together in one code block
-- Preserve comments inside code blocks exactly
-- If the entire document is source code, wrap it in one fenced code block
-
-Tables:
-- Convert tabular data into proper markdown tables
-- Preserve values exactly, including numbers, dates, percentages, and units
-
-Images and Visual Elements:
+Code and markers:
+- Preserve code exactly and wrap it in fenced code blocks when appropriate
 - Preserve any literal CTX_IMAGE_<number> marker exactly as written
-- Never renumber, rewrite, or remove CTX_IMAGE markers
-- Keep each CTX_IMAGE marker close to the surrounding content it belongs to
-- Never silently drop image references or visual markers
-
-Other:
-- Remove page numbers, repeated headers or footers, and watermark artifacts
-- Preserve technical terms, names, numbers, and dates exactly
-- Output only the markdown content`;
+- Preserve any literal <!--CTX_PAGE:number--> marker exactly as written
+- Never renumber, rewrite, or remove CTX_IMAGE or CTX_PAGE markers`;
 
 const WINDOW_CHARS = 40_000;
 const WINDOW_OVERLAP_CHARS = 4_000;
 const OVERLAP_COMPARE_LINES = 80;
+const AUTO_PARSE_QUALITY_THRESHOLD = 0.68;
+
+const pageParseCache = new Map<string, ProcessedDocumentPage>();
 
 async function resolveParsingModel(provider: string, modelName: string) {
   const providerConfig = await settingsRepository.getProviderByName(provider);
@@ -78,23 +92,32 @@ async function resolveParsingModel(provider: string, modelName: string) {
   return model;
 }
 
-function buildParsePrompt(
-  rawText: string,
-  documentTitle: string,
-  windowIndex: number,
-  totalWindows: number,
-): string {
-  return `Document title: "${documentTitle}"
-Window: ${windowIndex} of ${totalWindows}
+function buildParsePrompt(input: {
+  rawText: string;
+  documentTitle: string;
+  pageNumber: number;
+  windowIndex: number;
+  totalWindows: number;
+  repairPolicy: KnowledgeParseRepairPolicy;
+  qualityScore: number;
+  repairReason?: string | null;
+}): string {
+  return `Document title: "${input.documentTitle}"
+Page: ${input.pageNumber}
+Window: ${input.windowIndex} of ${input.totalWindows}
+Repair policy: ${input.repairPolicy}
+Extraction quality score: ${input.qualityScore.toFixed(2)}
+${input.repairReason ? `Repair hints: ${input.repairReason}` : ""}
 
 Raw extracted text:
 <document_window>
-${rawText}
+${input.rawText}
 </document_window>
 
-Convert this document window into clean, well-structured markdown.
-Preserve all content and keep the original order.
-If you see CTX_IMAGE markers, keep them unchanged in the output.`;
+Convert this page window into readable markdown.
+You may reorder text within the same local section to repair columns, wrapped paragraphs, tables, and lists.
+Do not summarize, invent, or move content across major sections.
+If the layout is ambiguous, keep the original local grouping.`;
 }
 
 function findWindowEnd(
@@ -147,11 +170,7 @@ export function splitRawTextIntoWindows(
     if (end >= rawText.length) break;
 
     const nextStart = Math.max(0, end - overlapChars);
-    if (nextStart <= start) {
-      start = end;
-    } else {
-      start = nextStart;
-    }
+    start = nextStart <= start ? end : nextStart;
   }
 
   return windows;
@@ -166,7 +185,7 @@ function findLineOverlap(previous: string, next: string): number {
     nextLines.length,
   );
 
-  for (let size = maxLines; size > 0; size--) {
+  for (let size = maxLines; size > 0; size -= 1) {
     const previousSlice = previousLines.slice(-size).join("\n");
     const nextSlice = nextLines.slice(0, size).join("\n");
     if (previousSlice === nextSlice) return size;
@@ -202,75 +221,196 @@ export function mergeParsedMarkdownWindows(windows: string[]): string {
   );
 }
 
-async function parseWindowToMarkdown(
-  model: LanguageModel,
-  rawText: string,
-  documentTitle: string,
-  windowIndex: number,
-  totalWindows: number,
-): Promise<string> {
+function buildPageCacheKey(input: {
+  page: ProcessedDocumentPage;
+  provider: string;
+  model: string;
+  repairPolicy: KnowledgeParseRepairPolicy;
+}) {
+  return createHash("sha1")
+    .update(input.page.fingerprint)
+    .update(`:${input.provider}:${input.model}:${input.repairPolicy}`)
+    .digest("hex");
+}
+
+async function parseWindowToMarkdown(input: {
+  model: LanguageModel;
+  rawText: string;
+  documentTitle: string;
+  pageNumber: number;
+  windowIndex: number;
+  totalWindows: number;
+  repairPolicy: KnowledgeParseRepairPolicy;
+  qualityScore: number;
+  repairReason?: string | null;
+}): Promise<string> {
   const { text } = await generateText({
-    model,
+    model: input.model,
     system: PARSE_SYSTEM_PROMPT,
-    prompt: buildParsePrompt(rawText, documentTitle, windowIndex, totalWindows),
+    prompt: buildParsePrompt({
+      rawText: input.rawText,
+      documentTitle: input.documentTitle,
+      pageNumber: input.pageNumber,
+      windowIndex: input.windowIndex,
+      totalWindows: input.totalWindows,
+      repairPolicy: input.repairPolicy,
+      qualityScore: input.qualityScore,
+      repairReason: input.repairReason,
+    }),
     temperature: 0,
   });
 
   const parsed = text.trim();
-  if (!parsed || parsed.length < 50) {
+  if (!parsed || parsed.length < Math.max(50, input.rawText.length * 0.15)) {
     console.warn(
-      `[ContextX] Parser returned suspiciously short output for "${documentTitle}" window ${windowIndex}/${totalWindows}; using raw text for this window`,
+      `[ContextX] Parser returned suspiciously short output for "${input.documentTitle}" page ${input.pageNumber}; using normalized text`,
     );
-    return rawText;
+    return input.rawText;
   }
 
   return parsed;
 }
 
-export async function parseDocumentToMarkdown(
-  rawText: string,
-  documentTitle: string,
-  parsingProvider: string,
-  parsingModel: string,
-): Promise<string> {
+function shouldRepairPage(
+  page: ProcessedDocumentPage,
+  mode: KnowledgeParseMode,
+): boolean {
+  if (mode === "off") return false;
+  if (mode === "always") return true;
+  return page.qualityScore < AUTO_PARSE_QUALITY_THRESHOLD;
+}
+
+function buildMarkdownFromPages(pages: ProcessedDocumentPage[]): string {
+  return pages
+    .flatMap((page) => [
+      createPageMarker(page.pageNumber),
+      page.markdown.trim() || page.normalizedText.trim(),
+    ])
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+async function parseSinglePage(input: {
+  model: LanguageModel;
+  page: ProcessedDocumentPage;
+  documentTitle: string;
+  provider: string;
+  parsingModel: string;
+  repairPolicy: KnowledgeParseRepairPolicy;
+}): Promise<ProcessedDocumentPage> {
+  const cacheKey = buildPageCacheKey({
+    page: input.page,
+    provider: input.provider,
+    model: input.parsingModel,
+    repairPolicy: input.repairPolicy,
+  });
+  const cached = pageParseCache.get(cacheKey);
+  if (cached) {
+    return { ...cached };
+  }
+
+  const sourceText = input.page.rawText || input.page.normalizedText;
+  const windows = splitRawTextIntoWindows(sourceText);
+  const parsedWindows: string[] = [];
+
+  for (const [index, windowText] of windows.entries()) {
+    parsedWindows.push(
+      await parseWindowToMarkdown({
+        model: input.model,
+        rawText: windowText,
+        documentTitle: input.documentTitle,
+        pageNumber: input.page.pageNumber,
+        windowIndex: index + 1,
+        totalWindows: windows.length,
+        repairPolicy: input.repairPolicy,
+        qualityScore: input.page.qualityScore,
+        repairReason: input.page.repairReason,
+      }),
+    );
+  }
+
+  const markdown = mergeParsedMarkdownWindows(parsedWindows).trim();
+  const repairedPage: ProcessedDocumentPage = {
+    ...input.page,
+    markdown: markdown || input.page.normalizedText,
+    extractionMode: "refined",
+  };
+  pageParseCache.set(cacheKey, repairedPage);
+  return repairedPage;
+}
+
+export async function parseDocumentToMarkdown(input: {
+  pages: ProcessedDocumentPage[];
+  documentTitle: string;
+  parsingProvider: string;
+  parsingModel: string;
+  mode: KnowledgeParseMode;
+  repairPolicy: KnowledgeParseRepairPolicy;
+}): Promise<{
+  markdown: string;
+  pages: ProcessedDocumentPage[];
+}> {
+  const normalizedPages =
+    input.pages.length > 0
+      ? input.pages
+      : [
+          {
+            pageNumber: 1,
+            rawText: "",
+            normalizedText: "",
+            markdown: "",
+            fingerprint: "empty",
+            qualityScore: 0,
+            extractionMode: "normalized" as const,
+            repairReason: "empty_page",
+          },
+        ];
+
+  if (input.mode === "off") {
+    return {
+      markdown: buildMarkdownFromPages(normalizedPages),
+      pages: normalizedPages,
+    };
+  }
+
   try {
-    const model = await resolveParsingModel(parsingProvider, parsingModel);
-    const windows = splitRawTextIntoWindows(rawText);
-
-    console.log(
-      `[ContextX] Parsing "${documentTitle}" with LLM (${parsingProvider}/${parsingModel}), ${windows.length} window(s)`,
+    const model = await resolveParsingModel(
+      input.parsingProvider,
+      input.parsingModel,
     );
+    const updatedPages: ProcessedDocumentPage[] = [];
 
-    const parsedWindows: string[] = [];
-    for (const [index, windowText] of windows.entries()) {
-      parsedWindows.push(
-        await parseWindowToMarkdown(
+    for (const page of normalizedPages) {
+      if (!shouldRepairPage(page, input.mode)) {
+        updatedPages.push(page);
+        continue;
+      }
+
+      updatedPages.push(
+        await parseSinglePage({
           model,
-          windowText,
-          documentTitle,
-          index + 1,
-          windows.length,
-        ),
+          page,
+          documentTitle: input.documentTitle,
+          provider: input.parsingProvider,
+          parsingModel: input.parsingModel,
+          repairPolicy: input.repairPolicy,
+        }),
       );
     }
 
-    const parsed = mergeParsedMarkdownWindows(parsedWindows).trim();
-    if (!parsed || parsed.length < 50) {
-      console.warn(
-        `[ContextX] LLM parser returned suspiciously short output for "${documentTitle}", using raw text`,
-      );
-      return rawText;
-    }
-
-    console.log(
-      `[ContextX] LLM parsing complete for "${documentTitle}": ${rawText.length} -> ${parsed.length} chars`,
-    );
-    return parsed;
+    return {
+      markdown: buildMarkdownFromPages(updatedPages),
+      pages: updatedPages,
+    };
   } catch (error) {
     console.error(
-      `[ContextX] LLM markdown parsing failed for "${documentTitle}", falling back to raw text:`,
+      `[ContextX] Page-level markdown parsing failed for "${input.documentTitle}", falling back to normalized pages:`,
       error,
     );
-    return rawText;
+    return {
+      markdown: buildMarkdownFromPages(normalizedPages),
+      pages: normalizedPages,
+    };
   }
 }

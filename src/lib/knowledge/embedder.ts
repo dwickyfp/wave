@@ -6,6 +6,8 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { settingsRepository } from "lib/db/repository";
 import { EmbeddingModel } from "ai";
 
+const embeddingCache = new Map<string, number[]>();
+
 // ─── Model Creation ────────────────────────────────────────────────────────────
 
 function createEmbeddingModel(
@@ -114,6 +116,14 @@ function preprocessForEmbedding(text: string): string {
 
 const BATCH_SIZE = 100;
 
+function buildEmbeddingCacheKey(
+  provider: string,
+  modelName: string,
+  text: string,
+) {
+  return `${provider}:${modelName}:${text}`;
+}
+
 /**
  * Embed multiple texts with preprocessing.
  * Texts are normalized and cleaned before being sent to the embedding model.
@@ -132,13 +142,31 @@ export async function embedTexts(
 
   // Preprocess all texts
   const preprocessed = texts.map(preprocessForEmbedding);
+  const allEmbeddings: number[][] = new Array(preprocessed.length);
+  const missing: Array<{ index: number; value: string; cacheKey: string }> = [];
 
-  const allEmbeddings: number[][] = [];
+  preprocessed.forEach((value, index) => {
+    const cacheKey = buildEmbeddingCacheKey(provider, modelName, value);
+    const cached = embeddingCache.get(cacheKey);
+    if (cached) {
+      allEmbeddings[index] = cached;
+      return;
+    }
+    missing.push({ index, value, cacheKey });
+  });
 
-  for (let i = 0; i < preprocessed.length; i += BATCH_SIZE) {
-    const batch = preprocessed.slice(i, i + BATCH_SIZE);
-    const { embeddings } = await embedMany({ model, values: batch });
-    allEmbeddings.push(...embeddings);
+  for (let i = 0; i < missing.length; i += BATCH_SIZE) {
+    const batch = missing.slice(i, i + BATCH_SIZE);
+    const { embeddings } = await embedMany({
+      model,
+      values: batch.map((entry) => entry.value),
+    });
+
+    batch.forEach((entry, index) => {
+      const embedding = embeddings[index] ?? [];
+      embeddingCache.set(entry.cacheKey, embedding);
+      allEmbeddings[entry.index] = embedding;
+    });
   }
 
   return allEmbeddings;
@@ -160,6 +188,13 @@ export async function embedSingleText(
   }
 
   const preprocessed = preprocessForEmbedding(text);
+  const cacheKey = buildEmbeddingCacheKey(provider, modelName, preprocessed);
+  const cached = embeddingCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const { embedding } = await embed({ model, value: preprocessed });
+  embeddingCache.set(cacheKey, embedding);
   return embedding;
 }

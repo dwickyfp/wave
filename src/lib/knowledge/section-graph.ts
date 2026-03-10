@@ -1,4 +1,5 @@
 import { generateUUID } from "lib/utils";
+import { parsePageMarker } from "./page-markers";
 
 export const SECTION_GRAPH_VERSION = 1;
 const MAX_SECTION_TOKENS = 900;
@@ -10,6 +11,8 @@ interface ParsedSection {
   headingLevel: number;
   headingBreadcrumb: string[];
   content: string;
+  pageStart?: number;
+  pageEnd?: number;
 }
 
 interface ContentBlock {
@@ -30,6 +33,8 @@ interface BaseSection {
   libraryVersion?: string;
   includeHeadingInChunkContent: boolean;
   headinglessDoc: boolean;
+  pageStart?: number;
+  pageEnd?: number;
 }
 
 export interface KnowledgeSectionNode {
@@ -52,6 +57,8 @@ export interface KnowledgeSectionNode {
   libraryId?: string;
   libraryVersion?: string;
   includeHeadingInChunkContent?: boolean;
+  pageStart?: number;
+  pageEnd?: number;
 }
 
 function estimateTokens(text: string): number {
@@ -117,6 +124,9 @@ function splitIntoSections(markdown: string): ParsedSection[] {
   let currentLevel = 0;
   let currentLines: string[] = [];
   let inCodeFence = false;
+  let currentPage = 1;
+  let currentPageStart = 1;
+  let currentPageEnd = 1;
 
   const flushSection = () => {
     const content = currentLines.join("\n").trim();
@@ -127,25 +137,39 @@ function splitIntoSections(markdown: string): ParsedSection[] {
       headingBreadcrumb:
         headingStack.length > 0 ? headingStack.map((item) => item.text) : [],
       content,
+      pageStart: currentPageStart,
+      pageEnd: currentPageEnd,
     });
   };
 
   for (const line of lines) {
     const trimmed = line.trim();
+    const pageMarker = !inCodeFence ? parsePageMarker(trimmed) : null;
+    if (pageMarker !== null) {
+      currentPage = pageMarker;
+      if (currentLines.length === 0) {
+        currentPageStart = pageMarker;
+      }
+      continue;
+    }
     if (trimmed.startsWith("```")) {
       inCodeFence = !inCodeFence;
       currentLines.push(line);
+      currentPageEnd = currentPage;
       continue;
     }
 
     const headingMatch = !inCodeFence ? line.match(/^(#{1,6})\s+(.+)/) : null;
     if (!headingMatch) {
       currentLines.push(line);
+      currentPageEnd = currentPage;
       continue;
     }
 
     flushSection();
     currentLines = [];
+    currentPageStart = currentPage;
+    currentPageEnd = currentPage;
 
     const level = headingMatch[1].length;
     const text = headingMatch[2].trim();
@@ -427,6 +451,11 @@ function createBaseSections(markdown: string): BaseSection[] {
   );
 
   if (!hasHeadings) {
+    const headinglessContent =
+      parsed
+        .map((section) => section.content)
+        .filter(Boolean)
+        .join("\n\n") || markdown;
     return [
       {
         key: "headingless",
@@ -434,10 +463,13 @@ function createBaseSections(markdown: string): BaseSection[] {
         headingPath: "Part 1",
         headings: ["Part 1"],
         level: 1,
-        content: markdown,
-        sourcePath: extractSourcePath(undefined, markdown),
+        content: headinglessContent,
+        sourcePath: extractSourcePath(undefined, headinglessContent),
         includeHeadingInChunkContent: false,
         headinglessDoc: true,
+        pageStart: parsed[0]?.pageStart ?? 1,
+        pageEnd:
+          parsed[parsed.length - 1]?.pageEnd ?? parsed[0]?.pageStart ?? 1,
       },
     ];
   }
@@ -486,6 +518,8 @@ function createBaseSections(markdown: string): BaseSection[] {
       ),
       includeHeadingInChunkContent: heading !== "Introduction",
       headinglessDoc: false,
+      pageStart: section.pageStart,
+      pageEnd: section.pageEnd,
     });
   }
 
@@ -540,6 +574,8 @@ export function buildKnowledgeSectionGraph(
         libraryId: base.libraryId,
         libraryVersion: base.libraryVersion,
         includeHeadingInChunkContent: base.includeHeadingInChunkContent,
+        pageStart: base.pageStart,
+        pageEnd: base.pageEnd,
       });
     });
   }

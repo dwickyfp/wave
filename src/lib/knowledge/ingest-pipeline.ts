@@ -12,8 +12,10 @@
  * 7. Embed enriched text
  * 8. Store chunks + update document status
  */
+import { createHash } from "node:crypto";
 import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import { assessExtractedPageQuality } from "./document-quality";
 import {
   completeSourceDocumentVersion,
   markDocumentVersionFailed,
@@ -30,6 +32,7 @@ import {
 import type {
   ProcessedDocument,
   ProcessedDocumentImage,
+  ProcessedDocumentPage,
 } from "./processor/types";
 
 export const KNOWLEDGE_INGEST_CANCELED_MESSAGE = "Canceled by user";
@@ -132,6 +135,42 @@ async function persistProcessedImages(input: {
   return persisted;
 }
 
+function buildFallbackPages(processedDocument: ProcessedDocument) {
+  if (processedDocument.pages?.length) {
+    return processedDocument.pages;
+  }
+
+  const quality = assessExtractedPageQuality(processedDocument.markdown);
+  return [
+    {
+      pageNumber: 1,
+      rawText: processedDocument.markdown,
+      normalizedText: processedDocument.markdown,
+      markdown: processedDocument.markdown,
+      fingerprint: createHash("sha1")
+        .update(processedDocument.markdown)
+        .digest("hex"),
+      qualityScore: quality.score,
+      extractionMode: "normalized" as const,
+      repairReason: quality.reasons.join(", ") || null,
+    } satisfies ProcessedDocumentPage,
+  ];
+}
+
+async function resolveKnowledgeIngestModels() {
+  const [parseModel, contextModel, imageModel] = (await Promise.all([
+    settingsRepository.getSetting("knowledge-parse-model"),
+    settingsRepository.getSetting("knowledge-context-model"),
+    settingsRepository.getSetting("knowledge-image-model"),
+  ])) as Array<{ provider: string; model: string } | null | undefined>;
+
+  return {
+    parseModel,
+    contextModel,
+    imageModel,
+  };
+}
+
 /**
  * Run the full ingestion pipeline for a single document.
  *
@@ -168,9 +207,10 @@ export async function runIngestPipeline(
     return "skipped";
   }
   const documentTitle = doc.name || doc.originalFilename || "Untitled";
-  const contextxConfig = (await settingsRepository.getSetting(
-    "contextx-model",
-  )) as { provider: string; model: string } | null | undefined;
+  const { parseModel, contextModel, imageModel } =
+    await resolveKnowledgeIngestModels();
+  const eagerImageAnalysisConfig =
+    group.imageMode === "always" ? imageModel : null;
   let pendingVersion: Awaited<
     ReturnType<typeof prepareSourceDocumentVersion>
   > | null = null;
@@ -185,36 +225,54 @@ export async function runIngestPipeline(
     if (doc.fileType === "url" && doc.sourceUrl) {
       processedDocument = await processDocument("url", doc.sourceUrl, {
         documentTitle,
-        imageAnalysis: contextxConfig,
+        imageAnalysis: eagerImageAnalysisConfig,
       });
     } else if (fileBuffer) {
       // Inline mode: use the buffer that was already read (no S3 download needed)
       processedDocument = await processDocument(doc.fileType, fileBuffer, {
         documentTitle,
-        imageAnalysis: contextxConfig,
+        imageAnalysis: eagerImageAnalysisConfig,
       });
     } else if (doc.storagePath) {
       const buffer = await serverFileStorage.download(doc.storagePath);
       processedDocument = await processDocument(doc.fileType, buffer, {
         documentTitle,
-        imageAnalysis: contextxConfig,
+        imageAnalysis: eagerImageAnalysisConfig,
       });
     } else {
       throw new Error(
         "Document has no storage path, source URL, or file buffer",
       );
     }
+    let processedPages = buildFallbackPages(processedDocument);
     let markdown = processedDocument.markdown;
 
     // ── 2. Optional LLM-based markdown parsing ────────────────────────────
     await reportProgress(15);
-    if (contextxConfig?.provider && contextxConfig?.model) {
-      markdown = await parseDocumentToMarkdown(
-        markdown,
+    if (
+      parseModel?.provider &&
+      parseModel?.model &&
+      group.parseMode !== "off"
+    ) {
+      const parsedDocument = await parseDocumentToMarkdown({
+        pages: processedPages,
         documentTitle,
-        contextxConfig.provider,
-        contextxConfig.model,
-      );
+        parsingProvider: parseModel.provider,
+        parsingModel: parseModel.model,
+        mode: group.parseMode,
+        repairPolicy: group.parseRepairPolicy,
+      });
+      markdown = parsedDocument.markdown;
+      processedPages = parsedDocument.pages;
+    } else if (processedPages.length > 0) {
+      markdown = processedPages
+        .flatMap((page) => [
+          `<!--CTX_PAGE:${page.pageNumber}-->`,
+          page.markdown.trim() || page.normalizedText.trim(),
+        ])
+        .filter(Boolean)
+        .join("\n\n")
+        .trim();
     }
     const resolvedImages = resolveContextImageLocations(
       markdown,
@@ -238,6 +296,9 @@ export async function runIngestPipeline(
       group,
       markdown,
       images: persistedImages,
+      pages: processedPages,
+      contextMode: group.contextMode,
+      contextModel,
       reportProgress,
     });
 

@@ -1,4 +1,5 @@
 import type {
+  KnowledgeContextMode,
   KnowledgeChunkMetadata,
   KnowledgeDocument,
   KnowledgeDocumentImage,
@@ -18,7 +19,10 @@ import {
   buildKnowledgeSectionGraph,
   SECTION_GRAPH_VERSION,
 } from "./section-graph";
-import type { ProcessedDocumentImage } from "./processor/types";
+import type {
+  ProcessedDocumentImage,
+  ProcessedDocumentPage,
+} from "./processor/types";
 
 const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
 
@@ -66,6 +70,9 @@ type MaterializationInput = {
   group: KnowledgeGroup;
   markdown: string;
   images?: ProcessedDocumentImage[];
+  pages?: ProcessedDocumentPage[];
+  contextMode?: KnowledgeContextMode;
+  contextModel?: { provider: string; model: string } | null;
   reportProgress?: (pct: number) => Promise<void> | void;
 };
 
@@ -77,6 +84,9 @@ export async function materializeDocumentMarkdown({
   group,
   markdown: inputMarkdown,
   images: inputImages,
+  pages: inputPages,
+  contextMode = "deterministic",
+  contextModel = null,
   reportProgress,
 }: MaterializationInput): Promise<MaterializedDocumentState> {
   const markdown = normalizeStructuredMarkdown(inputMarkdown);
@@ -116,6 +126,13 @@ export async function materializeDocumentMarkdown({
   const metadata = {
     ...(doc.metadata ?? {}),
     sectionGraphVersion: SECTION_GRAPH_VERSION,
+    pageStates: (inputPages ?? []).map((page) => ({
+      pageNumber: page.pageNumber,
+      fingerprint: page.fingerprint,
+      qualityScore: page.qualityScore,
+      extractionMode: page.extractionMode,
+      repairReason: page.repairReason ?? null,
+    })),
   };
 
   const imageEmbeddingTexts = (inputImages ?? [])
@@ -198,6 +215,10 @@ export async function materializeDocumentMarkdown({
       summary: section.summary,
       parentSectionId: section.parentSectionId ?? null,
     })),
+    {
+      mode: contextMode,
+      modelConfig: contextModel,
+    },
   );
 
   await reportProgress?.(75);

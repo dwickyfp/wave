@@ -17,16 +17,14 @@ export default async function KnowledgeGroupDetailPage({ params }: Props) {
   const group = await knowledgeRepository.selectGroupById(id, session.user.id);
   if (!group) notFound();
 
-  const [documents, contextxConfig] = await Promise.all([
-    knowledgeRepository.selectDocumentsByGroupScope(id),
-    settingsRepository.getSetting("contextx-model"),
-  ]);
+  const [documents, parseConfig, contextConfig, imageConfig] =
+    await Promise.all([
+      knowledgeRepository.selectDocumentsByGroupScope(id),
+      settingsRepository.getSetting("knowledge-parse-model"),
+      settingsRepository.getSetting("knowledge-context-model"),
+      settingsRepository.getSetting("knowledge-image-model"),
+    ]);
   const sourceGroups = await knowledgeRepository.selectGroupSources(id);
-
-  const contextxModel = contextxConfig as {
-    provider: string;
-    model: string;
-  } | null;
 
   return (
     <KnowledgeDetailPage
@@ -34,7 +32,14 @@ export default async function KnowledgeGroupDetailPage({ params }: Props) {
       initialDocuments={documents}
       initialSourceGroups={sourceGroups}
       userId={session.user.id}
-      contextxModel={contextxModel}
+      knowledgeModels={{
+        parse:
+          (parseConfig as { provider: string; model: string } | null) ?? null,
+        context:
+          (contextConfig as { provider: string; model: string } | null) ?? null,
+        image:
+          (imageConfig as { provider: string; model: string } | null) ?? null,
+      }}
     />
   );
 }

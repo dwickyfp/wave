@@ -1,11 +1,21 @@
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import {
-  createContextImageMarker,
+  assessExtractedPageQuality,
+  formatExtractedPageToMarkdown,
+} from "../document-quality";
+import { createPageMarker } from "../page-markers";
+import {
   generateContextImageArtifacts,
   generateContextImageBlocks,
   type ImageCandidate,
+  createContextImageMarker,
 } from "./image-markdown";
-import type { DocumentProcessingOptions, ProcessedDocument } from "./types";
+import type {
+  DocumentProcessingOptions,
+  ProcessedDocument,
+  ProcessedDocumentPage,
+} from "./types";
 
 const _require = createRequire(import.meta.url);
 const { PDFParse } = _require("pdf-parse") as {
@@ -30,33 +40,6 @@ const { PDFParse } = _require("pdf-parse") as {
     destroy(): Promise<void>;
   };
 };
-
-function formatPdfTextToMarkdown(rawText: string): string {
-  if (!rawText.trim()) return "";
-
-  const lines = rawText
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  const output: string[] = [];
-  let prevWasShort = false;
-
-  for (const line of lines) {
-    const wordCount = line.split(/\s+/).length;
-    const isLikelySectionHeader =
-      wordCount <= 8 && !line.endsWith(".") && line.length > 2;
-
-    if (isLikelySectionHeader && prevWasShort) {
-      output.push(`## ${line}`);
-    } else {
-      output.push(line);
-    }
-    prevWasShort = isLikelySectionHeader;
-  }
-
-  return output.join("\n").trim();
-}
 
 export async function processPdf(
   buffer: Buffer,
@@ -105,8 +88,25 @@ export async function processPdf(
     const imageBlocks = await generateContextImageBlocks(images);
 
     const output: string[] = [];
+    const pages: ProcessedDocumentPage[] = [];
     for (const page of textResult.pages) {
-      const pageMarkdown = formatPdfTextToMarkdown(page.text);
+      const pageMarkdown = formatExtractedPageToMarkdown(page.text);
+      const pageQuality = assessExtractedPageQuality(page.text, pageMarkdown);
+      pages.push({
+        pageNumber: page.num,
+        rawText: page.text,
+        normalizedText: pageMarkdown,
+        markdown: pageMarkdown,
+        fingerprint: createHash("sha1")
+          .update(page.text)
+          .update(`:${page.num}`)
+          .digest("hex"),
+        qualityScore: pageQuality.score,
+        extractionMode: "normalized" as const,
+        repairReason: pageQuality.reasons.join(", ") || null,
+      });
+
+      output.push(createPageMarker(page.num));
       if (pageMarkdown) {
         output.push(pageMarkdown);
       }
@@ -125,6 +125,7 @@ export async function processPdf(
 
     return {
       markdown: output.join("\n\n").trim(),
+      pages,
       imageBlocks,
       images,
     };

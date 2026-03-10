@@ -13,6 +13,7 @@ import {
   BrainCircuit,
   Check,
   Database,
+  ImageIcon,
   Loader2,
   SlidersHorizontal,
 } from "lucide-react";
@@ -28,7 +29,9 @@ import {
 } from "@/components/knowledge/knowledge-model-selector";
 
 const PROVIDERS_KEY = "/api/settings/providers";
-const CONTEXTX_MODEL_KEY = "/api/settings/contextx-model";
+const PARSE_MODEL_KEY = "/api/settings/knowledge-parse-model";
+const CONTEXT_MODEL_KEY = "/api/settings/knowledge-context-model";
+const IMAGE_MODEL_KEY = "/api/settings/knowledge-image-model";
 const JUDGE_MODEL_KEY = "/api/settings/evaluation-judge-model";
 const EMBEDDING_MODEL_KEY = "/api/settings/self-learning-embedding-model";
 
@@ -138,8 +141,16 @@ export function EmmaModelSettingsButton() {
     PROVIDERS_KEY,
     fetcher,
   );
-  const { data: contextxConfig } = useSWR<ContextXModelConfig>(
-    CONTEXTX_MODEL_KEY,
+  const { data: parseConfig } = useSWR<ContextXModelConfig>(
+    PARSE_MODEL_KEY,
+    fetcher,
+  );
+  const { data: contextConfig } = useSWR<ContextXModelConfig>(
+    CONTEXT_MODEL_KEY,
+    fetcher,
+  );
+  const { data: imageConfig } = useSWR<ContextXModelConfig>(
+    IMAGE_MODEL_KEY,
     fetcher,
   );
   const { data: judgeConfig } = useSWR<EvaluationJudgeModelConfig | null>(
@@ -152,13 +163,23 @@ export function EmmaModelSettingsButton() {
       fetcher,
     );
 
-  const [contextxValue, setContextxValue] = useState(NONE_VALUE);
+  const [parseValue, setParseValue] = useState(NONE_VALUE);
+  const [contextValue, setContextValue] = useState(NONE_VALUE);
+  const [imageValue, setImageValue] = useState(NONE_VALUE);
   const [judgeValue, setJudgeValue] = useState(NONE_VALUE);
   const [embeddingValue, setEmbeddingValue] = useState(NONE_VALUE);
 
   useEffect(() => {
-    setContextxValue(getConfiguredValue(contextxConfig));
-  }, [contextxConfig]);
+    setParseValue(getConfiguredValue(parseConfig));
+  }, [parseConfig]);
+
+  useEffect(() => {
+    setContextValue(getConfiguredValue(contextConfig));
+  }, [contextConfig]);
+
+  useEffect(() => {
+    setImageValue(getConfiguredValue(imageConfig));
+  }, [imageConfig]);
 
   useEffect(() => {
     setJudgeValue(getConfiguredValue(judgeConfig));
@@ -171,19 +192,29 @@ export function EmmaModelSettingsButton() {
   const llmProviders = buildProviders(providers, "llm");
   const embeddingProviders = buildProviders(providers, "embedding");
 
-  const currentContextxValue = getConfiguredValue(contextxConfig);
+  const currentParseValue = getConfiguredValue(parseConfig);
+  const currentContextValue = getConfiguredValue(contextConfig);
+  const currentImageValue = getConfiguredValue(imageConfig);
   const currentJudgeValue = getConfiguredValue(judgeConfig);
   const currentEmbeddingValue = getConfiguredValue(embeddingConfig);
 
-  const configuredCount = [contextxConfig, judgeConfig, embeddingConfig].filter(
-    Boolean,
-  ).length;
+  const configuredCount = [
+    parseConfig,
+    contextConfig,
+    imageConfig,
+    judgeConfig,
+    embeddingConfig,
+  ].filter(Boolean).length;
   const isLoading =
-    contextxConfig === undefined ||
+    parseConfig === undefined ||
+    contextConfig === undefined ||
+    imageConfig === undefined ||
     judgeConfig === undefined ||
     embeddingConfig === undefined;
   const isDirty =
-    contextxValue !== currentContextxValue ||
+    parseValue !== currentParseValue ||
+    contextValue !== currentContextValue ||
+    imageValue !== currentImageValue ||
     judgeValue !== currentJudgeValue ||
     embeddingValue !== currentEmbeddingValue;
 
@@ -213,9 +244,19 @@ export function EmmaModelSettingsButton() {
 
     const tasks = [
       {
-        label: "ContextX model",
-        url: CONTEXTX_MODEL_KEY,
-        value: contextxValue,
+        label: "Knowledge parse",
+        url: PARSE_MODEL_KEY,
+        value: parseValue,
+      },
+      {
+        label: "Knowledge context",
+        url: CONTEXT_MODEL_KEY,
+        value: contextValue,
+      },
+      {
+        label: "Knowledge image",
+        url: IMAGE_MODEL_KEY,
+        value: imageValue,
       },
       {
         label: "Evaluation judge",
@@ -234,7 +275,9 @@ export function EmmaModelSettingsButton() {
     );
 
     await Promise.all([
-      swrMutate(CONTEXTX_MODEL_KEY),
+      swrMutate(PARSE_MODEL_KEY),
+      swrMutate(CONTEXT_MODEL_KEY),
+      swrMutate(IMAGE_MODEL_KEY),
       swrMutate(JUDGE_MODEL_KEY),
       swrMutate(EMBEDDING_MODEL_KEY),
     ]);
@@ -278,7 +321,7 @@ export function EmmaModelSettingsButton() {
             Emma Models
           </span>
           <span className="text-muted-foreground text-xs">
-            {configuredCount}/3 configured
+            {configuredCount}/5 configured
           </span>
         </Button>
       </PopoverTrigger>
@@ -287,20 +330,38 @@ export function EmmaModelSettingsButton() {
           <div>
             <h4 className="font-medium text-sm">Emma Model Setup</h4>
             <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
-              Configure ContextX, the evaluation judge, and self-learning
-              embeddings in one place.
+              Configure knowledge parsing, chunk context, image analysis,
+              evaluation, and self-learning embeddings in one place.
             </p>
           </div>
 
           <div className="space-y-3">
             <SettingCard
-              title="ContextX Model"
-              description="Used for contextual enrichment during knowledge ingestion."
-              value={contextxValue}
-              onValueChange={setContextxValue}
+              title="Knowledge Parse"
+              description="Used for readability-focused page repair when extraction quality is low."
+              value={parseValue}
+              onValueChange={setParseValue}
               providers={llmProviders}
-              placeholder="Select ContextX model"
+              placeholder="Select parse model"
               icon={BookOpen}
+            />
+            <SettingCard
+              title="Knowledge Context"
+              description="Used only when chunk context mode allows LLM summaries for weakly structured chunks."
+              value={contextValue}
+              onValueChange={setContextValue}
+              providers={llmProviders}
+              placeholder="Select context model"
+              icon={BrainCircuit}
+            />
+            <SettingCard
+              title="Knowledge Image"
+              description="Used for vision-based image analysis when image mode is set to eager processing."
+              value={imageValue}
+              onValueChange={setImageValue}
+              providers={llmProviders}
+              placeholder="Select image model"
+              icon={ImageIcon}
             />
             <SettingCard
               title="Evaluation Judge"

@@ -3,14 +3,12 @@ import { settingsRepository } from "lib/db/repository";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-const CONTEXTX_MODEL_KEY = "knowledge-context-model";
+const KNOWLEDGE_IMAGE_MODEL_KEY = "knowledge-image-model";
 
-const ContextXModelSchema = z.object({
+const KnowledgeImageModelSchema = z.object({
   provider: z.string().min(1, "Provider is required"),
   model: z.string().min(1, "Model is required"),
 });
-
-export type ContextXModelConfig = z.infer<typeof ContextXModelSchema>;
 
 async function requireAdmin() {
   const session = await getSession();
@@ -32,11 +30,13 @@ export async function GET() {
     const auth = await requireAdmin();
     if (auth.error) return auth.error;
 
-    const config = await settingsRepository.getSetting(CONTEXTX_MODEL_KEY);
+    const config = await settingsRepository.getSetting(
+      KNOWLEDGE_IMAGE_MODEL_KEY,
+    );
     return NextResponse.json(config ?? null);
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || "Failed to get knowledge context model" },
+      { error: error.message || "Failed to get knowledge image model" },
       { status: 500 },
     );
   }
@@ -48,19 +48,17 @@ export async function PUT(request: Request) {
     if (auth.error) return auth.error;
 
     const json = await request.json();
-
-    // Allow null to clear the setting
     if (json === null) {
-      await settingsRepository.upsertSetting(CONTEXTX_MODEL_KEY, null);
+      await settingsRepository.upsertSetting(KNOWLEDGE_IMAGE_MODEL_KEY, null);
       return NextResponse.json({ success: true });
     }
 
-    const config = ContextXModelSchema.parse(json);
-    await settingsRepository.upsertSetting(CONTEXTX_MODEL_KEY, config);
+    const config = KnowledgeImageModelSchema.parse(json);
+    await settingsRepository.upsertSetting(KNOWLEDGE_IMAGE_MODEL_KEY, config);
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || "Failed to update knowledge context model" },
+      { error: error.message || "Failed to update knowledge image model" },
       { status: 500 },
     );
   }

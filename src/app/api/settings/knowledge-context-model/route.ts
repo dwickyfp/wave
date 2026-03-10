@@ -3,14 +3,12 @@ import { settingsRepository } from "lib/db/repository";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-const CONTEXTX_MODEL_KEY = "knowledge-context-model";
+const KNOWLEDGE_CONTEXT_MODEL_KEY = "knowledge-context-model";
 
-const ContextXModelSchema = z.object({
+const KnowledgeContextModelSchema = z.object({
   provider: z.string().min(1, "Provider is required"),
   model: z.string().min(1, "Model is required"),
 });
-
-export type ContextXModelConfig = z.infer<typeof ContextXModelSchema>;
 
 async function requireAdmin() {
   const session = await getSession();
@@ -32,7 +30,9 @@ export async function GET() {
     const auth = await requireAdmin();
     if (auth.error) return auth.error;
 
-    const config = await settingsRepository.getSetting(CONTEXTX_MODEL_KEY);
+    const config = await settingsRepository.getSetting(
+      KNOWLEDGE_CONTEXT_MODEL_KEY,
+    );
     return NextResponse.json(config ?? null);
   } catch (error: any) {
     return NextResponse.json(
@@ -48,15 +48,13 @@ export async function PUT(request: Request) {
     if (auth.error) return auth.error;
 
     const json = await request.json();
-
-    // Allow null to clear the setting
     if (json === null) {
-      await settingsRepository.upsertSetting(CONTEXTX_MODEL_KEY, null);
+      await settingsRepository.upsertSetting(KNOWLEDGE_CONTEXT_MODEL_KEY, null);
       return NextResponse.json({ success: true });
     }
 
-    const config = ContextXModelSchema.parse(json);
-    await settingsRepository.upsertSetting(CONTEXTX_MODEL_KEY, config);
+    const config = KnowledgeContextModelSchema.parse(json);
+    await settingsRepository.upsertSetting(KNOWLEDGE_CONTEXT_MODEL_KEY, config);
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json(

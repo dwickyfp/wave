@@ -12,6 +12,17 @@ export type ContextImageBlock = {
   markdown: string;
 };
 
+export type ProcessedDocumentPage = {
+  pageNumber: number;
+  rawText: string;
+  normalizedText: string;
+  markdown: string;
+  fingerprint: string;
+  qualityScore: number;
+  extractionMode: "raw" | "normalized" | "refined";
+  repairReason?: string | null;
+};
+
 export type ProcessedDocumentImageKind = "embedded" | "region";
 
 export type ProcessedDocumentImage = {
@@ -45,6 +56,7 @@ export type DocumentProcessingOptions = {
 
 export type ProcessedDocument = {
   markdown: string;
+  pages?: ProcessedDocumentPage[];
   imageBlocks?: ContextImageBlock[];
   images?: ProcessedDocumentImage[];
 };

@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 
 import {
   mergeParsedMarkdownWindows,
+  parseDocumentToMarkdown,
   splitRawTextIntoWindows,
 } from "./markdown-parser";
 
@@ -39,5 +40,41 @@ describe("markdown-parser", () => {
     expect(merged.match(/## Install/g)).toHaveLength(1);
     expect(merged.match(/## Usage/g)).toHaveLength(1);
     expect(merged).toContain("## Tail\n\nDone");
+  });
+
+  it("preserves page markers and skips parsing work when parse mode is off", async () => {
+    const result = await parseDocumentToMarkdown({
+      pages: [
+        {
+          pageNumber: 1,
+          rawText: "Page one raw text",
+          normalizedText: "Page one markdown",
+          markdown: "Page one markdown",
+          fingerprint: "page-1",
+          qualityScore: 0.9,
+          extractionMode: "normalized",
+          repairReason: null,
+        },
+        {
+          pageNumber: 2,
+          rawText: "Page two raw text",
+          normalizedText: "Page two markdown",
+          markdown: "Page two markdown",
+          fingerprint: "page-2",
+          qualityScore: 0.4,
+          extractionMode: "normalized",
+          repairReason: "fragmented_lines",
+        },
+      ],
+      documentTitle: "Guide",
+      parsingProvider: "openai",
+      parsingModel: "gpt-4.1-mini",
+      mode: "off",
+      repairPolicy: "section-safe-reorder",
+    });
+
+    expect(result.markdown).toContain("<!--CTX_PAGE:1-->");
+    expect(result.markdown).toContain("<!--CTX_PAGE:2-->");
+    expect(result.pages[1]?.extractionMode).toBe("normalized");
   });
 });
