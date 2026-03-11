@@ -274,10 +274,12 @@ async function parseWindowToMarkdown(input: {
   });
 
   const parsed = text.trim();
-  // Use whitespace-collapsed length so sparse pages (charts, table grids,
-  // padded financial layouts) don't inflate the threshold unfairly.
-  const effectiveRawLength = input.rawText.replace(/\s+/g, " ").trim().length;
-  if (!parsed || parsed.length < Math.max(50, effectiveRawLength * 0.15)) {
+  // Only treat truly empty or near-empty responses as failures – these catch
+  // LLM refusals ("I can't help"), blank outputs, or network truncation.
+  // Ratio-based comparisons against rawText are unreliable: sparse financial
+  // pages, chart grids, and image-heavy pages all produce legitimately compact
+  // markdown that would false-positive on any percentage threshold.
+  if (!parsed || parsed.length < 20) {
     const message = `[ContextX] Parser returned suspiciously short output for "${input.documentTitle}" page ${input.pageNumber}`;
     if (input.failureMode === "fail") {
       throw new Error(message);

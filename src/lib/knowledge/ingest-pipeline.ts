@@ -306,7 +306,7 @@ export async function runIngestPipeline(
       parsingModel: parseModel.model,
       mode: effectiveGroup.parseMode,
       repairPolicy: effectiveGroup.parseRepairPolicy,
-      failureMode: "fail",
+      failureMode: "fallback",
       onPageProgress: async ({ currentPage, pageNumber }) => {
         const parseProgress =
           totalPages > 0 ? 15 + (currentPage / totalPages) * 20 : 35;

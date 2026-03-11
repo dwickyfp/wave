@@ -26,8 +26,13 @@ export function useKnowledgeDocuments(groupId: string) {
     groupId ? `/api/knowledge/${groupId}/documents` : null,
     fetcher,
     {
-      // Poll faster (2s) while any document is processing for real-time progress
-      refreshInterval: 2000,
+      // Only poll while at least one document is actively ingesting.
+      // When all docs are settled (ready/failed) the interval drops to 0,
+      // preventing the periodic refetch that causes the drawer glitch.
+      refreshInterval: (data) =>
+        data?.some((d) => d.status === "pending" || d.status === "processing")
+          ? 2000
+          : 0,
     },
   );
   return swr;
