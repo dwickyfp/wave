@@ -1,10 +1,12 @@
 import { embedMany, embed } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createAzure } from "@ai-sdk/azure";
 import { createCohere } from "@ai-sdk/cohere";
 import { createOllama } from "ollama-ai-provider-v2";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { settingsRepository } from "lib/db/repository";
 import { EmbeddingModel } from "ai";
+import type { ProviderSettings } from "app-types/settings";
 
 const EMBEDDING_CACHE_MAX_ENTRIES = 500;
 const EMBEDDING_CACHE_TTL_MS = 15 * 60 * 1000;
@@ -61,11 +63,22 @@ type SingleEmbeddingOptions = {
 
 // ─── Model Creation ────────────────────────────────────────────────────────────
 
+function readSetting(
+  settings: ProviderSettings | null | undefined,
+  key: string,
+): string | null {
+  const value = settings?.[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 function createEmbeddingModel(
   provider: string,
   modelApiName: string,
   apiKey?: string | null,
   baseUrl?: string | null,
+  settings?: ProviderSettings | null,
 ): EmbeddingModel | null {
   try {
     switch (provider) {
@@ -98,6 +111,32 @@ function createEmbeddingModel(
         const p = createOpenRouter({ apiKey: key });
         return p.textEmbeddingModel(modelApiName as any);
       }
+      case "azure": {
+        const key = apiKey || process.env.AZURE_API_KEY;
+        if (!key) return null;
+        const isHttpUrl = baseUrl ? /^https?:\/\//i.test(baseUrl) : false;
+        const configuredBaseUrl =
+          readSetting(settings, "baseURL") ||
+          readSetting(settings, "baseUrl") ||
+          (isHttpUrl ? baseUrl : null);
+        const configuredResourceName =
+          readSetting(settings, "resourceName") ||
+          readSetting(settings, "resource") ||
+          (!isHttpUrl && baseUrl ? baseUrl : null) ||
+          process.env.AZURE_RESOURCE_NAME ||
+          null;
+        const configuredApiVersion =
+          readSetting(settings, "apiVersion") || null;
+        const p = createAzure({
+          apiKey: key,
+          ...(configuredBaseUrl ? { baseURL: configuredBaseUrl } : {}),
+          ...(!configuredBaseUrl && configuredResourceName
+            ? { resourceName: configuredResourceName }
+            : {}),
+          ...(configuredApiVersion ? { apiVersion: configuredApiVersion } : {}),
+        });
+        return p.embedding(modelApiName);
+      }
       default:
         return null;
     }
@@ -119,6 +158,7 @@ async function getEmbeddingModelFromDb(
       modelName,
       providerConfig.apiKey,
       providerConfig.baseUrl,
+      providerConfig.settings,
     );
   } catch {
     return null;
