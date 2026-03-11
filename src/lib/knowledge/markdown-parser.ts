@@ -274,7 +274,10 @@ async function parseWindowToMarkdown(input: {
   });
 
   const parsed = text.trim();
-  if (!parsed || parsed.length < Math.max(50, input.rawText.length * 0.15)) {
+  // Use whitespace-collapsed length so sparse pages (charts, table grids,
+  // padded financial layouts) don't inflate the threshold unfairly.
+  const effectiveRawLength = input.rawText.replace(/\s+/g, " ").trim().length;
+  if (!parsed || parsed.length < Math.max(50, effectiveRawLength * 0.15)) {
     const message = `[ContextX] Parser returned suspiciously short output for "${input.documentTitle}" page ${input.pageNumber}`;
     if (input.failureMode === "fail") {
       throw new Error(message);
