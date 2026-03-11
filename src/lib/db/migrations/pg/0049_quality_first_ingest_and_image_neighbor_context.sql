@@ -18,12 +18,12 @@ WHERE
   OR "image_mode" IS DISTINCT FROM 'always';
 
 ALTER TABLE "knowledge_document_image"
-ADD COLUMN "preceding_text" text,
-ADD COLUMN "following_text" text;
+ADD COLUMN IF NOT EXISTS "preceding_text" text,
+ADD COLUMN IF NOT EXISTS "following_text" text;
 
 ALTER TABLE "knowledge_document_image_version"
-ADD COLUMN "preceding_text" text,
-ADD COLUMN "following_text" text;
+ADD COLUMN IF NOT EXISTS "preceding_text" text,
+ADD COLUMN IF NOT EXISTS "following_text" text;
 
 INSERT INTO "system_settings" ("key", "value")
 VALUES ('knowledge-image-neighbor-context-enabled', 'true'::json)

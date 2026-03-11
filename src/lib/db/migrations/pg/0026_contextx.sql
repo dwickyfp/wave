@@ -2,7 +2,7 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 --> statement-breakpoint
 
-CREATE TABLE "knowledge_group" (
+CREATE TABLE IF NOT EXISTS "knowledge_group" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"name" text NOT NULL,
 	"description" text,
@@ -23,7 +23,7 @@ CREATE TABLE "knowledge_group" (
 );
 --> statement-breakpoint
 
-CREATE TABLE "knowledge_document" (
+CREATE TABLE IF NOT EXISTS "knowledge_document" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"group_id" uuid NOT NULL,
 	"user_id" uuid NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE "knowledge_document" (
 );
 --> statement-breakpoint
 
-CREATE TABLE "knowledge_chunk" (
+CREATE TABLE IF NOT EXISTS "knowledge_chunk" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"document_id" uuid NOT NULL,
 	"group_id" uuid NOT NULL,
@@ -58,7 +58,7 @@ CREATE TABLE "knowledge_chunk" (
 );
 --> statement-breakpoint
 
-CREATE TABLE "knowledge_group_agent" (
+CREATE TABLE IF NOT EXISTS "knowledge_group_agent" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"agent_id" uuid NOT NULL,
 	"group_id" uuid NOT NULL,
@@ -67,7 +67,7 @@ CREATE TABLE "knowledge_group_agent" (
 );
 --> statement-breakpoint
 
-CREATE TABLE "knowledge_usage_log" (
+CREATE TABLE IF NOT EXISTS "knowledge_usage_log" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"group_id" uuid NOT NULL,
 	"user_id" uuid,
@@ -80,35 +80,80 @@ CREATE TABLE "knowledge_usage_log" (
 );
 --> statement-breakpoint
 
-ALTER TABLE "knowledge_group" ADD CONSTRAINT "knowledge_group_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_group_user_id_user_id_fk') THEN
+    ALTER TABLE "knowledge_group" ADD CONSTRAINT "knowledge_group_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_document" ADD CONSTRAINT "knowledge_document_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_document_group_id_knowledge_group_id_fk') THEN
+    ALTER TABLE "knowledge_document" ADD CONSTRAINT "knowledge_document_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_document" ADD CONSTRAINT "knowledge_document_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_document_user_id_user_id_fk') THEN
+    ALTER TABLE "knowledge_document" ADD CONSTRAINT "knowledge_document_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_chunk" ADD CONSTRAINT "knowledge_chunk_document_id_knowledge_document_id_fk" FOREIGN KEY ("document_id") REFERENCES "public"."knowledge_document"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_chunk_document_id_knowledge_document_id_fk') THEN
+    ALTER TABLE "knowledge_chunk" ADD CONSTRAINT "knowledge_chunk_document_id_knowledge_document_id_fk" FOREIGN KEY ("document_id") REFERENCES "public"."knowledge_document"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_chunk" ADD CONSTRAINT "knowledge_chunk_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_chunk_group_id_knowledge_group_id_fk') THEN
+    ALTER TABLE "knowledge_chunk" ADD CONSTRAINT "knowledge_chunk_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_group_agent" ADD CONSTRAINT "knowledge_group_agent_agent_id_agent_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agent"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_group_agent_agent_id_agent_id_fk') THEN
+    ALTER TABLE "knowledge_group_agent" ADD CONSTRAINT "knowledge_group_agent_agent_id_agent_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agent"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_group_agent" ADD CONSTRAINT "knowledge_group_agent_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_group_agent_group_id_knowledge_group_id_fk') THEN
+    ALTER TABLE "knowledge_group_agent" ADD CONSTRAINT "knowledge_group_agent_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_usage_log" ADD CONSTRAINT "knowledge_usage_log_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_usage_log_group_id_knowledge_group_id_fk') THEN
+    ALTER TABLE "knowledge_usage_log" ADD CONSTRAINT "knowledge_usage_log_group_id_knowledge_group_id_fk" FOREIGN KEY ("group_id") REFERENCES "public"."knowledge_group"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "knowledge_usage_log" ADD CONSTRAINT "knowledge_usage_log_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_usage_log_user_id_user_id_fk') THEN
+    ALTER TABLE "knowledge_usage_log" ADD CONSTRAINT "knowledge_usage_log_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;
+  END IF;
+END $$;
 --> statement-breakpoint
 
-CREATE INDEX "knowledge_chunk_group_id_idx" ON "knowledge_chunk" USING btree ("group_id");
+CREATE INDEX IF NOT EXISTS "knowledge_chunk_group_id_idx" ON "knowledge_chunk" USING btree ("group_id");
 --> statement-breakpoint
-CREATE INDEX "knowledge_chunk_document_id_idx" ON "knowledge_chunk" USING btree ("document_id");
+CREATE INDEX IF NOT EXISTS "knowledge_chunk_document_id_idx" ON "knowledge_chunk" USING btree ("document_id");
 --> statement-breakpoint
-CREATE INDEX "knowledge_chunk_search_vector_idx" ON "knowledge_chunk" USING gin ("search_vector");
+CREATE INDEX IF NOT EXISTS "knowledge_chunk_search_vector_idx" ON "knowledge_chunk" USING gin ("search_vector");
 --> statement-breakpoint
-CREATE INDEX "knowledge_chunk_embedding_idx" ON "knowledge_chunk" USING ivfflat ("embedding" vector_cosine_ops) WITH (lists = 100);
+CREATE INDEX IF NOT EXISTS "knowledge_chunk_embedding_idx" ON "knowledge_chunk" USING ivfflat ("embedding" vector_cosine_ops) WITH (lists = 100);
 --> statement-breakpoint
-CREATE INDEX "knowledge_document_group_id_idx" ON "knowledge_document" USING btree ("group_id");
+CREATE INDEX IF NOT EXISTS "knowledge_document_group_id_idx" ON "knowledge_document" USING btree ("group_id");
 --> statement-breakpoint
-CREATE INDEX "knowledge_usage_log_group_id_idx" ON "knowledge_usage_log" USING btree ("group_id");
+CREATE INDEX IF NOT EXISTS "knowledge_usage_log_group_id_idx" ON "knowledge_usage_log" USING btree ("group_id");
 --> statement-breakpoint
-CREATE INDEX "knowledge_usage_log_created_at_idx" ON "knowledge_usage_log" USING btree ("created_at");
+CREATE INDEX IF NOT EXISTS "knowledge_usage_log_created_at_idx" ON "knowledge_usage_log" USING btree ("created_at");

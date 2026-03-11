@@ -1,4 +1,4 @@
-CREATE TABLE "snowflake_agent_config" (
+CREATE TABLE IF NOT EXISTS "snowflake_agent_config" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"agent_id" uuid NOT NULL,
 	"account_locator" text NOT NULL,
@@ -13,5 +13,11 @@ CREATE TABLE "snowflake_agent_config" (
 	CONSTRAINT "snowflake_agent_config_agent_id_unique" UNIQUE("agent_id")
 );
 --> statement-breakpoint
-ALTER TABLE "agent" ADD COLUMN "agent_type" varchar DEFAULT 'standard' NOT NULL;--> statement-breakpoint
-ALTER TABLE "snowflake_agent_config" ADD CONSTRAINT "snowflake_agent_config_agent_id_agent_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agent"("id") ON DELETE cascade ON UPDATE no action;
+ALTER TABLE "agent" ADD COLUMN IF NOT EXISTS "agent_type" varchar DEFAULT 'standard' NOT NULL;
+--> statement-breakpoint
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'snowflake_agent_config_agent_id_agent_id_fk') THEN
+    ALTER TABLE "snowflake_agent_config" ADD CONSTRAINT "snowflake_agent_config_agent_id_agent_id_fk" FOREIGN KEY ("agent_id") REFERENCES "public"."agent"("id") ON DELETE cascade ON UPDATE no action;
+  END IF;
+END $$;
