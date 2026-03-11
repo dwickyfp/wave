@@ -4,6 +4,10 @@ vi.mock("lib/db/repository", () => ({
   knowledgeRepository: {
     getGroupsByAgentId: vi.fn(),
   },
+  skillGroupRepository: {
+    getGroupsByAgentId: vi.fn(),
+    getSkillsByAgentGroupId: vi.fn(),
+  },
   skillRepository: {
     getSkillsByAgentId: vi.fn(),
   },
@@ -57,8 +61,12 @@ vi.mock("lib/ai/prompts", () => ({
   buildUserSystemPrompt: vi.fn(() => ""),
 }));
 
-const { knowledgeRepository, skillRepository, subAgentRepository } =
-  await import("lib/db/repository");
+const {
+  knowledgeRepository,
+  skillGroupRepository,
+  skillRepository,
+  subAgentRepository,
+} = await import("lib/db/repository");
 const { loadMcpTools } = await import("@/app/api/chat/shared.chat");
 const { loadSubAgentTools } = await import("lib/ai/agent/subagent-loader");
 const { createKnowledgeDocsTool } = await import("lib/ai/tools/knowledge-tool");
@@ -83,6 +91,12 @@ describe("loadWaveAgentBoundTools", () => {
         instructions: "Use owner skill",
       },
     ] as any);
+    vi.mocked(skillGroupRepository.getGroupsByAgentId).mockResolvedValue(
+      [] as any,
+    );
+    vi.mocked(skillGroupRepository.getSkillsByAgentGroupId).mockResolvedValue(
+      [] as any,
+    );
     vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue([
       {
         id: "subagent-1",

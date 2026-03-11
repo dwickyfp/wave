@@ -27,11 +27,8 @@ import {
   LOAD_SKILL_TOOL_NAME,
 } from "lib/ai/tools/skill-tool";
 import type { ActiveAgentSkill } from "lib/ai/agent/skill-activation";
-import {
-  knowledgeRepository,
-  skillRepository,
-  subAgentRepository,
-} from "lib/db/repository";
+import { getAgentAttachedSkills } from "lib/ai/agent/attached-skills";
+import { knowledgeRepository, subAgentRepository } from "lib/db/repository";
 import {
   loadAppDefaultTools,
   loadMcpTools,
@@ -87,13 +84,14 @@ export async function loadWaveAgentContinueCapabilities(options: {
 
   const capabilityUserId = resolveWaveAgentCapabilityUserId(options);
 
-  const [subAgents, knowledgeGroups, attachedSkills] = await Promise.all([
+  const [subAgents, knowledgeGroups, skillState] = await Promise.all([
     agent.subAgentsEnabled
       ? subAgentRepository.selectSubAgentsByAgentId(agent.id)
       : Promise.resolve([]),
     knowledgeRepository.getGroupsByAgentId(agent.id),
-    skillRepository.getSkillsByAgentId(agent.id),
+    getAgentAttachedSkills(agent.id),
   ]);
+  const attachedSkills = skillState.attachedSkills;
 
   const subagentTools =
     agent.subAgentsEnabled && subAgents.length > 0

@@ -32,6 +32,7 @@ import {
   getLatestUserMessageText,
   resolveActiveAgentSkills,
 } from "lib/ai/agent/skill-activation";
+import { getAgentAttachedSkills } from "lib/ai/agent/attached-skills";
 import {
   sanitizeModelMessagesForProvider,
   shouldSendToolDefinitionsToProvider,
@@ -47,7 +48,6 @@ import {
   agentRepository,
   knowledgeRepository,
   settingsRepository,
-  skillRepository,
   subAgentRepository,
   workflowRepository,
 } from "lib/db/repository";
@@ -688,9 +688,8 @@ export async function executeSubAgentExternalTool(
     chatModel,
     source: "mcp",
   });
-  const attachedSkills = await skillRepository.getSkillsByAgentId(
-    context.agent.id,
-  );
+  const attachedSkills = (await getAgentAttachedSkills(context.agent.id))
+    .attachedSkills;
   const activeSkillResolution = resolveActiveAgentSkills({
     skills: attachedSkills,
     taskText: input.task,

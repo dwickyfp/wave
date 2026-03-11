@@ -15,6 +15,7 @@ import { pgA2aAgentRepository } from "./pg/repositories/a2a-agent-repository.pg"
 import { pgSettingsRepository } from "./pg/repositories/settings-repository.pg";
 import { pgKnowledgeRepository } from "./pg/repositories/knowledge-repository.pg";
 import { pgSkillRepository } from "./pg/repositories/skill-repository.pg";
+import { pgSkillGroupRepository } from "./pg/repositories/skill-group-repository.pg";
 import { pgAgentAnalyticsRepository } from "./pg/repositories/agent-analytics-repository.pg";
 import { pgPilotExtensionRepository } from "./pg/repositories/pilot-extension-repository.pg";
 import { pgSelfLearningRepository } from "./pg/repositories/self-learning-repository.pg";
@@ -39,6 +40,7 @@ export const a2aAgentRepository = pgA2aAgentRepository;
 export const settingsRepository = pgSettingsRepository;
 export const knowledgeRepository = pgKnowledgeRepository;
 export const skillRepository = pgSkillRepository;
+export const skillGroupRepository = pgSkillGroupRepository;
 export const agentAnalyticsRepository = pgAgentAnalyticsRepository;
 export const pilotExtensionRepository = pgPilotExtensionRepository;
 export const selfLearningRepository = pgSelfLearningRepository;

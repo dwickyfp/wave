@@ -12,6 +12,10 @@ vi.mock("lib/db/repository", () => ({
   knowledgeRepository: {
     getGroupsByAgentId: vi.fn(),
   },
+  skillGroupRepository: {
+    getGroupsByAgentId: vi.fn(),
+    getSkillsByAgentGroupId: vi.fn(),
+  },
   settingsRepository: {
     getProviders: vi.fn(),
   },
@@ -129,6 +133,7 @@ const {
   agentAnalyticsRepository,
   knowledgeRepository,
   settingsRepository,
+  skillGroupRepository,
   skillRepository,
   subAgentRepository,
   workflowRepository,
@@ -206,6 +211,12 @@ describe("agent continue/openai route", () => {
       supportsFileInput: false,
     });
     vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([]);
+    vi.mocked(skillGroupRepository.getGroupsByAgentId).mockResolvedValue(
+      [] as any,
+    );
+    vi.mocked(skillGroupRepository.getSkillsByAgentGroupId).mockResolvedValue(
+      [] as any,
+    );
     vi.mocked(skillRepository.getSkillsByAgentId).mockResolvedValue([]);
     vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue(
       [],

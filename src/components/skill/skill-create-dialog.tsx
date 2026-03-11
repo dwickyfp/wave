@@ -23,12 +23,17 @@ interface SkillCreateDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialSkill?: SkillSummary | null;
+  onSkillSaved?: (
+    skill: SkillSummary,
+    options: { isEdit: boolean },
+  ) => void | Promise<void>;
 }
 
 export function SkillCreateDialog({
   open,
   onOpenChange,
   initialSkill,
+  onSkillSaved,
 }: SkillCreateDialogProps) {
   const [loading, setLoading] = useState(false);
   const [openGenerate, setOpenGenerate] = useState(false);
@@ -82,6 +87,9 @@ export function SkillCreateDialog({
         throw new Error(`Failed to ${isEdit ? "update" : "create"} skill`);
       }
 
+      const skill = (await res.json()) as SkillSummary;
+
+      await onSkillSaved?.(skill, { isEdit });
       await mutateSkills();
       toast.success(isEdit ? "Skill updated" : "Skill created");
       onOpenChange(false);

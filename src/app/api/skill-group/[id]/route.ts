@@ -1,6 +1,7 @@
-import { updateSkillSchema } from "app-types/skill";
+import { updateSkillGroupSchema } from "app-types/skill";
 import { getSession } from "auth/server";
-import { skillGroupRepository, skillRepository } from "lib/db/repository";
+import { skillGroupRepository } from "lib/db/repository";
+import { hasIncompatibleSkillsForGroupVisibility } from "lib/skill/skill-group-visibility";
 import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
@@ -9,24 +10,28 @@ interface Params {
 
 export async function GET(_req: NextRequest, { params }: Params) {
   const session = await getSession();
-  if (!session?.user)
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   const { id } = await params;
-  const skill = await skillRepository.selectSkillById(id, session.user.id);
-  if (!skill) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const group = await skillGroupRepository.selectGroupById(id, session.user.id);
+  if (!group) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
 
-  return NextResponse.json(skill);
+  return NextResponse.json(group);
 }
 
 export async function PUT(req: NextRequest, { params }: Params) {
   const session = await getSession();
-  if (!session?.user)
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   const { id } = await params;
   const body = await req.json();
-  const parsed = updateSkillSchema.safeParse(body);
+  const parsed = updateSkillGroupSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { error: parsed.error.flatten() },
@@ -34,14 +39,18 @@ export async function PUT(req: NextRequest, { params }: Params) {
     );
   }
 
-  if (parsed.data.visibility === "private") {
-    const sharedGroups =
-      await skillGroupRepository.getSharedGroupsBySkillId(id);
-    if (sharedGroups.length > 0) {
+  if (parsed.data.visibility) {
+    const skills = await skillGroupRepository.getSkillsByGroupId(id);
+    const hasIncompatibleSkills = hasIncompatibleSkillsForGroupVisibility({
+      skills,
+      groupVisibility: parsed.data.visibility,
+    });
+
+    if (hasIncompatibleSkills) {
       return NextResponse.json(
         {
           error:
-            "This skill is still used by read-only or public skill groups.",
+            "Read-only or public skill groups can only include read-only or public skills.",
         },
         { status: 409 },
       );
@@ -49,12 +58,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
   }
 
   try {
-    const skill = await skillRepository.updateSkill(
+    const group = await skillGroupRepository.updateGroup(
       id,
       session.user.id,
       parsed.data,
     );
-    return NextResponse.json(skill);
+    return NextResponse.json(group);
   } catch {
     return NextResponse.json(
       { error: "Not found or unauthorized" },
@@ -65,10 +74,11 @@ export async function PUT(req: NextRequest, { params }: Params) {
 
 export async function DELETE(_req: NextRequest, { params }: Params) {
   const session = await getSession();
-  if (!session?.user)
+  if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
   const { id } = await params;
-  await skillRepository.deleteSkill(id, session.user.id);
+  await skillGroupRepository.deleteGroup(id, session.user.id);
   return NextResponse.json({ success: true });
 }

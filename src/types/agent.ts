@@ -3,7 +3,7 @@ import { ChatMentionSchema } from "./chat";
 import { VisibilitySchema } from "./util";
 import type { SubAgent } from "./subagent";
 import type { KnowledgeSummary } from "./knowledge";
-import type { SkillSummary } from "./skill";
+import type { SkillGroupSummary, SkillSummary } from "./skill";
 
 export type AgentIcon = {
   type: "emoji";
@@ -102,6 +102,7 @@ export type Agent = AgentSummary & {
   subAgents?: SubAgent[];
   knowledgeGroups?: KnowledgeSummary[];
   skills?: SkillSummary[];
+  skillGroups?: SkillGroupSummary[];
 };
 
 export type AgentRepository = {

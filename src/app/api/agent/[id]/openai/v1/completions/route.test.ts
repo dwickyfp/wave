@@ -22,6 +22,10 @@ vi.mock("lib/db/repository", () => ({
   knowledgeRepository: {
     getGroupsByAgentId: vi.fn(),
   },
+  skillGroupRepository: {
+    getGroupsByAgentId: vi.fn(),
+    getSkillsByAgentGroupId: vi.fn(),
+  },
   settingsRepository: {
     getProviders: vi.fn(),
   },
