@@ -129,6 +129,7 @@ export type ChatMetadata = {
   chatModel?: ChatModel;
   toolChoice?: "auto" | "none" | "manual";
   toolCount?: number;
+  activatedSkills?: string[];
   agentId?: string;
   source?: "chat" | "emma_pilot";
   tabUrl?: string;
@@ -187,6 +188,18 @@ export type ChatThread = {
   a2aContextId?: string | null;
   /** Optional A2A task ID returned by the remote agent. */
   a2aTaskId?: string | null;
+};
+
+export type ChatThreadListItem = ChatThread & {
+  lastMessageAt: number;
+};
+
+export type PaginatedChatThreads = {
+  items: ChatThreadListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 };
 
 export type ChatThreadDetails = ChatThread & {
@@ -299,9 +312,21 @@ export type ChatRepository = {
 
   deleteChatMessage(id: string): Promise<void>;
 
-  selectThreadDetails(id: string): Promise<ChatThreadDetails | null>;
+  selectThreadDetails(
+    id: string,
+    options?: {
+      messageOffset?: number;
+      messageLimit?: number;
+    },
+  ): Promise<ChatThreadDetails | null>;
 
-  selectMessagesByThreadId(threadId: string): Promise<ChatMessage[]>;
+  selectMessagesByThreadId(
+    threadId: string,
+    options?: {
+      offset?: number;
+      limit?: number;
+    },
+  ): Promise<ChatMessage[]>;
 
   selectMessageById(messageId: string): Promise<ChatMessage | null>;
 
@@ -315,11 +340,14 @@ export type ChatRepository = {
 
   selectLatestThreadChatModel(threadId: string): Promise<ChatModel | null>;
 
-  selectThreadsByUserId(userId: string): Promise<
-    (ChatThread & {
-      lastMessageAt: number;
-    })[]
-  >;
+  selectThreadsByUserId(userId: string): Promise<ChatThreadListItem[]>;
+  selectThreadsPageByUserId(
+    userId: string,
+    input: {
+      limit: number;
+      offset: number;
+    },
+  ): Promise<PaginatedChatThreads>;
 
   updateThread(
     id: string,

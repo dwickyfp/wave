@@ -1,15 +1,19 @@
+import { createHash } from "node:crypto";
 import { embedMany, embed } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAzure } from "@ai-sdk/azure";
 import { createCohere } from "@ai-sdk/cohere";
 import { createOllama } from "ollama-ai-provider-v2";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { CacheKeys } from "lib/cache/cache-keys";
+import { serverCache } from "lib/cache";
 import { settingsRepository } from "lib/db/repository";
 import { EmbeddingModel } from "ai";
 import type { ProviderSettings } from "app-types/settings";
 
 const EMBEDDING_CACHE_MAX_ENTRIES = 500;
 const EMBEDDING_CACHE_TTL_MS = 15 * 60 * 1000;
+const EMBEDDING_CACHE_TTL_SERVER_MS = 15 * 60 * 1000;
 
 class EmbeddingLruCache {
   private readonly entries = new Map<
@@ -212,7 +216,8 @@ function buildEmbeddingCacheKey(
   modelName: string,
   text: string,
 ) {
-  return `${provider}:${modelName}:${text}`;
+  const hash = createHash("sha256").update(text).digest("hex");
+  return CacheKeys.embedding(provider, modelName, hash);
 }
 
 /**
@@ -305,11 +310,21 @@ export async function embedSingleTextWithUsage(
         usageTokens: 0,
       };
     }
+
+    const sharedCached = await serverCache.get<number[]>(cacheKey);
+    if (sharedCached) {
+      embeddingCache.set(cacheKey, sharedCached);
+      return {
+        embedding: sharedCached,
+        usageTokens: 0,
+      };
+    }
   }
 
   const { embedding, usage } = await embed({ model, value: preprocessed });
   if (options.cache !== false) {
     embeddingCache.set(cacheKey, embedding);
+    await serverCache.set(cacheKey, embedding, EMBEDDING_CACHE_TTL_SERVER_MS);
   }
   return {
     embedding,

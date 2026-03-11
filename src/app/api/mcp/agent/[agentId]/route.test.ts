@@ -68,6 +68,7 @@ vi.mock("lib/ai/tools/skill-tool", () => ({
 }));
 
 vi.mock("lib/ai/prompts", () => ({
+  buildActiveAgentSkillsSystemPrompt: vi.fn(() => ""),
   buildAgentSkillsSystemPrompt: vi.fn(() => ""),
   buildKnowledgeContextSystemPrompt: vi.fn(() => ""),
   buildMcpServerCustomizationsSystemPrompt: vi.fn(() => ""),

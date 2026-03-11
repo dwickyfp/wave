@@ -410,6 +410,14 @@ export interface KnowledgeUsageStats {
   }>;
 }
 
+export interface PaginatedKnowledgeDocuments {
+  items: KnowledgeDocument[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
 
 export const createKnowledgeGroupSchema = z.object({
@@ -504,11 +512,25 @@ export interface KnowledgeRepository {
   ): Promise<KnowledgeDocument>;
   selectDocumentsByGroupId(groupId: string): Promise<KnowledgeDocument[]>;
   selectDocumentsByGroupScope(groupId: string): Promise<KnowledgeDocument[]>;
+  selectDocumentsPageByGroupScope(
+    groupId: string,
+    input: { limit: number; offset: number },
+  ): Promise<PaginatedKnowledgeDocuments>;
   selectDocumentById(id: string): Promise<KnowledgeDocument | null>;
   selectDocumentByFingerprint(
     groupId: string,
     fingerprint: string,
   ): Promise<KnowledgeDocument | null>;
+  selectUrlDocumentBySourceUrl(
+    groupId: string,
+    sourceUrl: string,
+  ): Promise<KnowledgeDocument | null>;
+  selectFileDocumentByNameAndSize(input: {
+    groupId: string;
+    originalFilename: string;
+    fileType: DocumentFileType;
+    fileSize: number;
+  }): Promise<KnowledgeDocument | null>;
   updateDocumentStatus(
     id: string,
     status: DocumentStatus,

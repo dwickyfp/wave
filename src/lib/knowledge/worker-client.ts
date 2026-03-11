@@ -43,7 +43,7 @@ async function createQueue(): Promise<Queue> {
     maxRetriesPerRequest: null,
     lazyConnect: true,
   });
-  return new Queue(QUEUE_NAME, {
+  const queue = new Queue(QUEUE_NAME, {
     connection: connection as any,
     defaultJobOptions: {
       attempts: 3,
@@ -52,6 +52,8 @@ async function createQueue(): Promise<Queue> {
       removeOnFail: 200,
     },
   });
+  await queue.waitUntilReady();
+  return queue;
 }
 
 function getKnowledgeQueue(): Promise<Queue> {
@@ -161,5 +163,18 @@ export async function enqueueRollbackDocumentVersion(args: {
       expectedActiveVersionId: args.expectedActiveVersionId ?? null,
     } satisfies KnowledgeJob,
     { jobId: `rollback-version-${args.versionId}` },
+  );
+}
+
+export async function getKnowledgeQueueCounts() {
+  const queue = await getKnowledgeQueue();
+
+  return queue.getJobCounts(
+    "waiting",
+    "active",
+    "delayed",
+    "paused",
+    "completed",
+    "failed",
   );
 }

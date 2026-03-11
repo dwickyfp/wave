@@ -10,8 +10,10 @@ vi.mock("lib/db/repository", () => ({
   knowledgeRepository: {
     selectGroupById: vi.fn(),
     selectDocumentsByGroupScope: vi.fn(),
-    selectDocumentsByGroupId: vi.fn(),
+    selectDocumentsPageByGroupScope: vi.fn(),
     selectDocumentByFingerprint: vi.fn(),
+    selectUrlDocumentBySourceUrl: vi.fn(),
+    selectFileDocumentByNameAndSize: vi.fn(),
     insertDocument: vi.fn(),
     updateDocumentStatus: vi.fn(),
   },
@@ -39,6 +41,9 @@ const { getSession } = await import("auth/server");
 const { knowledgeRepository } = await import("lib/db/repository");
 const { serverFileStorage } = await import("lib/file-storage");
 const { enqueueIngestDocument } = await import("lib/knowledge/worker-client");
+const { reconcileDocumentIngestFailure } = await import(
+  "lib/knowledge/versioning"
+);
 const { POST } = await import("./route");
 
 function withParams(id: string) {
@@ -59,9 +64,15 @@ describe("knowledge documents route", () => {
       id: "group-1",
       userId: "user-1",
     } as any);
-    vi.mocked(knowledgeRepository.selectDocumentsByGroupId).mockResolvedValue(
-      [],
-    );
+    vi.mocked(
+      knowledgeRepository.selectUrlDocumentBySourceUrl,
+    ).mockResolvedValue(null);
+    vi.mocked(
+      knowledgeRepository.selectFileDocumentByNameAndSize,
+    ).mockResolvedValue(null);
+    vi.mocked(
+      knowledgeRepository.selectDocumentByFingerprint,
+    ).mockResolvedValue(null);
   });
 
   it("returns the existing document for duplicate URLs instead of inserting a new one", async () => {
@@ -144,6 +155,47 @@ describe("knowledge documents route", () => {
     await expect(response.json()).resolves.toMatchObject({
       id: "doc-2",
       duplicate: true,
+    });
+  });
+
+  it("marks the document failed when enqueueing ingestion fails", async () => {
+    vi.mocked(knowledgeRepository.insertDocument).mockResolvedValue({
+      id: "doc-3",
+      groupId: "group-1",
+      userId: "user-1",
+      name: "example.com",
+      originalFilename: "https://example.com/report",
+      fileType: "url",
+      sourceUrl: "https://example.com/report",
+      fingerprint: "fingerprint-3",
+      status: "pending",
+      chunkCount: 0,
+      tokenCount: 0,
+      createdAt: new Date("2026-03-10T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-10T00:00:00.000Z"),
+    } as any);
+    vi.mocked(enqueueIngestDocument).mockRejectedValue(
+      new Error("redis unavailable"),
+    );
+
+    const response = await POST(
+      new Request("http://localhost/api/knowledge/group-1/documents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceUrl: "https://example.com/report" }),
+      }) as any,
+      withParams("group-1"),
+    );
+
+    expect(response.status).toBe(503);
+    expect(reconcileDocumentIngestFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentId: "doc-3",
+      }),
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining("workers are unavailable"),
+      documentId: "doc-3",
     });
   });
 });

@@ -10,12 +10,18 @@ import { z } from "zod";
 import { Agent } from "app-types/agent";
 import { SubAgent } from "app-types/subagent";
 import { ChatModel } from "app-types/chat";
+import type { SkillSummary } from "app-types/skill";
 import { getDbModel } from "lib/ai/provider-factory";
 import {
   loadMcpTools,
   loadWorkFlowTools,
   loadAppDefaultTools,
 } from "@/app/api/chat/shared.chat";
+import { resolveActiveAgentSkills } from "lib/ai/agent/skill-activation";
+import {
+  createLoadSkillTool,
+  LOAD_SKILL_TOOL_NAME,
+} from "lib/ai/tools/skill-tool";
 import globalLogger from "logger";
 import { colorize } from "consola/utils";
 import { errorToString, safeJSONParse } from "lib/utils";
@@ -125,6 +131,13 @@ async function waitForRetryDelay(delayMs: number, signal?: AbortSignal) {
   });
 }
 
+function mergeInstructions(...sections: Array<string | false | undefined>) {
+  return sections
+    .map((section) => (typeof section === "string" ? section.trim() : ""))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 /**
  * Convert the agent's subagents into Vercel AI SDK tool definitions.
  * Each subagent becomes a streaming tool that the parent agent can delegate to.
@@ -137,6 +150,9 @@ export async function loadSubAgentTools(
   dataStream: UIMessageStreamWriter,
   abortSignal: AbortSignal,
   chatModel: ChatModel,
+  attachedSkills: Array<
+    Pick<SkillSummary, "id" | "title" | "description" | "instructions">
+  > = [],
 ): Promise<Record<string, Tool>> {
   const subAgents = agent.subAgents ?? [];
   const enabledSubAgents = subAgents.filter((sa) => sa.enabled);
@@ -164,6 +180,11 @@ export async function loadSubAgentTools(
           ...mcpTools,
           ...workflowTools,
           ...appDefaultTools,
+          ...(attachedSkills.length
+            ? {
+                [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
+              }
+            : {}),
         };
 
         const dbModelResult = await getDbModel(chatModel);
@@ -179,14 +200,6 @@ export async function loadSubAgentTools(
           `You are a specialized assistant called "${subagent.name}". Complete the given task autonomously and thoroughly.
 
 When you have finished, write a clear summary of your findings as your final response. This summary will be returned to the parent agent, so include all relevant information.`;
-
-        const subAgentLoopAgent = new ToolLoopAgent({
-          model: dbModelResult.model,
-          instructions,
-          tools: subAgentTools,
-          stopWhen: stepCountIs(10),
-          maxRetries: 4,
-        });
 
         const description =
           subagent.description ||
@@ -206,6 +219,18 @@ When you have finished, write a clear summary of your findings as your final res
             { abortSignal: toolAbortSignal },
           ) {
             const effectiveAbortSignal = toolAbortSignal ?? abortSignal;
+            const { activeSkillPrompt } = resolveActiveAgentSkills({
+              skills: attachedSkills,
+              taskText: task,
+            });
+            const subAgentLoopAgent = new ToolLoopAgent({
+              model: dbModelResult.model,
+              instructions: mergeInstructions(instructions, activeSkillPrompt),
+              tools: subAgentTools,
+              stopWhen: stepCountIs(10),
+              maxRetries: 4,
+            });
+
             logger.info(
               `Delegating to subagent "${subagent.name}": ${task.slice(0, 100)}...`,
             );

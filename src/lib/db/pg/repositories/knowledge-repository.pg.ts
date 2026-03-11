@@ -11,8 +11,19 @@ import {
   KnowledgeSummary,
   KnowledgeUsageStats,
   UsageSource,
+  PaginatedKnowledgeDocuments,
 } from "app-types/knowledge";
-import { and, count, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import {
+  and,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+} from "drizzle-orm";
 import { sanitizeImageStepHint } from "lib/knowledge/document-images";
 import { applyEnforcedKnowledgeIngestPolicy } from "lib/knowledge/quality-ingest-policy";
 import { generateUUID } from "lib/utils";
@@ -303,6 +314,22 @@ function toPgVectorLiteral(embedding: number[] | null): string | null {
   // vector dimensionality.
   const safe = embedding.map((n) => (Number.isFinite(n) ? n : 0));
   return `[${safe.join(",")}]`;
+}
+
+function buildTypedVectorComparison(column: string, embedding: number[]) {
+  const dimension = embedding.length;
+  const embeddingLiteral = toPgVectorLiteral(embedding);
+  if (!embeddingLiteral) {
+    throw new Error("Embedding vector is empty.");
+  }
+  const typedColumn = sql.raw(`${column}::vector(${dimension})`);
+  const typedEmbedding = sql`${embeddingLiteral}::vector(${sql.raw(String(dimension))})`;
+
+  return {
+    typedColumn,
+    typedEmbedding,
+    dimensionFilter: sql`vector_dims(${sql.raw(column)}) = ${dimension}`,
+  };
 }
 
 function buildUuidFilterSql(columnName: string, ids?: string[]) {
@@ -819,19 +846,44 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async selectDocumentsByGroupScope(groupId) {
+    const page = await pgKnowledgeRepository.selectDocumentsPageByGroupScope(
+      groupId,
+      {
+        limit: 500,
+        offset: 0,
+      },
+    );
+    return page.items;
+  },
+
+  async selectDocumentsPageByGroupScope(
+    groupId,
+    input,
+  ): Promise<PaginatedKnowledgeDocuments> {
     const sources = await pgKnowledgeRepository.selectGroupSources(groupId);
     const sourceByGroupId = new Map(
       sources.map((source) => [source.sourceGroupId, source]),
     );
     const scopeGroupIds = [groupId, ...sourceByGroupId.keys()];
+    const limit = Math.max(1, Math.min(input.limit, 100));
+    const offset = Math.max(0, input.offset);
 
     const rows = await db
       .select()
       .from(KnowledgeDocumentTable)
       .where(inArray(KnowledgeDocumentTable.groupId, scopeGroupIds))
-      .orderBy(desc(KnowledgeDocumentTable.createdAt));
+      .orderBy(desc(KnowledgeDocumentTable.createdAt))
+      .limit(limit)
+      .offset(offset);
 
-    return rows.map((row) => {
+    const [{ total }] = await db
+      .select({
+        total: count(KnowledgeDocumentTable.id),
+      })
+      .from(KnowledgeDocumentTable)
+      .where(inArray(KnowledgeDocumentTable.groupId, scopeGroupIds));
+
+    const items = rows.map((row) => {
       const mapped = mapDocument(row);
       if (row.groupId === groupId) {
         return {
@@ -854,6 +906,14 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         sourceGroupUserName: source?.sourceGroupUserName ?? null,
       };
     });
+
+    return {
+      items,
+      total,
+      limit,
+      offset,
+      hasMore: offset + items.length < total,
+    };
   },
 
   async selectDocumentById(id) {
@@ -873,6 +933,38 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         and(
           eq(KnowledgeDocumentTable.groupId, groupId),
           eq(KnowledgeDocumentTable.fingerprint, fingerprint),
+        ),
+      );
+    if (!row) return null;
+    return mapDocument(row);
+  },
+
+  async selectUrlDocumentBySourceUrl(groupId, sourceUrl) {
+    const [row] = await db
+      .select()
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.groupId, groupId),
+          eq(KnowledgeDocumentTable.fileType, "url"),
+          eq(KnowledgeDocumentTable.sourceUrl, sourceUrl),
+        ),
+      );
+    if (!row) return null;
+    return mapDocument(row);
+  },
+
+  async selectFileDocumentByNameAndSize(input) {
+    const [row] = await db
+      .select()
+      .from(KnowledgeDocumentTable)
+      .where(
+        and(
+          eq(KnowledgeDocumentTable.groupId, input.groupId),
+          eq(KnowledgeDocumentTable.fileType, input.fileType),
+          eq(KnowledgeDocumentTable.originalFilename, input.originalFilename),
+          eq(KnowledgeDocumentTable.fileSize, input.fileSize),
+          isNull(KnowledgeDocumentTable.sourceUrl),
         ),
       );
     if (!row) return null;
@@ -1328,17 +1420,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async vectorSearchDocumentMetadata(groupId, embedding, limit) {
-    const embeddingStr = `[${embedding.join(",")}]`;
+    const { typedColumn, typedEmbedding, dimensionFilter } =
+      buildTypedVectorComparison("kd.metadata_embedding", embedding);
     const rows = await db.execute<{ document_id: string; score: number }>(
       sql`
         SELECT
           kd.id AS document_id,
-          1 - (kd.metadata_embedding <=> ${embeddingStr}::vector) AS score
+          1 - (${typedColumn} <=> ${typedEmbedding}) AS score
         FROM knowledge_document kd
         WHERE kd.group_id = ${groupId}
           AND kd.status = 'ready'
           AND kd.metadata_embedding IS NOT NULL
-        ORDER BY kd.metadata_embedding <=> ${embeddingStr}::vector
+          AND ${dimensionFilter}
+        ORDER BY ${typedColumn} <=> ${typedEmbedding}
         LIMIT ${limit}
       `,
     );
@@ -1614,7 +1708,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async vectorSearchSections(groupId, embedding, limit, documentIds) {
-    const embeddingStr = `[${embedding.join(",")}]`;
+    const { typedColumn, typedEmbedding, dimensionFilter } =
+      buildTypedVectorComparison("ks.embedding", embedding);
     const docFilter = buildUuidFilterSql("ks.document_id", documentIds);
 
     const rows = await db.execute<{
@@ -1654,14 +1749,15 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           ks.token_count,
           ks.created_at,
           kd.name AS document_name,
-          1 - (ks.embedding <=> ${embeddingStr}::vector) AS score
+          1 - (${typedColumn} <=> ${typedEmbedding}) AS score
         FROM knowledge_section ks
         JOIN knowledge_document kd ON kd.id = ks.document_id
         WHERE ks.group_id = ${groupId}
           AND ks.embedding IS NOT NULL
+          AND ${dimensionFilter}
           AND kd.status = 'ready'
           ${docFilter}
-        ORDER BY ks.embedding <=> ${embeddingStr}::vector
+        ORDER BY ${typedColumn} <=> ${typedEmbedding}
         LIMIT ${limit}
       `,
     );
@@ -2219,7 +2315,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   },
 
   async vectorSearchImages(groupId, embedding, limit, documentIds) {
-    const embeddingStr = `[${embedding.join(",")}]`;
+    const { typedColumn, typedEmbedding, dimensionFilter } =
+      buildTypedVectorComparison("kdi.embedding", embedding);
     const docFilter =
       documentIds && documentIds.length > 0
         ? sql`AND kdi.document_id IN (${sql.join(
@@ -2287,13 +2384,14 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           kdi.manual_description,
           kdi.created_at,
           kdi.updated_at,
-          1 - (kdi.embedding <=> ${embeddingStr}::vector) AS score
+          1 - (${typedColumn} <=> ${typedEmbedding}) AS score
         FROM knowledge_document_image kdi
         WHERE kdi.group_id = ${groupId}
           AND kdi.is_renderable = true
           AND kdi.embedding IS NOT NULL
+          AND ${dimensionFilter}
           ${docFilter}
-        ORDER BY kdi.embedding <=> ${embeddingStr}::vector
+        ORDER BY ${typedColumn} <=> ${typedEmbedding}
         LIMIT ${limit}
       `,
     );

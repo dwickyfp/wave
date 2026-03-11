@@ -8,6 +8,8 @@ import {
   ChatRepository,
   ChatThreadDetails,
   ChatThread,
+  PaginatedChatThreads,
+  ChatThreadListItem,
 } from "app-types/chat";
 
 import { pgDb as db } from "../db.pg";
@@ -21,7 +23,7 @@ import {
   ChatThreadCompactionStateTable,
 } from "../schema.pg";
 
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, sql } from "drizzle-orm";
 
 async function invalidateCheckpointIfMessageIsCompacted(messageId: string) {
   const [message] = await db
@@ -89,6 +91,10 @@ export const pgChatRepository: ChatRepository = {
 
   selectThreadDetails: async (
     id: string,
+    options?: {
+      messageOffset?: number;
+      messageLimit?: number;
+    },
   ): Promise<ChatThreadDetails | null> => {
     if (!id) {
       return null;
@@ -103,7 +109,10 @@ export const pgChatRepository: ChatRepository = {
       return null;
     }
 
-    const messages = await pgChatRepository.selectMessagesByThreadId(id);
+    const messages = await pgChatRepository.selectMessagesByThreadId(id, {
+      offset: options?.messageOffset,
+      limit: options?.messageLimit,
+    });
     const compactionCheckpoint =
       await pgChatRepository.selectCompactionCheckpoint(id);
     const compactionState = await pgChatRepository.selectCompactionState(id);
@@ -126,12 +135,23 @@ export const pgChatRepository: ChatRepository = {
 
   selectMessagesByThreadId: async (
     threadId: string,
+    options?: {
+      offset?: number;
+      limit?: number;
+    },
   ): Promise<ChatMessage[]> => {
-    const result = await db
+    let query = db
       .select()
       .from(ChatMessageTable)
       .where(eq(ChatMessageTable.threadId, threadId))
       .orderBy(ChatMessageTable.createdAt, ChatMessageTable.id);
+    if (options?.offset && options.offset > 0) {
+      query = query.offset(options.offset) as typeof query;
+    }
+    if (options?.limit && options.limit > 0) {
+      query = query.limit(options.limit) as typeof query;
+    }
+    const result = await query;
     return result as ChatMessage[];
   },
 
@@ -190,11 +210,23 @@ export const pgChatRepository: ChatRepository = {
 
   selectThreadsByUserId: async (
     userId: string,
-  ): Promise<
-    (ChatThread & {
-      lastMessageAt: number;
-    })[]
-  > => {
+  ): Promise<ChatThreadListItem[]> => {
+    const page = await pgChatRepository.selectThreadsPageByUserId(userId, {
+      limit: 500,
+      offset: 0,
+    });
+    return page.items;
+  },
+
+  selectThreadsPageByUserId: async (
+    userId: string,
+    input: {
+      limit: number;
+      offset: number;
+    },
+  ): Promise<PaginatedChatThreads> => {
+    const limit = Math.max(1, Math.min(input.limit, 100));
+    const offset = Math.max(0, input.offset);
     const threadWithLatestMessage = await db
       .select({
         threadId: ChatThreadTable.id,
@@ -217,9 +249,18 @@ export const pgChatRepository: ChatRepository = {
         desc(
           sql`COALESCE(MAX(${ChatMessageTable.createdAt}), ${ChatThreadTable.createdAt})`,
         ),
-      );
+      )
+      .limit(limit)
+      .offset(offset);
 
-    return threadWithLatestMessage.map((row) => {
+    const [{ total }] = await db
+      .select({
+        total: count(ChatThreadTable.id),
+      })
+      .from(ChatThreadTable)
+      .where(eq(ChatThreadTable.userId, userId));
+
+    const items = threadWithLatestMessage.map((row) => {
       return {
         id: row.threadId,
         title: row.title,
@@ -230,6 +271,14 @@ export const pgChatRepository: ChatRepository = {
           : new Date(row.createdAt).getTime(),
       };
     });
+
+    return {
+      items,
+      total,
+      limit,
+      offset,
+      hasMore: offset + items.length < total,
+    };
   },
 
   updateThread: async (

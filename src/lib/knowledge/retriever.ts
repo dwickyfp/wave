@@ -1,11 +1,14 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { rerank } from "ai";
 import {
   KnowledgeDocumentImage,
   KnowledgeQueryResult,
   KnowledgeSection,
 } from "app-types/knowledge";
+import { CacheKeys } from "lib/cache/cache-keys";
+import { serverCache } from "lib/cache";
 import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { knowledgeRepository } from "lib/db/repository";
 import { settingsRepository } from "lib/db/repository";
@@ -79,6 +82,8 @@ const IMAGE_FALLBACK_STOP_WORDS = new Set([
   "document",
   "image",
 ]);
+const KNOWLEDGE_DOCS_CACHE_TTL_MS = 60 * 1000;
+const SHOULD_USE_KNOWLEDGE_DOCS_CACHE = process.env.NODE_ENV !== "test";
 
 async function resolveRetrievalScopes(
   group: GroupForRetrieval,
@@ -1203,6 +1208,36 @@ function normalizeDocsResultMode(
   return resultMode === "full-doc" ? "full-doc" : "section-first";
 }
 
+function buildKnowledgeDocsCacheKey(input: {
+  groupId: string;
+  query: string;
+  resultMode: NormalizedDocsResultMode;
+  tokenBudget: number;
+  maxDocs: number;
+  retrievalThreshold?: number | null;
+  libraryId?: string;
+  libraryVersion?: string;
+}) {
+  const hash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        query: input.query,
+        retrievalThreshold: input.retrievalThreshold ?? null,
+        libraryId: input.libraryId ?? null,
+        libraryVersion: input.libraryVersion ?? null,
+      }),
+    )
+    .digest("hex");
+
+  return CacheKeys.knowledgeDocs(
+    input.groupId,
+    input.resultMode,
+    hash,
+    input.tokenBudget,
+    input.maxDocs,
+  );
+}
+
 function getSectionGraphVersion(
   metadata?: Record<string, unknown> | null,
 ): number | null {
@@ -2291,6 +2326,22 @@ export async function queryKnowledgeAsDocs(
     Math.max(options.maxDocs ?? (resultMode === "section-first" ? 8 : 50), 1),
     50,
   );
+  const cacheKey = buildKnowledgeDocsCacheKey({
+    groupId: group.id,
+    query,
+    resultMode,
+    tokenBudget,
+    maxDocs,
+    retrievalThreshold: group.retrievalThreshold ?? null,
+    libraryId: options.libraryId,
+    libraryVersion: options.libraryVersion,
+  });
+  if (SHOULD_USE_KNOWLEDGE_DOCS_CACHE) {
+    const cached = await serverCache.get<DocRetrievalResult[]>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+  }
   const recallProfile = getRecallProfile(query, resultMode);
   const start = Date.now();
   const scopes = await resolveRetrievalScopes(group);
@@ -2544,6 +2595,9 @@ export async function queryKnowledgeAsDocs(
     })
     .catch(() => {});
 
+  if (SHOULD_USE_KNOWLEDGE_DOCS_CACHE) {
+    await serverCache.set(cacheKey, results, KNOWLEDGE_DOCS_CACHE_TTL_MS);
+  }
   return results;
 }
 

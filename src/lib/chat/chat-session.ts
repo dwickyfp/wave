@@ -8,8 +8,17 @@ import { isUserOwnedStorageKey } from "lib/file-storage/upload-policy";
 export async function ensureUserChatThread(input: {
   threadId: string;
   userId: string;
+  historyMode?: "full" | "compacted-tail";
 }): Promise<ChatThreadDetails> {
-  let thread = await chatRepository.selectThreadDetails(input.threadId);
+  const messageOffset =
+    input.historyMode === "full"
+      ? undefined
+      : (await chatRepository.selectCompactionCheckpoint(input.threadId))
+          ?.compactedMessageCount;
+
+  let thread = await chatRepository.selectThreadDetails(input.threadId, {
+    messageOffset,
+  });
 
   if (!thread) {
     const newThread = await chatRepository.insertThread({
@@ -17,7 +26,9 @@ export async function ensureUserChatThread(input: {
       title: "",
       userId: input.userId,
     });
-    thread = await chatRepository.selectThreadDetails(newThread.id);
+    thread = await chatRepository.selectThreadDetails(newThread.id, {
+      messageOffset,
+    });
   }
 
   if (!thread) {

@@ -8,17 +8,31 @@ import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 //   }
 // }
 
+function parsePoolNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 const pool = new Pool({
   connectionString: process.env.POSTGRES_URL!,
-  max: 10,
+  max: parsePoolNumber(process.env.PG_POOL_MAX, 10),
   // Fail fast if no connection is available rather than hanging indefinitely
-  connectionTimeoutMillis: 10_000,
+  connectionTimeoutMillis: parsePoolNumber(
+    process.env.PG_POOL_CONNECTION_TIMEOUT_MS,
+    10_000,
+  ),
   // Release idle connections after 30s (avoids reusing server-terminated sockets)
-  idleTimeoutMillis: 30_000,
+  idleTimeoutMillis: parsePoolNumber(
+    process.env.PG_POOL_IDLE_TIMEOUT_MS,
+    30_000,
+  ),
   // TCP keepalive prevents network middleboxes / the server from silently
   // dropping idle connections (root cause of "Connection terminated unexpectedly")
   keepAlive: true,
-  keepAliveInitialDelayMillis: 10_000,
+  keepAliveInitialDelayMillis: parsePoolNumber(
+    process.env.PG_POOL_KEEPALIVE_DELAY_MS,
+    10_000,
+  ),
 });
 
 // Prevent unhandled-rejection crashes when a connection errors while idle in the pool

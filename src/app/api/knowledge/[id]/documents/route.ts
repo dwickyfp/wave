@@ -7,7 +7,6 @@ import {
   assertKnowledgeDocumentSize,
   StorageUploadPolicyError,
 } from "lib/file-storage/upload-policy";
-import { runIngestPipeline } from "lib/knowledge/ingest-pipeline";
 import { reconcileDocumentIngestFailure } from "lib/knowledge/versioning";
 import { enqueueIngestDocument } from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
@@ -69,6 +68,30 @@ function tryNormalizeSourceUrl(sourceUrl: string): string | null {
   }
 }
 
+function parsePaginationParams(request: NextRequest): {
+  limit?: number;
+  offset?: number;
+} {
+  const limitParam = request.nextUrl.searchParams.get("limit");
+  const offsetParam = request.nextUrl.searchParams.get("offset");
+
+  const limit =
+    limitParam === null ? undefined : Number.parseInt(limitParam, 10);
+  const offset =
+    offsetParam === null ? undefined : Number.parseInt(offsetParam, 10);
+
+  return {
+    limit:
+      limit !== undefined && Number.isFinite(limit) && limit > 0
+        ? Math.min(limit, 100)
+        : undefined,
+    offset:
+      offset !== undefined && Number.isFinite(offset) && offset >= 0
+        ? offset
+        : undefined,
+  };
+}
+
 async function findExistingDocumentByFingerprint(
   groupId: string,
   fingerprint: string,
@@ -90,16 +113,17 @@ async function findExistingUrlDocument(
   }
 
   const normalizedSourceUrl = normalizeSourceUrl(sourceUrl);
-  const docs = await knowledgeRepository.selectDocumentsByGroupId(groupId);
   return (
-    docs.find((doc) => {
-      if (doc.fileType !== "url" || !doc.sourceUrl) return false;
-      try {
-        return normalizeSourceUrl(doc.sourceUrl) === normalizedSourceUrl;
-      } catch {
-        return doc.sourceUrl === sourceUrl;
-      }
-    }) ?? null
+    (await knowledgeRepository.selectUrlDocumentBySourceUrl(
+      groupId,
+      normalizedSourceUrl,
+    )) ??
+    (normalizedSourceUrl !== sourceUrl
+      ? await knowledgeRepository.selectUrlDocumentBySourceUrl(
+          groupId,
+          sourceUrl,
+        )
+      : null)
   );
 }
 
@@ -118,20 +142,26 @@ async function findExistingFileDocument(input: {
     return byFingerprint;
   }
 
-  const docs = await knowledgeRepository.selectDocumentsByGroupId(
-    input.groupId,
-  );
-  return (
-    docs.find(
-      (doc) =>
-        doc.fileType === input.fileType &&
-        (doc.fileSize ?? null) === input.fileSize &&
-        doc.originalFilename === input.originalFilename,
-    ) ?? null
-  );
+  return knowledgeRepository.selectFileDocumentByNameAndSize(input);
 }
 
-export async function GET(_req: NextRequest, { params }: Params) {
+async function enqueueDocumentIngestOrFail(
+  documentId: string,
+  groupId: string,
+): Promise<void> {
+  try {
+    await enqueueIngestDocument(documentId, groupId);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await reconcileDocumentIngestFailure({
+      documentId,
+      errorMessage: `Failed to enqueue ingest job: ${errorMessage}`,
+    }).catch(() => {});
+    throw error;
+  }
+}
+
+export async function GET(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -142,35 +172,17 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const group = await knowledgeRepository.selectGroupById(id, session.user.id);
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  const { limit, offset } = parsePaginationParams(req);
+  if (limit !== undefined || offset !== undefined) {
+    const docs = await knowledgeRepository.selectDocumentsPageByGroupScope(id, {
+      limit: limit ?? 20,
+      offset: offset ?? 0,
+    });
+    return NextResponse.json(docs);
+  }
+
   const docs = await knowledgeRepository.selectDocumentsByGroupScope(id);
   return NextResponse.json(docs);
-}
-
-/**
- * Try to enqueue a BullMQ job; if Redis is not reachable, fall back to
- * running the pipeline inline (fire-and-forget background task).
- */
-async function enqueueOrProcessInline(
-  docId: string,
-  groupId: string,
-  fileBuffer?: Buffer,
-) {
-  try {
-    await enqueueIngestDocument(docId, groupId);
-  } catch {
-    console.warn(
-      "[ContextX] Redis unavailable – processing document inline:",
-      docId,
-    );
-    // Fire-and-forget: don't block the HTTP response
-    runIngestPipeline(docId, groupId, fileBuffer).catch(async (err) => {
-      console.error("[ContextX] Inline ingest failed for document", docId, err);
-      await reconcileDocumentIngestFailure({
-        documentId: docId,
-        errorMessage: String(err),
-      }).catch(() => {});
-    });
-  }
 }
 
 export async function POST(req: NextRequest, { params }: Params) {
@@ -225,10 +237,21 @@ export async function POST(req: NextRequest, { params }: Params) {
       name: body.name?.trim() || new URL(sourceUrl).hostname,
       originalFilename: sourceUrl,
       fileType: "url",
-      sourceUrl,
+      sourceUrl: normalizedSourceUrl,
       fingerprint,
     });
-    await enqueueOrProcessInline(doc.id, groupId);
+    try {
+      await enqueueDocumentIngestOrFail(doc.id, groupId);
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            "Knowledge ingest workers are unavailable. Please retry shortly.",
+          documentId: doc.id,
+        },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(doc, { status: 201 });
   }
 
@@ -257,10 +280,21 @@ export async function POST(req: NextRequest, { params }: Params) {
       name: name || new URL(sourceUrl).hostname,
       originalFilename: sourceUrl,
       fileType: "url",
-      sourceUrl,
+      sourceUrl: normalizedSourceUrl,
       fingerprint,
     });
-    await enqueueOrProcessInline(doc.id, groupId);
+    try {
+      await enqueueDocumentIngestOrFail(doc.id, groupId);
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            "Knowledge ingest workers are unavailable. Please retry shortly.",
+          documentId: doc.id,
+        },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(doc, { status: 201 });
   }
 
@@ -299,10 +333,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ ...existing, duplicate: true });
   }
 
-  // Try to persist the file to object storage.
-  // If storage is not configured or not reachable, fall back to inline
-  // processing (the file is kept in memory for the pipeline).
-  let storagePath: string | undefined;
+  // Persist the file to object storage so worker processes can ingest it.
+  let storagePath: string;
   try {
     const uploadResult = await serverFileStorage.upload(buffer, {
       filename: `knowledge/${groupId}/${Date.now()}-${file.name}`,
@@ -310,9 +342,16 @@ export async function POST(req: NextRequest, { params }: Params) {
     });
     storagePath = uploadResult.key;
   } catch (uploadErr) {
-    console.warn(
-      "[ContextX] File storage unavailable – proceeding with inline processing:",
+    console.error(
+      "[ContextX] File storage unavailable for ingest request:",
       uploadErr,
+    );
+    return NextResponse.json(
+      {
+        error:
+          "File storage is unavailable. Document uploads require shared object storage.",
+      },
+      { status: 503 },
     );
   }
 
@@ -327,23 +366,18 @@ export async function POST(req: NextRequest, { params }: Params) {
     fingerprint,
   });
 
-  if (!storagePath) {
-    // Storage upload failed — buffer is the only source. Never enqueue because
-    // the worker process has no access to this in-memory buffer; always process inline.
-    runIngestPipeline(doc.id, groupId, buffer).catch(async (err) => {
-      console.error(
-        "[ContextX] Inline ingest failed for document",
-        doc.id,
-        err,
-      );
-      await reconcileDocumentIngestFailure({
+  try {
+    await enqueueDocumentIngestOrFail(doc.id, groupId);
+  } catch {
+    return NextResponse.json(
+      {
+        error:
+          "Knowledge ingest workers are unavailable. Please retry shortly.",
         documentId: doc.id,
-        errorMessage: String(err),
-      }).catch(() => {});
-    });
-  } else {
-    // Storage path is set — the worker can re-download from storage.
-    await enqueueOrProcessInline(doc.id, groupId);
+      },
+      { status: 503 },
+    );
   }
+
   return NextResponse.json(doc, { status: 201 });
 }

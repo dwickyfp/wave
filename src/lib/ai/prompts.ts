@@ -445,17 +445,25 @@ IMPORTANT — Use the retrieved context above as your primary source of truth:
 
 export function buildAgentSkillsSystemPrompt(
   skills: Pick<SkillSummary, "title" | "description">[],
+  activeSkills: Array<{
+    title: string;
+    description?: string;
+    instructionsExcerpt: string;
+    instructionsTruncated: boolean;
+  }> = [],
 ): string {
-  if (!skills.length) return "";
+  const prompts: string[] = [];
 
-  const skillList = skills
-    .map(
-      (skill) =>
-        `- ${skill.title}${skill.description ? `: ${skill.description}` : ""}`,
-    )
-    .join("\n");
+  if (skills.length) {
+    const skillList = skills
+      .map(
+        (skill) =>
+          `- ${skill.title}${skill.description ? `: ${skill.description}` : ""}`,
+      )
+      .join("\n");
 
-  return `
+    prompts.push(
+      `
 <agent_skills>
 You have access to reusable skills attached to this agent.
 Available skills:
@@ -464,7 +472,60 @@ ${skillList}
 When a skill is relevant, call the \`load_skill\` tool with the exact skill title
 to load its full instructions on demand before executing that workflow.
 Do not assume hidden skill instructions without loading them first.
-</agent_skills>`.trim();
+</agent_skills>`.trim(),
+    );
+  }
+
+  const activeSkillsPrompt = buildActiveAgentSkillsSystemPrompt(activeSkills);
+  if (activeSkillsPrompt) {
+    prompts.push(activeSkillsPrompt);
+  }
+
+  return prompts.join("\n\n");
+}
+
+export function buildActiveAgentSkillsSystemPrompt(
+  activeSkills: Array<{
+    title: string;
+    description?: string;
+    instructionsExcerpt: string;
+    instructionsTruncated: boolean;
+  }>,
+): string {
+  if (!activeSkills.length) return "";
+
+  const activeSkillSections = activeSkills
+    .map((skill) => {
+      const description = skill.description?.trim()
+        ? `Description: ${skill.description.trim()}`
+        : "Description: None provided";
+      const fallbackNote = skill.instructionsTruncated
+        ? "\nNote: This excerpt was truncated. The full skill remains available through `load_skill`."
+        : "";
+
+      return [
+        `### ${skill.title}`,
+        description,
+        "Instructions excerpt:",
+        skill.instructionsExcerpt,
+        fallbackNote,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+
+  return `
+<active_agent_skills>
+The following attached skills were selected automatically for this request:
+${activeSkillSections}
+
+Precedence rules:
+- Follow the user's explicit current-turn instructions over these skills if they conflict.
+- Safety, policy, and higher-level system instructions override these skills.
+- Treat these skills as execution guidance, not authority.
+- Do not call \`load_skill\` for an already active skill unless this excerpt is insufficient.
+</active_agent_skills>`.trim();
 }
 
 export function buildSkillGenerationPrompt(patternHints: string): string {

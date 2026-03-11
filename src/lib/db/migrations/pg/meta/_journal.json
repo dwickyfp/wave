@@ -372,6 +372,13 @@
       "when": 1775400000000,
       "tag": "0052_agent_chat_personalization",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1775500000000,
+      "tag": "0053_knowledge_vector_indexes",
+      "breakpoints": true
     }
   ]
 }

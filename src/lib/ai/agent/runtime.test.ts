@@ -48,6 +48,7 @@ vi.mock("lib/ai/tools/skill-tool", () => ({
 }));
 
 vi.mock("lib/ai/prompts", () => ({
+  buildActiveAgentSkillsSystemPrompt: vi.fn(() => ""),
   buildAgentSkillsSystemPrompt: vi.fn(() => ""),
   buildKnowledgeContextSystemPrompt: vi.fn(() => ""),
   buildMcpServerCustomizationsSystemPrompt: vi.fn(() => ""),
@@ -127,6 +128,11 @@ describe("loadWaveAgentBoundTools", () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
+      [
+        expect.objectContaining({
+          title: "Owner Skill",
+        }),
+      ],
     );
     expect(vi.mocked(createKnowledgeDocsTool)).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -26,6 +26,7 @@ import {
   createLoadSkillTool,
   LOAD_SKILL_TOOL_NAME,
 } from "lib/ai/tools/skill-tool";
+import type { ActiveAgentSkill } from "lib/ai/agent/skill-activation";
 import {
   knowledgeRepository,
   skillRepository,
@@ -105,6 +106,7 @@ export async function loadWaveAgentContinueCapabilities(options: {
           options.dataStream,
           options.abortSignal,
           options.chatModel,
+          attachedSkills,
         )
       : {};
 
@@ -226,6 +228,7 @@ export function buildWaveAgentSystemPrompt(options: {
   agent?: Agent | null;
   subAgents?: Agent["subAgents"];
   attachedSkills?: Pick<SkillSummary, "title" | "description">[];
+  activeSkills?: ActiveAgentSkill[];
   knowledgeContexts?: string[];
   mcpServerCustomizations?: Record<string, McpServerCustomizationsPrompt>;
   toolCallUnsupported?: boolean;
@@ -241,7 +244,10 @@ export function buildWaveAgentSystemPrompt(options: {
       options.mcpServerCustomizations ?? {},
     ),
     buildParallelSubAgentSystemPrompt(options.subAgents ?? []),
-    buildAgentSkillsSystemPrompt(options.attachedSkills ?? []),
+    buildAgentSkillsSystemPrompt(
+      options.attachedSkills ?? [],
+      options.activeSkills ?? [],
+    ),
     options.toolCallUnsupported && buildToolCallUnsupportedModelSystemPrompt,
     buildKnowledgeContextSystemPrompt(options.knowledgeContexts ?? []),
     ...(options.extraPrompts ?? []),

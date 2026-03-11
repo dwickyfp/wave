@@ -33,6 +33,7 @@ import {
   createNoopDataStream,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
+import { resolveActiveAgentSkills } from "lib/ai/agent/skill-activation";
 import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 import { AppDefaultToolkit } from "lib/ai/tools";
 import { getDbModel } from "lib/ai/provider-factory";
@@ -399,6 +400,7 @@ function buildPilotResponseMetadata(input: {
   proposals: PilotActionProposal[];
   taskState: PilotTaskState;
   toolCount: number;
+  activatedSkills?: string[];
   usage?: ChatUsage;
   pageVisualContext?: PilotVisualContext;
 }) {
@@ -407,6 +409,9 @@ function buildPilotResponseMetadata(input: {
     chatModel: input.resolvedModel,
     toolChoice: "auto",
     toolCount: input.toolCount,
+    activatedSkills: input.activatedSkills?.length
+      ? input.activatedSkills
+      : undefined,
     agentId: input.selectedAgent?.id,
     usage: input.usage,
     tabUrl: input.tabContext.url,
@@ -482,12 +487,17 @@ async function executePilotModelTurn(input: {
   const uiMessages = await convertToModelMessages(input.messages);
   const learnedPersonalizationPrompt =
     await getLearnedPersonalizationPromptForUser(input.userId);
+  const activeSkillResolution = resolveActiveAgentSkills({
+    skills: toolset.attachedSkills,
+    taskText: input.taskUserText,
+  });
   const system = buildWaveAgentSystemPrompt({
     user: input.user ?? undefined,
     userPreferences: input.userPreferences ?? undefined,
     agent: null,
     subAgents: toolset.subAgents,
     attachedSkills: toolset.attachedSkills,
+    activeSkills: activeSkillResolution.activeSkills,
     extraPrompts: [
       learnedPersonalizationPrompt,
       buildPilotBrokerPrompt({
@@ -598,6 +608,9 @@ async function executePilotModelTurn(input: {
     chatModel: input.resolvedModel,
     toolChoice: "auto",
     toolCount: (result.toolCalls ?? []).length,
+    activatedSkills: activeSkillResolution.activeSkillTitles.length
+      ? activeSkillResolution.activeSkillTitles
+      : undefined,
     agentId: input.selectedAgent?.id,
     usage,
     tabUrl: input.tabContext.url,
@@ -685,12 +698,17 @@ async function streamPilotModelTurn(input: {
   const uiMessages = await convertToModelMessages(input.modelMessages);
   const learnedPersonalizationPrompt =
     await getLearnedPersonalizationPromptForUser(input.user.id);
+  const activeSkillResolution = resolveActiveAgentSkills({
+    skills: toolset.attachedSkills,
+    taskText: input.taskUserText,
+  });
   const system = buildWaveAgentSystemPrompt({
     user: input.user ?? undefined,
     userPreferences: input.userPreferences ?? undefined,
     agent: null,
     subAgents: toolset.subAgents,
     attachedSkills: toolset.attachedSkills,
+    activeSkills: activeSkillResolution.activeSkills,
     extraPrompts: [
       learnedPersonalizationPrompt,
       buildPilotBrokerPrompt({
@@ -794,6 +812,7 @@ async function streamPilotModelTurn(input: {
           proposals: streamedProposals,
           taskState: finalTaskState,
           toolCount: streamedToolNames.size,
+          activatedSkills: activeSkillResolution.activeSkillTitles,
           usage: streamedUsage,
           pageVisualContext: input.pageVisualContext,
         });
@@ -808,6 +827,7 @@ async function streamPilotModelTurn(input: {
           proposals: [],
           taskState: baseTaskState,
           toolCount: 0,
+          activatedSkills: activeSkillResolution.activeSkillTitles,
           pageVisualContext: input.pageVisualContext,
         });
       }
@@ -838,6 +858,7 @@ async function streamPilotModelTurn(input: {
         proposals: finalProposals,
         taskState: finalTaskState,
         toolCount: streamedToolNames.size,
+        activatedSkills: activeSkillResolution.activeSkillTitles,
         usage: streamedUsage,
         pageVisualContext: input.pageVisualContext,
       });

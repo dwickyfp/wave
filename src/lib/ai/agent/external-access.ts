@@ -29,6 +29,10 @@ import {
   loadEmmaAgentBoundTools,
 } from "lib/ai/agent/runtime";
 import {
+  getLatestUserMessageText,
+  resolveActiveAgentSkills,
+} from "lib/ai/agent/skill-activation";
+import {
   sanitizeModelMessagesForProvider,
   shouldSendToolDefinitionsToProvider,
 } from "lib/ai/provider-compatibility";
@@ -36,9 +40,14 @@ import { getDbModel } from "lib/ai/provider-factory";
 import { workflowToVercelAITool } from "@/app/api/chat/shared.chat";
 import { createKnowledgeDocsTool } from "lib/ai/tools/knowledge-tool";
 import {
+  createLoadSkillTool,
+  LOAD_SKILL_TOOL_NAME,
+} from "lib/ai/tools/skill-tool";
+import {
   agentRepository,
   knowledgeRepository,
   settingsRepository,
+  skillRepository,
   subAgentRepository,
   workflowRepository,
 } from "lib/db/repository";
@@ -541,11 +550,16 @@ export async function streamEmmaManagedAgentRun(options: {
     chatModel,
     source: "mcp",
   });
+  const activeSkillResolution = resolveActiveAgentSkills({
+    skills: toolset.attachedSkills,
+    taskText: getLatestUserMessageText(options.messages),
+  });
 
   const systemPrompt = buildEmmaAgentSystemPrompt({
     agent: resolvedAgent,
     subAgents: toolset.subAgents,
     attachedSkills: toolset.attachedSkills,
+    activeSkills: activeSkillResolution.activeSkills,
     extraPrompts: [
       ...buildContinueRoutePrompt({
         codingMode: resolvedAgent.mcpCodingMode ?? false,
@@ -674,6 +688,18 @@ export async function executeSubAgentExternalTool(
     chatModel,
     source: "mcp",
   });
+  const attachedSkills = await skillRepository.getSkillsByAgentId(
+    context.agent.id,
+  );
+  const activeSkillResolution = resolveActiveAgentSkills({
+    skills: attachedSkills,
+    taskText: input.task,
+  });
+  const skillTools: Record<string, Tool> = attachedSkills.length
+    ? {
+        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
+      }
+    : {};
 
   const instructions =
     subagent.instructions ||
@@ -697,6 +723,7 @@ export async function executeSubAgentExternalTool(
     model,
     provider: chatModel.provider,
     system: buildEmmaAgentSystemPrompt({
+      activeSkills: activeSkillResolution.activeSkills,
       extraPrompts: [
         instructions,
         getUnifiedDiffInstruction(input.responseMode),
@@ -706,6 +733,7 @@ export async function executeSubAgentExternalTool(
     tools: {
       ...toolset.mcpTools,
       ...toolset.workflowTools,
+      ...skillTools,
       ...toolset.appDefaultTools,
     },
     abortSignal: context.abortSignal,
@@ -1127,6 +1155,9 @@ export async function streamContinueManagedTools(options: {
   const externalTools = createContinueManagedToolSet(
     options.request.tools ?? [],
   );
+  const convertedMessages = convertOpenAiMessagesToModelMessages(
+    options.request.messages,
+  );
   const internalCapabilities = await loadEmmaAgentContinueCapabilities({
     agent: resolvedAgent,
     userId: resolvedAgent.userId,
@@ -1143,6 +1174,10 @@ export async function streamContinueManagedTools(options: {
       ...internalCapabilities.skillTools,
     },
   });
+  const activeSkillResolution = resolveActiveAgentSkills({
+    skills: internalCapabilities.attachedSkills,
+    taskText: getLatestUserMessageText(convertedMessages),
+  });
 
   return streamText({
     model,
@@ -1150,6 +1185,7 @@ export async function streamContinueManagedTools(options: {
       agent: resolvedAgent,
       subAgents: internalCapabilities.subAgents,
       attachedSkills: internalCapabilities.attachedSkills,
+      activeSkills: activeSkillResolution.activeSkills,
       extraPrompts: [
         ...buildContinueRoutePrompt({
           codingMode: resolvedAgent.mcpCodingMode ?? false,
@@ -1166,7 +1202,7 @@ export async function streamContinueManagedTools(options: {
     }),
     messages: sanitizeModelMessagesForProvider({
       provider: chatModel.provider,
-      messages: convertOpenAiMessagesToModelMessages(options.request.messages),
+      messages: convertedMessages,
       tools: mergedTools.tools,
     }).messages,
     abortSignal: options.abortSignal,

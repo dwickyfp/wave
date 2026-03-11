@@ -13,7 +13,11 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { LanguageModel, RerankingModel } from "ai";
 import { ChatModel } from "app-types/chat";
 import type { ProviderSettings } from "app-types/settings";
+import { CacheKeys } from "lib/cache/cache-keys";
+import { serverCache } from "lib/cache";
 import { settingsRepository } from "lib/db/repository";
+
+const PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
@@ -211,20 +215,51 @@ export async function getDbRerankingModel(
   modelName: string,
 ): Promise<RerankingModel | null> {
   try {
-    const providerConfig =
-      await settingsRepository.getProviderByName(providerName);
-    if (!providerConfig || !providerConfig.enabled) return null;
+    const providerConfig = await serverCache.get<{
+      id: string;
+      apiKey: string | null;
+      baseUrl: string | null;
+      settings: ProviderSettings;
+      enabled: boolean;
+    }>(CacheKeys.providerConfig(providerName));
+    const resolvedProviderConfig =
+      providerConfig ??
+      (await settingsRepository
+        .getProviderByName(providerName)
+        .then(async (value) => {
+          if (value) {
+            await serverCache.set(
+              CacheKeys.providerConfig(providerName),
+              value,
+              PROVIDER_CACHE_TTL_MS,
+            );
+          }
+          return value;
+        }));
+    if (!resolvedProviderConfig || !resolvedProviderConfig.enabled) return null;
 
-    const modelConfig = await settingsRepository.getRerankingModel(
-      providerName,
-      modelName,
-    );
+    const modelConfig =
+      (await serverCache.get<any>(
+        CacheKeys.rerankingModelConfig(providerName, modelName),
+      )) ??
+      (await settingsRepository
+        .getRerankingModel(providerName, modelName)
+        .then(async (value) => {
+          if (value) {
+            await serverCache.set(
+              CacheKeys.rerankingModelConfig(providerName, modelName),
+              value,
+              PROVIDER_CACHE_TTL_MS,
+            );
+          }
+          return value;
+        }));
     if (!modelConfig) return null;
 
     return createRerankingModelFromConfig(
       providerName,
       modelConfig.apiName,
-      providerConfig.apiKey,
+      resolvedProviderConfig.apiKey,
     );
   } catch {
     return null;
@@ -252,15 +287,47 @@ export async function getDbModel(
 ): Promise<DbModelResult | null> {
   if (!chatModel) return null;
   try {
-    const providerConfig = await settingsRepository.getProviderByName(
-      chatModel.provider,
-    );
+    const providerConfig =
+      (await serverCache.get<{
+        id: string;
+        apiKey: string | null;
+        baseUrl: string | null;
+        settings: ProviderSettings;
+        enabled: boolean;
+      }>(CacheKeys.providerConfig(chatModel.provider))) ??
+      (await settingsRepository
+        .getProviderByName(chatModel.provider)
+        .then(async (value) => {
+          if (value) {
+            await serverCache.set(
+              CacheKeys.providerConfig(chatModel.provider),
+              value,
+              PROVIDER_CACHE_TTL_MS,
+            );
+          }
+          return value;
+        }));
     if (!providerConfig || !providerConfig.enabled) return null;
 
-    const modelConfig = await settingsRepository.getModelForChat(
-      chatModel.provider,
-      chatModel.model,
-    );
+    const modelConfig =
+      (await serverCache.get<any>(
+        CacheKeys.providerModelConfig(chatModel.provider, chatModel.model),
+      )) ??
+      (await settingsRepository
+        .getModelForChat(chatModel.provider, chatModel.model)
+        .then(async (value) => {
+          if (value) {
+            await serverCache.set(
+              CacheKeys.providerModelConfig(
+                chatModel.provider,
+                chatModel.model,
+              ),
+              value,
+              PROVIDER_CACHE_TTL_MS,
+            );
+          }
+          return value;
+        }));
     if (!modelConfig) return null;
 
     const model = createModelFromConfig(

@@ -27,6 +27,10 @@ import {
   buildEmmaAgentSystemPrompt,
   loadEmmaAgentBoundTools,
 } from "lib/ai/agent/runtime";
+import {
+  getLatestUserMessageText,
+  resolveActiveAgentSkills,
+} from "lib/ai/agent/skill-activation";
 import { resolveExternalAgentModelRuntime } from "lib/ai/agent/external-access";
 import {
   sanitizeModelMessagesForProvider,
@@ -313,6 +317,10 @@ async function streamStandardAgentRun(input: {
     ...toolset.appDefaultTools,
   };
   const messages = buildStandardAgentMessages(input.requestContext);
+  const activeSkillResolution = resolveActiveAgentSkills({
+    skills: toolset.attachedSkills,
+    taskText: getLatestUserMessageText(messages),
+  });
   const compatibleMessages = sanitizeModelMessagesForProvider({
     provider: chatModel.provider,
     messages,
@@ -328,6 +336,7 @@ async function streamStandardAgentRun(input: {
       agent: input.agent,
       subAgents: toolset.subAgents,
       attachedSkills: toolset.attachedSkills,
+      activeSkills: activeSkillResolution.activeSkills,
     }),
     messages: compatibleMessages.messages,
     stopWhen: stepCountIs(10),

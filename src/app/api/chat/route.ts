@@ -40,6 +40,11 @@ import {
   buildWaveAgentSystemPrompt,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
+import { resolveActiveAgentSkills } from "lib/ai/agent/skill-activation";
+import {
+  acquireChatConcurrencyLease,
+  type ChatConcurrencyLease,
+} from "lib/ai/chat-concurrency";
 import { ImageToolName } from "lib/ai/tools";
 import { createDbImageTool } from "lib/ai/tools/image";
 import {
@@ -141,6 +146,12 @@ function buildCompactionFailureMessage(input: {
 }
 
 export async function POST(request: Request) {
+  let chatConcurrencyLease: ChatConcurrencyLease | null = null;
+  const releaseChatConcurrencyLease = async () => {
+    await chatConcurrencyLease?.release();
+    chatConcurrencyLease = null;
+  };
+
   try {
     const json = await request.json();
 
@@ -149,6 +160,28 @@ export async function POST(request: Request) {
     if (!session?.user.id) {
       return new Response("Unauthorized", { status: 401 });
     }
+
+    const concurrencyResult = await acquireChatConcurrencyLease({
+      userId: session.user.id,
+    });
+    if (!concurrencyResult.ok) {
+      return Response.json(
+        {
+          message: concurrencyResult.message,
+          code: concurrencyResult.code,
+        },
+        { status: concurrencyResult.status },
+      );
+    }
+    chatConcurrencyLease = concurrencyResult.lease;
+    request.signal.addEventListener(
+      "abort",
+      () => {
+        void chatConcurrencyLease?.release();
+      },
+      { once: true },
+    );
+
     const {
       id,
       message,
@@ -163,6 +196,7 @@ export async function POST(request: Request) {
 
     const dbModelResult = await getDbModel(chatModel!);
     if (!dbModelResult) {
+      await releaseChatConcurrencyLease();
       return Response.json(
         {
           message: `Model "${chatModel?.model}" is not configured. Please set it up in Settings → AI Providers.`,
@@ -184,9 +218,11 @@ export async function POST(request: Request) {
       thread = await ensureUserChatThread({
         threadId: id,
         userId: session.user.id,
+        historyMode: "compacted-tail",
       });
     } catch (error) {
       if ((error as Error).message === "Forbidden") {
+        await releaseChatConcurrencyLease();
         return new Response("Forbidden", { status: 403 });
       }
       throw error;
@@ -248,6 +284,7 @@ export async function POST(request: Request) {
         );
 
       if (!sfConfig) {
+        await releaseChatConcurrencyLease();
         return Response.json(
           { message: "Snowflake configuration not found for this agent" },
           { status: 404 },
@@ -453,68 +490,75 @@ export async function POST(request: Request) {
         },
         generateId: generateUUID,
         onFinish: async ({ responseMessage, isAborted }) => {
-          const finalResponseMessage = isAborted
-            ? appendAbortedResponseNotice(responseMessage)
-            : responseMessage;
+          try {
+            const finalResponseMessage = isAborted
+              ? appendAbortedResponseNotice(responseMessage)
+              : responseMessage;
 
-          // Populate metadata from the captured Snowflake usage/model info
-          if (sfCapture.usage) {
-            sfMetadata.usage = attachUsageCost({
-              inputTokens: sfCapture.usage.input,
-              outputTokens: sfCapture.usage.output,
-              totalTokens: sfCapture.usage.input + sfCapture.usage.output,
-              inputTokenDetails: {
-                noCacheTokens: undefined,
-                cacheReadTokens: undefined,
-                cacheWriteTokens: undefined,
-              },
-              outputTokenDetails: {
-                textTokens: undefined,
-                reasoningTokens: undefined,
-              },
-            });
-            sfMetadata.chatModel = {
-              provider: "snowflake",
-              model: sfCapture.usage.model || "Snowflake Cortex",
-            };
-          }
+            // Populate metadata from the captured Snowflake usage/model info
+            if (sfCapture.usage) {
+              sfMetadata.usage = attachUsageCost({
+                inputTokens: sfCapture.usage.input,
+                outputTokens: sfCapture.usage.output,
+                totalTokens: sfCapture.usage.input + sfCapture.usage.output,
+                inputTokenDetails: {
+                  noCacheTokens: undefined,
+                  cacheReadTokens: undefined,
+                  cacheWriteTokens: undefined,
+                },
+                outputTokenDetails: {
+                  textTokens: undefined,
+                  reasoningTokens: undefined,
+                },
+              });
+              sfMetadata.chatModel = {
+                provider: "snowflake",
+                model: sfCapture.usage.model || "Snowflake Cortex",
+              };
+            }
 
-          // Advance parent_message_id so the next turn continues the thread
-          // from this assistant reply.  If Snowflake didn't emit message IDs
-          // (rare failure case per the docs) we leave the existing value.
-          if (sfCapture.newAssistantMessageId !== null) {
-            await chatRepository.updateThread(thread!.id, {
-              snowflakeParentMessageId: sfCapture.newAssistantMessageId,
-            });
-            logger.info(
-              `Advanced Snowflake thread ${sfThreadId} parent_message_id → ${sfCapture.newAssistantMessageId}`,
-            );
-          }
+            // Advance parent_message_id so the next turn continues the thread
+            // from this assistant reply.  If Snowflake didn't emit message IDs
+            // (rare failure case per the docs) we leave the existing value.
+            if (sfCapture.newAssistantMessageId !== null) {
+              await chatRepository.updateThread(thread!.id, {
+                snowflakeParentMessageId: sfCapture.newAssistantMessageId,
+              });
+              logger.info(
+                `Advanced Snowflake thread ${sfThreadId} parent_message_id → ${sfCapture.newAssistantMessageId}`,
+              );
+            }
 
-          if (finalResponseMessage.id === message.id) {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              ...finalResponseMessage,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: sfMetadata,
-            });
-          } else {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: message.role,
-              parts: message.parts.map(convertToSavePart),
-              id: message.id,
-            });
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: finalResponseMessage.role,
-              id: finalResponseMessage.id,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: sfMetadata,
-            });
+            if (finalResponseMessage.id === message.id) {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                ...finalResponseMessage,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata: sfMetadata,
+              });
+            } else {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: message.role,
+                parts: message.parts.map(convertToSavePart),
+                id: message.id,
+              });
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: finalResponseMessage.role,
+                id: finalResponseMessage.id,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata: sfMetadata,
+              });
+            }
+          } finally {
+            await releaseChatConcurrencyLease();
           }
         },
-        onError: handleError,
+        onError: (error) => {
+          void releaseChatConcurrencyLease();
+          return handleError(error);
+        },
         originalMessages: messages,
       });
 
@@ -531,6 +575,7 @@ export async function POST(request: Request) {
       );
 
       if (!a2aConfig) {
+        await releaseChatConcurrencyLease();
         return Response.json(
           { message: "A2A configuration not found for this agent" },
           { status: 404 },
@@ -544,6 +589,7 @@ export async function POST(request: Request) {
         .trim();
 
       if (!userText) {
+        await releaseChatConcurrencyLease();
         return Response.json(
           {
             message:
@@ -625,42 +671,49 @@ export async function POST(request: Request) {
         },
         generateId: generateUUID,
         onFinish: async ({ responseMessage, isAborted }) => {
-          const finalResponseMessage = isAborted
-            ? appendAbortedResponseNotice(responseMessage)
-            : responseMessage;
+          try {
+            const finalResponseMessage = isAborted
+              ? appendAbortedResponseNotice(responseMessage)
+              : responseMessage;
 
-          if (!isAborted) {
-            await chatRepository.updateThread(thread!.id, {
-              a2aAgentId: agent!.id,
-              a2aContextId: a2aCapture.contextId ?? null,
-              a2aTaskId: a2aCapture.taskId ?? null,
-            });
-          }
+            if (!isAborted) {
+              await chatRepository.updateThread(thread!.id, {
+                a2aAgentId: agent!.id,
+                a2aContextId: a2aCapture.contextId ?? null,
+                a2aTaskId: a2aCapture.taskId ?? null,
+              });
+            }
 
-          if (finalResponseMessage.id === message.id) {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              ...finalResponseMessage,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: a2aMetadata,
-            });
-          } else {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: message.role,
-              parts: message.parts.map(convertToSavePart),
-              id: message.id,
-            });
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: finalResponseMessage.role,
-              id: finalResponseMessage.id,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: a2aMetadata,
-            });
+            if (finalResponseMessage.id === message.id) {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                ...finalResponseMessage,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata: a2aMetadata,
+              });
+            } else {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: message.role,
+                parts: message.parts.map(convertToSavePart),
+                id: message.id,
+              });
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: finalResponseMessage.role,
+                id: finalResponseMessage.id,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata: a2aMetadata,
+              });
+            }
+          } finally {
+            await releaseChatConcurrencyLease();
           }
         },
-        onError: handleError,
+        onError: (error) => {
+          void releaseChatConcurrencyLease();
+          return handleError(error);
+        },
         originalMessages: messages,
       });
 
@@ -865,6 +918,19 @@ export async function POST(request: Request) {
           })
           .map((v) => filterMcpServerCustomizations(toolset.mcpTools as any, v))
           .orElse({});
+        const attachmentPreviewText = extractAttachmentPreviewText([
+          ...persistedMessages,
+          message,
+        ]);
+        const activeSkillResolution = resolveActiveAgentSkills({
+          skills: toolset.attachedSkills,
+          taskText: userQueryText,
+          contextText: attachmentPreviewText,
+        });
+        metadata.activatedSkills = activeSkillResolution.activeSkillTitles
+          .length
+          ? activeSkillResolution.activeSkillTitles
+          : undefined;
         const buildKnowledgeContextsForBudget = (() => {
           const cache = new Map<
             number,
@@ -997,6 +1063,7 @@ export async function POST(request: Request) {
               agent,
               subAgents: toolset.subAgents,
               attachedSkills: toolset.attachedSkills,
+              activeSkills: activeSkillResolution.activeSkills,
               knowledgeContexts,
               mcpServerCustomizations,
               toolCallUnsupported: !supportToolCall,
@@ -1103,10 +1170,6 @@ export async function POST(request: Request) {
         const strippedPersistedMessages =
           stripAttachmentPreviewPartsFromMessages(persistedMessages);
         const strippedCurrentMessage = stripAttachmentPreviewParts(message);
-        const attachmentPreviewText = extractAttachmentPreviewText([
-          ...persistedMessages,
-          message,
-        ]);
         const buildToolStages = (currentLoopMessages: ModelMessage[]) => {
           const hasExplicitMcpMentions = mentions.some(
             (mention) =>
@@ -1520,41 +1583,48 @@ export async function POST(request: Request) {
 
       generateId: generateUUID,
       onFinish: async ({ responseMessage, isAborted }) => {
-        const finalResponseMessage = isAborted
-          ? appendAbortedResponseNotice(responseMessage)
-          : responseMessage;
-        syncCapturedKnowledgeMetadata();
+        try {
+          const finalResponseMessage = isAborted
+            ? appendAbortedResponseNotice(responseMessage)
+            : responseMessage;
+          syncCapturedKnowledgeMetadata();
 
-        if (finalResponseMessage.id == message.id) {
-          await chatRepository.upsertMessage({
-            threadId: thread!.id,
-            ...finalResponseMessage,
-            parts: finalResponseMessage.parts.map(convertToSavePart),
-            metadata,
-          });
-        } else {
-          await chatRepository.upsertMessage({
-            threadId: thread!.id,
-            role: message.role,
-            parts: message.parts.map(convertToSavePart),
-            id: message.id,
-          });
-          await chatRepository.upsertMessage({
-            threadId: thread!.id,
-            role: finalResponseMessage.role,
-            id: finalResponseMessage.id,
-            parts: finalResponseMessage.parts.map(convertToSavePart),
-            metadata,
-          });
-        }
+          if (finalResponseMessage.id == message.id) {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              ...finalResponseMessage,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
+              metadata,
+            });
+          } else {
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: message.role,
+              parts: message.parts.map(convertToSavePart),
+              id: message.id,
+            });
+            await chatRepository.upsertMessage({
+              threadId: thread!.id,
+              role: finalResponseMessage.role,
+              id: finalResponseMessage.id,
+              parts: finalResponseMessage.parts.map(convertToSavePart),
+              metadata,
+            });
+          }
 
-        if (agent) {
-          agentRepository.updateAgent(agent.id, session.user.id, {
-            updatedAt: new Date(),
-          } as any);
+          if (agent) {
+            agentRepository.updateAgent(agent.id, session.user.id, {
+              updatedAt: new Date(),
+            } as any);
+          }
+        } finally {
+          await releaseChatConcurrencyLease();
         }
       },
-      onError: handleError,
+      onError: (error) => {
+        void releaseChatConcurrencyLease();
+        return handleError(error);
+      },
       originalMessages: messages,
     });
 
@@ -1563,6 +1633,7 @@ export async function POST(request: Request) {
       consumeSseStream: consumeStream,
     });
   } catch (error: any) {
+    await releaseChatConcurrencyLease();
     logger.error(error);
     return Response.json({ message: error.message }, { status: 500 });
   }
