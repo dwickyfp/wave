@@ -262,57 +262,59 @@ export function SkillGroupDetailPage({
 
   return (
     <div className="flex flex-col gap-6 p-4 md:p-6 max-w-5xl mx-auto w-full">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex flex-col gap-2">
-          <Link
-            href="/skills"
-            className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-          >
-            <ArrowLeftIcon className="size-4" />
-            Back to Skills
-          </Link>
-          <div className="flex items-center gap-3">
-            <div className="size-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
-              <FolderKanbanIcon className="size-5" />
-            </div>
-            <div>
-              <h1 className="text-2xl font-semibold">{groupState.name}</h1>
-              <p className="text-sm text-muted-foreground">
-                {skills.length} skills · Updated{" "}
-                {format(groupState.updatedAt || new Date(), "MMM d, yyyy")}
-              </p>
+      <div className="sticky top-0 z-30 -mx-4 border-b bg-background/95 px-4 py-4 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:-mx-6 md:px-6">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex flex-col gap-2">
+            <Link
+              href="/skills"
+              className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeftIcon className="size-4" />
+              Back to Skills
+            </Link>
+            <div className="flex items-center gap-3">
+              <div className="size-10 rounded-xl bg-primary/10 text-primary flex items-center justify-center">
+                <FolderKanbanIcon className="size-5" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-semibold">{groupState.name}</h1>
+                <p className="text-sm text-muted-foreground">
+                  {skills.length} skills · Updated{" "}
+                  {format(groupState.updatedAt || new Date(), "MMM d, yyyy")}
+                </p>
+              </div>
             </div>
           </div>
-        </div>
 
-        {isOwner && (
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setCreateOpen(true)}
-              className="gap-2"
-            >
-              <PlusIcon className="size-4" />
-              Create Skill
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={deleteGroup}
-              disabled={groupMutationLoading}
-              className="gap-2"
-            >
-              {groupMutationLoading ? (
-                <Loader2Icon className="size-4 animate-spin" />
-              ) : (
-                <Trash2Icon className="size-4" />
-              )}
-              Delete Group
-            </Button>
-          </div>
-        )}
+          {isOwner && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setCreateOpen(true)}
+                className="gap-2"
+              >
+                <PlusIcon className="size-4" />
+                Create Skill
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={deleteGroup}
+                disabled={groupMutationLoading}
+                className="gap-2"
+              >
+                {groupMutationLoading ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <Trash2Icon className="size-4" />
+                )}
+                Delete Group
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
+      <div className="flex flex-col gap-6">
         <Card>
           <CardHeader>
             <CardTitle>Group Details</CardTitle>
@@ -404,19 +406,22 @@ export function SkillGroupDetailPage({
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Members</CardTitle>
-            <CardDescription>
-              Add reusable skills to this group or create a new one directly
-              from here.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 flex-wrap">
-              <Badge variant="secondary">{skills.length} linked skills</Badge>
-              <Badge variant="outline" className="capitalize">
-                {groupState.visibility}
-              </Badge>
+          <CardHeader className="gap-4">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="flex flex-col gap-1">
+                <CardTitle>Members</CardTitle>
+                <CardDescription>
+                  Add reusable skills to this group or create a new one directly
+                  from here.
+                </CardDescription>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge variant="secondary">{skills.length} linked skills</Badge>
+                <Badge variant="outline" className="capitalize">
+                  {groupState.visibility}
+                </Badge>
+              </div>
             </div>
 
             {isOwner && (
@@ -469,8 +474,9 @@ export function SkillGroupDetailPage({
                 </Button>
               </div>
             )}
-
-            <div className="flex flex-col gap-2">
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               {skills.map((skill) => (
                 <div
                   key={skill.id}
@@ -507,13 +513,13 @@ export function SkillGroupDetailPage({
                   )}
                 </div>
               ))}
-
-              {skills.length === 0 && (
-                <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-                  No skills in this group yet.
-                </div>
-              )}
             </div>
+
+            {skills.length === 0 && (
+              <div className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+                No skills in this group yet.
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
