@@ -6,7 +6,7 @@ import {
   ModelType,
   ProviderSettings,
 } from "app-types/settings";
-import { and, eq, or } from "drizzle-orm";
+import { and, eq, inArray, or } from "drizzle-orm";
 import { pickPreferredModelConfig } from "lib/settings/model-config-match";
 import { pgDb as db } from "../db.pg";
 import {
@@ -16,6 +16,18 @@ import {
 } from "../schema.pg";
 
 const MASKED_KEY = "••••••••";
+const SYSTEM_SETTINGS_CACHE_TTL_MS = 5_000;
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __server__system_settings_cache__:
+    | Map<string, { value: unknown; expiresAt: number }>
+    | undefined;
+}
+
+const systemSettingsCache =
+  globalThis.__server__system_settings_cache__ || new Map();
+globalThis.__server__system_settings_cache__ = systemSettingsCache;
 
 function maskApiKey(key: string | null | undefined): string | null {
   if (!key) return null;
@@ -79,6 +91,23 @@ function sanitizeModelConfigInput<
     outputTokenPricePer1MUsd: 0,
     supportsGeneration: false,
   };
+}
+
+function readCachedSystemSetting(key: string): unknown | undefined {
+  const cached = systemSettingsCache.get(key);
+  if (!cached) return undefined;
+  if (cached.expiresAt <= Date.now()) {
+    systemSettingsCache.delete(key);
+    return undefined;
+  }
+  return cached.value;
+}
+
+function writeCachedSystemSetting(key: string, value: unknown): void {
+  systemSettingsCache.set(key, {
+    value,
+    expiresAt: Date.now() + SYSTEM_SETTINGS_CACHE_TTL_MS,
+  });
 }
 
 export const pgSettingsRepository = {
@@ -432,11 +461,61 @@ export const pgSettingsRepository = {
   // ─── System Settings ────────────────────────────────────────────────────────
 
   async getSetting(key: string): Promise<unknown> {
+    const cached = readCachedSystemSetting(key);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const [row] = await db
       .select()
       .from(SystemSettingsTable)
       .where(eq(SystemSettingsTable.key, key));
-    return row?.value ?? null;
+    const value = row?.value ?? null;
+    writeCachedSystemSetting(key, value);
+    return value;
+  },
+
+  async getSettings(keys: string[]): Promise<Record<string, unknown>> {
+    const uniqueKeys = Array.from(
+      new Set(keys.map((key) => key.trim()).filter(Boolean)),
+    );
+    if (uniqueKeys.length === 0) return {};
+
+    const values: Record<string, unknown> = {};
+    const missingKeys: string[] = [];
+
+    for (const key of uniqueKeys) {
+      const cached = readCachedSystemSetting(key);
+      if (cached !== undefined) {
+        values[key] = cached;
+      } else {
+        missingKeys.push(key);
+      }
+    }
+
+    if (missingKeys.length > 0) {
+      const rows = await db
+        .select({
+          key: SystemSettingsTable.key,
+          value: SystemSettingsTable.value,
+        })
+        .from(SystemSettingsTable)
+        .where(inArray(SystemSettingsTable.key, missingKeys));
+
+      for (const row of rows) {
+        values[row.key] = row.value;
+        writeCachedSystemSetting(row.key, row.value);
+      }
+
+      for (const key of missingKeys) {
+        if (!(key in values)) {
+          values[key] = null;
+          writeCachedSystemSetting(key, null);
+        }
+      }
+    }
+
+    return values;
   },
 
   async upsertSetting(key: string, value: unknown): Promise<void> {
@@ -448,5 +527,6 @@ export const pgSettingsRepository = {
         target: SystemSettingsTable.key,
         set: { value: value as any, updatedAt: now },
       });
+    writeCachedSystemSetting(key, value);
   },
 };

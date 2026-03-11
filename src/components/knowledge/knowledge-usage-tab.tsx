@@ -4,14 +4,13 @@ import { useKnowledgeUsage } from "@/hooks/queries/use-knowledge";
 import { Card, CardContent, CardHeader, CardTitle } from "ui/card";
 import { Badge } from "ui/badge";
 import { Skeleton } from "ui/skeleton";
+import { BarChart, Bar, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "ui/chart";
 import { format } from "date-fns";
 import {
   MessageSquareIcon,
@@ -24,6 +23,13 @@ import {
 interface Props {
   groupId: string;
 }
+
+const dailyQueriesChartConfig = {
+  count: {
+    label: "Queries",
+    color: "var(--chart-1)",
+  },
+} satisfies ChartConfig;
 
 export function KnowledgeUsageTab({ groupId }: Props) {
   const { data: stats, isLoading } = useKnowledgeUsage(groupId, 7);
@@ -104,28 +110,41 @@ export function KnowledgeUsageTab({ groupId }: Props) {
             <CardTitle className="text-sm font-medium">Daily Queries</CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0">
-            <ResponsiveContainer width="100%" height={120}>
+            <ChartContainer
+              config={dailyQueriesChartConfig}
+              className="h-[140px] w-full aspect-auto"
+            >
               <BarChart
                 data={stats.dailyStats}
-                margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
+                margin={{ top: 8, right: 8, left: -12, bottom: 0 }}
               >
+                <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis
                   dataKey="date"
                   tickFormatter={(v) => format(new Date(v), "MMM d")}
-                  tick={{ fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickMargin={8}
                 />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip
-                  formatter={(v) => [v, "Queries"]}
-                  labelFormatter={(l) => format(new Date(l), "MMM d, yyyy")}
+                <YAxis axisLine={false} tickLine={false} width={32} />
+                <ChartTooltip
+                  cursor={false}
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(label) =>
+                        format(new Date(String(label)), "MMM d, yyyy")
+                      }
+                    />
+                  }
                 />
                 <Bar
                   dataKey="count"
-                  fill="hsl(var(--primary))"
-                  radius={[3, 3, 0, 0]}
+                  fill="var(--color-count)"
+                  radius={[6, 6, 0, 0]}
+                  maxBarSize={48}
                 />
               </BarChart>
-            </ResponsiveContainer>
+            </ChartContainer>
           </CardContent>
         </Card>
       )}

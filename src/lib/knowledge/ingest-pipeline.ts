@@ -160,15 +160,27 @@ function buildFallbackPages(processedDocument: ProcessedDocument) {
 }
 
 async function resolveKnowledgeIngestModels() {
-  const [parseModel, contextModel, imageModel, imageNeighborContextSetting] =
-    (await Promise.all([
-      settingsRepository.getSetting("knowledge-parse-model"),
-      settingsRepository.getSetting("knowledge-context-model"),
-      settingsRepository.getSetting("knowledge-image-model"),
-      settingsRepository.getSetting("knowledge-image-neighbor-context-enabled"),
-    ])) as Array<
-      { provider: string; model: string } | boolean | null | undefined
-    >;
+  const settings = await settingsRepository.getSettings([
+    "knowledge-parse-model",
+    "knowledge-context-model",
+    "knowledge-image-model",
+    "knowledge-image-neighbor-context-enabled",
+  ]);
+  const parseModel = settings["knowledge-parse-model"] as
+    | { provider: string; model: string }
+    | null
+    | undefined;
+  const contextModel = settings["knowledge-context-model"] as
+    | { provider: string; model: string }
+    | null
+    | undefined;
+  const imageModel = settings["knowledge-image-model"] as
+    | { provider: string; model: string }
+    | null
+    | undefined;
+  const imageNeighborContextSetting = settings[
+    "knowledge-image-neighbor-context-enabled"
+  ] as boolean | null | undefined;
 
   return {
     parseModel:

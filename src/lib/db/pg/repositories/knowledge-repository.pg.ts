@@ -3082,8 +3082,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         `),
       db.execute<{ total_tokens: number }>(sql`
           SELECT COALESCE(SUM(
-            CASE
-              WHEN jsonb_typeof(details) = 'object'
+              CASE
+              WHEN json_typeof(details) = 'object'
                 AND (details->>'embeddingTokenCount') IS NOT NULL
               THEN (details->>'embeddingTokenCount')::numeric
               ELSE 0
@@ -3094,8 +3094,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         `),
       db.execute<{ total_tokens: number }>(sql`
           SELECT COALESCE(SUM(
-            CASE
-              WHEN jsonb_typeof(details) = 'object'
+              CASE
+              WHEN json_typeof(details) = 'object'
                 AND (details->>'embeddingTokenCount') IS NOT NULL
               THEN (details->>'embeddingTokenCount')::numeric
               ELSE 0
