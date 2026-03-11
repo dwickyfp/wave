@@ -11,10 +11,12 @@ import { enrichChunksWithContext } from "./context-enricher";
 import { buildDocumentImageEmbeddingText } from "./document-images";
 import {
   buildDocumentMetadataEmbeddingText,
+  buildDocumentRetrievalIdentity,
   extractAutoDocumentMetadata,
 } from "./document-metadata";
 import { embedSingleTextWithUsage, embedTextsWithUsage } from "./embedder";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
+import { classifyFinancialStatementDocument } from "./financial-statement";
 import {
   buildKnowledgeSectionGraph,
   SECTION_GRAPH_VERSION,
@@ -111,7 +113,16 @@ function formatSectionPageSpan(section: {
 function buildSectionEmbeddingText(section: SectionGraphSection): string {
   const excerpt = section.content.trim().slice(0, 1200);
   return [
+    section.canonicalTitle ? `Document: ${section.canonicalTitle}` : "",
+    section.issuerName ? `Issuer: ${section.issuerName}` : "",
+    section.issuerTicker ? `Ticker: ${section.issuerTicker}` : "",
+    section.reportType ? `Report type: ${section.reportType}` : "",
+    section.fiscalYear ? `Fiscal year: ${section.fiscalYear}` : "",
     `Section path: ${section.headingPath}`,
+    section.noteNumber
+      ? `Note: ${section.noteSubsection ? `${section.noteNumber}.${section.noteSubsection}` : section.noteNumber}`
+      : "",
+    section.noteTitle ? `Note title: ${section.noteTitle}` : "",
     section.summary ? `Summary: ${section.summary}` : "",
     excerpt ? `Excerpt: ${excerpt}` : "",
     formatSectionPageSpan(section),
@@ -136,12 +147,28 @@ export async function materializeDocumentMarkdown({
   const markdown = normalizeStructuredMarkdown(inputMarkdown);
 
   await reportProgress?.(40, { stage: "materializing" });
-  const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId);
   const autoMeta = extractAutoDocumentMetadata(markdown, documentTitle);
-  const resolvedTitle = doc.titleManual ? doc.name : autoMeta.title;
+  const retrievalIdentity = buildDocumentRetrievalIdentity({
+    markdown,
+    fallbackTitle: documentTitle,
+    originalFilename: doc.originalFilename,
+    pageCount: inputPages?.length ?? null,
+  });
+  const classification = classifyFinancialStatementDocument({
+    markdown,
+    pageCount: inputPages?.length ?? undefined,
+    filename: doc.originalFilename,
+  });
+  const resolvedTitle = doc.titleManual
+    ? doc.name
+    : retrievalIdentity.canonicalTitle || autoMeta.title;
   const resolvedDescription = doc.descriptionManual
     ? (doc.description ?? null)
     : autoMeta.description;
+  const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId, {
+    retrievalIdentity,
+    classification,
+  });
   let metadataTokens = 0;
   let imageTokens = 0;
   let sectionTokens = 0;
@@ -154,6 +181,7 @@ export async function materializeDocumentMarkdown({
       description: resolvedDescription,
       originalFilename: doc.originalFilename,
       sourceUrl: doc.sourceUrl,
+      retrievalIdentity,
     });
     if (metadataText) {
       try {
@@ -177,6 +205,7 @@ export async function materializeDocumentMarkdown({
   const metadata = {
     ...(doc.metadata ?? {}),
     sectionGraphVersion: SECTION_GRAPH_VERSION,
+    retrievalIdentity,
     pageStates: (inputPages ?? []).map((page) => ({
       pageNumber: page.pageNumber,
       fingerprint: page.fingerprint,

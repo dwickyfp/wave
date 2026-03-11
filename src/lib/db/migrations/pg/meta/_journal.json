@@ -379,6 +379,20 @@
       "when": 1775500000000,
       "tag": "0053_knowledge_vector_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775600000000,
+      "tag": "0054_skill_groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1775700000000,
+      "tag": "0055_contextx_financial_precision",
+      "breakpoints": true
     }
   ]
 }

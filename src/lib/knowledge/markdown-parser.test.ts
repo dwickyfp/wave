@@ -34,6 +34,7 @@ vi.mock("lib/ai/provider-factory", () => ({
 }));
 
 import {
+  isTransientKnowledgeParseError,
   mergeParsedMarkdownWindows,
   parseDocumentToMarkdown,
   splitRawTextIntoWindows,
@@ -162,7 +163,62 @@ describe("markdown-parser", () => {
     );
   });
 
-  it("reports per-page parsing progress while iterating the document", async () => {
+  it("runs multiple repaired pages in parallel while preserving final page order", async () => {
+    const resolvers: Array<(value: { text: string }) => void> = [];
+    generateTextMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+
+    const promise = parseDocumentToMarkdown({
+      pages: [
+        {
+          pageNumber: 1,
+          rawText: "Page one raw text",
+          normalizedText: "Page one markdown",
+          markdown: "Page one markdown",
+          fingerprint: "page-parallel-1",
+          qualityScore: 0.2,
+          extractionMode: "normalized",
+          repairReason: "broken_reading_order",
+        },
+        {
+          pageNumber: 2,
+          rawText: "Page two raw text",
+          normalizedText: "Page two markdown",
+          markdown: "Page two markdown",
+          fingerprint: "page-parallel-2",
+          qualityScore: 0.2,
+          extractionMode: "normalized",
+          repairReason: "broken_reading_order",
+        },
+      ],
+      documentTitle: "Parallel Guide",
+      parsingProvider: "openai",
+      parsingModel: "gpt-4.1-mini",
+      mode: "always",
+      repairPolicy: "section-safe-reorder",
+    });
+
+    await vi.waitFor(() => {
+      expect(generateTextMock).toHaveBeenCalledTimes(2);
+    });
+
+    resolvers[1]?.({ text: "## Page Two\n\nSecond page content" });
+    resolvers[0]?.({ text: "## Page One\n\nFirst page content" });
+
+    const result = await promise;
+
+    expect(result.markdown).toContain("<!--CTX_PAGE:1-->\n\n## Page One");
+    expect(result.markdown).toContain("<!--CTX_PAGE:2-->\n\n## Page Two");
+    expect(result.markdown.indexOf("<!--CTX_PAGE:1-->")).toBeLessThan(
+      result.markdown.indexOf("<!--CTX_PAGE:2-->"),
+    );
+  });
+
+  it("reports monotonic per-page parsing progress as pages complete", async () => {
     const onPageProgress = vi.fn();
 
     await parseDocumentToMarkdown({
@@ -196,18 +252,16 @@ describe("markdown-parser", () => {
       onPageProgress,
     });
 
-    expect(onPageProgress).toHaveBeenNthCalledWith(1, {
-      currentPage: 1,
-      totalPages: 2,
-      pageNumber: 1,
-      repairing: true,
-    });
-    expect(onPageProgress).toHaveBeenNthCalledWith(2, {
-      currentPage: 2,
-      totalPages: 2,
-      pageNumber: 2,
-      repairing: false,
-    });
+    expect(onPageProgress).toHaveBeenCalledTimes(2);
+    expect(
+      onPageProgress.mock.calls.map(([state]) => state.currentPage),
+    ).toEqual([1, 2]);
+    expect(
+      onPageProgress.mock.calls.every(
+        ([state]) =>
+          state.totalPages === 2 && typeof state.pageNumber === "number",
+      ),
+    ).toBe(true);
   });
 
   it("fails the page parse when strict failure mode rejects short output", async () => {
@@ -240,5 +294,14 @@ describe("markdown-parser", () => {
         failureMode: "fail",
       }),
     ).rejects.toThrow(/suspiciously short output/i);
+  });
+
+  it("classifies 429-style parsing failures as transient", () => {
+    expect(
+      isTransientKnowledgeParseError(new Error("429 rate limit exceeded")),
+    ).toBe(true);
+    expect(isTransientKnowledgeParseError(new Error("syntax error"))).toBe(
+      false,
+    );
   });
 });

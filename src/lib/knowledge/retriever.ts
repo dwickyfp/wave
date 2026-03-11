@@ -13,6 +13,11 @@ import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { knowledgeRepository } from "lib/db/repository";
 import { settingsRepository } from "lib/db/repository";
 import { embedSingleText } from "./embedder";
+import {
+  mergeKnowledgeQueryConstraints,
+  matchesRetrievalIdentityConstraints,
+  type KnowledgeQueryConstraints,
+} from "./query-constraints";
 
 // Minimal group interface — satisfied by both KnowledgeGroup and KnowledgeSummary
 type GroupForRetrieval = {
@@ -143,11 +148,13 @@ async function getDocumentMetadataSignals(
   query: string,
   queryEmbedding?: number[],
   limit = CANDIDATE_LIMIT,
+  documentIds?: string[],
 ): Promise<Map<string, number>> {
   const lexicalPromise = knowledgeRepository.searchDocumentMetadata(
     groupId,
     query,
     limit,
+    documentIds,
   );
   const semanticPromise =
     DOC_META_VECTOR_ENABLED && queryEmbedding
@@ -155,6 +162,7 @@ async function getDocumentMetadataSignals(
           groupId,
           queryEmbedding,
           limit,
+          documentIds,
         )
       : Promise.resolve([]);
 
@@ -672,6 +680,7 @@ export interface QueryKnowledgeOptions {
   userId?: string | null;
   source?: "chat" | "agent" | "mcp";
   skipLogging?: boolean;
+  constraints?: KnowledgeQueryConstraints;
 }
 
 async function queryKnowledgeSingleScope(
@@ -679,10 +688,28 @@ async function queryKnowledgeSingleScope(
   query: string,
   topN: number,
   resultMode: RetrievalResultMode,
+  constraints: KnowledgeQueryConstraints,
 ): Promise<KnowledgeQueryResult[]> {
   const queryVariants = expandQuery(query);
   const allQueries = [query, ...queryVariants];
   const recallProfile = getRecallProfile(query, resultMode);
+  const entityMatches =
+    constraints.strictEntityMatch && (constraints.issuer || constraints.ticker)
+      ? await knowledgeRepository.findDocumentIdsByRetrievalIdentity(scope.id, {
+          issuer: constraints.issuer ?? null,
+          ticker: constraints.ticker ?? null,
+          limit: recallProfile.docCandidates,
+        })
+      : [];
+  const entityMatchedDocumentIds = entityMatches.map((row) => row.documentId);
+
+  if (
+    constraints.strictEntityMatch &&
+    (constraints.issuer || constraints.ticker) &&
+    entityMatchedDocumentIds.length === 0
+  ) {
+    return [];
+  }
 
   let embeddings: number[][] = [];
   try {
@@ -703,8 +730,16 @@ async function queryKnowledgeSingleScope(
     query,
     embeddings[0],
     recallProfile.docCandidates,
+    entityMatchedDocumentIds.length > 0 ? entityMatchedDocumentIds : undefined,
   );
   const docSignalMap = await docSignalPromise;
+  for (const match of entityMatches) {
+    const existing = docSignalMap.get(match.documentId) ?? 0;
+    docSignalMap.set(
+      match.documentId,
+      Math.max(existing, 1 + match.score * 0.05),
+    );
+  }
 
   const shortlistedDocIds = Array.from(docSignalMap.entries())
     .sort((a, b) => b[1] - a[1])
@@ -715,34 +750,53 @@ async function queryKnowledgeSingleScope(
     return [];
   }
 
-  const [sectionSearchResults, textSectionResults] = await Promise.all([
-    Promise.all(
-      embeddings.map((embedding) =>
-        knowledgeRepository.vectorSearchSections(
-          scope.id,
-          embedding,
-          recallProfile.sectionCandidates,
-          shortlistedDocIds,
-        ),
-      ),
-    ),
-    knowledgeRepository.fullTextSearchSections(
-      scope.id,
-      query,
-      recallProfile.sectionCandidates,
-      shortlistedDocIds,
-    ),
-  ]);
+  const structuredSectionMatches =
+    constraints.page || constraints.noteNumber
+      ? await knowledgeRepository.findSectionsByStructuredFilters({
+          groupId: scope.id,
+          documentIds: shortlistedDocIds,
+          page: constraints.page ?? null,
+          noteNumber: constraints.noteNumber ?? null,
+          noteSubsection: constraints.noteSubsection ?? null,
+          limit: recallProfile.sectionCandidates,
+        })
+      : [];
 
-  const shortlistedSectionIds = mergeSectionCandidates({
-    vectorLists: sectionSearchResults.map((results) =>
-      results.filter((result) => result.score >= MIN_VECTOR_SCORE),
-    ),
-    textResults: textSectionResults,
-    docSignalMap,
-  })
-    .slice(0, recallProfile.sectionCandidates)
-    .map((candidate) => candidate.section.id);
+  if (
+    (constraints.page || constraints.noteNumber) &&
+    structuredSectionMatches.length === 0
+  ) {
+    return [];
+  }
+
+  const shortlistedSectionIds =
+    structuredSectionMatches.length > 0
+      ? structuredSectionMatches.map((match) => match.section.id)
+      : mergeSectionCandidates({
+          vectorLists: (
+            await Promise.all(
+              embeddings.map((embedding) =>
+                knowledgeRepository.vectorSearchSections(
+                  scope.id,
+                  embedding,
+                  recallProfile.sectionCandidates,
+                  shortlistedDocIds,
+                ),
+              ),
+            )
+          ).map((results) =>
+            results.filter((result) => result.score >= MIN_VECTOR_SCORE),
+          ),
+          textResults: await knowledgeRepository.fullTextSearchSections(
+            scope.id,
+            query,
+            recallProfile.sectionCandidates,
+            shortlistedDocIds,
+          ),
+          docSignalMap,
+        })
+          .slice(0, recallProfile.sectionCandidates)
+          .map((candidate) => candidate.section.id);
 
   const searchFilters =
     shortlistedSectionIds.length > 0
@@ -872,6 +926,14 @@ async function queryKnowledgeSingleScope(
     }));
 
   finalResults = await attachNeighborContext(finalResults, scope.id);
+  if (
+    constraints.strictEntityMatch &&
+    (constraints.issuer || constraints.ticker)
+  ) {
+    finalResults = finalResults.filter((result) =>
+      entityMatchedDocumentIds.includes(result.documentId),
+    );
+  }
 
   return finalResults;
 }
@@ -901,8 +963,10 @@ export async function queryKnowledge(
     userId,
     source = "chat",
     skipLogging = false,
+    constraints: rawConstraints,
   } = options;
   const start = Date.now();
+  const constraints = mergeKnowledgeQueryConstraints(query, rawConstraints);
 
   const scopes = await resolveRetrievalScopes(group);
   const scopedResults = await Promise.all(
@@ -912,6 +976,7 @@ export async function queryKnowledge(
         query,
         Math.max(topN, FINAL_AFTER_RERANK),
         resultMode,
+        constraints,
       ).catch(() => []),
     ),
   );
@@ -1217,6 +1282,7 @@ function buildKnowledgeDocsCacheKey(input: {
   retrievalThreshold?: number | null;
   libraryId?: string;
   libraryVersion?: string;
+  constraints?: KnowledgeQueryConstraints;
 }) {
   const hash = createHash("sha256")
     .update(
@@ -1225,6 +1291,7 @@ function buildKnowledgeDocsCacheKey(input: {
         retrievalThreshold: input.retrievalThreshold ?? null,
         libraryId: input.libraryId ?? null,
         libraryVersion: input.libraryVersion ?? null,
+        constraints: input.constraints ?? null,
       }),
     )
     .digest("hex");
@@ -1269,10 +1336,22 @@ type SectionBundleCandidate = {
 };
 
 function formatSectionHeading(section: KnowledgeSection): string {
-  if (section.partCount > 1) {
-    return `${section.headingPath} (Part ${section.partIndex + 1}/${section.partCount})`;
-  }
-  return section.headingPath;
+  const baseLabel = section.noteNumber
+    ? `Note ${section.noteSubsection ? `${section.noteNumber}.${section.noteSubsection}` : section.noteNumber}${section.noteTitle ? ` ${section.noteTitle}` : ""}`
+    : section.headingPath;
+  const partLabel =
+    section.partCount > 1
+      ? `Part ${section.partIndex + 1}/${section.partCount}`
+      : null;
+  const headingLabel = partLabel ? `${baseLabel} (${partLabel})` : baseLabel;
+  const pageLabel =
+    section.pageStart && section.pageEnd
+      ? section.pageStart === section.pageEnd
+        ? `Page ${section.pageStart}`
+        : `Pages ${section.pageStart}-${section.pageEnd}`
+      : null;
+
+  return [headingLabel, pageLabel].filter(Boolean).join(" | ");
 }
 
 function getSplitSiblingSection(
@@ -1477,6 +1556,11 @@ export interface QueryKnowledgeDocsOptions {
   libraryId?: string;
   /** Optional library version scope. */
   libraryVersion?: string;
+  issuer?: string;
+  ticker?: string;
+  page?: number;
+  note?: string;
+  strictEntityMatch?: boolean;
   userId?: string | null;
   source?: "chat" | "agent" | "mcp";
 }
@@ -2317,6 +2401,13 @@ export async function queryKnowledgeAsDocs(
   query: string,
   options: QueryKnowledgeDocsOptions = {},
 ): Promise<DocRetrievalResult[]> {
+  const constraints = mergeKnowledgeQueryConstraints(query, {
+    issuer: options.issuer,
+    ticker: options.ticker,
+    page: options.page,
+    note: options.note,
+    strictEntityMatch: options.strictEntityMatch,
+  });
   const tokenBudget = Math.min(
     Math.max(options.tokens || DEFAULT_FULL_DOC_TOKENS, 500),
     MAX_FULL_DOC_TOKENS,
@@ -2335,6 +2426,7 @@ export async function queryKnowledgeAsDocs(
     retrievalThreshold: group.retrievalThreshold ?? null,
     libraryId: options.libraryId,
     libraryVersion: options.libraryVersion,
+    constraints,
   });
   if (SHOULD_USE_KNOWLEDGE_DOCS_CACHE) {
     const cached = await serverCache.get<DocRetrievalResult[]>(cacheKey);
@@ -2352,6 +2444,7 @@ export async function queryKnowledgeAsDocs(
     topN: Math.min(recallProfile.chunkCandidates, Math.max(maxDocs * 12, 24)),
     resultMode,
     skipLogging: true,
+    constraints,
   });
 
   const docSignalMaps = await Promise.all(
@@ -2445,8 +2538,14 @@ export async function queryKnowledgeAsDocs(
   if (candidateDocMeta.length === 0) return [];
 
   const allowedGroupIds = new Set(scopes.map((scope) => scope.id));
-  const candidateDocMetaInScope = candidateDocMeta.filter((doc) =>
-    allowedGroupIds.has(doc.groupId),
+  const candidateDocMetaInScope = candidateDocMeta.filter(
+    (doc) =>
+      allowedGroupIds.has(doc.groupId) &&
+      (!constraints.strictEntityMatch ||
+        matchesRetrievalIdentityConstraints(
+          (doc.metadata?.retrievalIdentity as any) ?? null,
+          constraints,
+        )),
   );
   if (candidateDocMetaInScope.length === 0) return [];
 

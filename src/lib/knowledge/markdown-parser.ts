@@ -13,6 +13,7 @@ import type {
 } from "app-types/knowledge";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
+import { mapWithConcurrency } from "./async-pool";
 import { createPageMarker } from "./page-markers";
 import type { ProcessedDocumentPage } from "./processor/types";
 
@@ -64,8 +65,58 @@ const WINDOW_CHARS = 40_000;
 const WINDOW_OVERLAP_CHARS = 4_000;
 const OVERLAP_COMPARE_LINES = 80;
 const AUTO_PARSE_QUALITY_THRESHOLD = 0.68;
+const DEFAULT_PARSE_PAGE_CONCURRENCY = 4;
+const DEFAULT_PARSE_WINDOW_CONCURRENCY = 2;
+const DEFAULT_LONG_DOC_PAGE_THRESHOLD = 40;
 
 const pageParseCache = new Map<string, ProcessedDocumentPage>();
+
+function readPositiveIntEnv(name: string, fallback: number) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getLongDocPageThreshold() {
+  return readPositiveIntEnv(
+    "KNOWLEDGE_PARSE_LONG_DOC_PAGE_THRESHOLD",
+    DEFAULT_LONG_DOC_PAGE_THRESHOLD,
+  );
+}
+
+function getPageParseConcurrency(totalPages: number) {
+  const configured = readPositiveIntEnv(
+    "KNOWLEDGE_PARSE_PAGE_CONCURRENCY",
+    DEFAULT_PARSE_PAGE_CONCURRENCY,
+  );
+  return totalPages >= getLongDocPageThreshold()
+    ? configured
+    : Math.min(2, configured);
+}
+
+function getWindowParseConcurrency(totalPages: number) {
+  const configured = readPositiveIntEnv(
+    "KNOWLEDGE_PARSE_WINDOW_CONCURRENCY",
+    DEFAULT_PARSE_WINDOW_CONCURRENCY,
+  );
+  return totalPages >= getLongDocPageThreshold()
+    ? configured
+    : Math.min(1, configured);
+}
+
+export function isTransientKnowledgeParseError(error: unknown) {
+  const message =
+    error instanceof Error ? error.message.toLowerCase() : String(error);
+  return (
+    message.includes("429") ||
+    message.includes("rate limit") ||
+    message.includes("too many requests") ||
+    message.includes("overloaded") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("timeout")
+  );
+}
 
 async function resolveParsingModel(provider: string, modelName: string) {
   const providerConfig = await settingsRepository.getProviderByName(provider);
@@ -319,6 +370,7 @@ async function parseSinglePage(input: {
   parsingModel: string;
   repairPolicy: KnowledgeParseRepairPolicy;
   failureMode?: "fallback" | "fail";
+  windowConcurrency?: number;
 }): Promise<ProcessedDocumentPage> {
   const cacheKey = buildPageCacheKey({
     page: input.page,
@@ -333,24 +385,40 @@ async function parseSinglePage(input: {
 
   const sourceText = input.page.rawText || input.page.normalizedText;
   const windows = splitRawTextIntoWindows(sourceText);
-  const parsedWindows: string[] = [];
-
-  for (const [index, windowText] of windows.entries()) {
-    parsedWindows.push(
-      await parseWindowToMarkdown({
-        model: input.model,
-        rawText: windowText,
-        documentTitle: input.documentTitle,
-        pageNumber: input.page.pageNumber,
-        windowIndex: index + 1,
-        totalWindows: windows.length,
-        repairPolicy: input.repairPolicy,
-        qualityScore: input.page.qualityScore,
-        repairReason: input.page.repairReason,
-        failureMode: input.failureMode,
-      }),
-    );
-  }
+  const windowConcurrency = Math.max(1, input.windowConcurrency ?? 1);
+  const parsedWindows =
+    windowConcurrency <= 1 || windows.length <= 1
+      ? await mapWithConcurrency(windows, 1, async (windowText, index) =>
+          parseWindowToMarkdown({
+            model: input.model,
+            rawText: windowText,
+            documentTitle: input.documentTitle,
+            pageNumber: input.page.pageNumber,
+            windowIndex: index + 1,
+            totalWindows: windows.length,
+            repairPolicy: input.repairPolicy,
+            qualityScore: input.page.qualityScore,
+            repairReason: input.page.repairReason,
+            failureMode: input.failureMode,
+          }),
+        )
+      : await mapWithConcurrency(
+          windows,
+          Math.min(windowConcurrency, windows.length),
+          async (windowText, index) =>
+            parseWindowToMarkdown({
+              model: input.model,
+              rawText: windowText,
+              documentTitle: input.documentTitle,
+              pageNumber: input.page.pageNumber,
+              windowIndex: index + 1,
+              totalWindows: windows.length,
+              repairPolicy: input.repairPolicy,
+              qualityScore: input.page.qualityScore,
+              repairReason: input.page.repairReason,
+              failureMode: input.failureMode,
+            }),
+        );
 
   const markdown = mergeParsedMarkdownWindows(parsedWindows).trim();
   const repairedPage: ProcessedDocumentPage = {
@@ -408,34 +476,95 @@ export async function parseDocumentToMarkdown(input: {
       input.parsingProvider,
       input.parsingModel,
     );
-    const updatedPages: ProcessedDocumentPage[] = [];
     const totalPages = normalizedPages.length;
+    const windowConcurrency = getWindowParseConcurrency(totalPages);
+    let pageConcurrency = getPageParseConcurrency(totalPages);
+    let completedPages = 0;
+    const updatedPages = [...normalizedPages];
+    const repairQueue = normalizedPages
+      .map((page, index) => ({
+        page,
+        index,
+        repairing: shouldRepairPage(page, input.mode),
+      }))
+      .filter((entry) => entry.repairing);
 
-    for (const [index, page] of normalizedPages.entries()) {
-      const repairing = shouldRepairPage(page, input.mode);
+    const markProgress = async (
+      page: ProcessedDocumentPage,
+      repairing: boolean,
+    ) => {
+      completedPages += 1;
       await input.onPageProgress?.({
-        currentPage: index + 1,
+        currentPage: completedPages,
         totalPages,
         pageNumber: page.pageNumber,
         repairing,
       });
+    };
 
-      if (!repairing) {
-        updatedPages.push(page);
-        continue;
+    for (const entry of normalizedPages
+      .map((page, index) => ({
+        page,
+        index,
+        repairing: shouldRepairPage(page, input.mode),
+      }))
+      .filter((item) => !item.repairing)) {
+      await markProgress(entry.page, false);
+    }
+
+    let cursor = 0;
+    while (cursor < repairQueue.length) {
+      const batchSize = Math.max(
+        1,
+        Math.min(pageConcurrency, repairQueue.length - cursor),
+      );
+      const batch = repairQueue.slice(cursor, cursor + batchSize);
+      const batchResults = await mapWithConcurrency(
+        batch,
+        batchSize,
+        async (entry) => {
+          try {
+            const parsedPage = await parseSinglePage({
+              model,
+              page: entry.page,
+              documentTitle: input.documentTitle,
+              provider: input.parsingProvider,
+              parsingModel: input.parsingModel,
+              repairPolicy: input.repairPolicy,
+              failureMode: input.failureMode,
+              windowConcurrency,
+            });
+            return {
+              index: entry.index,
+              page: parsedPage,
+              repairing: true,
+            };
+          } catch (error) {
+            if (isTransientKnowledgeParseError(error)) {
+              pageConcurrency = 1;
+            }
+            if (input.failureMode === "fail") {
+              throw error;
+            }
+            console.warn(
+              `[ContextX] Falling back to normalized page ${entry.page.pageNumber} for "${input.documentTitle}":`,
+              error,
+            );
+            return {
+              index: entry.index,
+              page: entry.page,
+              repairing: true,
+            };
+          }
+        },
+      );
+
+      for (const result of batchResults) {
+        updatedPages[result.index] = result.page;
+        await markProgress(result.page, result.repairing);
       }
 
-      updatedPages.push(
-        await parseSinglePage({
-          model,
-          page,
-          documentTitle: input.documentTitle,
-          provider: input.parsingProvider,
-          parsingModel: input.parsingModel,
-          repairPolicy: input.repairPolicy,
-          failureMode: input.failureMode,
-        }),
-      );
+      cursor += batchSize;
     }
 
     return {

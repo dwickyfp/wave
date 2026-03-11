@@ -1,7 +1,14 @@
 import { generateUUID } from "lib/utils";
+import {
+  classifyFinancialStatementDocument,
+  matchFinancialNoteHeading,
+  matchFinancialSubsection,
+  type FinancialStatementClassification,
+  type RetrievalIdentity,
+} from "./financial-statement";
 import { parsePageMarker } from "./page-markers";
 
-export const SECTION_GRAPH_VERSION = 1;
+export const SECTION_GRAPH_VERSION = 2;
 const MAX_SECTION_TOKENS = 900;
 const TARGET_SECTION_PART_TOKENS = 700;
 const SUMMARY_TOKEN_LIMIT = 160;
@@ -13,6 +20,10 @@ interface ParsedSection {
   content: string;
   pageStart?: number;
   pageEnd?: number;
+  noteNumber?: string;
+  noteTitle?: string;
+  noteSubsection?: string;
+  continued?: boolean;
 }
 
 interface ContentBlock {
@@ -35,6 +46,10 @@ interface BaseSection {
   headinglessDoc: boolean;
   pageStart?: number;
   pageEnd?: number;
+  noteNumber?: string;
+  noteTitle?: string;
+  noteSubsection?: string;
+  continued?: boolean;
 }
 
 export interface KnowledgeSectionNode {
@@ -59,6 +74,16 @@ export interface KnowledgeSectionNode {
   includeHeadingInChunkContent?: boolean;
   pageStart?: number;
   pageEnd?: number;
+  canonicalTitle?: string;
+  issuerName?: string;
+  issuerTicker?: string;
+  reportType?: string;
+  fiscalYear?: number;
+  periodEnd?: string;
+  noteNumber?: string;
+  noteTitle?: string;
+  noteSubsection?: string;
+  continued?: boolean;
 }
 
 function estimateTokens(text: string): number {
@@ -116,6 +141,29 @@ function extractLibraryId(headingBreadcrumb: string[]): string | undefined {
     .replace(/^-+|-+$/g, "");
 }
 
+function isLikelyStructuredHeading(text: string): boolean {
+  const heading = text.trim();
+  if (!heading) return false;
+  if (matchFinancialNoteHeading(heading) || matchFinancialSubsection(heading)) {
+    return true;
+  }
+  if (heading.length < 2 || heading.length > 140) return false;
+
+  const alphaCount = (heading.match(/[A-Za-z]/g) ?? []).length;
+  const digitCount = (heading.match(/\d/g) ?? []).length;
+  if (alphaCount < 2) return false;
+  if (digitCount > alphaCount) return false;
+  if (
+    /(?:rp|usd|\d{1,3}(?:[.,]\d{3}){1,}|jumlah|saldo awal|saldo akhir)/i.test(
+      heading,
+    )
+  ) {
+    return false;
+  }
+  if (heading.includes("|")) return false;
+  return true;
+}
+
 function splitIntoSections(markdown: string): ParsedSection[] {
   const lines = markdown.split("\n");
   const sections: ParsedSection[] = [];
@@ -166,6 +214,12 @@ function splitIntoSections(markdown: string): ParsedSection[] {
       continue;
     }
 
+    if (!isLikelyStructuredHeading(headingMatch[2])) {
+      currentLines.push(line);
+      currentPageEnd = currentPage;
+      continue;
+    }
+
     flushSection();
     currentLines = [];
     currentPageStart = currentPage;
@@ -185,6 +239,174 @@ function splitIntoSections(markdown: string): ParsedSection[] {
   }
 
   flushSection();
+  return sections;
+}
+
+function splitIntoFinancialSections(markdown: string): ParsedSection[] {
+  type ActiveSection = {
+    heading: string;
+    headingLevel: number;
+    headingBreadcrumb: string[];
+    lines: string[];
+    pageStart: number;
+    pageEnd: number;
+    noteNumber?: string;
+    noteTitle?: string;
+    noteSubsection?: string;
+    continued?: boolean;
+  };
+
+  const sections: ParsedSection[] = [];
+  const lines = markdown.split("\n");
+  let inCodeFence = false;
+  let currentPage = 1;
+  let introLines: string[] = [];
+  let introPageStart = 1;
+  let introPageEnd = 1;
+  let active: ActiveSection | null = null;
+
+  const flushIntro = () => {
+    const content = introLines.join("\n").trim();
+    if (!content) return;
+    sections.push({
+      heading: "Introduction",
+      headingLevel: 1,
+      headingBreadcrumb: ["Introduction"],
+      content,
+      pageStart: introPageStart,
+      pageEnd: introPageEnd,
+    });
+    introLines = [];
+  };
+
+  const flushActive = () => {
+    if (!active) return;
+    const content = active.lines.join("\n").trim();
+    if (content) {
+      sections.push({
+        heading: active.heading,
+        headingLevel: active.headingLevel,
+        headingBreadcrumb: active.headingBreadcrumb,
+        content,
+        pageStart: active.pageStart,
+        pageEnd: active.pageEnd,
+        noteNumber: active.noteNumber,
+        noteTitle: active.noteTitle,
+        noteSubsection: active.noteSubsection,
+        continued: active.continued,
+      });
+    }
+    active = null;
+  };
+
+  const startSection = (input: {
+    heading: string;
+    headingLevel: number;
+    headingBreadcrumb: string[];
+    noteNumber?: string;
+    noteTitle?: string;
+    noteSubsection?: string;
+    continued?: boolean;
+  }) => {
+    flushActive();
+    active = {
+      ...input,
+      lines: [],
+      pageStart: currentPage,
+      pageEnd: currentPage,
+    };
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const pageMarker = !inCodeFence ? parsePageMarker(trimmed) : null;
+    if (pageMarker !== null) {
+      currentPage = pageMarker;
+      if (!active && introLines.length === 0) {
+        introPageStart = pageMarker;
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      inCodeFence = !inCodeFence;
+      const currentActive = active as ActiveSection | null;
+      if (currentActive) {
+        currentActive.lines.push(line);
+        currentActive.pageEnd = currentPage;
+      } else {
+        introLines.push(line);
+        introPageEnd = currentPage;
+      }
+      continue;
+    }
+
+    const noteHeading = !inCodeFence ? matchFinancialNoteHeading(line) : null;
+    if (noteHeading) {
+      const nextHeading = `${noteHeading.noteNumber}. ${noteHeading.noteTitle}`;
+      const currentActive = active as ActiveSection | null;
+      const sameNote =
+        currentActive?.noteNumber === noteHeading.noteNumber &&
+        currentActive?.noteTitle === noteHeading.noteTitle;
+
+      if (sameNote && currentActive) {
+        currentActive.pageEnd = currentPage;
+        currentActive.continued =
+          currentActive.continued || noteHeading.continued;
+        continue;
+      }
+
+      flushIntro();
+      startSection({
+        heading: nextHeading,
+        headingLevel: 2,
+        headingBreadcrumb: [nextHeading],
+        noteNumber: noteHeading.noteNumber,
+        noteTitle: noteHeading.noteTitle,
+        continued: noteHeading.continued,
+      });
+      continue;
+    }
+
+    const currentActive = active as ActiveSection | null;
+    const subsection =
+      !inCodeFence && currentActive ? matchFinancialSubsection(line) : null;
+    if (
+      currentActive &&
+      subsection &&
+      currentActive.noteNumber &&
+      currentActive.noteTitle
+    ) {
+      const parentHeading = `${currentActive.noteNumber}. ${currentActive.noteTitle}`;
+      startSection({
+        heading: `${subsection.noteSubsection}. ${subsection.title}`,
+        headingLevel: 3,
+        headingBreadcrumb: [
+          parentHeading,
+          `${subsection.noteSubsection}. ${subsection.title}`,
+        ],
+        noteNumber: currentActive.noteNumber,
+        noteTitle: currentActive.noteTitle,
+        noteSubsection: subsection.noteSubsection,
+        continued: currentActive.continued,
+      });
+      continue;
+    }
+
+    if (currentActive) {
+      currentActive.lines.push(line);
+      currentActive.pageEnd = currentPage;
+    } else {
+      if (introLines.length === 0) {
+        introPageStart = currentPage;
+      }
+      introLines.push(line);
+      introPageEnd = currentPage;
+    }
+  }
+
+  flushActive();
+  flushIntro();
   return sections;
 }
 
@@ -444,8 +666,17 @@ function buildSectionSummary(
   return trimTextToTokenLimit(parts.join(" "), SUMMARY_TOKEN_LIMIT);
 }
 
-function createBaseSections(markdown: string): BaseSection[] {
-  const parsed = splitIntoSections(markdown);
+function createBaseSections(
+  markdown: string,
+  classification?: FinancialStatementClassification | null,
+): BaseSection[] {
+  const resolvedClassification =
+    classification ?? classifyFinancialStatementDocument({ markdown });
+  const parsed =
+    resolvedClassification.isFinancialStatement &&
+    resolvedClassification.noteHeadingCount >= 1
+      ? splitIntoFinancialSections(markdown)
+      : splitIntoSections(markdown);
   const hasHeadings = parsed.some(
     (section) => section.headingLevel > 0 && section.heading.length > 0,
   );
@@ -470,6 +701,10 @@ function createBaseSections(markdown: string): BaseSection[] {
         pageStart: parsed[0]?.pageStart ?? 1,
         pageEnd:
           parsed[parsed.length - 1]?.pageEnd ?? parsed[0]?.pageStart ?? 1,
+        noteNumber: undefined,
+        noteTitle: undefined,
+        noteSubsection: undefined,
+        continued: false,
       },
     ];
   }
@@ -520,6 +755,10 @@ function createBaseSections(markdown: string): BaseSection[] {
       headinglessDoc: false,
       pageStart: section.pageStart,
       pageEnd: section.pageEnd,
+      noteNumber: section.noteNumber,
+      noteTitle: section.noteTitle,
+      noteSubsection: section.noteSubsection,
+      continued: section.continued,
     });
   }
 
@@ -530,11 +769,15 @@ export function buildKnowledgeSectionGraph(
   markdown: string,
   documentId: string,
   groupId: string,
+  options: {
+    retrievalIdentity?: RetrievalIdentity | null;
+    classification?: FinancialStatementClassification | null;
+  } = {},
 ): KnowledgeSectionNode[] {
   const cleaned = cleanText(markdown);
   if (!cleaned) return [];
 
-  const baseSections = createBaseSections(cleaned);
+  const baseSections = createBaseSections(cleaned, options.classification);
   if (baseSections.length === 0) return [];
 
   const expanded = baseSections.map((base) => {
@@ -576,6 +819,16 @@ export function buildKnowledgeSectionGraph(
         includeHeadingInChunkContent: base.includeHeadingInChunkContent,
         pageStart: base.pageStart,
         pageEnd: base.pageEnd,
+        canonicalTitle: options.retrievalIdentity?.canonicalTitle,
+        issuerName: options.retrievalIdentity?.issuerName ?? undefined,
+        issuerTicker: options.retrievalIdentity?.issuerTicker ?? undefined,
+        reportType: options.retrievalIdentity?.reportType ?? undefined,
+        fiscalYear: options.retrievalIdentity?.fiscalYear ?? undefined,
+        periodEnd: options.retrievalIdentity?.periodEnd ?? undefined,
+        noteNumber: base.noteNumber,
+        noteTitle: base.noteTitle,
+        noteSubsection: base.noteSubsection,
+        continued: base.continued,
       });
     });
   }

@@ -58,6 +58,16 @@ export type KnowledgeChunkMetadata = {
   sectionTitle?: string;
   headings?: string[];
   headingPath?: string;
+  canonicalTitle?: string;
+  issuerName?: string;
+  issuerTicker?: string;
+  reportType?: string;
+  fiscalYear?: number;
+  periodEnd?: string;
+  noteNumber?: string;
+  noteTitle?: string;
+  noteSubsection?: string;
+  continued?: boolean;
   chunkType?:
     | "code"
     | "directive"
@@ -205,6 +215,12 @@ export interface KnowledgeSection {
   content: string;
   summary: string;
   tokenCount: number;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  noteNumber?: string | null;
+  noteTitle?: string | null;
+  noteSubsection?: string | null;
+  continued?: boolean | null;
   embedding?: number[] | null;
   createdAt: Date;
 }
@@ -620,15 +636,25 @@ export interface KnowledgeRepository {
       updatedAt: Date;
     }>
   >;
+  findDocumentIdsByRetrievalIdentity(
+    groupId: string,
+    input: {
+      issuer?: string | null;
+      ticker?: string | null;
+      limit?: number;
+    },
+  ): Promise<Array<{ documentId: string; score: number }>>;
   searchDocumentMetadata(
     groupId: string,
     query: string,
     limit: number,
+    documentIds?: string[],
   ): Promise<Array<{ documentId: string; score: number }>>;
   vectorSearchDocumentMetadata(
     groupId: string,
     embedding: number[],
     limit: number,
+    documentIds?: string[],
   ): Promise<Array<{ documentId: string; score: number }>>;
 
   // Sections
@@ -638,6 +664,20 @@ export interface KnowledgeRepository {
   deleteSectionsByDocumentId(documentId: string): Promise<void>;
   getSectionsByIds(ids: string[]): Promise<KnowledgeSection[]>;
   getRelatedSections(sectionIds: string[]): Promise<KnowledgeSection[]>;
+  findSectionsByStructuredFilters(input: {
+    groupId: string;
+    documentIds?: string[];
+    page?: number | null;
+    noteNumber?: string | null;
+    noteSubsection?: string | null;
+    limit?: number;
+  }): Promise<
+    Array<{
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+    }>
+  >;
 
   // Chunks
   insertChunks(

@@ -140,6 +140,31 @@ function formatPageSpan(chunk: TextChunk): string {
   return `Pages: ${start}-${end}.`;
 }
 
+function buildEmbeddingIdentityPrefix(chunk: TextChunk): string {
+  const parts = [
+    chunk.metadata.canonicalTitle
+      ? `Document: ${chunk.metadata.canonicalTitle}.`
+      : "",
+    chunk.metadata.issuerName ? `Issuer: ${chunk.metadata.issuerName}.` : "",
+    chunk.metadata.issuerTicker
+      ? `Ticker: ${chunk.metadata.issuerTicker}.`
+      : "",
+    chunk.metadata.reportType
+      ? `Report type: ${chunk.metadata.reportType}.`
+      : "",
+    chunk.metadata.fiscalYear
+      ? `Fiscal year: ${chunk.metadata.fiscalYear}.`
+      : "",
+    chunk.metadata.noteNumber
+      ? `Note: ${chunk.metadata.noteSubsection ? `${chunk.metadata.noteNumber}.${chunk.metadata.noteSubsection}` : chunk.metadata.noteNumber}.`
+      : "",
+    chunk.metadata.noteTitle ? `Note title: ${chunk.metadata.noteTitle}.` : "",
+    formatPageSpan(chunk),
+  ].filter(Boolean);
+
+  return parts.join(" ").trim();
+}
+
 function isWeaklyStructuredChunk(chunk: TextChunk): boolean {
   const metadata = chunk.metadata;
   if (!metadata.headingPath && !metadata.section) return true;
@@ -253,9 +278,13 @@ export async function enrichChunksWithContext(
       return {
         ...chunk,
         contextSummary: context,
-        embeddingText: context
-          ? `${context}\n\n${chunk.content}`
-          : chunk.content,
+        embeddingText: [
+          buildEmbeddingIdentityPrefix(chunk),
+          context,
+          chunk.content,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
       };
     });
   }
@@ -272,9 +301,13 @@ export async function enrichChunksWithContext(
       return {
         ...chunk,
         contextSummary: context,
-        embeddingText: context
-          ? `${context}\n\n${chunk.content}`
-          : chunk.content,
+        embeddingText: [
+          buildEmbeddingIdentityPrefix(chunk),
+          context,
+          chunk.content,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
       };
     });
   }
@@ -310,7 +343,13 @@ export async function enrichChunksWithContext(
     return {
       ...chunk,
       contextSummary: context,
-      embeddingText: context ? `${context}\n\n${chunk.content}` : chunk.content,
+      embeddingText: [
+        buildEmbeddingIdentityPrefix(chunk),
+        context,
+        chunk.content,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     };
   });
 }

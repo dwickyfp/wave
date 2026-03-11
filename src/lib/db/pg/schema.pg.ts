@@ -1083,6 +1083,12 @@ export const KnowledgeSectionTable = pgTable(
     content: text("content").notNull(),
     summary: text("summary").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
+    noteNumber: text("note_number"),
+    noteTitle: text("note_title"),
+    noteSubsection: text("note_subsection"),
+    continued: boolean("continued").notNull().default(false),
     embedding: vector("embedding"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -1092,6 +1098,12 @@ export const KnowledgeSectionTable = pgTable(
     index("knowledge_section_group_id_idx").on(t.groupId),
     index("knowledge_section_document_id_idx").on(t.documentId),
     index("knowledge_section_parent_section_id_idx").on(t.parentSectionId),
+    index("knowledge_section_note_number_idx").on(t.groupId, t.noteNumber),
+    index("knowledge_section_page_span_idx").on(
+      t.groupId,
+      t.pageStart,
+      t.pageEnd,
+    ),
   ],
 );
 
@@ -1118,6 +1130,16 @@ export const KnowledgeChunkTable = pgTable(
       sectionTitle?: string;
       headings?: string[];
       headingPath?: string;
+      canonicalTitle?: string;
+      issuerName?: string;
+      issuerTicker?: string;
+      reportType?: string;
+      fiscalYear?: number;
+      periodEnd?: string;
+      noteNumber?: string;
+      noteTitle?: string;
+      noteSubsection?: string;
+      continued?: boolean;
       chunkType?:
         | "code"
         | "directive"
@@ -1235,6 +1257,12 @@ export const KnowledgeSectionVersionTable = pgTable(
     content: text("content").notNull(),
     summary: text("summary").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
+    noteNumber: text("note_number"),
+    noteTitle: text("note_title"),
+    noteSubsection: text("note_subsection"),
+    continued: boolean("continued").notNull().default(false),
     embedding: vector("embedding"),
     sourcePath: text("source_path"),
     libraryId: text("library_id"),
@@ -1283,6 +1311,16 @@ export const KnowledgeChunkVersionTable = pgTable(
       sectionTitle?: string;
       headings?: string[];
       headingPath?: string;
+      canonicalTitle?: string;
+      issuerName?: string;
+      issuerTicker?: string;
+      reportType?: string;
+      fiscalYear?: number;
+      periodEnd?: string;
+      noteNumber?: string;
+      noteTitle?: string;
+      noteSubsection?: string;
+      continued?: boolean;
       chunkType?:
         | "code"
         | "directive"

@@ -64,6 +64,12 @@ type VersionSnapshotSection = {
   content: string;
   summary: string;
   tokenCount: number;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  noteNumber?: string | null;
+  noteTitle?: string | null;
+  noteSubsection?: string | null;
+  continued?: boolean | null;
   embedding?: number[] | null;
   sourcePath?: string | null;
   libraryId?: string | null;
@@ -623,6 +629,12 @@ async function selectLiveSections(
     content: string;
     summary: string;
     token_count: number;
+    page_start: number | null;
+    page_end: number | null;
+    note_number: string | null;
+    note_title: string | null;
+    note_subsection: string | null;
+    continued: boolean | null;
     embedding_text: string | null;
   }>(
     sql`
@@ -639,6 +651,12 @@ async function selectLiveSections(
         content,
         summary,
         token_count,
+        page_start,
+        page_end,
+        note_number,
+        note_title,
+        note_subsection,
+        continued,
         embedding::text AS embedding_text
       FROM knowledge_section
       WHERE document_id = ${documentId}::uuid
@@ -659,6 +677,12 @@ async function selectLiveSections(
     content: row.content,
     summary: row.summary,
     tokenCount: row.token_count,
+    pageStart: row.page_start ?? null,
+    pageEnd: row.page_end ?? null,
+    noteNumber: row.note_number ?? null,
+    noteTitle: row.note_title ?? null,
+    noteSubsection: row.note_subsection ?? null,
+    continued: row.continued ?? false,
     embedding: parsePgVectorLiteral(row.embedding_text),
     sourcePath: null,
     libraryId: null,
@@ -820,6 +844,12 @@ async function selectVersionSections(
     summary: string;
     token_count: number;
     embedding_text: string | null;
+    page_start: number | null;
+    page_end: number | null;
+    note_number: string | null;
+    note_title: string | null;
+    note_subsection: string | null;
+    continued: boolean | null;
     source_path: string | null;
     library_id: string | null;
     library_version: string | null;
@@ -840,6 +870,12 @@ async function selectVersionSections(
         summary,
         token_count,
         embedding::text AS embedding_text,
+        page_start,
+        page_end,
+        note_number,
+        note_title,
+        note_subsection,
+        continued,
         source_path,
         library_id,
         library_version,
@@ -863,6 +899,12 @@ async function selectVersionSections(
     content: row.content,
     summary: row.summary,
     tokenCount: row.token_count,
+    pageStart: row.page_start ?? null,
+    pageEnd: row.page_end ?? null,
+    noteNumber: row.note_number ?? null,
+    noteTitle: row.note_title ?? null,
+    noteSubsection: row.note_subsection ?? null,
+    continued: row.continued ?? false,
     embedding: parsePgVectorLiteral(row.embedding_text),
     sourcePath: row.source_path ?? null,
     libraryId: row.library_id ?? null,
@@ -1100,6 +1142,12 @@ async function insertSectionSnapshots(
         content: section.content,
         summary: section.summary,
         tokenCount: section.tokenCount,
+        pageStart: section.pageStart ?? null,
+        pageEnd: section.pageEnd ?? null,
+        noteNumber: section.noteNumber ?? null,
+        noteTitle: section.noteTitle ?? null,
+        noteSubsection: section.noteSubsection ?? null,
+        continued: section.continued ?? false,
         embedding: toPgVectorExpression(section.embedding ?? null),
         sourcePath: section.sourcePath ?? null,
         libraryId: section.libraryId ?? null,
@@ -1225,6 +1273,12 @@ async function replaceLiveMaterialization(
           content: section.content,
           summary: section.summary,
           tokenCount: section.tokenCount,
+          pageStart: section.pageStart ?? null,
+          pageEnd: section.pageEnd ?? null,
+          noteNumber: section.noteNumber ?? null,
+          noteTitle: section.noteTitle ?? null,
+          noteSubsection: section.noteSubsection ?? null,
+          continued: section.continued ?? false,
           embedding: toPgVectorExpression(section.embedding ?? null),
           createdAt: new Date(),
         })),

@@ -281,6 +281,12 @@ function mapSection(
     parentSectionId: row.parentSectionId ?? null,
     prevSectionId: row.prevSectionId ?? null,
     nextSectionId: row.nextSectionId ?? null,
+    pageStart: row.pageStart ?? null,
+    pageEnd: row.pageEnd ?? null,
+    noteNumber: row.noteNumber ?? null,
+    noteTitle: row.noteTitle ?? null,
+    noteSubsection: row.noteSubsection ?? null,
+    continued: row.continued ?? false,
     embedding: null,
   };
 }
@@ -1310,7 +1316,108 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }));
   },
 
-  async searchDocumentMetadata(groupId, query, limit) {
+  async findDocumentIdsByRetrievalIdentity(groupId, input) {
+    const issuer = input.issuer?.trim() ?? null;
+    const ticker = input.ticker?.trim().toUpperCase() ?? null;
+    if (!issuer && !ticker) {
+      return [];
+    }
+
+    const rows = await db.execute<{ document_id: string; score: number }>(
+      sql`
+        WITH q AS (
+          SELECT
+            ${issuer}::text AS issuer_q,
+            ${ticker}::text AS ticker_q
+        )
+        SELECT
+          kd.id AS document_id,
+          (
+            CASE
+              WHEN (SELECT ticker_q FROM q) IS NOT NULL
+               AND (
+                 upper(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')) = (SELECT ticker_q FROM q)
+                 OR upper(coalesce(kd.name, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
+                 OR upper(coalesce(kd.original_filename, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
+                 OR EXISTS (
+                   SELECT 1
+                   FROM jsonb_array_elements_text(
+                     COALESCE(kd.metadata::jsonb->'retrievalIdentity'->'issuerAliases', '[]'::jsonb)
+                   ) alias
+                   WHERE upper(alias) = (SELECT ticker_q FROM q)
+                 )
+               )
+              THEN 1.0
+              ELSE 0
+            END
+            +
+            CASE
+              WHEN (SELECT issuer_q FROM q) IS NOT NULL
+               AND (
+                 lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                 OR lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                 OR lower(coalesce(kd.name, '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                 OR EXISTS (
+                   SELECT 1
+                   FROM jsonb_array_elements_text(
+                     COALESCE(kd.metadata::jsonb->'retrievalIdentity'->'issuerAliases', '[]'::jsonb)
+                   ) alias
+                   WHERE lower(alias) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                 )
+               )
+              THEN 0.9
+              ELSE 0
+            END
+          ) AS score
+        FROM knowledge_document kd
+        WHERE kd.group_id = ${groupId}
+          AND kd.status = 'ready'
+          AND (
+            (
+              (SELECT ticker_q FROM q) IS NOT NULL
+              AND (
+                upper(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')) = (SELECT ticker_q FROM q)
+                OR upper(coalesce(kd.name, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
+                OR upper(coalesce(kd.original_filename, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
+                OR EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements_text(
+                    COALESCE(kd.metadata::jsonb->'retrievalIdentity'->'issuerAliases', '[]'::jsonb)
+                  ) alias
+                  WHERE upper(alias) = (SELECT ticker_q FROM q)
+                )
+              )
+            )
+            OR
+            (
+              (SELECT issuer_q FROM q) IS NOT NULL
+              AND (
+                lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                OR lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                OR lower(coalesce(kd.name, '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                OR EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements_text(
+                    COALESCE(kd.metadata::jsonb->'retrievalIdentity'->'issuerAliases', '[]'::jsonb)
+                  ) alias
+                  WHERE lower(alias) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                )
+              )
+            )
+          )
+        ORDER BY score DESC, kd.updated_at DESC
+        LIMIT ${Math.max(1, input.limit ?? 24)}
+      `,
+    );
+
+    return rows.rows.map((row) => ({
+      documentId: row.document_id,
+      score: Number(row.score),
+    }));
+  },
+
+  async searchDocumentMetadata(groupId, query, limit, documentIds) {
+    const documentFilter = buildUuidFilterSql("kd.id", documentIds);
     const rows = await db.execute<{ document_id: string; score: number }>(
       sql`
         WITH q AS (
@@ -1330,6 +1437,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   'simple',
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
                   coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(kd.source_url, '')
                 ),
@@ -1340,6 +1450,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   'english',
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
                   coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(kd.source_url, '')
                 ),
@@ -1347,14 +1460,24 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               )
             )
             + 0.25 * ts_rank_cd(
-              to_tsvector(
-                'simple',
-                coalesce(kd.name, '') || ' ' || coalesce(kd.description, '')
-              ),
-              (SELECT phrase_q FROM q)
-            )
+                to_tsvector(
+                  'simple',
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')
+                ),
+                (SELECT phrase_q FROM q)
+              )
             + CASE
-                WHEN (coalesce(kd.name, '') || ' ' || coalesce(kd.description, ''))
+                WHEN (
+                  coalesce(kd.name, '') || ' ' ||
+                  coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')
+                )
                   ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
               END
@@ -1363,6 +1486,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   regexp_replace(
                     coalesce(kd.name, '') || ' ' ||
                     coalesce(kd.description, '') || ' ' ||
+                    coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+                    coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+                    coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
                     coalesce(kd.original_filename, '') || ' ' ||
                     coalesce(kd.source_url, ''),
                     '\s+',
@@ -1376,11 +1502,15 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         FROM knowledge_document kd
         WHERE kd.group_id = ${groupId}
           AND kd.status = 'ready'
+          ${documentFilter}
           AND (
             to_tsvector(
               'simple',
               coalesce(kd.name, '') || ' ' ||
               coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
               coalesce(kd.original_filename, '') || ' ' ||
               coalesce(kd.source_url, '')
             ) @@ (SELECT simple_q FROM q)
@@ -1388,16 +1518,28 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               'english',
               coalesce(kd.name, '') || ' ' ||
               coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
               coalesce(kd.original_filename, '') || ' ' ||
               coalesce(kd.source_url, '')
             ) @@ (SELECT english_q FROM q)
-            OR (coalesce(kd.name, '') || ' ' || coalesce(kd.description, ''))
+            OR (
+              coalesce(kd.name, '') || ' ' ||
+              coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')
+            )
               ILIKE (SELECT ilike_q FROM q)
             OR similarity(
               lower(
                 regexp_replace(
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
+                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
                   coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(kd.source_url, ''),
                   '\s+',
@@ -1419,9 +1561,10 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     }));
   },
 
-  async vectorSearchDocumentMetadata(groupId, embedding, limit) {
+  async vectorSearchDocumentMetadata(groupId, embedding, limit, documentIds) {
     const { typedColumn, typedEmbedding, dimensionFilter } =
       buildTypedVectorComparison("kd.metadata_embedding", embedding);
+    const documentFilter = buildUuidFilterSql("kd.id", documentIds);
     const rows = await db.execute<{ document_id: string; score: number }>(
       sql`
         SELECT
@@ -1432,6 +1575,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           AND kd.status = 'ready'
           AND kd.metadata_embedding IS NOT NULL
           AND ${dimensionFilter}
+          ${documentFilter}
         ORDER BY ${typedColumn} <=> ${typedEmbedding}
         LIMIT ${limit}
       `,
@@ -1466,6 +1610,12 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           content: section.content,
           summary: section.summary,
           tokenCount: section.tokenCount,
+          pageStart: section.pageStart ?? null,
+          pageEnd: section.pageEnd ?? null,
+          noteNumber: section.noteNumber ?? null,
+          noteTitle: section.noteTitle ?? null,
+          noteSubsection: section.noteSubsection ?? null,
+          continued: section.continued ?? false,
           embedding:
             toPgVectorLiteral(section.embedding ?? null) === null
               ? null
@@ -1529,6 +1679,110 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     return rows.map(mapSection);
   },
 
+  async findSectionsByStructuredFilters(input) {
+    const docFilter = buildUuidFilterSql("ks.document_id", input.documentIds);
+    const pageFilter =
+      typeof input.page === "number" && Number.isFinite(input.page)
+        ? sql`AND COALESCE(ks.page_start, 0) <= ${input.page}
+               AND COALESCE(ks.page_end, ks.page_start, 0) >= ${input.page}`
+        : sql``;
+    const noteNumberFilter = input.noteNumber
+      ? sql`AND ks.note_number = ${input.noteNumber}`
+      : sql``;
+    const noteSubsectionFilter = input.noteSubsection
+      ? sql`AND lower(COALESCE(ks.note_subsection, '')) = lower(${input.noteSubsection})`
+      : sql``;
+    const rows = await db.execute<{
+      id: string;
+      document_id: string;
+      group_id: string;
+      parent_section_id: string | null;
+      prev_section_id: string | null;
+      next_section_id: string | null;
+      heading: string;
+      heading_path: string;
+      level: number;
+      part_index: number;
+      part_count: number;
+      content: string;
+      summary: string;
+      token_count: number;
+      page_start: number | null;
+      page_end: number | null;
+      note_number: string | null;
+      note_title: string | null;
+      note_subsection: string | null;
+      continued: boolean | null;
+      created_at: Date;
+      document_name: string;
+    }>(
+      sql`
+        SELECT
+          ks.id,
+          ks.document_id,
+          ks.group_id,
+          ks.parent_section_id,
+          ks.prev_section_id,
+          ks.next_section_id,
+          ks.heading,
+          ks.heading_path,
+          ks.level,
+          ks.part_index,
+          ks.part_count,
+          ks.content,
+          ks.summary,
+          ks.token_count,
+          ks.page_start,
+          ks.page_end,
+          ks.note_number,
+          ks.note_title,
+          ks.note_subsection,
+          ks.continued,
+          ks.created_at,
+          kd.name AS document_name
+        FROM knowledge_section ks
+        JOIN knowledge_document kd ON kd.id = ks.document_id
+        WHERE ks.group_id = ${input.groupId}
+          AND kd.status = 'ready'
+          ${docFilter}
+          ${pageFilter}
+          ${noteNumberFilter}
+          ${noteSubsectionFilter}
+        ORDER BY ks.page_start ASC NULLS LAST, ks.created_at ASC
+        LIMIT ${Math.max(1, input.limit ?? 200)}
+      `,
+    );
+
+    return rows.rows.map((row) => ({
+      section: {
+        id: row.id,
+        documentId: row.document_id,
+        groupId: row.group_id,
+        parentSectionId: row.parent_section_id ?? null,
+        prevSectionId: row.prev_section_id ?? null,
+        nextSectionId: row.next_section_id ?? null,
+        heading: row.heading,
+        headingPath: row.heading_path,
+        level: row.level,
+        partIndex: row.part_index,
+        partCount: row.part_count,
+        content: row.content,
+        summary: row.summary,
+        tokenCount: row.token_count,
+        pageStart: row.page_start ?? null,
+        pageEnd: row.page_end ?? null,
+        noteNumber: row.note_number ?? null,
+        noteTitle: row.note_title ?? null,
+        noteSubsection: row.note_subsection ?? null,
+        continued: row.continued ?? false,
+        embedding: null,
+        createdAt: row.created_at,
+      } satisfies KnowledgeSection,
+      documentId: row.document_id,
+      documentName: row.document_name,
+    }));
+  },
+
   async fullTextSearchSections(groupId, query, limit, documentIds) {
     const docFilter = buildUuidFilterSql("ks.document_id", documentIds);
 
@@ -1547,6 +1801,12 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       content: string;
       summary: string;
       token_count: number;
+      page_start: number | null;
+      page_end: number | null;
+      note_number: string | null;
+      note_title: string | null;
+      note_subsection: string | null;
+      continued: boolean | null;
       created_at: Date;
       document_name: string;
       score: number;
@@ -1575,6 +1835,12 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           ks.content,
           ks.summary,
           ks.token_count,
+          ks.page_start,
+          ks.page_end,
+          ks.note_number,
+          ks.note_title,
+          ks.note_subsection,
+          ks.continued,
           ks.created_at,
           kd.name AS document_name,
           (
@@ -1584,7 +1850,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   'english',
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.note_number, '') || ' ' ||
+                  coalesce(ks.note_title, '') || ' ' ||
+                  coalesce(ks.note_subsection, '') || ' ' ||
                   coalesce(ks.summary, '') || ' ' ||
                   coalesce(ks.content, '')
                 ),
@@ -1595,7 +1865,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   'simple',
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.note_number, '') || ' ' ||
+                  coalesce(ks.note_title, '') || ' ' ||
+                  coalesce(ks.note_subsection, '') || ' ' ||
                   coalesce(ks.summary, '') || ' ' ||
                   coalesce(ks.content, '')
                 ),
@@ -1606,6 +1880,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               to_tsvector(
                 'simple',
                 coalesce(ks.heading_path, '') || ' ' ||
+                coalesce(ks.note_number, '') || ' ' ||
+                coalesce(ks.note_title, '') || ' ' ||
                 coalesce(ks.summary, '')
               ),
               (SELECT phrase_q FROM q)
@@ -1613,6 +1889,9 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             + CASE
                 WHEN (
                   coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.note_number, '') || ' ' ||
+                  coalesce(ks.note_title, '') || ' ' ||
+                  coalesce(ks.note_subsection, '') || ' ' ||
                   coalesce(ks.summary, '') || ' ' ||
                   coalesce(ks.content, '')
                 ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
@@ -1623,7 +1902,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   regexp_replace(
                     coalesce(kd.name, '') || ' ' ||
                     coalesce(kd.description, '') || ' ' ||
+                    coalesce(kd.original_filename, '') || ' ' ||
                     coalesce(ks.heading_path, '') || ' ' ||
+                    coalesce(ks.note_number, '') || ' ' ||
+                    coalesce(ks.note_title, '') || ' ' ||
+                    coalesce(ks.note_subsection, '') || ' ' ||
                     coalesce(ks.summary, '') || ' ' ||
                     coalesce(ks.content, ''),
                     '\s+',
@@ -1644,7 +1927,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               'english',
               coalesce(kd.name, '') || ' ' ||
               coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
               coalesce(ks.heading_path, '') || ' ' ||
+              coalesce(ks.note_number, '') || ' ' ||
+              coalesce(ks.note_title, '') || ' ' ||
+              coalesce(ks.note_subsection, '') || ' ' ||
               coalesce(ks.summary, '') || ' ' ||
               coalesce(ks.content, '')
             ) @@ (SELECT english_q FROM q)
@@ -1652,12 +1939,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               'simple',
               coalesce(kd.name, '') || ' ' ||
               coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
               coalesce(ks.heading_path, '') || ' ' ||
+              coalesce(ks.note_number, '') || ' ' ||
+              coalesce(ks.note_title, '') || ' ' ||
+              coalesce(ks.note_subsection, '') || ' ' ||
               coalesce(ks.summary, '') || ' ' ||
               coalesce(ks.content, '')
             ) @@ (SELECT simple_q FROM q)
             OR (
               coalesce(ks.heading_path, '') || ' ' ||
+              coalesce(ks.note_number, '') || ' ' ||
+              coalesce(ks.note_title, '') || ' ' ||
+              coalesce(ks.note_subsection, '') || ' ' ||
               coalesce(ks.summary, '') || ' ' ||
               coalesce(ks.content, '')
             ) ILIKE (SELECT ilike_q FROM q)
@@ -1666,7 +1960,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                 regexp_replace(
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(ks.heading_path, '') || ' ' ||
+                  coalesce(ks.note_number, '') || ' ' ||
+                  coalesce(ks.note_title, '') || ' ' ||
+                  coalesce(ks.note_subsection, '') || ' ' ||
                   coalesce(ks.summary, '') || ' ' ||
                   coalesce(ks.content, ''),
                   '\s+',
@@ -1698,6 +1996,12 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         content: row.content,
         summary: row.summary,
         tokenCount: row.token_count,
+        pageStart: row.page_start ?? null,
+        pageEnd: row.page_end ?? null,
+        noteNumber: row.note_number ?? null,
+        noteTitle: row.note_title ?? null,
+        noteSubsection: row.note_subsection ?? null,
+        continued: row.continued ?? false,
         embedding: null,
         createdAt: row.created_at,
       } satisfies KnowledgeSection,
@@ -1727,6 +2031,12 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       content: string;
       summary: string;
       token_count: number;
+      page_start: number | null;
+      page_end: number | null;
+      note_number: string | null;
+      note_title: string | null;
+      note_subsection: string | null;
+      continued: boolean | null;
       created_at: Date;
       document_name: string;
       score: number;
@@ -1747,6 +2057,12 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           ks.content,
           ks.summary,
           ks.token_count,
+          ks.page_start,
+          ks.page_end,
+          ks.note_number,
+          ks.note_title,
+          ks.note_subsection,
+          ks.continued,
           ks.created_at,
           kd.name AS document_name,
           1 - (${typedColumn} <=> ${typedEmbedding}) AS score
@@ -1778,6 +2094,12 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         content: row.content,
         summary: row.summary,
         tokenCount: row.token_count,
+        pageStart: row.page_start ?? null,
+        pageEnd: row.page_end ?? null,
+        noteNumber: row.note_number ?? null,
+        noteTitle: row.note_title ?? null,
+        noteSubsection: row.note_subsection ?? null,
+        continued: row.continued ?? false,
         embedding: null,
         createdAt: row.created_at,
       } satisfies KnowledgeSection,
@@ -1931,10 +2253,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   'english',
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(kc.context_summary, '') || ' ' ||
                   coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
                   coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-                  coalesce(kc.metadata->>'section', '')
+                  coalesce(kc.metadata->>'section', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageEnd', '')
                 ),
                 (SELECT english_q FROM q)
               ),
@@ -1943,10 +2274,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   'simple',
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(kc.context_summary, '') || ' ' ||
                   coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
                   coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-                  coalesce(kc.metadata->>'section', '')
+                  coalesce(kc.metadata->>'section', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageEnd', '')
                 ),
                 (SELECT simple_q FROM q)
               )
@@ -1957,8 +2297,15 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                 'simple',
                 coalesce(kd.name, '') || ' ' ||
                 coalesce(kd.description, '') || ' ' ||
+                coalesce(kd.original_filename, '') || ' ' ||
+                coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+                coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+                coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
                 coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-                coalesce(kc.metadata->>'section', '')
+                coalesce(kc.metadata->>'section', '') || ' ' ||
+                coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+                coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+                coalesce(kc.metadata->>'noteSubsection', '')
               ),
               (SELECT simple_q FROM q)
             )
@@ -1980,10 +2327,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                 WHEN (
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(kc.context_summary, '') || ' ' ||
                   coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
                   coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-                  coalesce(kc.metadata->>'section', '')
+                  coalesce(kc.metadata->>'section', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageEnd', '')
                 ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
               END
@@ -1992,10 +2348,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   regexp_replace(
                     coalesce(kd.name, '') || ' ' ||
                     coalesce(kd.description, '') || ' ' ||
+                    coalesce(kd.original_filename, '') || ' ' ||
                     coalesce(kc.context_summary, '') || ' ' ||
                     coalesce(kc.content, '') || ' ' ||
+                    coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+                    coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+                    coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
                     coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-                    coalesce(kc.metadata->>'section', ''),
+                    coalesce(kc.metadata->>'section', '') || ' ' ||
+                    coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+                    coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+                    coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+                    coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+                    coalesce(kc.metadata->>'pageEnd', ''),
                     '\s+',
                     ' ',
                     'g'
@@ -2015,37 +2380,73 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               'english',
               coalesce(kd.name, '') || ' ' ||
               coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
               coalesce(kc.context_summary, '') || ' ' ||
               coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+              coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+              coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
               coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-              coalesce(kc.metadata->>'section', '')
+              coalesce(kc.metadata->>'section', '') || ' ' ||
+              coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+              coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+              coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+              coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+              coalesce(kc.metadata->>'pageEnd', '')
             ) @@ (SELECT english_q FROM q)
             OR to_tsvector(
               'simple',
               coalesce(kd.name, '') || ' ' ||
               coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
               coalesce(kc.context_summary, '') || ' ' ||
               coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+              coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+              coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
               coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-              coalesce(kc.metadata->>'section', '')
+              coalesce(kc.metadata->>'section', '') || ' ' ||
+              coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+              coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+              coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+              coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+              coalesce(kc.metadata->>'pageEnd', '')
             ) @@ (SELECT simple_q FROM q)
             OR (
               coalesce(kd.name, '') || ' ' ||
               coalesce(kd.description, '') || ' ' ||
+              coalesce(kd.original_filename, '') || ' ' ||
               coalesce(kc.context_summary, '') || ' ' ||
               coalesce(kc.content, '') || ' ' ||
+              coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+              coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+              coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
               coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-              coalesce(kc.metadata->>'section', '')
+              coalesce(kc.metadata->>'section', '') || ' ' ||
+              coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+              coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+              coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+              coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+              coalesce(kc.metadata->>'pageEnd', '')
             ) ILIKE (SELECT ilike_q FROM q)
             OR similarity(
               lower(
                 regexp_replace(
                   coalesce(kd.name, '') || ' ' ||
                   coalesce(kd.description, '') || ' ' ||
+                  coalesce(kd.original_filename, '') || ' ' ||
                   coalesce(kc.context_summary, '') || ' ' ||
                   coalesce(kc.content, '') || ' ' ||
+                  coalesce(kc.metadata->>'canonicalTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerName', '') || ' ' ||
+                  coalesce(kc.metadata->>'issuerTicker', '') || ' ' ||
                   coalesce(kc.metadata->>'headingPath', '') || ' ' ||
-                  coalesce(kc.metadata->>'section', ''),
+                  coalesce(kc.metadata->>'section', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteNumber', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteTitle', '') || ' ' ||
+                  coalesce(kc.metadata->>'noteSubsection', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageStart', '') || ' ' ||
+                  coalesce(kc.metadata->>'pageEnd', ''),
                   '\s+',
                   ' ',
                   'g'

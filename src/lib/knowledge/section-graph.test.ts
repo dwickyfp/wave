@@ -44,7 +44,7 @@ Advanced nested guidance.
 
     const sections = buildKnowledgeSectionGraph(markdown, "doc-1", "group-1");
 
-    expect(SECTION_GRAPH_VERSION).toBe(1);
+    expect(SECTION_GRAPH_VERSION).toBe(2);
 
     const introduction = sections.find(
       (section) => section.headingPath === "Introduction",
@@ -115,5 +115,56 @@ Step one.
     expect(guide?.pageEnd).toBe(1);
     expect(setup?.pageStart).toBe(2);
     expect(setup?.pageEnd).toBe(2);
+  });
+
+  it("groups financial statement note continuations instead of table-like pseudo headings", () => {
+    const markdown = `
+<!--CTX_PAGE:63-->
+14. EFEK-EFEK UNTUK TUJUAN INVESTASI
+
+a. Berdasarkan jenis
+
+Obligasi pemerintah dan MTN.
+
+<!--CTX_PAGE:64-->
+14. EFEK-EFEK UNTUK TUJUAN INVESTASI(lanjutan)
+
+Rincian obligasi lanjutan.
+
+<!--CTX_PAGE:65-->
+b. Berdasarkan mata uang
+
+Rupiah dan valuta asing.
+`.trim();
+
+    const sections = buildKnowledgeSectionGraph(markdown, "doc-fs", "group-1", {
+      classification: {
+        isFinancialStatement: true,
+        noteHeadingCount: 2,
+        pageCount: 3,
+        matchedPhrases: ["notes to the financial statements"],
+      },
+    });
+    const noteSections = sections.filter(
+      (section) => section.noteNumber === "14",
+    );
+
+    expect(noteSections.length).toBeGreaterThan(1);
+    expect(
+      noteSections.some(
+        (section) =>
+          section.noteTitle === "EFEK-EFEK UNTUK TUJUAN INVESTASI" &&
+          section.pageStart === 63 &&
+          section.pageEnd === 64,
+      ),
+    ).toBe(true);
+    expect(noteSections.some((section) => section.noteSubsection === "b")).toBe(
+      true,
+    );
+    expect(
+      sections.some((section) =>
+        section.headingPath.includes("Obligasi pemerintah dan MTN"),
+      ),
+    ).toBe(false);
   });
 });

@@ -9,6 +9,16 @@ export interface TextChunk {
     headings?: string[];
     /** Full heading breadcrumb path, e.g. "Guide > Installation > macOS" */
     headingPath?: string;
+    canonicalTitle?: string;
+    issuerName?: string;
+    issuerTicker?: string;
+    reportType?: string;
+    fiscalYear?: number;
+    periodEnd?: string;
+    noteNumber?: string;
+    noteTitle?: string;
+    noteSubsection?: string;
+    continued?: boolean;
     chunkType?:
       | "code"
       | "directive"
@@ -44,6 +54,16 @@ export interface ChunkableKnowledgeSection {
   includeHeadingInChunkContent?: boolean;
   pageStart?: number;
   pageEnd?: number;
+  canonicalTitle?: string;
+  issuerName?: string;
+  issuerTicker?: string;
+  reportType?: string;
+  fiscalYear?: number;
+  periodEnd?: string;
+  noteNumber?: string;
+  noteTitle?: string;
+  noteSubsection?: string;
+  continued?: boolean;
   extractionMode?: "raw" | "normalized" | "refined";
   qualityScore?: number;
   repairReason?: string;
@@ -740,6 +760,16 @@ export function chunkKnowledgeSections(
         pageEnd: section.pageEnd,
         pageNumber:
           section.pageStart === section.pageEnd ? section.pageStart : undefined,
+        canonicalTitle: section.canonicalTitle,
+        issuerName: section.issuerName,
+        issuerTicker: section.issuerTicker,
+        reportType: section.reportType,
+        fiscalYear: section.fiscalYear,
+        periodEnd: section.periodEnd,
+        noteNumber: section.noteNumber,
+        noteTitle: section.noteTitle,
+        noteSubsection: section.noteSubsection,
+        continued: section.continued,
         extractionMode: section.extractionMode,
         qualityScore: section.qualityScore,
         repairReason: section.repairReason,

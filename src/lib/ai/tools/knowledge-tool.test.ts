@@ -104,6 +104,54 @@ describe("knowledge-tool", () => {
     );
   });
 
+  it("passes structured issuer and page filters through to retrieval", async () => {
+    const tool = createKnowledgeDocsTool({
+      id: "group-1",
+      name: "Product Docs",
+      userId: "user-1",
+      visibility: "private",
+      purpose: "default",
+      isSystemManaged: false,
+      embeddingModel: "embed",
+      embeddingProvider: "openai",
+      rerankingModel: null,
+      rerankingProvider: null,
+      parsingModel: null,
+      parsingProvider: null,
+      parseMode: "auto",
+      parseRepairPolicy: "section-safe-reorder",
+      contextMode: "deterministic",
+      imageMode: "auto",
+      lazyRefinementEnabled: true,
+      retrievalThreshold: 0,
+      mcpEnabled: false,
+      documentCount: 1,
+      chunkCount: 10,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await tool.execute?.(
+      {
+        query: "BBCA halaman 100",
+        ticker: "BBCA",
+        page: 100,
+        strictEntityMatch: true,
+      },
+      { toolCallId: "call-structured", messages: [] } as any,
+    );
+
+    expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
+      expect.anything(),
+      "BBCA halaman 100",
+      expect.objectContaining({
+        ticker: "BBCA",
+        page: 100,
+        strictEntityMatch: true,
+      }),
+    );
+  });
+
   it("reports retrieved docs through the callback", async () => {
     const docs = [
       {

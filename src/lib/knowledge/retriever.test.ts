@@ -15,6 +15,7 @@ vi.mock("lib/db/repository", () => ({
     fullTextSearchSections: vi.fn(),
     searchDocumentMetadata: vi.fn(),
     vectorSearchDocumentMetadata: vi.fn(),
+    findDocumentIdsByRetrievalIdentity: vi.fn(),
     fullTextSearchImages: vi.fn(),
     vectorSearchImages: vi.fn(),
     getDocumentImages: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("lib/db/repository", () => ({
     getDocumentMetadataByIdsAcrossGroups: vi.fn(),
     getSectionsByIds: vi.fn(),
     getRelatedSections: vi.fn(),
+    findSectionsByStructuredFilters: vi.fn(),
     getDocumentMarkdown: vi.fn(),
     insertUsageLog: vi.fn(),
   },
@@ -84,12 +86,18 @@ describe("queryKnowledgeAsDocs", () => {
     vi.mocked(
       knowledgeRepository.vectorSearchDocumentMetadata,
     ).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
+    ).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getAdjacentChunks).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.fullTextSearchImages).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.vectorSearchImages).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getDocumentImages).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.findSectionsByStructuredFilters,
+    ).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue(null);
     vi.mocked(knowledgeRepository.insertUsageLog).mockResolvedValue(undefined);
   });
@@ -202,6 +210,97 @@ describe("queryKnowledgeAsDocs", () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]?.documentId).toBe("doc-1");
+  });
+
+  it("hard-filters explicit issuer queries to matching documents", async () => {
+    vi.mocked(
+      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
+    ).mockResolvedValue([{ documentId: "doc-1", score: 1 }]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({
+        documentId: "doc-1",
+        chunk: {
+          documentId: "doc-1",
+          metadata: {
+            headingPath: "Financial Statements > Note 14",
+            section: "Note 14",
+            issuerTicker: "BBCA",
+            issuerName: "PT Bank Central Asia Tbk",
+          },
+        },
+      }),
+    ]);
+
+    const results = await queryKnowledge(group, "BBCA marketable securities", {
+      topN: 3,
+    });
+
+    expect(
+      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
+    ).toHaveBeenCalledWith("group-1", {
+      issuer: null,
+      ticker: "BBCA",
+      limit: expect.any(Number),
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.documentId).toBe("doc-1");
+  });
+
+  it("uses structured section filters for exact page queries", async () => {
+    vi.mocked(
+      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
+    ).mockResolvedValue([{ documentId: "doc-1", score: 1 }]);
+    vi.mocked(
+      knowledgeRepository.findSectionsByStructuredFilters,
+    ).mockResolvedValue([
+      {
+        section: {
+          id: "section-page-100",
+          documentId: "doc-1",
+          groupId: "group-1",
+          parentSectionId: null,
+          prevSectionId: null,
+          nextSectionId: null,
+          heading: "38. LIABILITAS IMBALAN PASCA-KERJA",
+          headingPath: "38. LIABILITAS IMBALAN PASCA-KERJA",
+          level: 2,
+          partIndex: 0,
+          partCount: 1,
+          content: "Matched page section.",
+          summary: "Matched page summary.",
+          tokenCount: 80,
+          pageStart: 100,
+          pageEnd: 100,
+          noteNumber: "38",
+          noteTitle: "LIABILITAS IMBALAN PASCA-KERJA",
+          noteSubsection: null,
+          continued: false,
+          createdAt: new Date("2026-02-01T00:00:00Z"),
+        },
+        documentId: "doc-1",
+        documentName: "BBCA Statements",
+      },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({ chunk: { sectionId: "section-page-100" } }),
+    ]);
+
+    await queryKnowledge(group, "BBCA halaman 100 liabilitas", { topN: 3 });
+
+    expect(
+      knowledgeRepository.findSectionsByStructuredFilters,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupId: "group-1",
+        page: 100,
+      }),
+    );
+    expect(knowledgeRepository.vectorSearch).toHaveBeenCalledWith(
+      "group-1",
+      [0.1, 0.2, 0.3],
+      expect.any(Number),
+      { sectionIds: ["section-page-100"] },
+    );
   });
 
   it("returns section-first bundles with parent and continuation context", async () => {
