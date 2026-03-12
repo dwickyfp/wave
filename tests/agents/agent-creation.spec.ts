@@ -1,11 +1,12 @@
-import { test, expect, Page } from "@playwright/test";
+import { expect, Page, test } from "@playwright/test";
+
+import { TEST_USERS } from "../constants/test-users";
 import {
-  uniqueTestName,
   clickAndWaitForNavigation,
   openDropdown,
   selectDropdownOption,
+  uniqueTestName,
 } from "../utils/test-helpers";
-import { TEST_USERS } from "../constants/test-users";
 
 async function createAgent(
   page: Page,
@@ -31,19 +32,15 @@ test.describe("Agent Creation and Sharing Workflow", () => {
       "This agent tests the sharing workflow",
     );
 
-    // Verify we're on agents list
     expect(page.url()).toContain("/agents");
   });
 
   test("should show created agent on agents page", async ({ page }) => {
-    // Create an agent
     const agentName = uniqueTestName("Test Agent");
     await createAgent(page, agentName, "Should appear in agent list");
 
-    // We should already be on agents page after creation
     expect(page.url()).toContain("/agents");
 
-    // Check if agent appears in the page - more specific selector
     await expect(
       page.locator(`[data-testid*="agent-card-name"]:has-text("${agentName}")`),
     ).toBeVisible({ timeout: 5000 });
@@ -53,10 +50,8 @@ test.describe("Agent Creation and Sharing Workflow", () => {
     const agentName = uniqueTestName("Sidebar Agent");
     await createAgent(page, agentName, "Should appear in sidebar");
 
-    // Navigate to home to see sidebar
     await page.goto("/");
 
-    // Agent should be visible in the sidebar - use specific selector
     await expect(
       page.locator(
         `[data-testid*="sidebar-agent-name"]:has-text("${agentName}")`,
@@ -73,26 +68,19 @@ test.describe("Agent Creation and Sharing Workflow", () => {
   });
 
   test("should edit an existing agent", async ({ page }) => {
-    // Create an agent first
     const originalName = uniqueTestName("Original Agent");
     const updatedName = uniqueTestName("Updated Agent");
     await createAgent(page, originalName, "Will be edited");
 
-    // Click on the agent from the list using a simpler selector
     await page.locator(`main a:has-text("${originalName}")`).first().click();
 
-    // Edit the name with a unique name
     await page.getByTestId("agent-name-input").fill(updatedName);
-
-    // Edit the description
     await page
       .getByTestId("agent-description-input")
       .fill("Updated description after editing");
 
-    // Save changes
     await clickAndWaitForNavigation(page, "agent-save-button", "**/agents");
 
-    // Check the updated agent appears using the unique name
     await expect(
       page.locator(
         `[data-testid*="agent-card-name"]:has-text("${updatedName}")`,
@@ -100,20 +88,14 @@ test.describe("Agent Creation and Sharing Workflow", () => {
     ).toBeVisible({ timeout: 5000 });
   });
 
-  // Commenting out due to rate limiting issues with free OpenRouter API
-  // This test is flaky in CI due to 429 errors from the free tier
   test.skip("should generate an agent with AI", async ({ page }) => {
     await page.goto("/agent/new");
 
-    // Click Generate With AI button
     await page.getByTestId("agent-generate-with-ai-button").click();
 
-    // Should open a dialog - wait for it to appear
     await expect(
       page.getByTestId("agent-generate-agent-prompt-textarea"),
-    ).toBeVisible({
-      timeout: 5000,
-    });
+    ).toBeVisible({ timeout: 5000 });
     await page
       .getByTestId("agent-generate-agent-prompt-textarea")
       .fill("Help me come up with a dog names.");
@@ -126,7 +108,6 @@ test.describe("Agent Creation and Sharing Workflow", () => {
   test("should create an agent with example", async ({ page }) => {
     await page.goto("/agent/new");
 
-    // Click Create With Example button
     await openDropdown(page, "agent-create-with-example-button");
     await selectDropdownOption(
       page,
@@ -140,7 +121,6 @@ test.describe("Agent Creation and Sharing Workflow", () => {
   test("should add instructions to agent", async ({ page }) => {
     await page.goto("/agent/new");
 
-    // Fill basic info
     await page.getByTestId("agent-name-input").fill("Agent with Instructions");
     await page
       .getByTestId("agent-description-input")
@@ -154,5 +134,69 @@ test.describe("Agent Creation and Sharing Workflow", () => {
 
     await clickAndWaitForNavigation(page, "agent-save-button", "**/agents");
     expect(page.url()).toContain("/agents");
+  });
+
+  test("should review AI instruction updates before saving", async ({
+    page,
+  }) => {
+    const agentName = uniqueTestName("Instruction Review Agent");
+    const initialInstructions =
+      "You are a helpful assistant.\nAnswer clearly and with examples.";
+    const generatedInstructions =
+      "You are a helpful assistant.\nAnswer clearly and with examples.\nUse a three-step review checklist before every final response.";
+
+    await page.goto("/agent/new");
+    await page.getByTestId("agent-name-input").fill(agentName);
+    await page
+      .getByTestId("agent-description-input")
+      .fill("Agent used for AI instruction revision tests");
+    await page.getByTestId("agent-prompt-textarea").fill(initialInstructions);
+    await clickAndWaitForNavigation(page, "agent-save-button", "**/agents");
+
+    await page.locator(`main a:has-text("${agentName}")`).first().click();
+
+    await page.route("**/api/agent/instructions/ai", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/plain",
+        body: JSON.stringify({ instructions: generatedInstructions }),
+      });
+    });
+
+    await page.getByTestId("agent-instruction-enhance-button").click();
+    await page
+      .getByTestId("agent-instruction-enhance-prompt-textarea")
+      .fill("Add a three-step review checklist before every final response.");
+    await page.getByTestId("agent-instruction-enhance-generate-button").click();
+
+    await expect(page.getByTestId("agent-prompt-textarea")).toHaveValue(
+      generatedInstructions,
+    );
+    await expect(
+      page.getByTestId("agent-instruction-review-actions"),
+    ).toBeVisible();
+    await expect(
+      page.getByTestId("agent-instruction-diff-preview"),
+    ).toContainText(
+      "Use a three-step review checklist before every final response.",
+    );
+
+    await page.getByTestId("agent-instruction-review-cancel-button").click();
+    await expect(page.getByTestId("agent-prompt-textarea")).toHaveValue(
+      initialInstructions,
+    );
+
+    await page.getByTestId("agent-instruction-enhance-button").click();
+    await page
+      .getByTestId("agent-instruction-enhance-prompt-textarea")
+      .fill("Add a three-step review checklist before every final response.");
+    await page.getByTestId("agent-instruction-enhance-generate-button").click();
+    await page.getByTestId("agent-instruction-review-accept-button").click();
+
+    await clickAndWaitForNavigation(page, "agent-save-button", "**/agents");
+    await page.locator(`main a:has-text("${agentName}")`).first().click();
+    await expect(page.getByTestId("agent-prompt-textarea")).toHaveValue(
+      generatedInstructions,
+    );
   });
 });

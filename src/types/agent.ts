@@ -227,3 +227,25 @@ export const AgentGenerateSchema = z.object({
     .optional()
     .default([]),
 });
+
+export const AgentInstructionEnhanceRequestSchema = z.object({
+  changePrompt: z.string().min(1),
+  currentInstructions: z.string().default(""),
+  chatModel: z
+    .object({
+      provider: z.string(),
+      model: z.string(),
+    })
+    .optional(),
+  agentContext: z
+    .object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+      role: z.string().optional(),
+    })
+    .optional(),
+});
+
+export const AgentInstructionEnhanceResponseSchema = z.object({
+  instructions: z.string().describe("Enhanced system instructions"),
+});

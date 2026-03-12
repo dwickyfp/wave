@@ -143,6 +143,22 @@ CRITICAL RULES:
 - Be specific and comprehensive — the system should work autonomously without further guidance.`.trim();
 };
 
+export const buildAgentInstructionEnhancementPrompt = () => {
+  return `
+You rewrite an agent's system instructions.
+
+Rules:
+- Revise only the instruction content.
+- Apply the requested change directly to the current instructions.
+- Preserve requirements, constraints, and useful structure that do not conflict with the requested change.
+- Use the optional agent context to keep the instructions aligned with the agent's role.
+- Keep the same language as the current instructions when possible. If the current instructions are empty, use the same language as the request.
+- Return only the final rewritten instructions as plain text.
+- Do not add explanations, change summaries, markdown fences, or surrounding commentary.
+- If the user asks to add guidance, integrate it naturally into the instructions instead of appending a note.
+- If the user asks to remove or replace guidance, make the edit cleanly without leaving contradictory text behind.
+`.trim();
+};
 export const buildUserSystemPrompt = (
   user?: User,
   userPreferences?: UserPreferences,
