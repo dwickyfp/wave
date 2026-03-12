@@ -1,21 +1,21 @@
-"use client";
+﻿"use client";
 
+import { LlmModelConfigInput, ModelType } from "app-types/settings";
+import { cn } from "lib/utils";
 import { useState } from "react";
 import { toast } from "sonner";
+import { Button } from "ui/button";
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "ui/dialog";
-import { Button } from "ui/button";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
 import { Switch } from "ui/switch";
-import { LlmModelConfigInput, ModelType } from "app-types/settings";
-import { cn } from "lib/utils";
 
 interface ModelRegisterDialogProps {
   open: boolean;
@@ -35,7 +35,7 @@ const MODEL_TYPE_OPTIONS: ModelTypeOption[] = [
   {
     value: "llm",
     label: "LLM",
-    description: "Large language model for chat & reasoning",
+    description: "Large language model for chat and reasoning",
   },
   {
     value: "image_generation",
@@ -175,8 +175,8 @@ export function ModelRegisterDialog({
   });
 
   const handleTypeChange = (type: ModelType) => {
-    setForm((f) => ({
-      ...f,
+    setForm((current) => ({
+      ...current,
       modelType: type,
       ...DEFAULT_CAPABILITIES[type],
     }));
@@ -191,7 +191,7 @@ export function ModelRegisterDialog({
   ) => {
     const value = raw.trim();
     if (!value.length) {
-      setForm((f) => ({ ...f, [key]: 0 }));
+      setForm((current) => ({ ...current, [key]: 0 }));
       return;
     }
 
@@ -200,18 +200,22 @@ export function ModelRegisterDialog({
 
     if (Number.isNaN(parsed) || parsed < 0) return;
 
-    setForm((f) => ({ ...f, [key]: parsed }));
+    setForm((current) => ({ ...current, [key]: parsed }));
   };
 
-  const visibleSwitches = CAPABILITY_SWITCHES.filter((s) =>
-    s.visibleFor.includes(form.modelType as ModelType),
+  const visibleSwitches = CAPABILITY_SWITCHES.filter((switchItem) =>
+    switchItem.visibleFor.includes(form.modelType as ModelType),
   );
+  const selectedType =
+    MODEL_TYPE_OPTIONS.find((option) => option.value === form.modelType) ??
+    MODEL_TYPE_OPTIONS[0];
 
   const handleSubmit = async () => {
     if (!form.apiName.trim() || !form.uiName.trim()) {
       toast.error("API name and display name are required");
       return;
     }
+
     if (
       form.contextLength < 0 ||
       form.inputTokenPricePer1MUsd < 0 ||
@@ -220,6 +224,7 @@ export function ModelRegisterDialog({
       toast.error("Numeric model settings cannot be negative");
       return;
     }
+
     setSaving(true);
     try {
       const res = await fetch("/api/settings/models", {
@@ -229,6 +234,7 @@ export function ModelRegisterDialog({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to create model");
+
       toast.success(`Model "${form.uiName}" added`);
       onCreated();
       onClose();
@@ -240,170 +246,277 @@ export function ModelRegisterDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Add Model</DialogTitle>
-          <DialogDescription>
-            Register a new model for <strong>{providerName}</strong>.
-          </DialogDescription>
-        </DialogHeader>
+    <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
+      <DialogContent className="w-[calc(100vw-1.5rem)] max-w-3xl gap-0 overflow-hidden p-0 sm:max-h-[calc(100vh-4rem)] sm:max-w-3xl">
+        <div className="flex max-h-[calc(100vh-1.5rem)] flex-col sm:max-h-[calc(100vh-4rem)]">
+          <DialogHeader className="border-b px-4 py-4 pr-12 sm:px-6 sm:py-5">
+            <DialogTitle>Add Model</DialogTitle>
+            <DialogDescription className="space-y-1">
+              <span className="block">
+                Register a new model for <strong>{providerName}</strong>.
+              </span>
+              <span className="block text-xs">
+                The form stays scrollable on smaller screens so the actions
+                remain reachable.
+              </span>
+            </DialogDescription>
+          </DialogHeader>
 
-        <div className="space-y-4 py-2">
-          {/* Model Type selector */}
-          <div className="space-y-2">
-            <Label>Model Type</Label>
-            <div className="grid grid-cols-2 gap-2">
-              {MODEL_TYPE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => handleTypeChange(opt.value)}
-                  className={cn(
-                    "flex flex-col items-start gap-0.5 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors",
-                    form.modelType === opt.value
-                      ? "border-primary bg-primary/5 text-primary"
-                      : "border-border hover:border-muted-foreground/40 hover:bg-muted/50",
+          <div className="flex-1 overflow-y-auto">
+            <div className="space-y-6 p-4 sm:p-6">
+              <div className="grid gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.85fr)]">
+                <div className="space-y-6">
+                  <section className="rounded-xl border bg-muted/20 p-4 sm:p-5">
+                    <div className="mb-4 space-y-1">
+                      <h3 className="text-sm font-medium">Model Type</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Pick the capability profile that best matches the
+                        provider model you are registering.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {MODEL_TYPE_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => handleTypeChange(option.value)}
+                          className={cn(
+                            "flex min-h-24 flex-col items-start justify-between rounded-xl border px-4 py-3 text-left transition-colors",
+                            form.modelType === option.value
+                              ? "border-primary bg-primary/10 text-foreground shadow-sm"
+                              : "border-border bg-background hover:border-muted-foreground/40 hover:bg-muted/50",
+                          )}
+                        >
+                          <span className="text-sm font-medium">
+                            {option.label}
+                          </span>
+                          <span className="text-xs leading-relaxed text-muted-foreground">
+                            {option.description}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border p-4 sm:p-5">
+                    <div className="mb-4 space-y-1">
+                      <h3 className="text-sm font-medium">Identity</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Use the provider-facing model ID and a shorter display
+                        name for internal selection lists.
+                      </p>
+                    </div>
+
+                    <div className="space-y-4">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="apiName">API Model Name</Label>
+                        <Input
+                          id="apiName"
+                          placeholder="e.g. gpt-4.1 or openai/gpt-image-1"
+                          value={form.apiName}
+                          onChange={(e) =>
+                            setForm((current) => ({
+                              ...current,
+                              apiName: e.target.value,
+                            }))
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          The exact model ID passed to the provider API.
+                        </p>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <Label htmlFor="uiName">Display Name</Label>
+                        <Input
+                          id="uiName"
+                          placeholder="e.g. GPT Image 1"
+                          value={form.uiName}
+                          onChange={(e) =>
+                            setForm((current) => ({
+                              ...current,
+                              uiName: e.target.value,
+                            }))
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Name shown in the model selector.
+                        </p>
+                      </div>
+                    </div>
+                  </section>
+
+                  {form.modelType === "llm" && (
+                    <section className="rounded-xl border p-4 sm:p-5">
+                      <div className="mb-4 space-y-1">
+                        <h3 className="text-sm font-medium">
+                          Runtime and Pricing
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                          Add capacity and cost metadata so users can compare
+                          models more easily.
+                        </p>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="contextLength">Context Length</Label>
+                          <Input
+                            id="contextLength"
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={form.contextLength}
+                            onChange={(e) =>
+                              handleNumberChange(
+                                "contextLength",
+                                e.target.value,
+                              )
+                            }
+                          />
+                          <p className="text-xs text-muted-foreground">
+                            Maximum supported context window for this model. Use
+                            0 if unknown.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                          <div className="space-y-1.5">
+                            <Label htmlFor="inputTokenPricePer1MUsd">
+                              Input Price / 1M Tokens (USD)
+                            </Label>
+                            <Input
+                              id="inputTokenPricePer1MUsd"
+                              type="number"
+                              min="0"
+                              step="0.000001"
+                              value={form.inputTokenPricePer1MUsd}
+                              onChange={(e) =>
+                                handleNumberChange(
+                                  "inputTokenPricePer1MUsd",
+                                  e.target.value,
+                                )
+                              }
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <Label htmlFor="outputTokenPricePer1MUsd">
+                              Output Price / 1M Tokens (USD)
+                            </Label>
+                            <Input
+                              id="outputTokenPricePer1MUsd"
+                              type="number"
+                              min="0"
+                              step="0.000001"
+                              value={form.outputTokenPricePer1MUsd}
+                              onChange={(e) =>
+                                handleNumberChange(
+                                  "outputTokenPricePer1MUsd",
+                                  e.target.value,
+                                )
+                              }
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </section>
                   )}
-                >
-                  <span className="font-medium">{opt.label}</span>
-                  <span className="text-xs text-muted-foreground leading-snug">
-                    {opt.description}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* API Model Name */}
-          <div className="space-y-1.5">
-            <Label htmlFor="apiName">API Model Name</Label>
-            <Input
-              id="apiName"
-              placeholder="e.g. gpt-4.1 or openai/gpt-image-1"
-              value={form.apiName}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, apiName: e.target.value }))
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              The exact model ID passed to the provider API.
-            </p>
-          </div>
-
-          {/* Display Name */}
-          <div className="space-y-1.5">
-            <Label htmlFor="uiName">Display Name</Label>
-            <Input
-              id="uiName"
-              placeholder="e.g. GPT Image 1"
-              value={form.uiName}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, uiName: e.target.value }))
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Name shown in the model selector.
-            </p>
-          </div>
-
-          {form.modelType === "llm" && (
-            <>
-              <div className="space-y-1.5">
-                <Label htmlFor="contextLength">Context Length</Label>
-                <Input
-                  id="contextLength"
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={form.contextLength}
-                  onChange={(e) =>
-                    handleNumberChange("contextLength", e.target.value)
-                  }
-                />
-                <p className="text-xs text-muted-foreground">
-                  Maximum supported context window for this model. Use 0 if
-                  unknown.
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor="inputTokenPricePer1MUsd">
-                    Input Price / 1M Tokens (USD)
-                  </Label>
-                  <Input
-                    id="inputTokenPricePer1MUsd"
-                    type="number"
-                    min="0"
-                    step="0.000001"
-                    value={form.inputTokenPricePer1MUsd}
-                    onChange={(e) =>
-                      handleNumberChange(
-                        "inputTokenPricePer1MUsd",
-                        e.target.value,
-                      )
-                    }
-                  />
                 </div>
 
-                <div className="space-y-1.5">
-                  <Label htmlFor="outputTokenPricePer1MUsd">
-                    Output Price / 1M Tokens (USD)
-                  </Label>
-                  <Input
-                    id="outputTokenPricePer1MUsd"
-                    type="number"
-                    min="0"
-                    step="0.000001"
-                    value={form.outputTokenPricePer1MUsd}
-                    onChange={(e) =>
-                      handleNumberChange(
-                        "outputTokenPricePer1MUsd",
-                        e.target.value,
-                      )
-                    }
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Capabilities (only for LLM or Image Generation) */}
-          {visibleSwitches.length > 0 && (
-            <div className="space-y-3 pt-1">
-              <p className="text-sm font-medium">Capabilities</p>
-              {visibleSwitches.map(({ key, label, description }) => (
-                <div
-                  key={key}
-                  className="flex items-center justify-between gap-4"
-                >
-                  <div>
-                    <p className="text-sm">{label}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {description}
+                <div className="space-y-6">
+                  <section className="rounded-xl border bg-muted/20 p-4 sm:p-5">
+                    <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                      Summary
                     </p>
-                  </div>
-                  <Switch
-                    checked={!!form[key]}
-                    onCheckedChange={(checked) =>
-                      setForm((f) => ({ ...f, [key]: checked }))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <p className="text-xs text-muted-foreground">
+                          Provider
+                        </p>
+                        <p className="mt-1 text-sm font-medium">
+                          {providerName}
+                        </p>
+                      </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
-          </Button>
-          <Button onClick={handleSubmit} disabled={saving}>
-            {saving ? "Saving…" : "Add Model"}
-          </Button>
-        </DialogFooter>
+                      <div>
+                        <p className="text-xs text-muted-foreground">
+                          Selected Type
+                        </p>
+                        <p className="mt-1 text-sm font-medium">
+                          {selectedType.label}
+                        </p>
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                          {selectedType.description}
+                        </p>
+                      </div>
+
+                      <div className="rounded-lg border bg-background px-3 py-2.5">
+                        <p className="text-xs text-muted-foreground">
+                          Required before saving
+                        </p>
+                        <p className="mt-1 text-sm">
+                          API model name and display name
+                        </p>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-xl border p-4 sm:p-5">
+                    <div className="mb-4 space-y-1">
+                      <h3 className="text-sm font-medium">Capabilities</h3>
+                      <p className="text-xs text-muted-foreground">
+                        Toggle only the behaviors this model should expose to
+                        the app.
+                      </p>
+                    </div>
+
+                    {visibleSwitches.length > 0 ? (
+                      <div className="space-y-3">
+                        {visibleSwitches.map(({ key, label, description }) => (
+                          <div
+                            key={key}
+                            className="flex items-start justify-between gap-4 rounded-xl border bg-muted/20 px-3 py-3"
+                          >
+                            <div className="space-y-1 pr-2">
+                              <p className="text-sm font-medium">{label}</p>
+                              <p className="text-xs leading-relaxed text-muted-foreground">
+                                {description}
+                              </p>
+                            </div>
+                            <Switch
+                              checked={!!form[key]}
+                              onCheckedChange={(checked) =>
+                                setForm((current) => ({
+                                  ...current,
+                                  [key]: checked,
+                                }))
+                              }
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="rounded-xl border border-dashed bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
+                        This model type does not expose extra capability flags.
+                      </div>
+                    )}
+                  </section>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter className="border-t bg-background px-4 py-4 sm:px-6">
+            <Button variant="outline" onClick={onClose} disabled={saving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSubmit} disabled={saving}>
+              {saving ? "Saving..." : "Add Model"}
+            </Button>
+          </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

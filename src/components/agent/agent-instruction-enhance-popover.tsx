@@ -1,19 +1,20 @@
 "use client";
 
-import { useState } from "react";
 import { experimental_useObject } from "@ai-sdk/react";
-import { useTranslations } from "next-intl";
 import { WandSparklesIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useState } from "react";
 
 import { appStore } from "@/app/store";
 import { SelectModel } from "@/components/select-model";
 import { AgentInstructionEnhanceResponseSchema } from "app-types/agent";
 import { ChatModel } from "app-types/chat";
+import { cn } from "lib/utils";
 import { Button } from "ui/button";
 import { Label } from "ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
-import { Textarea } from "ui/textarea";
 import { handleErrorWithToast } from "ui/shared-toast";
+import { Textarea } from "ui/textarea";
 
 function defaultModel() {
   return appStore.getState().chatModel;
@@ -23,6 +24,8 @@ export function AgentInstructionEnhancePopover({
   currentInstructions,
   agentContext,
   disabled,
+  iconOnly = false,
+  className,
   onGenerated,
 }: {
   currentInstructions: string;
@@ -32,6 +35,8 @@ export function AgentInstructionEnhancePopover({
     role?: string;
   };
   disabled?: boolean;
+  iconOnly?: boolean;
+  className?: string;
   onGenerated: (instructions: string) => void;
 }) {
   const t = useTranslations();
@@ -82,13 +87,20 @@ export function AgentInstructionEnhancePopover({
       <PopoverTrigger asChild>
         <Button
           type="button"
-          size="sm"
-          variant="secondary"
+          size={iconOnly ? "icon" : "sm"}
+          variant={iconOnly ? "ghost" : "secondary"}
+          aria-label={t("Agent.instructionsAiTrigger")}
+          title={t("Agent.instructionsAiTrigger")}
           disabled={disabled || isLoading}
           data-testid="agent-instruction-enhance-button"
+          className={cn(iconOnly && "size-8 shrink-0", className)}
         >
           <WandSparklesIcon className="size-3.5" />
-          {t("Agent.instructionsAiTrigger")}
+          {iconOnly ? (
+            <span className="sr-only">{t("Agent.instructionsAiTrigger")}</span>
+          ) : (
+            t("Agent.instructionsAiTrigger")
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent

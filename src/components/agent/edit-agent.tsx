@@ -1466,18 +1466,6 @@ export default function EditAgent({
               <p className="text-sm text-muted-foreground">
                 {t("Agent.agentSettingsDescription")}
               </p>
-              {hasEditAccess && (
-                <AgentInstructionEnhancePopover
-                  currentInstructions={agent.instructions?.systemPrompt || ""}
-                  agentContext={{
-                    name: agent.name || "",
-                    description: agent.description || "",
-                    role: agent.instructions?.role || "",
-                  }}
-                  disabled={isLoading || isInstructionReviewActive}
-                  onGenerated={handleApplyInstructionEnhancement}
-                />
-              )}
             </div>
 
             <div className="flex gap-2 items-center">
@@ -1507,9 +1495,24 @@ export default function EditAgent({
             </div>
 
             <div className="flex gap-2 flex-col">
-              <Label htmlFor="agent-prompt" className="text-base">
-                {t("Agent.agentInstructionsLabel")}
-              </Label>
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="agent-prompt" className="text-base">
+                  {t("Agent.agentInstructionsLabel")}
+                </Label>
+                {hasEditAccess && initialAgent && (
+                  <AgentInstructionEnhancePopover
+                    currentInstructions={agent.instructions?.systemPrompt || ""}
+                    agentContext={{
+                      name: agent.name || "",
+                      description: agent.description || "",
+                      role: agent.instructions?.role || "",
+                    }}
+                    disabled={isLoading || isInstructionReviewActive}
+                    iconOnly
+                    onGenerated={handleApplyInstructionEnhancement}
+                  />
+                )}
+              </div>
               {false ? (
                 <Skeleton className="w-full h-48" />
               ) : (
