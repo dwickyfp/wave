@@ -52,7 +52,7 @@ importers:
         version: 1.25.1(hono@4.11.3)(zod@4.2.1)
       '@openrouter/ai-sdk-provider':
         specifier: ^2.2.3
-        version: 2.2.3(ai@6.0.125(zod@4.2.1))(zod@4.2.1)
+        version: 2.2.3(ai@6.0.126(zod@4.2.1))(zod@4.2.1)
       '@radix-ui/react-accordion':
         specifier: ^1.2.12
         version: 1.2.12(@types/react-dom@19.2.3(@types/react@19.2.7))(@types/react@19.2.7)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -126,8 +126,8 @@ importers:
         specifier: ^12.10.0
         version: 12.10.0(@types/react@19.2.7)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       ai:
-        specifier: ^6.0.125
-        version: 6.0.125(zod@4.2.1)
+        specifier: ^6.0.126
+        version: 6.0.126(zod@4.2.1)
       bcrypt-ts:
         specifier: ^7.1.0
         version: 7.1.0
@@ -406,7 +406,7 @@ packages:
       zod: ^3.25.76 || ^4.1.8
 
   '@ai-sdk/gateway@3.0.66':
-    resolution: {integrity: sha512-SIQ0YY0iMuv+07HLsZ+bB990zUJ6S4ujORAh+Jv1V2KGNn73qQKnGO0JBk+w+Res8YqOFSycwDoWcFlQrVxS4A==}
+    resolution: {integrity: sha512-SIQ0YY0iMuv+07HLsZ+bB990zUJ6S4ujORAh+Jv1V2KGNn73qQKnGO0JBk+w+Res8YqOFSycwDoWcFlQrVxS4A==, tarball: https://artifactory.pbdjarum.net/npm/npm-group/%40ai-sdk/gateway/-/gateway-3.0.66.tgz}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -464,7 +464,7 @@ packages:
     engines: {node: '>=18'}
 
   '@ai-sdk/provider@3.0.8':
-    resolution: {integrity: sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ==}
+    resolution: {integrity: sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ==, tarball: https://artifactory.pbdjarum.net/npm/npm-group/%40ai-sdk/provider/-/provider-3.0.8.tgz}
     engines: {node: '>=18'}
 
   '@ai-sdk/react@3.0.118':
@@ -3566,8 +3566,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  ai@6.0.125:
-    resolution: {integrity: sha512-EPnh7PRQCM2aYgwMlLsY5xkSNIsPH27HeP81F2eZi6TDm1YJ2gKx0TN9LYYIqZII0VDhOH2uds2u2QmV9DKPdw==, tarball: https://artifactory.pbdjarum.net/npm/npm-group/ai/-/ai-6.0.125.tgz}
+  ai@6.0.126:
+    resolution: {integrity: sha512-pSoIPNcWLC60H3g3B9Qg6yznrDXkLQ+w4psrnvtM15uVtlYFkWEy5nLSRTkkFBPnZ3lfR1K8ut760O3As+in5A==, tarball: https://artifactory.pbdjarum.net/npm/npm-group/ai/-/ai-6.0.126.tgz}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -8794,9 +8794,9 @@ snapshots:
 
   '@nolyfill/is-core-module@1.0.39': {}
 
-  '@openrouter/ai-sdk-provider@2.2.3(ai@6.0.125(zod@4.2.1))(zod@4.2.1)':
+  '@openrouter/ai-sdk-provider@2.2.3(ai@6.0.126(zod@4.2.1))(zod@4.2.1)':
     dependencies:
-      ai: 6.0.125(zod@4.2.1)
+      ai: 6.0.126(zod@4.2.1)
       zod: 4.2.1
 
   '@opentelemetry/api@1.9.0': {}
@@ -10639,7 +10639,7 @@ snapshots:
       '@opentelemetry/api': 1.9.0
       zod: 4.2.1
 
-  ai@6.0.125(zod@4.2.1):
+  ai@6.0.126(zod@4.2.1):
     dependencies:
       '@ai-sdk/gateway': 3.0.72(zod@4.2.1)
       '@ai-sdk/provider': 3.0.8
