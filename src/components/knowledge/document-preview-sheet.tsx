@@ -1145,8 +1145,7 @@ export function DocumentPreviewSheet({
                       <div className="border-b px-6 py-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="text-xs text-muted-foreground">
-                            Raw markdown only. Rendered preview is disabled to
-                            keep the drawer lightweight.
+                            Raw markdown
                           </div>
 
                           {showMarkdownActions ? (

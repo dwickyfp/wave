@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 
 import {
   getNextReservedVersionNumber,
+  resolveDocumentVersionRetention,
   resolveKnowledgeDocumentFailureOutcome,
 } from "./versioning";
 
@@ -47,6 +48,35 @@ describe("getNextReservedVersionNumber", () => {
     ).toEqual({
       status: "failed",
       errorMessage: "initial ingest failed",
+    });
+  });
+
+  it("retains only the active version and in-flight processing versions", () => {
+    expect(
+      resolveDocumentVersionRetention({
+        activeVersionId: "version-3",
+        versions: [
+          { id: "version-1", status: "ready" },
+          { id: "version-2", status: "failed" },
+          { id: "version-3", status: "ready" },
+          { id: "version-4", status: "processing" },
+        ],
+      }),
+    ).toEqual({
+      retainedVersionIds: ["version-3", "version-4"],
+      deletedVersionIds: ["version-1", "version-2"],
+    });
+  });
+
+  it("keeps the active version even when it is still processing", () => {
+    expect(
+      resolveDocumentVersionRetention({
+        activeVersionId: "version-9",
+        versions: [{ id: "version-9", status: "processing" }],
+      }),
+    ).toEqual({
+      retainedVersionIds: ["version-9"],
+      deletedVersionIds: [],
     });
   });
 });

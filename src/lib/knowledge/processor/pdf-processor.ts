@@ -39,6 +39,19 @@ const { PDFParse } = _require("pdf-parse") as {
   };
 };
 
+type PdfImageExtractionResult = {
+  pages: Array<{
+    pageNumber: number;
+    images: Array<{
+      data: Uint8Array;
+      name: string;
+      width: number;
+      height: number;
+      dataUrl?: string;
+    }>;
+  }>;
+};
+
 const PDF_OP_SAVE = 10;
 const PDF_OP_RESTORE = 11;
 const PDF_OP_TRANSFORM = 12;
@@ -53,6 +66,8 @@ type PdfPageProxy = {
   getViewport(args: { scale: number }): {
     transform: number[];
     convertToViewportPoint: (x: number, y: number) => [number, number];
+    width?: number;
+    height?: number;
   };
   getOperatorList(): Promise<{
     fnArray: number[];
@@ -80,6 +95,15 @@ type PdfImagePlacement = {
   right: number;
   top: number;
   bottom: number;
+};
+
+type PdfImageSelectionInput = {
+  lines: PdfLine[];
+  placement: PdfImagePlacement | null;
+  pageWidth: number | null;
+  pageHeight: number | null;
+  imageWidth: number;
+  imageHeight: number;
 };
 
 function multiplyTransform(a: number[], b: number[]) {
@@ -128,6 +152,98 @@ function buildAnchorSnippet(lines: PdfLine[], lineIndex: number | null) {
     .filter(Boolean)
     .join(" ")
     .trim();
+}
+
+function placementOverlapsLine(line: PdfLine, placement: PdfImagePlacement) {
+  return !(
+    line.xMax < placement.left ||
+    line.xMin > placement.right ||
+    line.yMax < placement.top ||
+    line.yMin > placement.bottom
+  );
+}
+
+function hasNearbyCaption(lines: PdfLine[], placement: PdfImagePlacement) {
+  return lines.some(
+    (line) =>
+      line.yMin >= placement.bottom - 4 &&
+      line.yMin - placement.bottom <= 48 &&
+      looksLikeCaption(line.text),
+  );
+}
+
+export function shouldKeepPdfImageCandidate(
+  input: PdfImageSelectionInput,
+): boolean {
+  if (input.imageWidth * input.imageHeight < 2_500) {
+    return false;
+  }
+
+  if (!input.placement) {
+    return true;
+  }
+
+  const placementWidth = Math.max(
+    0,
+    input.placement.right - input.placement.left,
+  );
+  const placementHeight = Math.max(
+    0,
+    input.placement.bottom - input.placement.top,
+  );
+
+  if (placementWidth < 40 || placementHeight < 40) {
+    return false;
+  }
+
+  const pageWidth =
+    input.pageWidth && Number.isFinite(input.pageWidth)
+      ? Math.abs(input.pageWidth)
+      : null;
+  const pageHeight =
+    input.pageHeight && Number.isFinite(input.pageHeight)
+      ? Math.abs(input.pageHeight)
+      : null;
+  const hasCaption = hasNearbyCaption(input.lines, input.placement);
+
+  if (pageWidth && pageHeight) {
+    const isThinHorizontalStrip =
+      placementWidth >= pageWidth * 0.75 &&
+      placementHeight <= Math.max(36, pageHeight * 0.08);
+    const isThinVerticalStrip =
+      placementHeight >= pageHeight * 0.75 &&
+      placementWidth <= Math.max(36, pageWidth * 0.08);
+
+    if (isThinHorizontalStrip || isThinVerticalStrip) {
+      return false;
+    }
+
+    const coverage =
+      (placementWidth * placementHeight) / (pageWidth * pageHeight);
+    if (coverage >= 0.72) {
+      return false;
+    }
+
+    const overlappingLines = input.lines.filter((line) =>
+      placementOverlapsLine(line, input.placement as PdfImagePlacement),
+    ).length;
+    const overlapRatio =
+      input.lines.length > 0 ? overlappingLines / input.lines.length : 0;
+
+    if (
+      !hasCaption &&
+      coverage >= 0.38 &&
+      (overlapRatio >= 0.35 || input.lines.length >= 8)
+    ) {
+      return false;
+    }
+
+    if (!hasCaption && coverage >= 0.2 && overlapRatio >= 0.72) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 async function extractPdfLines(page: PdfPageProxy): Promise<PdfLine[]> {
@@ -477,6 +593,22 @@ export function composePageText(
     .trim();
 }
 
+async function extractPdfImagesSafely(parser: {
+  getImage(opts?: {
+    imageThreshold?: number;
+  }): Promise<PdfImageExtractionResult>;
+}): Promise<PdfImageExtractionResult> {
+  try {
+    return await parser.getImage({ imageThreshold: 80 });
+  } catch (error) {
+    console.warn(
+      "[ContextX] Failed to extract embedded PDF images; continuing with text-only PDF ingestion:",
+      error,
+    );
+    return { pages: [] };
+  }
+}
+
 export async function processPdf(
   buffer: Buffer,
   options: DocumentProcessingOptions = {},
@@ -489,7 +621,7 @@ export async function processPdf(
         load(): Promise<PdfDocumentProxy>;
       }
     ).load();
-    const imageResult = await parser.getImage({ imageThreshold: 80 });
+    const imageResult = await extractPdfImagesSafely(parser);
     const imagesByPage = new Map(
       imageResult.pages.map((page) => [page.pageNumber, page.images] as const),
     );
@@ -507,6 +639,7 @@ export async function processPdf(
       const page = await loadedDocument.getPage(pageNumber);
       try {
         const lines = await extractPdfLines(page);
+        const viewport = page.getViewport({ scale: 1 });
         const pageImages = imagesByPage.get(pageNumber) ?? [];
         const placementsByName = await extractPdfImagePlacements(
           page,
@@ -518,9 +651,24 @@ export async function processPdf(
         }> = [];
 
         for (const image of pageImages) {
-          const marker = createContextImageMarker(imageIndex);
           const placements = placementsByName.get(image.name) ?? [];
           const placement = placements.shift() ?? null;
+          if (
+            !shouldKeepPdfImageCandidate({
+              lines,
+              placement,
+              pageWidth:
+                typeof viewport.width === "number" ? viewport.width : null,
+              pageHeight:
+                typeof viewport.height === "number" ? viewport.height : null,
+              imageWidth: image.width,
+              imageHeight: image.height,
+            })
+          ) {
+            continue;
+          }
+
+          const marker = createContextImageMarker(imageIndex);
           const anchor = selectImageAnchor(lines, pageNumber, placement);
           const anchorSnippet = buildAnchorSnippet(
             lines,
@@ -533,6 +681,8 @@ export async function processPdf(
             buffer: Buffer.from(image.data),
             mediaType:
               image.dataUrl?.match(/^data:([^;]+);/i)?.[1] ?? "image/png",
+            caption:
+              anchor.source === "caption" ? (anchor.anchorText ?? null) : null,
             pageNumber,
             surroundingText: anchorSnippet,
             precedingText: anchor.precedingText ?? null,

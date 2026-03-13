@@ -276,6 +276,25 @@ export function buildFinancialStatementRetrievalIdentity(input: {
     filename: input.originalFilename ?? null,
   });
 
+  if (!classification.isFinancialStatement) {
+    return {
+      canonicalTitle:
+        input.autoTitle?.trim() ||
+        input.fallbackTitle ||
+        input.originalFilename ||
+        "Untitled",
+      autoTitle: input.autoTitle ?? null,
+      issuerName: null,
+      issuerTicker: null,
+      issuerAliases: [],
+      reportType: null,
+      fiscalYear: null,
+      periodEnd: null,
+      pageCount: input.pageCount ?? classification.pageCount,
+      isFinancialStatement: false,
+    };
+  }
+
   const issuer = detectIssuerFromTexts([
     input.markdown.slice(0, 12_000),
     input.fallbackTitle,

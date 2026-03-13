@@ -13,6 +13,7 @@ import {
   buildDocumentMetadataEmbeddingText,
   buildDocumentRetrievalIdentity,
   extractAutoDocumentMetadata,
+  generateDocumentMetadata,
 } from "./document-metadata";
 import { embedSingleTextWithUsage, embedTextsWithUsage } from "./embedder";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
@@ -148,9 +149,20 @@ export async function materializeDocumentMarkdown({
 
   await reportProgress?.(40, { stage: "materializing" });
   const autoMeta = extractAutoDocumentMetadata(markdown, documentTitle);
+  const generatedMeta =
+    doc.titleManual && doc.descriptionManual
+      ? autoMeta
+      : await generateDocumentMetadata({
+          markdown,
+          fallbackTitle: autoMeta.title || documentTitle,
+          originalFilename: doc.originalFilename,
+          sourceUrl: doc.sourceUrl,
+          pageCount: inputPages?.length ?? null,
+          modelConfig: contextModel,
+        });
   const retrievalIdentity = buildDocumentRetrievalIdentity({
     markdown,
-    fallbackTitle: documentTitle,
+    fallbackTitle: generatedMeta.title || autoMeta.title || documentTitle,
     originalFilename: doc.originalFilename,
     pageCount: inputPages?.length ?? null,
   });
@@ -161,10 +173,10 @@ export async function materializeDocumentMarkdown({
   });
   const resolvedTitle = doc.titleManual
     ? doc.name
-    : retrievalIdentity.canonicalTitle || autoMeta.title;
+    : generatedMeta.title || retrievalIdentity.canonicalTitle || autoMeta.title;
   const resolvedDescription = doc.descriptionManual
     ? (doc.description ?? null)
-    : autoMeta.description;
+    : (generatedMeta.description ?? autoMeta.description);
   const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId, {
     retrievalIdentity,
     classification,
@@ -206,6 +218,10 @@ export async function materializeDocumentMarkdown({
     ...(doc.metadata ?? {}),
     sectionGraphVersion: SECTION_GRAPH_VERSION,
     retrievalIdentity,
+    generatedMetadata: {
+      title: generatedMeta.title,
+      description: generatedMeta.description ?? null,
+    },
     pageStates: (inputPages ?? []).map((page) => ({
       pageNumber: page.pageNumber,
       fingerprint: page.fingerprint,

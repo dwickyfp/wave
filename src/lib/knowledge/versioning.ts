@@ -7,7 +7,7 @@ import type {
   KnowledgeDocumentVersionSummary,
   KnowledgeGroup,
 } from "app-types/knowledge";
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import { knowledgeRepository } from "lib/db/repository";
 import { pgDb as db } from "lib/db/pg/db.pg";
 import {
@@ -30,6 +30,7 @@ import { generateUUID } from "lib/utils";
 const VERSION_BATCH_SIZE = 100;
 const ROLLBACK_MODEL_MISMATCH_REASON =
   "This version uses a different embedding model than the current knowledge group.";
+const KNOWLEDGE_DOCUMENT_HISTORY_ENABLED = false;
 
 type DocumentVersionChangeType =
   | "initial_ingest"
@@ -113,6 +114,11 @@ type MaterializedCommitInput = {
   totalTokens: number;
   embeddingTokenCount: number;
 };
+
+type DocumentVersionRetentionRow = Pick<
+  KnowledgeDocumentVersion,
+  "id" | "status"
+>;
 
 type VersionRowWithVector =
   typeof KnowledgeDocumentVersionTable.$inferSelect & {
@@ -306,6 +312,26 @@ export function resolveKnowledgeDocumentFailureOutcome(input: {
   return {
     status: "failed" as const,
     errorMessage: input.errorMessage,
+  };
+}
+
+export function resolveDocumentVersionRetention(input: {
+  activeVersionId: string;
+  versions: DocumentVersionRetentionRow[];
+}) {
+  const retainedVersionIds = new Set<string>([input.activeVersionId]);
+
+  for (const version of input.versions) {
+    if (version.status === "processing") {
+      retainedVersionIds.add(version.id);
+    }
+  }
+
+  return {
+    retainedVersionIds: [...retainedVersionIds],
+    deletedVersionIds: input.versions
+      .map((version) => version.id)
+      .filter((id) => !retainedVersionIds.has(id)),
   };
 }
 
@@ -1180,7 +1206,7 @@ async function insertChunkSnapshots(
         sectionVersionId: chunk.sectionId ?? null,
         content: chunk.content,
         contextSummary: chunk.contextSummary ?? null,
-        embedding: chunk.embedding ?? null,
+        embedding: null,
         chunkIndex: chunk.chunkIndex,
         tokenCount: chunk.tokenCount,
         metadata: chunk.metadata ?? null,
@@ -1228,7 +1254,7 @@ async function insertImageSnapshots(
         isRenderable: image.isRenderable,
         manualLabel: image.manualLabel,
         manualDescription: image.manualDescription,
-        embedding: image.embedding ?? null,
+        embedding: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       })),
@@ -1279,7 +1305,7 @@ async function replaceLiveMaterialization(
           noteTitle: section.noteTitle ?? null,
           noteSubsection: section.noteSubsection ?? null,
           continued: section.continued ?? false,
-          embedding: toPgVectorExpression(section.embedding ?? null),
+          embedding: sql`NULL::vector`,
           createdAt: new Date(),
         })),
       );
@@ -1373,6 +1399,49 @@ async function insertHistoryEvent(
   });
 }
 
+async function pruneDocumentVersionHistory(
+  tx: any,
+  args: { documentId: string; activeVersionId: string },
+) {
+  await tx
+    .delete(KnowledgeDocumentHistoryEventTable)
+    .where(eq(KnowledgeDocumentHistoryEventTable.documentId, args.documentId));
+
+  const versions = (await tx
+    .select({
+      id: KnowledgeDocumentVersionTable.id,
+      status: KnowledgeDocumentVersionTable.status,
+    })
+    .from(KnowledgeDocumentVersionTable)
+    .where(
+      eq(KnowledgeDocumentVersionTable.documentId, args.documentId),
+    )) as DocumentVersionRetentionRow[];
+
+  const { deletedVersionIds } = resolveDocumentVersionRetention({
+    activeVersionId: args.activeVersionId,
+    versions,
+  });
+
+  if (deletedVersionIds.length === 0) {
+    return;
+  }
+
+  await tx
+    .delete(KnowledgeChunkVersionTable)
+    .where(inArray(KnowledgeChunkVersionTable.versionId, deletedVersionIds));
+  await tx
+    .delete(KnowledgeDocumentImageVersionTable)
+    .where(
+      inArray(KnowledgeDocumentImageVersionTable.versionId, deletedVersionIds),
+    );
+  await tx
+    .delete(KnowledgeSectionVersionTable)
+    .where(inArray(KnowledgeSectionVersionTable.versionId, deletedVersionIds));
+  await tx
+    .delete(KnowledgeDocumentVersionTable)
+    .where(inArray(KnowledgeDocumentVersionTable.id, deletedVersionIds));
+}
+
 function ensureModelMatch(
   version: Pick<
     KnowledgeDocumentVersion,
@@ -1462,7 +1531,7 @@ async function finalizeMaterializedVersion({
         resolvedTitle,
         resolvedDescription: resolvedDescription ?? null,
         metadata: metadata ?? null,
-        metadataEmbedding: toPgVectorExpression(metadataEmbedding ?? null),
+        metadataEmbedding: sql`NULL::vector`,
         chunkCount: chunks.length,
         tokenCount: totalTokens,
         embeddingTokenCount,
@@ -1494,20 +1563,28 @@ async function finalizeMaterializedVersion({
       } as any)
       .where(eq(KnowledgeDocumentTable.id, doc.id));
 
-    await insertHistoryEvent(tx, {
+    if (KNOWLEDGE_DOCUMENT_HISTORY_ENABLED) {
+      await insertHistoryEvent(tx, {
+        documentId: doc.id,
+        groupId: group.id,
+        userId: doc.userId,
+        actorUserId: actorUserId ?? doc.userId,
+        eventType,
+        fromVersionId: sourceVersionId ?? null,
+        toVersionId: versionId,
+        details: {
+          chunkCount: chunks.length,
+          tokenCount: totalTokens,
+          embeddingTokenCount:
+            eventType === "rollback" ? 0 : embeddingTokenCount,
+          imageCount: images.length,
+        },
+      });
+    }
+
+    await pruneDocumentVersionHistory(tx, {
       documentId: doc.id,
-      groupId: group.id,
-      userId: doc.userId,
-      actorUserId: actorUserId ?? doc.userId,
-      eventType,
-      fromVersionId: sourceVersionId ?? null,
-      toVersionId: versionId,
-      details: {
-        chunkCount: chunks.length,
-        tokenCount: totalTokens,
-        embeddingTokenCount: eventType === "rollback" ? 0 : embeddingTokenCount,
-        imageCount: images.length,
-      },
+      activeVersionId: versionId,
     });
   });
 }
