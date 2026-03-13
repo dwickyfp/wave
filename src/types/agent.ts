@@ -4,6 +4,7 @@ import { VisibilitySchema } from "./util";
 import type { SubAgent } from "./subagent";
 import type { KnowledgeSummary } from "./knowledge";
 import type { SkillGroupSummary, SkillSummary } from "./skill";
+import type { SharedTeamSummary, TeamAccessSource } from "./team";
 
 export type AgentIcon = {
   type: "emoji";
@@ -92,6 +93,8 @@ export type AgentSummary = {
   userName?: string;
   userAvatar?: string;
   isBookmarked?: boolean;
+  accessSource?: TeamAccessSource;
+  sharedTeams?: SharedTeamSummary[];
   subAgentsEnabled?: boolean;
   chatPersonalizationEnabled?: boolean;
   agentType?: z.infer<typeof AgentTypeSchema>;

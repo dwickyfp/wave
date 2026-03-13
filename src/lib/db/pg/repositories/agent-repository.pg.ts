@@ -2,6 +2,9 @@ import { Agent, AgentRepository, AgentSummary } from "app-types/agent";
 import { pgDb as db } from "../db.pg";
 import { AgentTable, BookmarkTable, UserTable } from "../schema.pg";
 import { and, desc, eq, ne, or, sql } from "drizzle-orm";
+import { buildTeamShareExists } from "./team-resource-access.pg";
+import { attachSharedTeamsToResources } from "./team-resource-metadata.pg";
+import { pgTeamRepository } from "./team-repository.pg";
 import { generateUUID } from "lib/utils";
 
 function toAgentRecord(result: any): Agent {
@@ -110,13 +113,20 @@ export const pgAgentRepository: AgentRepository = {
             eq(AgentTable.userId, userId), // Own agent
             eq(AgentTable.visibility, "public"), // Public agent
             eq(AgentTable.visibility, "readonly"), // Readonly agent
+            buildTeamShareExists("agent", AgentTable.id, userId),
           ),
         ),
       );
 
     if (!result) return null;
 
-    return toAgentRecord(result);
+    const [agent] = await attachSharedTeamsToResources(
+      [toAgentRecord(result)],
+      "agent",
+      userId,
+    );
+
+    return agent;
   },
 
   async selectAgentByIdForMcp(id): Promise<Agent | null> {
@@ -191,10 +201,14 @@ export const pgAgentRepository: AgentRepository = {
       .orderBy(desc(AgentTable.createdAt));
 
     // Map database nulls to undefined and set defaults for owned agents
-    return results.map((result) => ({
-      ...toAgentRecord(result),
-      isBookmarked: false,
-    }));
+    return await attachSharedTeamsToResources(
+      results.map((result) => ({
+        ...toAgentRecord(result),
+        isBookmarked: false,
+      })),
+      "agent",
+      userId,
+    );
   },
 
   async updateAgent(id, userId, agent) {
@@ -231,6 +245,11 @@ export const pgAgentRepository: AgentRepository = {
     limit = 50,
   ): Promise<AgentSummary[]> {
     let orConditions: any[] = [];
+    const teamSharedAccess = buildTeamShareExists(
+      "agent",
+      AgentTable.id,
+      currentUserId,
+    );
 
     // Build OR conditions based on filters array
     for (const filter of filters) {
@@ -243,6 +262,7 @@ export const pgAgentRepository: AgentRepository = {
             or(
               eq(AgentTable.visibility, "public"),
               eq(AgentTable.visibility, "readonly"),
+              teamSharedAccess,
             ),
           ),
         );
@@ -253,6 +273,7 @@ export const pgAgentRepository: AgentRepository = {
             or(
               eq(AgentTable.visibility, "public"),
               eq(AgentTable.visibility, "readonly"),
+              teamSharedAccess,
             ),
             sql`${BookmarkTable.id} IS NOT NULL`,
           ),
@@ -269,6 +290,7 @@ export const pgAgentRepository: AgentRepository = {
               or(
                 eq(AgentTable.visibility, "public"),
                 eq(AgentTable.visibility, "readonly"),
+                teamSharedAccess,
               ),
             ),
           ),
@@ -315,7 +337,11 @@ export const pgAgentRepository: AgentRepository = {
       .limit(limit);
 
     // Map database nulls to undefined
-    return results.map((result) => toAgentSummaryRecord(result));
+    return await attachSharedTeamsToResources(
+      results.map((result) => toAgentSummaryRecord(result)),
+      "agent",
+      currentUserId,
+    );
   },
 
   async checkAccess(agentId, userId, destructive = false) {
@@ -330,8 +356,13 @@ export const pgAgentRepository: AgentRepository = {
       return false;
     }
     if (userId == agent.userId) return true;
-    if (agent.visibility === "public" && !destructive) return true;
-    return false;
+    if (!destructive && agent.visibility === "public") return true;
+    if (!destructive && agent.visibility === "readonly") return true;
+    return await pgTeamRepository.isResourceSharedWithUserTeam({
+      userId,
+      resourceType: "agent",
+      resourceId: agentId,
+    });
   },
 
   async setMcpApiKey(id, userId, keyHash, keyPreview) {

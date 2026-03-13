@@ -7,6 +7,7 @@ import {
 } from "app-types/mcp";
 import type { ProviderSettings } from "app-types/settings";
 import { UserPreferences } from "app-types/user";
+import type { TeamResourceType, TeamRole } from "app-types/team";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -21,6 +22,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -30,7 +32,7 @@ const vector = customType<{ data: number[]; config?: { dimensions?: number } }>(
   {
     dataType(config) {
       if (config?.dimensions) return `vector(${config.dimensions})`;
-      return "vector"; // no dimension constraint — accepts any size
+      return "vector"; // no dimension constraint Ã¢â‚¬â€ accepts any size
     },
     toDriver(value: number[]): string {
       return `[${value.join(",")}]`;
@@ -81,7 +83,7 @@ export const ChatThreadTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
-    // Snowflake Cortex Threads — persisted per chat session so we can pass
+    // Snowflake Cortex Threads Ã¢â‚¬â€ persisted per chat session so we can pass
     // thread_id + parent_message_id to agent:run on every subsequent turn.
     // Only populated when the thread is backed by a Snowflake Cortex agent.
     snowflakeThreadId: text("snowflake_thread_id"),
@@ -447,6 +449,91 @@ export const UserTable = pgTable("user", {
 
 // Role tables removed - using Better Auth's built-in role system
 // Roles are now managed via the 'role' field on UserTable
+export const TeamTable = pgTable(
+  "team",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    name: text("name").notNull(),
+    description: text("description"),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("team_owner_user_id_idx").on(table.ownerUserId)],
+);
+
+export const TeamMemberTable = pgTable(
+  "team_member",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => TeamTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    role: varchar("role", {
+      enum: ["owner", "admin", "member"],
+    })
+      .$type<TeamRole>()
+      .notNull(),
+    addedByUserId: uuid("added_by_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.teamId, table.userId),
+    uniqueIndex("team_member_single_owner_idx")
+      .on(table.teamId)
+      .where(sql`${table.role} = 'owner'`),
+    index("team_member_team_id_idx").on(table.teamId),
+    index("team_member_user_id_idx").on(table.userId),
+    index("team_member_team_id_role_idx").on(table.teamId, table.role),
+  ],
+);
+
+export const TeamResourceShareTable = pgTable(
+  "team_resource_share",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => TeamTable.id, { onDelete: "cascade" }),
+    resourceType: varchar("resource_type", {
+      enum: ["agent", "mcp", "skill"],
+    })
+      .$type<TeamResourceType>()
+      .notNull(),
+    resourceId: uuid("resource_id").notNull(),
+    sharedByUserId: uuid("shared_by_user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.teamId, table.resourceType, table.resourceId),
+    index("team_resource_share_team_id_idx").on(table.teamId),
+    index("team_resource_share_resource_idx").on(
+      table.resourceType,
+      table.resourceId,
+    ),
+    index("team_resource_share_team_type_idx").on(
+      table.teamId,
+      table.resourceType,
+    ),
+  ],
+);
 
 export const SessionTable = pgTable("session", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -769,7 +856,7 @@ export type ArchiveEntity = typeof ArchiveTable.$inferSelect;
 export type ArchiveItemEntity = typeof ArchiveItemTable.$inferSelect;
 export type BookmarkEntity = typeof BookmarkTable.$inferSelect;
 
-// ─── LLM Provider & Model Configuration ───────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ LLM Provider & Model Configuration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 export const LlmProviderConfigTable = pgTable("llm_provider_config", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -861,7 +948,7 @@ export type LlmProviderConfigEntity =
 export type LlmModelConfigEntity = typeof LlmModelConfigTable.$inferSelect;
 export type SystemSettingsEntity = typeof SystemSettingsTable.$inferSelect;
 
-// ─── ContextX Knowledge Management ────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ ContextX Knowledge Management Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 export const KnowledgeGroupTable = pgTable("knowledge_group", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -978,7 +1065,7 @@ export const KnowledgeDocumentTable = pgTable(
       .notNull()
       .default("pending"),
     errorMessage: text("error_message"),
-    /** Ingestion progress percentage (0–100). Null when not processing. */
+    /** Ingestion progress percentage (0Ã¢â‚¬â€œ100). Null when not processing. */
     processingProgress: integer("processing_progress"),
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
@@ -1962,6 +2049,10 @@ export type KnowledgeSectionEntity = typeof KnowledgeSectionTable.$inferSelect;
 export type KnowledgeChunkEntity = typeof KnowledgeChunkTable.$inferSelect;
 export type KnowledgeGroupAgentEntity =
   typeof KnowledgeGroupAgentTable.$inferSelect;
+export type TeamEntity = typeof TeamTable.$inferSelect;
+export type TeamMemberEntity = typeof TeamMemberTable.$inferSelect;
+export type TeamResourceShareEntity =
+  typeof TeamResourceShareTable.$inferSelect;
 export type SkillEntity = typeof SkillTable.$inferSelect;
 export type SkillGroupEntity = typeof SkillGroupTable.$inferSelect;
 export type SkillGroupSkillEntity = typeof SkillGroupSkillTable.$inferSelect;

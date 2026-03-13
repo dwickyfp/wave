@@ -16,8 +16,10 @@ import { ShareableActions, type Visibility } from "./shareable-actions";
 import { WorkflowSummary } from "app-types/workflow";
 import { AgentSummary } from "app-types/agent";
 import { MCPServerInfo } from "app-types/mcp";
+import type { SharedTeamSummary } from "app-types/team";
 import { MCPIcon } from "ui/mcp-icon";
 import Link from "next/link";
+import { Badge } from "ui/badge";
 
 export interface ShareableIcon {
   value?: string;
@@ -58,6 +60,10 @@ export function ShareableCard({
   const isPublished = (item as WorkflowSummary).isPublished;
   const isBookmarked =
     type === "mcp" ? undefined : (item as AgentSummary).isBookmarked;
+  const sharedTeams = ((item as AgentSummary | MCPServerInfo).sharedTeams ??
+    []) as SharedTeamSummary[];
+  const visibleTeamNames = sharedTeams.slice(0, 2).map((team) => team.name);
+  const hiddenTeamCount = sharedTeams.length - visibleTeamNames.length;
 
   return (
     <Link href={href} title={item.name}>
@@ -96,6 +102,12 @@ export function ShareableCard({
                 <time className="shrink-0">
                   {format(item.updatedAt || new Date(), "MMM d, yyyy")}
                 </time>
+                {sharedTeams.length > 0 ? (
+                  <span className="truncate">
+                    {visibleTeamNames.join(", ")}
+                    {hiddenTeamCount > 0 ? ` +${hiddenTeamCount}` : ""}
+                  </span>
+                ) : null}
                 {type === "workflow" && !isPublished && (
                   <span className="px-2 rounded-sm bg-secondary text-foreground shrink-0">
                     {t("Workflow.draft")}
@@ -107,9 +119,27 @@ export function ShareableCard({
         </CardHeader>
 
         <CardContent className="min-h-0 grow">
-          <CardDescription className="text-xs line-clamp-3 break-words overflow-hidden">
-            {item.description}
-          </CardDescription>
+          <div className="space-y-2">
+            <CardDescription className="text-xs line-clamp-3 break-words overflow-hidden">
+              {item.description}
+            </CardDescription>
+            {sharedTeams.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5">
+                {visibleTeamNames.map((teamName) => (
+                  <Badge
+                    key={teamName}
+                    variant="outline"
+                    className="max-w-full truncate"
+                  >
+                    {teamName}
+                  </Badge>
+                ))}
+                {hiddenTeamCount > 0 ? (
+                  <Badge variant="outline">+{hiddenTeamCount} teams</Badge>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
         </CardContent>
 
         <CardFooter className="shrink min-h-0 overflow-visible">
@@ -137,6 +167,15 @@ export function ShareableCard({
                 isDeleteLoading={isDeleteLoading}
                 disabled={actionsDisabled}
                 renderActions={renderActions}
+                teamShare={
+                  type === "workflow"
+                    ? undefined
+                    : {
+                        resourceType: type,
+                        resourceId: item.id,
+                        resourceName: item.name,
+                      }
+                }
               />
             </div>
 

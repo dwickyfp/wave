@@ -283,6 +283,13 @@ export async function canDeleteWorkflow(): Promise<boolean> {
 }
 
 /**
+ * Check if user can create teams
+ */
+export async function canCreateTeam(): Promise<boolean> {
+  return await hasEditorPermission();
+}
+
+/**
  * Check if user can create MCP connections
  */
 export async function canCreateMCP(): Promise<boolean> {

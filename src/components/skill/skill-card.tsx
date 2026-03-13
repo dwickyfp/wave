@@ -22,6 +22,7 @@ import {
   DropdownMenuTrigger,
 } from "ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
+import { ResourceTeamShareDialog } from "../teams/resource-team-share-dialog";
 
 const VISIBILITY_ICONS = {
   private: LockIcon,
@@ -71,6 +72,9 @@ export function SkillCard({
   isDeleteLoading = false,
 }: SkillCardProps) {
   const VisIcon = VISIBILITY_ICONS[skill.visibility];
+  const visibleTeamNames = (skill.sharedTeams ?? []).slice(0, 2);
+  const hiddenTeamCount =
+    (skill.sharedTeams?.length ?? 0) - visibleTeamNames.length;
 
   return (
     <Card className="w-full transition-colors group flex flex-col hover:bg-input/40">
@@ -93,6 +97,12 @@ export function SkillCard({
                   {format(skill.updatedAt || new Date(), "MMM d, yyyy")}
                 </time>
                 <VisIcon className="size-3" />
+                {visibleTeamNames.length ? (
+                  <span className="truncate">
+                    {visibleTeamNames.map((team) => team.name).join(", ")}
+                    {hiddenTeamCount > 0 ? ` +${hiddenTeamCount}` : ""}
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>
@@ -100,10 +110,26 @@ export function SkillCard({
       </CardHeader>
 
       <CardFooter className="pt-0 pb-3">
-        <div className="flex items-center justify-between w-full">
-          <Badge variant="secondary" className="capitalize text-xs">
-            {skill.visibility}
-          </Badge>
+        <div className="flex items-center justify-between w-full gap-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant="secondary" className="capitalize text-xs">
+              {skill.visibility}
+            </Badge>
+            {visibleTeamNames.map((team) => (
+              <Badge
+                key={team.id}
+                variant="outline"
+                className="max-w-full truncate text-xs"
+              >
+                {team.name}
+              </Badge>
+            ))}
+            {hiddenTeamCount > 0 ? (
+              <Badge variant="outline" className="text-xs">
+                +{hiddenTeamCount} teams
+              </Badge>
+            ) : null}
+          </div>
 
           {isOwner && (
             <div className="flex items-center gap-1">
@@ -194,6 +220,12 @@ export function SkillCard({
                   <TooltipContent>Delete skill</TooltipContent>
                 </Tooltip>
               )}
+
+              <ResourceTeamShareDialog
+                resourceType="skill"
+                resourceId={skill.id}
+                resourceName={skill.title}
+              />
             </div>
           )}
         </div>

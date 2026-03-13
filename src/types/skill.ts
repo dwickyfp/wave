@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { VisibilitySchema } from "./util";
+import type { SharedTeamSummary, TeamAccessSource } from "./team";
 
 export type SkillVisibility = z.infer<typeof VisibilitySchema>;
 
@@ -14,6 +15,8 @@ export interface Skill {
   updatedAt: Date;
   userName?: string;
   userAvatar?: string | null;
+  accessSource?: TeamAccessSource;
+  sharedTeams?: SharedTeamSummary[];
 }
 
 export type SkillSummary = Skill;

@@ -5,6 +5,7 @@ import {
 import { Tool } from "ai";
 import { tag } from "lib/tag";
 import { z } from "zod";
+import type { SharedTeamSummary, TeamAccessSource } from "./team";
 
 export const MCPRemoteConfigZodSchema = z.object({
   url: z.string().url().describe("The URL of the SSE endpoint"),
@@ -61,6 +62,8 @@ export type MCPServerInfo = {
   userName?: string | null;
   userAvatar?: string | null;
   description?: string; // For ShareableCard compatibility
+  accessSource?: TeamAccessSource;
+  sharedTeams?: SharedTeamSummary[];
   icon?: {
     value?: string;
     style?: {
@@ -96,6 +99,8 @@ export type McpServerSelect = {
   publishAuthMode?: McpPublishAuthMode;
   publishApiKeyHash?: string | null;
   publishApiKeyPreview?: string | null;
+  accessSource?: TeamAccessSource;
+  sharedTeams?: SharedTeamSummary[];
 };
 
 export type MCPServerDetail = MCPServerInfo & {

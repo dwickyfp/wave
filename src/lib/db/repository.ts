@@ -19,6 +19,7 @@ import { pgSkillGroupRepository } from "./pg/repositories/skill-group-repository
 import { pgAgentAnalyticsRepository } from "./pg/repositories/agent-analytics-repository.pg";
 import { pgPilotExtensionRepository } from "./pg/repositories/pilot-extension-repository.pg";
 import { pgSelfLearningRepository } from "./pg/repositories/self-learning-repository.pg";
+import { pgTeamRepository } from "./pg/repositories/team-repository.pg";
 
 export const chatRepository = pgChatRepository;
 export const userRepository = pgUserRepository;
@@ -44,3 +45,4 @@ export const skillGroupRepository = pgSkillGroupRepository;
 export const agentAnalyticsRepository = pgAgentAnalyticsRepository;
 export const pilotExtensionRepository = pgPilotExtensionRepository;
 export const selfLearningRepository = pgSelfLearningRepository;
+export const teamRepository = pgTeamRepository;

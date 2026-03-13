@@ -22,6 +22,7 @@ import {
   Settings2,
   Palette,
   Languages,
+  Users,
   Sun,
   MoonStar,
   ChevronRight,
@@ -37,10 +38,13 @@ import { useTranslations } from "next-intl";
 import useSWR from "swr";
 import { getLocaleAction } from "@/i18n/get-locale";
 import { Suspense, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { useThemeStyle } from "@/hooks/use-theme-style";
 import { BasicUser } from "app-types/user";
+import { TeamSummary } from "app-types/team";
 import { getUserAvatar } from "lib/user/utils";
 import { Skeleton } from "ui/skeleton";
+import { canCreateTeam } from "lib/auth/client-permissions";
 
 export function AppSidebarUserInner(props: {
   user?: BasicUser;
@@ -128,6 +132,7 @@ export function AppSidebarUserInner(props: {
             </DropdownMenuItem>
             <SelectTheme />
             <SelectLanguage />
+            <SelectTeams userRole={user.role} />
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="cursor-pointer"
@@ -284,6 +289,58 @@ function SelectLanguage() {
   );
 }
 
+function SelectTeams({ userRole }: { userRole?: string | null }) {
+  const router = useRouter();
+  const canCreate = canCreateTeam(userRole);
+  const { data: teams = [] } = useSWR<TeamSummary[]>("/api/teams", fetcher, {
+    fallbackData: [],
+    revalidateOnFocus: false,
+  });
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        <Users className="mr-2 size-4" />
+        <span>Teams</span>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuPortal>
+        <DropdownMenuSubContent className="w-64 p-0">
+          {canCreate ? (
+            <div className="border-b p-2">
+              <button
+                type="button"
+                className="w-full rounded-md bg-secondary px-3 py-2 text-left text-sm font-medium hover:bg-secondary/80"
+                onClick={() => router.push("/teams")}
+              >
+                Create Team
+              </button>
+            </div>
+          ) : null}
+          <div className="max-h-64 overflow-y-auto p-1">
+            {teams.length ? (
+              teams.map((team) => (
+                <DropdownMenuItem
+                  key={team.id}
+                  className="cursor-pointer flex items-center justify-between"
+                  onClick={() => router.push(`/teams/${team.id}`)}
+                >
+                  <span className="truncate">{team.name}</span>
+                  <span className="text-xs text-muted-foreground capitalize">
+                    {team.role}
+                  </span>
+                </DropdownMenuItem>
+              ))
+            ) : (
+              <div className="px-3 py-2 text-sm text-muted-foreground">
+                No teams yet
+              </div>
+            )}
+          </div>
+        </DropdownMenuSubContent>
+      </DropdownMenuPortal>
+    </DropdownMenuSub>
+  );
+}
 export function AppSidebarUserSkeleton() {
   return (
     <SidebarMenu>

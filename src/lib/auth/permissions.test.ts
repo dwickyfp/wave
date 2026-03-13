@@ -105,4 +105,22 @@ describe("auth/permissions", () => {
       permissions.canManageMCPServer("owner-1", "public"),
     ).resolves.toBe(true);
   });
+
+  it("canCreateTeam allows editors", async () => {
+    const permissions = await import("./permissions");
+    vi.mocked(getSession).mockResolvedValue({
+      user: { id: "u1", role: "editor" },
+    } as any);
+
+    await expect(permissions.canCreateTeam()).resolves.toBe(true);
+  });
+
+  it("canCreateTeam rejects plain users", async () => {
+    const permissions = await import("./permissions");
+    vi.mocked(getSession).mockResolvedValue({
+      user: { id: "u1", role: "user" },
+    } as any);
+
+    await expect(permissions.canCreateTeam()).resolves.toBe(false);
+  });
 });

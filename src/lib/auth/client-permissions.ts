@@ -98,6 +98,14 @@ export function canDeleteWorkflow(userRoleString?: string | null): boolean {
 }
 
 /**
+ * Check if user can create teams (client-side)
+ */
+export function canCreateTeam(userRoleString?: string | null): boolean {
+  const cleanRole = parseRoleString(userRoleString);
+  return cleanRole === "admin" || cleanRole === "editor";
+}
+
+/**
  * Check if user can create MCP connections (client-side)
  */
 export function canCreateMCP(userRoleString?: string | null): boolean {

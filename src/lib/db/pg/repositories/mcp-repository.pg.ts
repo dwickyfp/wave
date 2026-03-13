@@ -1,6 +1,8 @@
 import { pgDb as db } from "../db.pg";
 import { McpServerTable, UserTable } from "../schema.pg";
-import { eq, or, desc } from "drizzle-orm";
+import { desc, eq, or } from "drizzle-orm";
+import { buildTeamShareExists } from "./team-resource-access.pg";
+import { attachSharedTeamsToResources } from "./team-resource-metadata.pg";
 import { generateUUID } from "lib/utils";
 import type { MCPRepository } from "app-types/mcp";
 
@@ -97,10 +99,11 @@ export const pgMcpRepository: MCPRepository = {
         or(
           eq(McpServerTable.userId, userId),
           eq(McpServerTable.visibility, "public"),
+          buildTeamShareExists("mcp", McpServerTable.id, userId),
         ),
       )
       .orderBy(desc(McpServerTable.createdAt));
-    return results;
+    return await attachSharedTeamsToResources(results, "mcp", userId);
   },
 
   async updateVisibility(id, visibility) {

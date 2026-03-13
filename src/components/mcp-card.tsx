@@ -50,6 +50,7 @@ export const MCPCard = memo(function MCPCard({
   userName,
   userAvatar,
   publishEnabled,
+  sharedTeams,
 }: MCPServerInfo & { user: BasicUser }) {
   const router = useRouter();
   const appStoreMutate = appStore((state) => state.mutate);
@@ -65,6 +66,8 @@ export const MCPCard = memo(function MCPCard({
   );
   const isLoading = isProcessing || status === "loading";
   const needsAuthorization = status === "authorizing";
+  const visibleTeamNames = (sharedTeams ?? []).slice(0, 2);
+  const hiddenTeamCount = (sharedTeams?.length ?? 0) - visibleTeamNames.length;
 
   const errorMessage = useMemo(() => {
     if (!error) return null;
@@ -168,6 +171,19 @@ export const MCPCard = memo(function MCPCard({
                     ? "This server has a connection issue. Open details for the current error and publish state."
                     : "Open details to review configuration, tools, and publish settings."}
               </p>
+
+              {visibleTeamNames.length ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  {visibleTeamNames.map((team) => (
+                    <Badge key={team.id} variant="outline">
+                      {team.name}
+                    </Badge>
+                  ))}
+                  {hiddenTeamCount > 0 ? (
+                    <Badge variant="outline">+{hiddenTeamCount} teams</Badge>
+                  ) : null}
+                </div>
+              ) : null}
 
               {!isOwner && userName ? (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
