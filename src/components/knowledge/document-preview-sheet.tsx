@@ -23,7 +23,13 @@ import {
   TableIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useEffectEvent, useState } from "react";
+import {
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
@@ -85,6 +91,34 @@ function getImageCacheKey(versionId?: string | null) {
 
 function formatVersionLabel(version: KnowledgeDocumentVersionSummary) {
   return `Version ${version.versionNumber}`;
+}
+
+function getSelectionOffsetsWithinElement(element: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  if (
+    !element.contains(range.startContainer) ||
+    !element.contains(range.endContainer)
+  ) {
+    return null;
+  }
+
+  const startRange = range.cloneRange();
+  startRange.selectNodeContents(element);
+  startRange.setEnd(range.startContainer, range.startOffset);
+
+  const endRange = range.cloneRange();
+  endRange.selectNodeContents(element);
+  endRange.setEnd(range.endContainer, range.endOffset);
+
+  return {
+    start: startRange.toString().length,
+    end: endRange.toString().length,
+  };
 }
 
 function VersionLabel({
@@ -203,6 +237,7 @@ export function DocumentPreviewSheet({
   const [savingVersion, setSavingVersion] = useState(false);
   const [savingImages, setSavingImages] = useState(false);
   const [mainTab, setMainTab] = useState<MainTab>("configuration");
+  const [isMarkdownEditing, setIsMarkdownEditing] = useState(false);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
     null,
   );
@@ -225,6 +260,24 @@ export function DocumentPreviewSheet({
     KnowledgeDocumentImagePreview[]
   >([]);
   const [imagesLoading, setImagesLoading] = useState(false);
+  const markdownEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const markdownPreviewViewportRef = useRef<HTMLDivElement | null>(null);
+  const pendingMarkdownScrollTopRef = useRef<number | null>(null);
+  const pendingMarkdownSelectionRef = useRef<{
+    start: number;
+    end: number;
+  } | null>(null);
+
+  const syncDraftMarkdownFromEditor = () => {
+    const editor = markdownEditorRef.current;
+    if (!editor) {
+      return draftMarkdown;
+    }
+
+    const nextValue = editor.value;
+    setDraftMarkdown(nextValue);
+    return nextValue;
+  };
 
   const loadPreview = useEffectEvent(
     async ({ showLoader = true }: { showLoader?: boolean } = {}) => {
@@ -424,6 +477,7 @@ export function DocumentPreviewSheet({
       setError(null);
       setSelectedVersionId(null);
       setPreferredVersionId(null);
+      setIsMarkdownEditing(false);
       setDraftMarkdown("");
       setMarkdownByVersion({});
       setMarkdownLoading(false);
@@ -550,6 +604,37 @@ export function DocumentPreviewSheet({
   }, [selectedVersionId, markdownByVersion]);
 
   useEffect(() => {
+    setIsMarkdownEditing(false);
+    pendingMarkdownSelectionRef.current = null;
+    pendingMarkdownScrollTopRef.current = null;
+  }, [selectedVersionId, mainTab, previewData?.activeVersionId]);
+
+  useLayoutEffect(() => {
+    if (!isMarkdownEditing) {
+      return;
+    }
+
+    const editor = markdownEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const selection = pendingMarkdownSelectionRef.current;
+    const scrollTop = pendingMarkdownScrollTopRef.current;
+    if (document.activeElement !== editor) {
+      editor.focus();
+    }
+    if (selection) {
+      editor.setSelectionRange(selection.start, selection.end);
+    } else {
+      editor.setSelectionRange(0, 0);
+    }
+    if (scrollTop !== null) {
+      editor.scrollTop = scrollTop;
+    }
+  }, [isMarkdownEditing]);
+
+  useEffect(() => {
     setDraftImages(documentImages);
   }, [documentImages]);
 
@@ -568,6 +653,10 @@ export function DocumentPreviewSheet({
     null;
   const baselineMarkdown =
     (selectedVersionId && markdownByVersion[selectedVersionId]) ?? "";
+  const currentMarkdownDraft =
+    isMarkdownEditing && markdownEditorRef.current
+      ? markdownEditorRef.current.value
+      : draftMarkdown;
   const markdownAvailable =
     !!previewData?.markdownAvailable && !!selectedVersionId;
   const hasLoadedMarkdown =
@@ -580,7 +669,7 @@ export function DocumentPreviewSheet({
     !!previewData &&
     (selectedVersionId ?? previewData.activeVersionId ?? null) !==
       (previewData.activeVersionId ?? null);
-  const hasMarkdownDraftChanges = draftMarkdown !== baselineMarkdown;
+  const hasMarkdownDraftChanges = currentMarkdownDraft !== baselineMarkdown;
   const rollbackSelectionBlocked =
     hasVersionSelectionChange &&
     (!selectedVersion || !selectedVersion.canRollback);
@@ -591,11 +680,12 @@ export function DocumentPreviewSheet({
   const isActiveVersionSelected =
     !!selectedVersion &&
     selectedVersion.id === (previewData?.activeVersionId ?? null);
-  const canEditMarkdown =
+  const canStartMarkdownEdit =
     !isInherited &&
     isActiveVersionSelected &&
     mainTab === "markdown" &&
     hasLoadedMarkdown;
+  const canEditMarkdown = canStartMarkdownEdit && isMarkdownEditing;
   const canEditImages =
     !isInherited && isActiveVersionSelected && mainTab === "images";
   const hasImageDraftChanges =
@@ -665,6 +755,7 @@ export function DocumentPreviewSheet({
   const resetMarkdownState = () => {
     setSelectedVersionId(previewData?.activeVersionId ?? null);
     setPreferredVersionId(null);
+    setIsMarkdownEditing(false);
     if (previewData?.activeVersionId) {
       setDraftMarkdown(markdownByVersion[previewData.activeVersionId] ?? "");
       setMarkdownError(null);
@@ -675,6 +766,8 @@ export function DocumentPreviewSheet({
 
   const handleSaveMarkdown = async () => {
     if (!doc || !previewData) return;
+
+    const nextMarkdownDraft = syncDraftMarkdownFromEditor();
 
     setSavingVersion(true);
     try {
@@ -710,7 +803,7 @@ export function DocumentPreviewSheet({
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              markdownContent: draftMarkdown,
+              markdownContent: nextMarkdownDraft,
               expectedActiveVersionId: previewData.activeVersionId,
             }),
           },
@@ -727,8 +820,10 @@ export function DocumentPreviewSheet({
       if (queuedVersionId) {
         setPreferredVersionId(queuedVersionId);
         setSelectedVersionId(queuedVersionId);
+        setIsMarkdownEditing(false);
       } else {
         setPreferredVersionId(null);
+        setIsMarkdownEditing(false);
       }
       await loadPreview();
       if (mainTab === "markdown" && queuedVersionId) {
@@ -796,9 +891,38 @@ export function DocumentPreviewSheet({
 
   const handleSelectVersion = (value: string) => {
     setSelectedVersionId(value);
+    setIsMarkdownEditing(false);
     setDraftMarkdown(markdownByVersion[value] ?? "");
     setMarkdownError(null);
     setDocumentImages(imagesByVersion[getImageCacheKey(value)] ?? []);
+  };
+
+  const startMarkdownEdit = ({
+    selection,
+    scrollTop,
+  }: {
+    selection?: { start: number; end: number } | null;
+    scrollTop?: number | null;
+  } = {}) => {
+    if (!canStartMarkdownEdit) {
+      return;
+    }
+
+    pendingMarkdownSelectionRef.current = selection ?? null;
+    pendingMarkdownScrollTopRef.current = scrollTop ?? null;
+    setIsMarkdownEditing(true);
+  };
+
+  const handleBeginMarkdownEdit = (event: React.MouseEvent<HTMLElement>) => {
+    const offsets = getSelectionOffsetsWithinElement(event.currentTarget);
+    const caretOffset = offsets?.end ?? 0;
+    startMarkdownEdit({
+      selection: {
+        start: caretOffset,
+        end: caretOffset,
+      },
+      scrollTop: markdownPreviewViewportRef.current?.scrollTop ?? null,
+    });
   };
 
   const FileIconComp = FILE_ICONS[doc?.fileType ?? ""] ?? FileIcon;
@@ -1145,7 +1269,9 @@ export function DocumentPreviewSheet({
                       <div className="border-b px-6 py-3">
                         <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="text-xs text-muted-foreground">
-                            Raw markdown
+                            {canStartMarkdownEdit
+                              ? "Raw markdown. Click Edit to modify the active version. Double-click also works."
+                              : "Raw markdown"}
                           </div>
 
                           {showMarkdownActions ? (
@@ -1189,6 +1315,24 @@ export function DocumentPreviewSheet({
                                 Save
                               </Button>
                             </div>
+                          ) : canStartMarkdownEdit && !canEditMarkdown ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-8 gap-1.5 text-xs"
+                                onClick={() =>
+                                  startMarkdownEdit({
+                                    scrollTop:
+                                      markdownPreviewViewportRef.current
+                                        ?.scrollTop ?? null,
+                                  })
+                                }
+                              >
+                                <FileTextIcon className="size-3.5" />
+                                Edit markdown
+                              </Button>
+                            </div>
                           ) : null}
                         </div>
                       </div>
@@ -1224,22 +1368,53 @@ export function DocumentPreviewSheet({
                           <div className="flex h-full items-center justify-center px-8 text-center text-sm text-muted-foreground">
                             Markdown for this version is not available yet.
                           </div>
+                        ) : canEditMarkdown ? (
+                          <div
+                            className="relative isolate z-20 h-full overflow-hidden bg-background pointer-events-auto"
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => event.stopPropagation()}
+                            onKeyUp={(event) => event.stopPropagation()}
+                          >
+                            <textarea
+                              key={selectedVersionId ?? "markdown-editor"}
+                              ref={markdownEditorRef}
+                              id="knowledge-document-markdown-editor"
+                              name="knowledgeDocumentMarkdown"
+                              defaultValue={draftMarkdown}
+                              onChange={(event) => {
+                                setDraftMarkdown(event.target.value);
+                              }}
+                              onKeyDown={(event) => {
+                                event.stopPropagation();
+                              }}
+                              onKeyUp={(event) => {
+                                event.stopPropagation();
+                              }}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={(event) => event.stopPropagation()}
+                              spellCheck={false}
+                              className="relative z-20 h-full w-full resize-none border-0 bg-transparent px-6 py-6 font-mono text-xs leading-relaxed text-foreground caret-foreground outline-none pointer-events-auto"
+                            />
+                          </div>
                         ) : (
-                          <ScrollArea className="h-full">
-                            {canEditMarkdown ? (
-                              <Textarea
-                                value={draftMarkdown}
-                                onChange={(event) =>
-                                  setDraftMarkdown(event.target.value)
-                                }
-                                className="min-h-full rounded-none border-0 bg-transparent px-6 py-6 font-mono text-xs leading-relaxed shadow-none focus-visible:ring-0"
-                              />
-                            ) : (
-                              <pre className="p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90">
-                                {draftMarkdown || "No markdown content."}
-                              </pre>
-                            )}
-                          </ScrollArea>
+                          <div
+                            ref={markdownPreviewViewportRef}
+                            className="h-full overflow-auto"
+                          >
+                            <pre
+                              onDoubleClick={handleBeginMarkdownEdit}
+                              className={cn(
+                                "min-h-full cursor-text select-text p-6 font-mono text-xs whitespace-pre-wrap break-words leading-relaxed text-foreground/90",
+                                canStartMarkdownEdit &&
+                                  "transition-colors hover:bg-muted/10",
+                              )}
+                            >
+                              {draftMarkdown || "No markdown content."}
+                            </pre>
+                          </div>
                         )}
                       </div>
                     </div>
