@@ -175,6 +175,91 @@ async function getDocumentMetadataSignals(
   return buildDocumentSignalMap(lexicalRows, semanticRows);
 }
 
+async function backfillChunkMatchesForDocument(input: {
+  doc: RankedDocCandidate;
+  query: string;
+  scopeById: Map<string, RetrievalScope>;
+  embeddingCache: Map<string, number[] | null>;
+  limit?: number;
+}): Promise<KnowledgeQueryResult[]> {
+  const scope = input.scopeById.get(input.doc.sourceGroupId ?? "");
+  if (!scope) return [];
+
+  const searchLimit = Math.max(input.limit ?? 3, 6);
+  const filters = { documentIds: [input.doc.documentId] };
+
+  const lexicalPromise = knowledgeRepository
+    .fullTextSearch(scope.id, input.query, searchLimit, filters)
+    .catch(() => []);
+
+  let queryEmbedding = input.embeddingCache.get(scope.id);
+  if (queryEmbedding === undefined) {
+    queryEmbedding = DOC_META_VECTOR_ENABLED
+      ? await embedSingleText(
+          input.query,
+          scope.embeddingProvider,
+          scope.embeddingModel,
+        ).catch(() => null)
+      : null;
+    input.embeddingCache.set(scope.id, queryEmbedding);
+  }
+
+  const semanticPromise =
+    DOC_META_VECTOR_ENABLED && queryEmbedding
+      ? knowledgeRepository
+          .vectorSearch(scope.id, queryEmbedding, searchLimit, filters)
+          .catch(() => [])
+      : Promise.resolve([]);
+
+  const [lexicalRows, semanticRows] = await Promise.all([
+    lexicalPromise,
+    semanticPromise,
+  ]);
+
+  const merged = new Map<string, KnowledgeQueryResult>();
+  const ingest = (
+    row: KnowledgeQueryResult,
+    scoreType: "lexicalScore" | "semanticScore",
+  ) => {
+    const existing = merged.get(row.chunk.id);
+    const score = row.score ?? 0;
+    if (!existing) {
+      merged.set(row.chunk.id, {
+        ...row,
+        confidenceScore: score,
+        lexicalScore: scoreType === "lexicalScore" ? score : undefined,
+        semanticScore: scoreType === "semanticScore" ? score : undefined,
+      });
+      return;
+    }
+
+    merged.set(row.chunk.id, {
+      ...existing,
+      score: Math.max(existing.score ?? 0, score),
+      confidenceScore: Math.max(existing.confidenceScore ?? 0, score),
+      lexicalScore:
+        scoreType === "lexicalScore"
+          ? Math.max(existing.lexicalScore ?? 0, score)
+          : existing.lexicalScore,
+      semanticScore:
+        scoreType === "semanticScore"
+          ? Math.max(existing.semanticScore ?? 0, score)
+          : existing.semanticScore,
+    });
+  };
+
+  for (const row of lexicalRows) ingest(row, "lexicalScore");
+  for (const row of semanticRows) ingest(row, "semanticScore");
+
+  return Array.from(merged.values())
+    .sort((left, right) => {
+      const leftScore = left.confidenceScore ?? left.score;
+      const rightScore = right.confidenceScore ?? right.score;
+      return rightScore - leftScore;
+    })
+    .slice(0, input.limit ?? 3);
+}
+
 // ─── Query Expansion ───────────────────────────────────────────────────────────
 
 type RetrievalResultMode = "section-first" | "full-doc";
@@ -1288,7 +1373,7 @@ function buildKnowledgeDocsCacheKey(input: {
   const hash = createHash("sha256")
     .update(
       JSON.stringify({
-        cacheVersion: 2,
+        cacheVersion: 3,
         query: input.query,
         retrievalThreshold: input.retrievalThreshold ?? null,
         libraryId: input.libraryId ?? null,
@@ -2450,10 +2535,12 @@ async function assembleFullDocResults(input: {
   >;
   query: string;
   tokenBudget: number;
+  scopeById: Map<string, RetrievalScope>;
 }): Promise<{ results: DocRetrievalResult[]; tokensUsed: number }> {
-  const { docsToAssemble, chunkStats, query, tokenBudget } = input;
+  const { docsToAssemble, chunkStats, query, tokenBudget, scopeById } = input;
   const results: DocRetrievalResult[] = [];
   let tokensUsed = 0;
+  const embeddingCache = new Map<string, number[] | null>();
 
   for (const doc of docsToAssemble) {
     const remaining = tokenBudget - tokensUsed;
@@ -2464,11 +2551,22 @@ async function assembleFullDocResults(input: {
     );
     if (!docData?.markdown) continue;
 
+    const existingMatches = chunkStats.get(doc.documentId)?.matches ?? [];
+    const citationMatches =
+      existingMatches.length > 0
+        ? existingMatches
+        : await backfillChunkMatchesForDocument({
+            doc,
+            query,
+            scopeById,
+            embeddingCache,
+          });
+
     const contentTokens = estimateTokens(docData.markdown);
     if (contentTokens + tokensUsed <= tokenBudget) {
       const citationCandidates = Array.from(
         new Map(
-          (chunkStats.get(doc.documentId)?.matches ?? [])
+          citationMatches
             .sort((left, right) => {
               const leftScore =
                 left.rerankScore ?? left.confidenceScore ?? left.score;
@@ -2519,7 +2617,7 @@ async function assembleFullDocResults(input: {
       markdown: docData.markdown,
       query,
       budgetTokens: remaining,
-      chunkMatches: chunkStats.get(doc.documentId)?.matches ?? [],
+      chunkMatches: citationMatches,
     });
     if (!truncated) break;
 
@@ -2535,7 +2633,7 @@ async function assembleFullDocResults(input: {
       markdown: truncated,
       citationCandidates: Array.from(
         new Map(
-          (chunkStats.get(doc.documentId)?.matches ?? [])
+          citationMatches
             .sort((left, right) => {
               const leftScore =
                 left.rerankScore ?? left.confidenceScore ?? left.score;
@@ -3054,6 +3152,7 @@ export async function queryKnowledgeAsDocs(
         chunkStats,
         query,
         tokenBudget,
+        scopeById,
       });
       results = fallback.results;
       tokensUsed = fallback.tokensUsed;
@@ -3064,6 +3163,7 @@ export async function queryKnowledgeAsDocs(
       chunkStats,
       query,
       tokenBudget,
+      scopeById,
     });
     results = assembled.results;
     tokensUsed = assembled.tokensUsed;

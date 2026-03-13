@@ -377,6 +377,8 @@ export interface KnowledgeDocumentPreview {
   isUrlOnly: boolean;
   requestedVersionId?: string | null;
   resolvedVersionId?: string | null;
+  resolvedCitationPageStart?: number | null;
+  resolvedCitationPageEnd?: number | null;
   binaryMatchesRequestedVersion?: boolean;
   fallbackWarning?: string | null;
   activeVersionId: string | null;

@@ -563,6 +563,77 @@ describe("queryKnowledgeAsDocs", () => {
     );
   });
 
+  it("backfills chunk evidence for metadata-only full-doc results so citations keep exact pages", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockImplementation(
+      async (_groupId, _embedding, _limit, filters) => {
+        if (filters?.documentIds?.includes("doc-1")) {
+          return [
+            makeChunkHit({
+              chunk: {
+                content:
+                  "Vape products become taxable under the updated reporting framework.",
+                metadata: {
+                  headingPath: "PMK 161 > Pasal 3",
+                  section: "Pasal 3",
+                  pageStart: 2,
+                  pageEnd: 2,
+                },
+              },
+              score: 0.88,
+            }),
+          ];
+        }
+
+        return [];
+      },
+    );
+    vi.mocked(knowledgeRepository.fullTextSearch).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "PMK 161",
+        description: null,
+        metadata: null,
+        activeVersionId: "version-1",
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue({
+      name: "PMK 161",
+      description: null,
+      markdown: [
+        "<!--CTX_PAGE:1-->",
+        "# PMK 161",
+        "",
+        "Opening page.",
+        "",
+        "<!--CTX_PAGE:2-->",
+        "Vape products become taxable under the updated reporting framework.",
+      ].join("\n"),
+    });
+
+    const docs = await queryKnowledgeAsDocs(group, "vape cukai", {
+      tokens: 5000,
+      resultMode: "full-doc",
+    });
+
+    expect(docs[0]?.citationCandidates).toEqual([
+      expect.objectContaining({
+        pageStart: 2,
+        pageEnd: 2,
+      }),
+    ]);
+    expect(knowledgeRepository.vectorSearch).toHaveBeenCalledWith(
+      "group-1",
+      [0.1, 0.2, 0.3],
+      expect.any(Number),
+      { documentIds: ["doc-1"] },
+    );
+  });
+
   it("attaches matched images scoped to the returned documents", async () => {
     vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
       { documentId: "doc-1", score: 0.9 },

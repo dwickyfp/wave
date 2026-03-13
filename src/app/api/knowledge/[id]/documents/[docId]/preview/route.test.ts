@@ -267,6 +267,75 @@ describe("knowledge document preview route", () => {
     });
   });
 
+  it("resolves citation page from excerpt when citation metadata is missing", async () => {
+    vi.mocked(knowledgeRepository.selectGroupById).mockResolvedValue({
+      id: "group-1",
+      userId: "user-1",
+    } as any);
+    vi.mocked(knowledgeRepository.selectDocumentById).mockResolvedValue({
+      id: "doc-1",
+      groupId: "group-1",
+      userId: "user-1",
+      name: "PMK 161",
+      description: "Processed markdown",
+      originalFilename: "pmk-161.pdf",
+      fileType: "pdf",
+      fileSize: 2048,
+      storagePath: "knowledge/doc-1/pmk-161.pdf",
+      sourceUrl: null,
+      markdownContent: [
+        "<!--CTX_PAGE:1-->",
+        "Opening definitions and title page.",
+        "",
+        "<!--CTX_PAGE:2-->",
+        "Vape products become taxable under the updated reporting framework.",
+      ].join("\n"),
+      activeVersionId: "version-2",
+      latestVersionNumber: 2,
+    } as any);
+    vi.mocked(listDocumentVersions).mockResolvedValue([
+      {
+        id: "version-2",
+        versionNumber: 2,
+        status: "ready",
+        changeType: "edit",
+        isActive: true,
+        resolvedTitle: "PMK 161",
+        resolvedDescription: "Processed markdown",
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingTokenCount: 42,
+        chunkCount: 3,
+        tokenCount: 120,
+        sourceVersionId: "version-1",
+        createdByUserId: "user-1",
+        createdAt: new Date("2026-03-09T08:00:00.000Z"),
+        updatedAt: new Date("2026-03-09T08:00:00.000Z"),
+        canRollback: false,
+        rollbackBlockedReason: null,
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getDocumentImagesByVersion).mockResolvedValue(
+      [],
+    );
+    vi.mocked(serverFileStorage.getDownloadUrl!).mockResolvedValue(
+      "https://storage.example/pmk-161.pdf",
+    );
+
+    const response = await GET(
+      withRequest(
+        "http://localhost/api/knowledge/group-1/documents/doc-1/preview?excerpt=Vape%20products%20become%20taxable%20under%20the%20updated%20reporting%20framework.",
+      ),
+      withParams("group-1", "doc-1"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      resolvedCitationPageStart: 2,
+      resolvedCitationPageEnd: 2,
+    });
+  });
+
   it("returns 404 when the requested version does not exist", async () => {
     vi.mocked(knowledgeRepository.selectGroupById).mockResolvedValue({
       id: "group-1",

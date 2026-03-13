@@ -67,6 +67,10 @@ function CitationPanelBody({
   const fileType =
     previewData?.doc.fileType ?? citationPreview.fileType ?? "file";
   const FileIconComp = FILE_ICONS[fileType] ?? FileIcon;
+  const resolvedPageStart =
+    previewData?.resolvedCitationPageStart ?? citationPreview.pageStart ?? null;
+  const resolvedPageEnd =
+    previewData?.resolvedCitationPageEnd ?? citationPreview.pageEnd ?? null;
   const downloadUrl =
     previewData?.previewUrl ??
     previewData?.assetUrl ??
@@ -114,15 +118,9 @@ function CitationPanelBody({
                   {fileType.toUpperCase()}
                 </Badge>
               ) : null}
-              {formatPageLabel(
-                citationPreview.pageStart,
-                citationPreview.pageEnd,
-              ) ? (
+              {formatPageLabel(resolvedPageStart, resolvedPageEnd) ? (
                 <span className="text-xs text-muted-foreground">
-                  {formatPageLabel(
-                    citationPreview.pageStart,
-                    citationPreview.pageEnd,
-                  )}
+                  {formatPageLabel(resolvedPageStart, resolvedPageEnd)}
                 </span>
               ) : null}
               {previewData?.doc.fileSize ? (
@@ -191,8 +189,8 @@ function CitationPanelBody({
               <KnowledgeDocumentViewer
                 data={previewData}
                 evidence={{
-                  pageStart: citationPreview.pageStart,
-                  pageEnd: citationPreview.pageEnd,
+                  pageStart: resolvedPageStart,
+                  pageEnd: resolvedPageEnd,
                   sectionHeading: citationPreview.sectionHeading,
                   excerpt: citationPreview.excerpt,
                   fallbackWarning:
@@ -234,6 +232,15 @@ export function CitationPreviewPanel() {
     const searchParams = new URLSearchParams();
     if (citationPreview.versionId) {
       searchParams.set("versionId", citationPreview.versionId);
+    }
+    if (citationPreview.pageStart != null) {
+      searchParams.set("pageStart", String(citationPreview.pageStart));
+    }
+    if (citationPreview.pageEnd != null) {
+      searchParams.set("pageEnd", String(citationPreview.pageEnd));
+    }
+    if (citationPreview.excerpt?.trim()) {
+      searchParams.set("excerpt", citationPreview.excerpt.trim().slice(0, 800));
     }
 
     setLoading(true);
