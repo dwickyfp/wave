@@ -147,6 +147,33 @@ describe("knowledge citations", () => {
     ).toBe(true);
   });
 
+  it("replaces a wrong existing citation with the better page-matched citation", () => {
+    const multiPageCitations = [
+      {
+        ...citations[0],
+        number: 1,
+        pageStart: 3,
+        pageEnd: 3,
+        excerpt: "Traditional tobacco reporting before the vape update.",
+      },
+      {
+        ...citations[0],
+        number: 2,
+        pageStart: 6,
+        pageEnd: 6,
+        excerpt: "Vape products are integrated into Hasil Tembakau reporting.",
+      },
+    ];
+
+    const output = enforceKnowledgeCitationCoverage({
+      text: "Vape products are integrated into Hasil Tembakau reporting [1].",
+      citations: multiPageCitations,
+    });
+
+    expect(output).toContain("[2]");
+    expect(output).not.toContain("[1].");
+  });
+
   it("linkifies markers outside code blocks and inline code only", () => {
     const linked = linkifyKnowledgeCitationMarkers({
       text: [

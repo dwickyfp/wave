@@ -401,16 +401,18 @@ describe("queryKnowledgeAsDocs", () => {
     expect(docs[0]?.markdown).toContain(
       "### Guide > Authentication (Part 1/2)",
     );
-    expect(docs[0]?.citationCandidates).toEqual([
-      expect.objectContaining({
-        versionId: "version-1",
-        sectionId: "section-1",
-        sectionHeading: "Guide > Authentication",
-        pageStart: 8,
-        pageEnd: 8,
-        excerpt: "Matched authentication section content.",
-      }),
-    ]);
+    expect(docs[0]?.citationCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          versionId: "version-1",
+          sectionId: "section-1",
+          sectionHeading: "Guide > Authentication",
+          pageStart: 8,
+          pageEnd: 8,
+          excerpt: "Authentication content for the matched section.",
+        }),
+      ]),
+    );
     expect(docs[0]?.markdown).toContain("Parent context:");
     expect(docs[0]?.markdown).toContain("#### Next Part");
     expect(knowledgeRepository.getDocumentMarkdown).toHaveBeenCalledTimes(1);
@@ -502,6 +504,104 @@ describe("queryKnowledgeAsDocs", () => {
         pageEnd: 5,
       }),
     ]);
+  });
+
+  it("keeps multiple chunk-level citations for a single matched section when pages differ", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({
+        chunk: {
+          id: "chunk-1",
+          content: "2018 regulation created the earlier excise reporting path.",
+          metadata: {
+            headingPath: "PMK 161 > Pasal 3",
+            section: "Pasal 3",
+            pageStart: 3,
+            pageEnd: 3,
+          },
+        },
+        score: 0.91,
+      }),
+      makeChunkHit({
+        chunk: {
+          id: "chunk-2",
+          content:
+            "Vape products were integrated into Hasil Tembakau reporting in 2022.",
+          metadata: {
+            headingPath: "PMK 161 > Pasal 3",
+            section: "Pasal 3",
+            pageStart: 6,
+            pageEnd: 6,
+          },
+        },
+        score: 0.89,
+      }),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "PMK 161",
+        description: null,
+        metadata: { sectionGraphVersion: 1 },
+        activeVersionId: "version-1",
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      {
+        id: "section-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        parentSectionId: null,
+        prevSectionId: null,
+        nextSectionId: null,
+        heading: "Pasal 3",
+        headingPath: "PMK 161 > Pasal 3",
+        level: 2,
+        partIndex: 0,
+        partCount: 1,
+        content: "This legal section spans multiple pages and multiple rules.",
+        summary: "Taxable goods reporting requirements.",
+        tokenCount: 180,
+        pageStart: 3,
+        pageEnd: 6,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue({
+      name: "PMK 161",
+      description: null,
+      markdown: [
+        "<!--CTX_PAGE:3-->",
+        "2018 regulation created the earlier excise reporting path.",
+        "",
+        "<!--CTX_PAGE:6-->",
+        "Vape products were integrated into Hasil Tembakau reporting in 2022.",
+      ].join("\n"),
+    });
+
+    const docs = await queryKnowledgeAsDocs(group, "vape cukai", {
+      tokens: 5000,
+    });
+
+    expect(docs[0]?.citationCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pageStart: 3,
+          pageEnd: 3,
+          excerpt: "2018 regulation created the earlier excise reporting path.",
+        }),
+        expect.objectContaining({
+          pageStart: 6,
+          pageEnd: 6,
+          excerpt:
+            "Vape products were integrated into Hasil Tembakau reporting in 2022.",
+        }),
+      ]),
+    );
   });
 
   it("falls back to full-doc retrieval for legacy documents without section graphs", async () => {

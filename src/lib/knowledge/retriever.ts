@@ -1685,6 +1685,81 @@ function buildSectionCitationCandidate(input: {
   };
 }
 
+function buildSectionCitationEntries(input: {
+  section: KnowledgeSection;
+  matches: KnowledgeQueryResult[];
+  versionId?: string | null;
+  relevanceScore: number;
+  maxCandidates?: number;
+}): Array<{
+  candidate: RetrievedKnowledgeCitation;
+  pageSnippets: string[];
+}> {
+  const rankedMatches = [...input.matches].sort((left, right) => {
+    const leftScore = left.rerankScore ?? left.confidenceScore ?? left.score;
+    const rightScore =
+      right.rerankScore ?? right.confidenceScore ?? right.score;
+    return rightScore - leftScore;
+  });
+  const entries: Array<{
+    candidate: RetrievedKnowledgeCitation;
+    pageSnippets: string[];
+  }> = [];
+  const seenKeys = new Set<string>();
+
+  for (const match of rankedMatches) {
+    const matchScore =
+      match.rerankScore ?? match.confidenceScore ?? match.score ?? 0;
+    const candidate = {
+      ...buildChunkCitationCandidate({
+        match,
+        versionId: input.versionId ?? null,
+      }),
+      sectionId: match.chunk.sectionId ?? input.section.id,
+      sectionHeading: getSectionCitationHeading(input.section),
+      relevanceScore: Math.max(input.relevanceScore, matchScore),
+    } satisfies RetrievedKnowledgeCitation;
+    const key = [
+      candidate.sectionId ?? "",
+      candidate.pageStart ?? "",
+      candidate.pageEnd ?? "",
+      candidate.excerpt,
+    ].join("::");
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    entries.push({
+      candidate,
+      pageSnippets: buildCitationSnippetHints({
+        matches: [match],
+        fallbacks: [
+          match.chunk.content,
+          match.chunk.contextSummary,
+          input.section.summary,
+        ],
+      }),
+    });
+
+    if (entries.length >= (input.maxCandidates ?? 3)) {
+      break;
+    }
+  }
+
+  if (entries.length > 0) {
+    return entries;
+  }
+
+  return [
+    {
+      candidate: buildSectionCitationCandidate(input),
+      pageSnippets: buildCitationSnippetHints({
+        matches: input.matches,
+        fallbacks: [input.section.summary, input.section.content],
+      }),
+    },
+  ];
+}
+
 function buildChunkCitationCandidate(input: {
   match: KnowledgeQueryResult;
   versionId?: string | null;
@@ -2806,18 +2881,14 @@ async function assembleSectionFirstResults(input: {
         heading: formatSectionHeading(bundle.section),
         score: bundle.score,
       });
-      existing.citationCandidates.push({
-        candidate: buildSectionCitationCandidate({
+      existing.citationCandidates.push(
+        ...buildSectionCitationEntries({
           section: bundle.section,
           matches: bundle.matches,
           versionId: bundle.doc.versionId ?? null,
           relevanceScore: bundle.score,
         }),
-        pageSnippets: buildCitationSnippetHints({
-          matches: bundle.matches,
-          fallbacks: [bundle.section.summary, bundle.section.content],
-        }),
-      });
+      );
       continue;
     }
 
@@ -2830,20 +2901,12 @@ async function assembleSectionFirstResults(input: {
           score: bundle.score,
         },
       ],
-      citationCandidates: [
-        {
-          candidate: buildSectionCitationCandidate({
-            section: bundle.section,
-            matches: bundle.matches,
-            versionId: bundle.doc.versionId ?? null,
-            relevanceScore: bundle.score,
-          }),
-          pageSnippets: buildCitationSnippetHints({
-            matches: bundle.matches,
-            fallbacks: [bundle.section.summary, bundle.section.content],
-          }),
-        },
-      ],
+      citationCandidates: buildSectionCitationEntries({
+        section: bundle.section,
+        matches: bundle.matches,
+        versionId: bundle.doc.versionId ?? null,
+        relevanceScore: bundle.score,
+      }),
     });
   }
 

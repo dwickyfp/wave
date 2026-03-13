@@ -489,16 +489,74 @@ function scoreCitationForLine(
   return overlap * 2 + citation.relevanceScore;
 }
 
-function pickBestCitationForLine(
+type RankedCitationForLine = {
+  citation: ChatKnowledgeCitation;
+  score: number;
+};
+
+function rankCitationsForLine(
   line: string,
   citations: ChatKnowledgeCitation[],
-): ChatKnowledgeCitation | null {
-  if (!citations.length) return null;
+): RankedCitationForLine[] {
+  if (!citations.length) return [];
 
-  return [...citations].sort(
-    (left, right) =>
-      scoreCitationForLine(line, right) - scoreCitationForLine(line, left),
-  )[0]!;
+  return citations
+    .map((citation) => ({
+      citation,
+      score: scoreCitationForLine(line, citation),
+    }))
+    .sort((left, right) => right.score - left.score);
+}
+
+function pickBestCitationsForLine(
+  line: string,
+  citations: ChatKnowledgeCitation[],
+): ChatKnowledgeCitation[] {
+  const ranked = rankCitationsForLine(line, citations);
+  if (!ranked.length) return [];
+
+  const top = ranked[0];
+  if (!top || top.score <= 0) return [];
+
+  const selected = [top];
+  const second = ranked.find(
+    (entry) =>
+      entry.citation.number !== top.citation.number &&
+      entry.score > 0 &&
+      entry.score >= top.score * 0.72 &&
+      (entry.citation.documentId !== top.citation.documentId ||
+        entry.citation.pageStart !== top.citation.pageStart ||
+        entry.citation.pageEnd !== top.citation.pageEnd ||
+        entry.citation.sectionId !== top.citation.sectionId),
+  );
+
+  if (second) {
+    selected.push(second);
+  }
+
+  return selected.map((entry) => entry.citation);
+}
+
+function scoreCitationSelectionForLine(
+  line: string,
+  citations: ChatKnowledgeCitation[],
+): number {
+  return citations.reduce(
+    (total, citation) => total + scoreCitationForLine(line, citation),
+    0,
+  );
+}
+
+function stripAllCitationMarkers(line: string): string {
+  return line
+    .replace(/\s*\[(\d+)\](?!\()/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sameCitationSet(left: number[], right: number[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
 }
 
 export function validateKnowledgeCitationText(input: {
@@ -579,20 +637,66 @@ export function enforceKnowledgeCitationCoverage(input: {
               ? full
               : "";
           });
-          const existingCitations = extractCitationNumbers(cleanedLine);
-          if (existingCitations.length > 0) {
-            return cleanedLine;
-          }
-
-          const bestCitation = pickBestCitationForLine(
-            cleanedLine,
+          const baseLine = stripAllCitationMarkers(cleanedLine);
+          const existingCitationNumbers = dedupeCitationNumbers(
+            extractCitationNumbers(cleanedLine),
+          );
+          const existingCitations = existingCitationNumbers
+            .map((citationNumber) =>
+              input.citations.find(
+                (citation) => citation.number === citationNumber,
+              ),
+            )
+            .filter(
+              (citation): citation is ChatKnowledgeCitation => citation != null,
+            );
+          const recommendedCitations = pickBestCitationsForLine(
+            baseLine,
             input.citations,
           );
-          if (!bestCitation) return cleanedLine;
+
+          if (existingCitations.length > 0) {
+            const normalizedExistingLine = appendCitationSequence(
+              baseLine,
+              formatCitationSequence(existingCitationNumbers),
+            );
+            if (!recommendedCitations.length) {
+              return normalizedExistingLine;
+            }
+
+            const recommendedNumbers = recommendedCitations.map(
+              (citation) => citation.number,
+            );
+            if (sameCitationSet(existingCitationNumbers, recommendedNumbers)) {
+              return normalizedExistingLine;
+            }
+
+            const existingScore = scoreCitationSelectionForLine(
+              baseLine,
+              existingCitations,
+            );
+            const recommendedScore = scoreCitationSelectionForLine(
+              baseLine,
+              recommendedCitations,
+            );
+
+            if (recommendedScore <= existingScore + 1) {
+              return normalizedExistingLine;
+            }
+
+            return appendCitationSequence(
+              baseLine,
+              formatCitationSequence(recommendedNumbers),
+            );
+          }
+
+          if (!recommendedCitations.length) return cleanedLine;
 
           return appendCitationSequence(
-            cleanedLine,
-            `[${bestCitation.number}]`,
+            baseLine,
+            formatCitationSequence(
+              recommendedCitations.map((citation) => citation.number),
+            ),
           );
         })
         .join("\n");
