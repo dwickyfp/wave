@@ -1,3 +1,5 @@
+import { parsePageMarker } from "./page-markers";
+
 export interface TextChunk {
   sectionId?: string | null;
   content: string;
@@ -109,6 +111,217 @@ function cleanText(text: string): string {
       .replace(/[^\S\n]{2,}/g, " ")
       .trim()
   );
+}
+
+type MarkdownPageSlice = {
+  pageNumber: number;
+  normalized: string;
+  tokenSet: Set<string>;
+};
+
+function normalizePageLookupText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/<!--CTX_PAGE:\d+-->/g, " ")
+    .replace(/`{1,3}[^`]*`{1,3}/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function tokenizePageLookupText(value: string): string[] {
+  return Array.from(
+    new Set(
+      normalizePageLookupText(value)
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 4),
+    ),
+  );
+}
+
+function splitMarkdownIntoPageSlices(markdown?: string): MarkdownPageSlice[] {
+  if (!markdown?.trim()) return [];
+
+  const pages: MarkdownPageSlice[] = [];
+  let currentPage = 1;
+  let currentLines: string[] = [];
+
+  const flush = () => {
+    const normalized = normalizePageLookupText(currentLines.join("\n"));
+    if (!normalized) return;
+
+    pages.push({
+      pageNumber: currentPage,
+      normalized,
+      tokenSet: new Set(tokenizePageLookupText(normalized)),
+    });
+  };
+
+  for (const line of markdown.split("\n")) {
+    const pageMarker = parsePageMarker(line.trim());
+    if (pageMarker != null) {
+      flush();
+      currentPage = pageMarker;
+      currentLines = [];
+      continue;
+    }
+
+    currentLines.push(line);
+  }
+
+  flush();
+  return pages;
+}
+
+function scorePageSliceForSnippet(
+  page: MarkdownPageSlice,
+  normalizedSnippet: string,
+  snippetTokens: string[],
+): number {
+  if (!normalizedSnippet) return 0;
+
+  const anchors = [
+    normalizedSnippet,
+    normalizedSnippet.slice(0, 180),
+    normalizedSnippet.slice(0, 120),
+    normalizedSnippet.slice(0, 72),
+    normalizedSnippet.slice(0, 40),
+  ].filter((anchor, index, items) => {
+    return anchor.length >= 24 && items.indexOf(anchor) === index;
+  });
+
+  for (let index = 0; index < anchors.length; index += 1) {
+    const anchor = anchors[index];
+    if (page.normalized.includes(anchor)) {
+      return 1000 - index * 100 + anchor.length / 1000;
+    }
+  }
+
+  if (snippetTokens.length === 0) return 0;
+
+  const overlapCount = snippetTokens.filter((token) =>
+    page.tokenSet.has(token),
+  ).length;
+  const overlapRatio = overlapCount / snippetTokens.length;
+  return overlapRatio >= 0.45 ? overlapRatio : 0;
+}
+
+function inferPageForSnippet(
+  pageSlices: MarkdownPageSlice[],
+  snippet: string,
+): number | null {
+  const normalizedSnippet = normalizePageLookupText(snippet);
+  if (normalizedSnippet.length < 24) return null;
+
+  const snippetTokens = tokenizePageLookupText(snippet);
+  let bestPage: number | null = null;
+  let bestScore = 0;
+
+  for (const page of pageSlices) {
+    const score = scorePageSliceForSnippet(
+      page,
+      normalizedSnippet,
+      snippetTokens,
+    );
+    if (score > bestScore) {
+      bestScore = score;
+      bestPage = page.pageNumber;
+    }
+  }
+
+  return bestScore > 0 ? bestPage : null;
+}
+
+function buildChunkLookupSnippets(content: string): string[] {
+  const lines = content
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const bodyLines =
+    lines[0]?.match(/^#{1,6}\s+/) != null ? lines.slice(1) : lines;
+  const bodyText = bodyLines.join(" ").replace(/\s+/g, " ").trim();
+  const lookupText = bodyText || content.replace(/\s+/g, " ").trim();
+  if (!lookupText) return [];
+
+  return Array.from(
+    new Set(
+      [
+        lookupText,
+        lookupText.slice(0, 220),
+        lookupText.slice(Math.max(0, lookupText.length - 220)),
+        lookupText.slice(0, 360),
+      ].filter((snippet) => snippet.length >= 24),
+    ),
+  );
+}
+
+function resolveChunkPageMetadata(input: {
+  chunk: TextChunk;
+  pageSlices: MarkdownPageSlice[];
+}): TextChunk["metadata"] {
+  const fallbackStart = input.chunk.metadata.pageStart;
+  const fallbackEnd = input.chunk.metadata.pageEnd;
+  const relevantPageSlices =
+    input.pageSlices.length > 0 &&
+    typeof fallbackStart === "number" &&
+    typeof fallbackEnd === "number"
+      ? input.pageSlices.filter(
+          (page) =>
+            page.pageNumber >= Math.min(fallbackStart, fallbackEnd) &&
+            page.pageNumber <= Math.max(fallbackStart, fallbackEnd),
+        )
+      : input.pageSlices;
+
+  const normalizedContent = input.chunk.content.replace(/\s+/g, " ").trim();
+  if (!normalizedContent || relevantPageSlices.length === 0) {
+    return input.chunk.metadata;
+  }
+
+  const lookupSnippets = buildChunkLookupSnippets(input.chunk.content);
+  const firstSnippet = lookupSnippets[0];
+  const lastSnippet = lookupSnippets[lookupSnippets.length - 1];
+  const inferredStart =
+    (firstSnippet
+      ? inferPageForSnippet(relevantPageSlices, firstSnippet)
+      : null) ??
+    lookupSnippets
+      .map((snippet) => inferPageForSnippet(relevantPageSlices, snippet))
+      .find((pageNumber) => pageNumber != null) ??
+    fallbackStart ??
+    fallbackEnd;
+  const inferredEnd =
+    (lastSnippet
+      ? inferPageForSnippet(relevantPageSlices, lastSnippet)
+      : null) ??
+    [...lookupSnippets]
+      .reverse()
+      .map((snippet) => inferPageForSnippet(relevantPageSlices, snippet))
+      .find((pageNumber) => pageNumber != null) ??
+    inferredStart ??
+    fallbackEnd ??
+    fallbackStart;
+
+  if (inferredStart == null && inferredEnd == null) {
+    return input.chunk.metadata;
+  }
+
+  const pageStart = Math.min(
+    inferredStart ?? inferredEnd ?? 1,
+    inferredEnd ?? inferredStart ?? 1,
+  );
+  const pageEnd = Math.max(
+    inferredStart ?? inferredEnd ?? 1,
+    inferredEnd ?? inferredStart ?? 1,
+  );
+
+  return {
+    ...input.chunk.metadata,
+    pageStart,
+    pageEnd,
+    pageNumber: pageStart === pageEnd ? pageStart : undefined,
+  };
 }
 
 // ─── Section Parsing with Heading Hierarchy ────────────────────────────────────
@@ -730,10 +943,14 @@ export function chunkKnowledgeSections(
   sections: ChunkableKnowledgeSection[],
   chunkSize = 768,
   overlapPercent = 10,
+  options?: {
+    sourceMarkdown?: string;
+  },
 ): TextChunk[] {
   if (sections.length === 0) return [];
 
   const allChunks: TextChunk[] = [];
+  const pageSlices = splitMarkdownIntoPageSlices(options?.sourceMarkdown);
 
   for (const section of sections) {
     const headingPrefix =
@@ -775,10 +992,22 @@ export function chunkKnowledgeSections(
         repairReason: section.repairReason,
       },
       allChunks.length,
-    ).map((chunk) => ({
-      ...chunk,
-      sectionId: section.id,
-    }));
+    ).map((chunk) => {
+      const chunkWithSection = {
+        ...chunk,
+        sectionId: section.id,
+      };
+
+      return pageSlices.length > 0
+        ? {
+            ...chunkWithSection,
+            metadata: resolveChunkPageMetadata({
+              chunk: chunkWithSection,
+              pageSlices,
+            }),
+          }
+        : chunkWithSection;
+    });
 
     allChunks.push(...sectionChunks);
   }

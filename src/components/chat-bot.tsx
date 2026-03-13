@@ -1,7 +1,9 @@
 "use client";
 
+import { appStore } from "@/app/store";
 import { useChat } from "@ai-sdk/react";
-import { toast } from "sonner";
+import clsx from "clsx";
+import { cn, createDebounce, generateUUID, truncateString } from "lib/utils";
 import {
   startTransition,
   useCallback,
@@ -10,36 +12,48 @@ import {
   useRef,
   useState,
 } from "react";
-import PromptInput from "./prompt-input";
-import clsx from "clsx";
-import { appStore } from "@/app/store";
-import { cn, createDebounce, generateUUID, truncateString } from "lib/utils";
-import { ErrorMessage, PreviewMessage } from "./message";
+import { toast } from "sonner";
 import { ChatGreeting } from "./chat-greeting";
+import { ErrorMessage, PreviewMessage } from "./message";
+import PromptInput from "./prompt-input";
 
-import { useShallow } from "zustand/shallow";
 import {
   DefaultChatTransport,
-  isToolUIPart,
-  lastAssistantMessageIsCompleteWithToolCalls,
   TextUIPart,
   UIMessage,
+  isToolUIPart,
+  lastAssistantMessageIsCompleteWithToolCalls,
 } from "ai";
+import { useShallow } from "zustand/shallow";
 
-import { safe } from "ts-safe";
-import { mutate } from "swr";
+import { deleteThreadAction } from "@/app/api/chat/actions";
+import { useGenerateThreadTitle } from "@/hooks/queries/use-generate-thread-title";
+import { useChatShellState } from "@/hooks/use-chat-shell-state";
+import { useFileDragOverlay } from "@/hooks/use-file-drag-overlay";
+import { useToRef } from "@/hooks/use-latest";
+import { useMounted } from "@/hooks/use-mounted";
+import { useThreadFileUploader } from "@/hooks/use-thread-file-uploader";
 import {
   ChatApiSchemaRequestBody,
   ChatAttachment,
   ChatModel,
   ChatThreadCompactionCheckpoint,
 } from "app-types/chat";
-import { useToRef } from "@/hooks/use-latest";
-import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
-import { Button } from "ui/button";
-import { deleteThreadAction } from "@/app/api/chat/actions";
+import { AnimatePresence, motion } from "framer-motion";
+import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
+import { getStorageManager } from "lib/browser-stroage";
+import {
+  applyFinalizedAssistantText,
+  stripKnowledgeCitationLinks,
+} from "lib/chat/knowledge-citations";
+import { Shortcuts, isShortcutEvent } from "lib/keyboard-shortcuts";
+import { ArrowDown, FilePlus, Loader } from "lucide-react";
+import { useTranslations } from "next-intl";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { ArrowDown, Loader, FilePlus } from "lucide-react";
+import { mutate } from "swr";
+import { safe } from "ts-safe";
+import { Button } from "ui/button";
 import {
   Dialog,
   DialogContent,
@@ -48,21 +62,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "ui/dialog";
-import { useTranslations } from "next-intl";
 import { Think } from "ui/think";
-import { useGenerateThreadTitle } from "@/hooks/queries/use-generate-thread-title";
-import dynamic from "next/dynamic";
-import { useMounted } from "@/hooks/use-mounted";
-import { getStorageManager } from "lib/browser-stroage";
-import { AnimatePresence, motion } from "framer-motion";
-import { useThreadFileUploader } from "@/hooks/use-thread-file-uploader";
-import { useFileDragOverlay } from "@/hooks/use-file-drag-overlay";
 import { CitationPreviewPanel } from "./citation-preview-panel";
-import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
-import {
-  applyFinalizedAssistantText,
-  stripKnowledgeCitationLinks,
-} from "lib/chat/knowledge-citations";
 
 type Props = {
   threadId: string;
@@ -95,6 +96,8 @@ export default function ChatBot({
   initialMessages,
   initialCompactionCheckpoint,
 }: Props) {
+  useChatShellState(threadId);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -478,13 +481,6 @@ export default function ChatBot({
       behavior: "smooth",
     });
   }, []);
-
-  useEffect(() => {
-    appStoreMutate({ currentThreadId: threadId });
-    return () => {
-      appStoreMutate({ currentThreadId: null });
-    };
-  }, [threadId]);
 
   useEffect(() => {
     if (pendingThreadMention && threadId) {

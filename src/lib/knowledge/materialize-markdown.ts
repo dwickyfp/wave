@@ -283,6 +283,9 @@ export async function materializeDocumentMarkdown({
     sections,
     group.chunkSize,
     group.chunkOverlapPercent,
+    {
+      sourceMarkdown: markdown,
+    },
   );
   if (chunks.length === 0) {
     const embeddingUsage = {
