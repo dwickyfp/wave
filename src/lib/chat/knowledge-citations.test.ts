@@ -3,8 +3,8 @@ import {
   applyFinalizedAssistantText,
   buildKnowledgeCitations,
   enforceKnowledgeCitationCoverage,
-  linkifyKnowledgeCitationMarkers,
   linkifyAssistantKnowledgeCitations,
+  linkifyKnowledgeCitationMarkers,
   normalizeKnowledgeCitationLayout,
   stripAssistantKnowledgeCitationLinks,
   stripKnowledgeCitationLinks,
@@ -261,6 +261,41 @@ describe("knowledge citations", () => {
     expect((message.metadata as any).knowledgeCitations).toHaveLength(1);
   });
 
+  it("preserves tool-call ordering when finalizing a multi-step assistant reply", () => {
+    const message = applyFinalizedAssistantText(
+      {
+        id: "assistant-4",
+        role: "assistant",
+        metadata: {},
+        parts: [
+          { type: "text", text: "", state: "done" },
+          {
+            type: "tool-webSearch",
+            toolCallId: "call-1",
+            state: "output-available",
+            input: { query: "passkeys" },
+            output: { results: ["Guide"] },
+          },
+          { type: "text", text: "Draft final answer", state: "done" },
+        ],
+      } as any,
+      "Final answer [1]",
+      {
+        knowledgeCitations: citations,
+      },
+    );
+
+    expect(message.parts.map((part) => part.type)).toEqual([
+      "text",
+      "tool-webSearch",
+      "text",
+    ]);
+    expect((message.parts[0] as any).text).toBe("");
+    expect((message.parts[2] as any).text).toContain(
+      "knowledge://group-1/doc-1?",
+    );
+  });
+
   it("can linkify hydrated assistant history and strip it for model reuse", () => {
     const hydrated = linkifyAssistantKnowledgeCitations({
       id: "assistant-2",
@@ -279,5 +314,34 @@ describe("knowledge citations", () => {
     expect(sanitized.parts.find((part) => part.type === "text")).toMatchObject({
       text: "Final answer [1].",
     });
+  });
+
+  it("updates the trailing assistant answer when linkifying hydrated history", () => {
+    const hydrated = linkifyAssistantKnowledgeCitations({
+      id: "assistant-5",
+      role: "assistant",
+      metadata: {
+        knowledgeCitations: citations,
+      },
+      parts: [
+        { type: "text", text: "", state: "done" },
+        {
+          type: "tool-webSearch",
+          toolCallId: "call-2",
+          state: "output-available",
+          input: { query: "passkeys" },
+          output: { results: ["Guide"] },
+        },
+        { type: "text", text: "Final answer [1].", state: "done" },
+      ],
+    } as any);
+
+    expect((hydrated.parts[0] as any).text).toBe("");
+    expect((hydrated.parts[2] as any).text).toContain(
+      "knowledge://group-1/doc-1?",
+    );
+
+    const sanitized = stripAssistantKnowledgeCitationLinks(hydrated);
+    expect((sanitized.parts[2] as any).text).toBe("Final answer [1].");
   });
 });

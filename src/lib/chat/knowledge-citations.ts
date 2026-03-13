@@ -711,6 +711,22 @@ export function stripKnowledgeCitationLinks(text: string): string {
   return text.replace(/\[(\d+)\]\(knowledge:\/\/[^)\s]+\)/g, "[$1]");
 }
 
+function findAssistantAnswerTextPartIndex(parts: UIMessage["parts"]): number {
+  let fallbackIndex = -1;
+
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part?.type !== "text") continue;
+
+    fallbackIndex = index;
+    if (part.text.trim().length > 0) {
+      return index;
+    }
+  }
+
+  return fallbackIndex;
+}
+
 function updateAssistantTextPart(
   message: UIMessage,
   transform: (text: string, citations: ChatKnowledgeCitation[]) => string,
@@ -727,14 +743,12 @@ function updateAssistantTextPart(
     return message;
   }
 
-  const firstTextIndex = message.parts.findIndex(
-    (part) => part.type === "text",
-  );
-  if (firstTextIndex === -1) {
+  const answerTextIndex = findAssistantAnswerTextPartIndex(message.parts);
+  if (answerTextIndex === -1) {
     return message;
   }
 
-  const part = message.parts[firstTextIndex];
+  const part = message.parts[answerTextIndex];
   if (part.type !== "text") {
     return message;
   }
@@ -745,7 +759,7 @@ function updateAssistantTextPart(
   }
 
   const nextParts = [...message.parts];
-  nextParts[firstTextIndex] = {
+  nextParts[answerTextIndex] = {
     ...part,
     text: nextText,
   };
@@ -774,14 +788,12 @@ export function stripAssistantKnowledgeCitationLinks(
     return message;
   }
 
-  const firstTextIndex = message.parts.findIndex(
-    (part) => part.type === "text",
-  );
-  if (firstTextIndex === -1) {
+  const answerTextIndex = findAssistantAnswerTextPartIndex(message.parts);
+  if (answerTextIndex === -1) {
     return message;
   }
 
-  const part = message.parts[firstTextIndex];
+  const part = message.parts[answerTextIndex];
   if (part.type !== "text") {
     return message;
   }
@@ -792,7 +804,7 @@ export function stripAssistantKnowledgeCitationLinks(
   }
 
   const nextParts = [...message.parts];
-  nextParts[firstTextIndex] = {
+  nextParts[answerTextIndex] = {
     ...part,
     text: nextText,
   };
@@ -820,10 +832,8 @@ export function applyFinalizedAssistantText(
     };
   }
 
-  const firstTextIndex = message.parts.findIndex(
-    (part) => part.type === "text",
-  );
-  if (firstTextIndex === -1) {
+  const answerTextIndex = findAssistantAnswerTextPartIndex(message.parts);
+  if (answerTextIndex === -1) {
     return {
       ...message,
       ...(metadataPatch
@@ -832,9 +842,17 @@ export function applyFinalizedAssistantText(
     };
   }
 
-  const nextParts = message.parts.filter(
-    (part, index) => part.type !== "text" || index === firstTextIndex,
-  );
+  const part = message.parts[answerTextIndex];
+  if (part.type !== "text") {
+    return {
+      ...message,
+      ...(metadataPatch
+        ? { metadata: { ...(message.metadata ?? {}), ...metadataPatch } }
+        : {}),
+    };
+  }
+
+  const nextParts = [...message.parts];
   const knowledgeCitations = Array.isArray(metadataPatch?.knowledgeCitations)
     ? metadataPatch.knowledgeCitations
     : Array.isArray(
@@ -850,8 +868,8 @@ export function applyFinalizedAssistantText(
           citations: knowledgeCitations,
         })
       : finalizedText;
-  nextParts[firstTextIndex] = {
-    type: "text",
+  nextParts[answerTextIndex] = {
+    ...part,
     text: nextText,
     state: "done",
   };

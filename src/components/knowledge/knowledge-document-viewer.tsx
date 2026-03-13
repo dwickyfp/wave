@@ -25,6 +25,30 @@ type CitationEvidence = {
   fallbackWarning?: string | null;
 };
 
+export function normalizePdfPageNumber(
+  page?: number | null,
+  pageCount?: number | null,
+): number {
+  const normalized =
+    typeof page === "number" && Number.isFinite(page) ? Math.trunc(page) : 1;
+  const minimumPage = Math.max(1, normalized);
+  if (
+    typeof pageCount !== "number" ||
+    !Number.isFinite(pageCount) ||
+    pageCount < 1
+  ) {
+    return minimumPage;
+  }
+
+  return Math.min(minimumPage, Math.trunc(pageCount));
+}
+
+export function resolveCitationInitialPage(
+  evidence?: Pick<CitationEvidence, "pageStart" | "pageEnd">,
+): number {
+  return normalizePdfPageNumber(evidence?.pageStart ?? evidence?.pageEnd ?? 1);
+}
+
 function isImageFileType(fileType: string) {
   return ["png", "jpg", "jpeg", "gif", "webp"].includes(fileType);
 }
@@ -47,20 +71,26 @@ function PdfDocumentViewer({
   assetUrl: string;
   initialPage?: number | null;
 }) {
+  const requestedInitialPage = normalizePdfPageNumber(initialPage);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
+  const requestedPageRef = useRef(requestedInitialPage);
   const [pdfDocument, setPdfDocument] = useState<any>(null);
   const [pageCount, setPageCount] = useState(0);
-  const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
+  const [currentPage, setCurrentPage] = useState(requestedInitialPage);
   const [containerWidth, setContainerWidth] = useState(0);
   const [loadingDocument, setLoadingDocument] = useState(true);
   const [renderingPage, setRenderingPage] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setCurrentPage(initialPage ?? 1);
-  }, [initialPage, assetUrl]);
+    const nextRequestedPage = normalizePdfPageNumber(initialPage);
+    requestedPageRef.current = nextRequestedPage;
+    setCurrentPage(
+      normalizePdfPageNumber(nextRequestedPage, pdfDocument?.numPages),
+    );
+  }, [assetUrl, initialPage, pdfDocument]);
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -112,14 +142,13 @@ function PdfDocumentViewer({
           return;
         }
 
+        const nextPage = normalizePdfPageNumber(
+          requestedPageRef.current,
+          nextDocument.numPages,
+        );
         setPdfDocument(nextDocument);
         setPageCount(nextDocument.numPages);
-        setCurrentPage((current) =>
-          Math.min(
-            Math.max(current || initialPage || 1, 1),
-            nextDocument.numPages,
-          ),
-        );
+        setCurrentPage(nextPage);
       } catch (loadError) {
         if (!cancelled) {
           setError(
@@ -222,6 +251,11 @@ function PdfDocumentViewer({
       void renderTask?.cancel?.();
     };
   }, [containerWidth, currentPage, pdfDocument]);
+
+  useEffect(() => {
+    if (!viewportRef.current) return;
+    viewportRef.current.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [currentPage]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -332,6 +366,7 @@ export function KnowledgeDocumentViewer({
     evidence?.pageStart,
     evidence?.pageEnd,
   );
+  const initialCitationPage = resolveCitationInitialPage(evidence);
 
   if (isUrlOnly) {
     return (
@@ -399,10 +434,7 @@ export function KnowledgeDocumentViewer({
             </span>
           </div>
         ) : null}
-        <PdfDocumentViewer
-          assetUrl={url}
-          initialPage={evidence?.pageStart ?? 1}
-        />
+        <PdfDocumentViewer assetUrl={url} initialPage={initialCitationPage} />
       </div>
     );
   }

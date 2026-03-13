@@ -13,6 +13,7 @@ import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { knowledgeRepository } from "lib/db/repository";
 import { settingsRepository } from "lib/db/repository";
 import { embedSingleText } from "./embedder";
+import { parsePageMarker } from "./page-markers";
 import {
   mergeKnowledgeQueryConstraints,
   matchesRetrievalIdentityConstraints,
@@ -1287,6 +1288,7 @@ function buildKnowledgeDocsCacheKey(input: {
   const hash = createHash("sha256")
     .update(
       JSON.stringify({
+        cacheVersion: 2,
         query: input.query,
         retrievalThreshold: input.retrievalThreshold ?? null,
         libraryId: input.libraryId ?? null,
@@ -1371,6 +1373,203 @@ function buildCitationExcerpt(
   return `${(lastSpace > maxLength * 0.7 ? cut.slice(0, lastSpace) : cut).trim()}...`;
 }
 
+type MarkdownPageSlice = {
+  pageNumber: number;
+  normalized: string;
+  tokenSet: Set<string>;
+};
+
+function normalizeCitationLookupText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/<!--CTX_PAGE:\d+-->/g, " ")
+    .replace(/`{1,3}[^`]*`{1,3}/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function tokenizeCitationLookupText(value: string): string[] {
+  return Array.from(
+    new Set(
+      normalizeCitationLookupText(value)
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 4),
+    ),
+  );
+}
+
+function splitMarkdownIntoPageSlices(markdown: string): MarkdownPageSlice[] {
+  const pages: MarkdownPageSlice[] = [];
+  let currentPage = 1;
+  let currentLines: string[] = [];
+
+  const flush = () => {
+    const normalized = normalizeCitationLookupText(currentLines.join("\n"));
+    if (!normalized) return;
+
+    pages.push({
+      pageNumber: currentPage,
+      normalized,
+      tokenSet: new Set(tokenizeCitationLookupText(normalized)),
+    });
+  };
+
+  for (const line of markdown.split("\n")) {
+    const pageMarker = parsePageMarker(line.trim());
+    if (pageMarker != null) {
+      flush();
+      currentPage = pageMarker;
+      currentLines = [];
+      continue;
+    }
+
+    currentLines.push(line);
+  }
+
+  flush();
+
+  if (pages.length > 0) return pages;
+
+  const fallback = normalizeCitationLookupText(markdown);
+  return fallback
+    ? [
+        {
+          pageNumber: 1,
+          normalized: fallback,
+          tokenSet: new Set(tokenizeCitationLookupText(fallback)),
+        },
+      ]
+    : [];
+}
+
+function scorePageSliceForSnippet(
+  page: MarkdownPageSlice,
+  normalizedSnippet: string,
+  snippetTokens: string[],
+): number {
+  if (!normalizedSnippet) return 0;
+
+  const anchors = [
+    normalizedSnippet,
+    normalizedSnippet.slice(0, 160),
+    normalizedSnippet.slice(0, 96),
+    normalizedSnippet.slice(0, 64),
+    normalizedSnippet.slice(0, 40),
+  ].filter((anchor, index, items) => {
+    return anchor.length >= 24 && items.indexOf(anchor) === index;
+  });
+
+  for (let index = 0; index < anchors.length; index += 1) {
+    const anchor = anchors[index];
+    if (page.normalized.includes(anchor)) {
+      return 1000 - index * 100 + anchor.length / 1000;
+    }
+  }
+
+  if (snippetTokens.length === 0) return 0;
+
+  const overlapCount = snippetTokens.filter((token) =>
+    page.tokenSet.has(token),
+  ).length;
+  const overlapRatio = overlapCount / snippetTokens.length;
+  return overlapRatio >= 0.45 ? overlapRatio : 0;
+}
+
+function inferCitationPageFromMarkdown(input: {
+  markdown: string;
+  snippets: string[];
+}): number | null {
+  const pages = splitMarkdownIntoPageSlices(input.markdown);
+  if (pages.length === 0) return null;
+
+  let bestPage: number | null = null;
+  let bestScore = 0;
+
+  for (const snippet of input.snippets) {
+    const normalizedSnippet = normalizeCitationLookupText(snippet);
+    if (normalizedSnippet.length < 24) continue;
+
+    const snippetTokens = tokenizeCitationLookupText(snippet);
+    for (const page of pages) {
+      const score = scorePageSliceForSnippet(
+        page,
+        normalizedSnippet,
+        snippetTokens,
+      );
+      if (score > bestScore) {
+        bestScore = score;
+        bestPage = page.pageNumber;
+      }
+    }
+  }
+
+  return bestScore > 0 ? bestPage : null;
+}
+
+function shouldRefineCitationPage(
+  candidate: Pick<RetrievedKnowledgeCitation, "pageStart" | "pageEnd">,
+): boolean {
+  return (
+    candidate.pageStart == null ||
+    candidate.pageEnd == null ||
+    candidate.pageStart !== candidate.pageEnd
+  );
+}
+
+function refineCitationCandidatePage(input: {
+  candidate: RetrievedKnowledgeCitation;
+  markdown: string;
+  snippets: string[];
+}): RetrievedKnowledgeCitation {
+  if (!shouldRefineCitationPage(input.candidate)) {
+    return input.candidate;
+  }
+
+  const precisePage = inferCitationPageFromMarkdown({
+    markdown: input.markdown,
+    snippets: input.snippets,
+  });
+  if (precisePage == null) {
+    return input.candidate;
+  }
+
+  return {
+    ...input.candidate,
+    pageStart: precisePage,
+    pageEnd: precisePage,
+  };
+}
+
+function buildCitationSnippetHints(input: {
+  matches?: KnowledgeQueryResult[];
+  fallbacks?: Array<string | null | undefined>;
+}): string[] {
+  const candidates = [
+    ...(input.matches ?? [])
+      .slice()
+      .sort((left, right) => {
+        const leftScore =
+          left.rerankScore ?? left.confidenceScore ?? left.score;
+        const rightScore =
+          right.rerankScore ?? right.confidenceScore ?? right.score;
+        return rightScore - leftScore;
+      })
+      .flatMap((match) => [match.chunk.content, match.chunk.contextSummary]),
+    ...(input.fallbacks ?? []),
+  ];
+
+  return Array.from(
+    new Set(
+      candidates
+        .map((value) => value?.replace(/\s+/g, " ").trim() ?? "")
+        .filter((value) => value.length >= 24),
+    ),
+  ).slice(0, 4);
+}
+
 function buildSectionCitationCandidate(input: {
   section: KnowledgeSection;
   matches: KnowledgeQueryResult[];
@@ -1392,8 +1591,8 @@ function buildSectionCitationCandidate(input: {
     versionId: input.versionId ?? null,
     sectionId: input.section.id,
     sectionHeading: getSectionCitationHeading(input.section),
-    pageStart: input.section.pageStart ?? topMatchPageStart ?? null,
-    pageEnd: input.section.pageEnd ?? topMatchPageEnd ?? null,
+    pageStart: topMatchPageStart ?? input.section.pageStart ?? null,
+    pageEnd: topMatchPageEnd ?? input.section.pageEnd ?? null,
     excerpt: buildCitationExcerpt(
       input.section.content || topMatch?.chunk.content || input.section.summary,
     ),
@@ -2278,9 +2477,15 @@ async function assembleFullDocResults(input: {
               return rightScore - leftScore;
             })
             .map((match) => {
-              const candidate = buildChunkCitationCandidate({
-                match,
-                versionId: doc.versionId ?? null,
+              const candidate = refineCitationCandidatePage({
+                candidate: buildChunkCitationCandidate({
+                  match,
+                  versionId: doc.versionId ?? null,
+                }),
+                markdown: docData.markdown,
+                snippets: buildCitationSnippetHints({
+                  matches: [match],
+                }),
               });
               const key = [
                 candidate.sectionId ?? "",
@@ -2339,9 +2544,15 @@ async function assembleFullDocResults(input: {
               return rightScore - leftScore;
             })
             .map((match) => {
-              const candidate = buildChunkCitationCandidate({
-                match,
-                versionId: doc.versionId ?? null,
+              const candidate = refineCitationCandidatePage({
+                candidate: buildChunkCitationCandidate({
+                  match,
+                  versionId: doc.versionId ?? null,
+                }),
+                markdown: docData.markdown,
+                snippets: buildCitationSnippetHints({
+                  matches: [match],
+                }),
               });
               const key = [
                 candidate.sectionId ?? "",
@@ -2467,7 +2678,10 @@ async function assembleSectionFirstResults(input: {
     RankedDocCandidate & {
       blocks: string[];
       matchedSections: Array<{ heading: string; score: number }>;
-      citationCandidates: RetrievedKnowledgeCitation[];
+      citationCandidates: Array<{
+        candidate: RetrievedKnowledgeCitation;
+        pageSnippets: string[];
+      }>;
     }
   >();
   let tokensUsed = 0;
@@ -2494,14 +2708,18 @@ async function assembleSectionFirstResults(input: {
         heading: formatSectionHeading(bundle.section),
         score: bundle.score,
       });
-      existing.citationCandidates.push(
-        buildSectionCitationCandidate({
+      existing.citationCandidates.push({
+        candidate: buildSectionCitationCandidate({
           section: bundle.section,
           matches: bundle.matches,
           versionId: bundle.doc.versionId ?? null,
           relevanceScore: bundle.score,
         }),
-      );
+        pageSnippets: buildCitationSnippetHints({
+          matches: bundle.matches,
+          fallbacks: [bundle.section.summary, bundle.section.content],
+        }),
+      });
       continue;
     }
 
@@ -2515,44 +2733,72 @@ async function assembleSectionFirstResults(input: {
         },
       ],
       citationCandidates: [
-        buildSectionCitationCandidate({
-          section: bundle.section,
-          matches: bundle.matches,
-          versionId: bundle.doc.versionId ?? null,
-          relevanceScore: bundle.score,
-        }),
+        {
+          candidate: buildSectionCitationCandidate({
+            section: bundle.section,
+            matches: bundle.matches,
+            versionId: bundle.doc.versionId ?? null,
+            relevanceScore: bundle.score,
+          }),
+          pageSnippets: buildCitationSnippetHints({
+            matches: bundle.matches,
+            fallbacks: [bundle.section.summary, bundle.section.content],
+          }),
+        },
       ],
     });
   }
 
-  const results = docsToAssemble
-    .map((doc) => aggregated.get(doc.documentId))
-    .filter(Boolean)
-    .map((doc) => ({
-      documentId: doc!.documentId,
-      documentName: doc!.documentName,
-      sourceGroupId: doc!.sourceGroupId,
-      sourceGroupName: doc!.sourceGroupName,
-      isInherited: doc!.isInherited,
-      versionId: doc!.versionId ?? null,
-      relevanceScore: doc!.relevanceScore,
-      chunkHits: doc!.chunkHits,
-      markdown: `${doc!.blocks.join("\n\n---\n\n")}\n\n[... section-first context]`,
-      matchedSections: doc!.matchedSections,
+  const results: DocRetrievalResult[] = [];
+
+  for (const doc of docsToAssemble) {
+    const aggregatedDoc = aggregated.get(doc.documentId);
+    if (!aggregatedDoc) continue;
+
+    const needsPageRefinement = aggregatedDoc.citationCandidates.some(
+      ({ candidate }) => shouldRefineCitationPage(candidate),
+    );
+    const docMarkdown = needsPageRefinement
+      ? ((await knowledgeRepository.getDocumentMarkdown(doc.documentId))
+          ?.markdown ?? null)
+      : null;
+
+    results.push({
+      documentId: aggregatedDoc.documentId,
+      documentName: aggregatedDoc.documentName,
+      sourceGroupId: aggregatedDoc.sourceGroupId,
+      sourceGroupName: aggregatedDoc.sourceGroupName,
+      isInherited: aggregatedDoc.isInherited,
+      versionId: aggregatedDoc.versionId ?? null,
+      relevanceScore: aggregatedDoc.relevanceScore,
+      chunkHits: aggregatedDoc.chunkHits,
+      markdown: `${aggregatedDoc.blocks.join("\n\n---\n\n")}\n\n[... section-first context]`,
+      matchedSections: aggregatedDoc.matchedSections,
       citationCandidates: Array.from(
         new Map(
-          doc!.citationCandidates.map((candidate) => {
-            const key = [
-              candidate.sectionId ?? "",
-              candidate.pageStart ?? "",
-              candidate.pageEnd ?? "",
-              candidate.excerpt,
-            ].join("::");
-            return [key, candidate] as const;
-          }),
+          aggregatedDoc.citationCandidates.map(
+            ({ candidate, pageSnippets }) => {
+              const resolvedCandidate =
+                docMarkdown && pageSnippets.length > 0
+                  ? refineCitationCandidatePage({
+                      candidate,
+                      markdown: docMarkdown,
+                      snippets: pageSnippets,
+                    })
+                  : candidate;
+              const key = [
+                resolvedCandidate.sectionId ?? "",
+                resolvedCandidate.pageStart ?? "",
+                resolvedCandidate.pageEnd ?? "",
+                resolvedCandidate.excerpt,
+              ].join("::");
+              return [key, resolvedCandidate] as const;
+            },
+          ),
         ).values(),
       ),
-    }));
+    });
+  }
 
   return { results, tokensUsed, sectionCount };
 }

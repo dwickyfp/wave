@@ -377,6 +377,21 @@ describe("queryKnowledgeAsDocs", () => {
         createdAt: new Date("2026-02-01T00:00:00Z"),
       },
     ]);
+    vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue({
+      name: "Guide",
+      description: null,
+      markdown: [
+        "<!--CTX_PAGE:7-->",
+        "# Guide",
+        "",
+        "Guide intro",
+        "",
+        "<!--CTX_PAGE:8-->",
+        "Authentication content for the matched section.",
+        "",
+        "Continuation content for the next part.",
+      ].join("\n"),
+    });
 
     const docs = await queryKnowledgeAsDocs(group, "auth setup", {
       tokens: 5000,
@@ -391,14 +406,14 @@ describe("queryKnowledgeAsDocs", () => {
         versionId: "version-1",
         sectionId: "section-1",
         sectionHeading: "Guide > Authentication",
-        pageStart: 7,
+        pageStart: 8,
         pageEnd: 8,
         excerpt: "Matched authentication section content.",
       }),
     ]);
     expect(docs[0]?.markdown).toContain("Parent context:");
     expect(docs[0]?.markdown).toContain("#### Next Part");
-    expect(knowledgeRepository.getDocumentMarkdown).not.toHaveBeenCalled();
+    expect(knowledgeRepository.getDocumentMarkdown).toHaveBeenCalledTimes(1);
     expect(knowledgeRepository.insertUsageLog).toHaveBeenCalledWith(
       expect.objectContaining({
         metadata: expect.objectContaining({
@@ -408,6 +423,85 @@ describe("queryKnowledgeAsDocs", () => {
         }),
       }),
     );
+  });
+
+  it("refines section-first citation pages from document page markers for multi-page sections", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({
+        chunk: {
+          content:
+            "Vape products become taxable under the updated reporting framework.",
+          metadata: {
+            headingPath: "PMK 161 > Pasal 3",
+            section: "Pasal 3",
+            pageStart: 1,
+            pageEnd: 12,
+          },
+        },
+      }),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "PMK 161",
+        description: null,
+        metadata: { sectionGraphVersion: 1 },
+        activeVersionId: "version-1",
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      {
+        id: "section-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        parentSectionId: null,
+        prevSectionId: null,
+        nextSectionId: null,
+        heading: "Pasal 3",
+        headingPath: "PMK 161 > Pasal 3",
+        level: 2,
+        partIndex: 0,
+        partCount: 1,
+        content:
+          "This legal section spans multiple pages and starts on page one.",
+        summary: "Taxable goods reporting requirements.",
+        tokenCount: 180,
+        pageStart: 1,
+        pageEnd: 12,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue({
+      name: "PMK 161",
+      description: null,
+      markdown: [
+        "<!--CTX_PAGE:1-->",
+        "# PMK 161",
+        "",
+        "Opening page.",
+        "",
+        "<!--CTX_PAGE:5-->",
+        "Vape products become taxable under the updated reporting framework.",
+        "",
+        "Further details for the same requirement.",
+      ].join("\n"),
+    });
+
+    const docs = await queryKnowledgeAsDocs(group, "vape cukai", {
+      tokens: 5000,
+    });
+
+    expect(docs[0]?.citationCandidates).toEqual([
+      expect.objectContaining({
+        pageStart: 5,
+        pageEnd: 5,
+      }),
+    ]);
   });
 
   it("falls back to full-doc retrieval for legacy documents without section graphs", async () => {
