@@ -316,6 +316,7 @@ describe("queryKnowledgeAsDocs", () => {
         name: "Guide",
         description: null,
         metadata: { sectionGraphVersion: 1 },
+        activeVersionId: "version-1",
         updatedAt: new Date("2026-02-01T00:00:00Z"),
       },
     ]);
@@ -335,6 +336,8 @@ describe("queryKnowledgeAsDocs", () => {
         content: "Matched authentication section content.",
         summary: "Authentication section summary.",
         tokenCount: 120,
+        pageStart: 7,
+        pageEnd: 8,
         createdAt: new Date("2026-02-01T00:00:00Z"),
       },
     ]);
@@ -383,6 +386,16 @@ describe("queryKnowledgeAsDocs", () => {
     expect(docs[0]?.markdown).toContain(
       "### Guide > Authentication (Part 1/2)",
     );
+    expect(docs[0]?.citationCandidates).toEqual([
+      expect.objectContaining({
+        versionId: "version-1",
+        sectionId: "section-1",
+        sectionHeading: "Guide > Authentication",
+        pageStart: 7,
+        pageEnd: 8,
+        excerpt: "Matched authentication section content.",
+      }),
+    ]);
     expect(docs[0]?.markdown).toContain("Parent context:");
     expect(docs[0]?.markdown).toContain("#### Next Part");
     expect(knowledgeRepository.getDocumentMarkdown).not.toHaveBeenCalled();
@@ -399,7 +412,17 @@ describe("queryKnowledgeAsDocs", () => {
 
   it("falls back to full-doc retrieval for legacy documents without section graphs", async () => {
     vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
-      makeChunkHit({ chunk: { sectionId: null } }),
+      makeChunkHit({
+        chunk: {
+          sectionId: null,
+          metadata: {
+            headingPath: "Legacy Guide > Authentication",
+            section: "Authentication",
+            pageStart: 11,
+            pageEnd: 12,
+          },
+        },
+      }),
     ]);
     vi.mocked(
       knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
@@ -410,6 +433,7 @@ describe("queryKnowledgeAsDocs", () => {
         name: "Legacy Guide",
         description: null,
         metadata: null,
+        activeVersionId: "legacy-version-1",
         updatedAt: new Date("2026-02-01T00:00:00Z"),
       },
     ]);
@@ -425,6 +449,15 @@ describe("queryKnowledgeAsDocs", () => {
 
     expect(docs).toHaveLength(1);
     expect(docs[0]?.markdown).toContain("Full legacy document content.");
+    expect(docs[0]?.citationCandidates).toEqual([
+      expect.objectContaining({
+        versionId: "legacy-version-1",
+        sectionId: null,
+        sectionHeading: "Legacy Guide > Authentication",
+        pageStart: 11,
+        pageEnd: 12,
+      }),
+    ]);
     expect(knowledgeRepository.getDocumentMarkdown).toHaveBeenCalledTimes(1);
     expect(knowledgeRepository.insertUsageLog).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -1321,7 +1321,7 @@ function getSectionGraphVersion(
 
 type RankedDocCandidate = Omit<
   DocRetrievalResult,
-  "markdown" | "matchedSections"
+  "markdown" | "matchedSections" | "citationCandidates" | "matchedImages"
 > & {
   sectionGraphVersion: number | null;
   freshnessScore?: number;
@@ -1336,9 +1336,7 @@ type SectionBundleCandidate = {
 };
 
 function formatSectionHeading(section: KnowledgeSection): string {
-  const baseLabel = section.noteNumber
-    ? `Note ${section.noteSubsection ? `${section.noteNumber}.${section.noteSubsection}` : section.noteNumber}${section.noteTitle ? ` ${section.noteTitle}` : ""}`
-    : section.headingPath;
+  const baseLabel = getSectionCitationHeading(section);
   const partLabel =
     section.partCount > 1
       ? `Part ${section.partIndex + 1}/${section.partCount}`
@@ -1352,6 +1350,83 @@ function formatSectionHeading(section: KnowledgeSection): string {
       : null;
 
   return [headingLabel, pageLabel].filter(Boolean).join(" | ");
+}
+
+function getSectionCitationHeading(section: KnowledgeSection): string {
+  return section.noteNumber
+    ? `Note ${section.noteSubsection ? `${section.noteNumber}.${section.noteSubsection}` : section.noteNumber}${section.noteTitle ? ` ${section.noteTitle}` : ""}`
+    : section.headingPath;
+}
+
+function buildCitationExcerpt(
+  text: string | null | undefined,
+  maxLength = 280,
+): string {
+  const normalized = (text ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (normalized.length <= maxLength) return normalized;
+
+  const cut = normalized.slice(0, maxLength);
+  const lastSpace = cut.lastIndexOf(" ");
+  return `${(lastSpace > maxLength * 0.7 ? cut.slice(0, lastSpace) : cut).trim()}...`;
+}
+
+function buildSectionCitationCandidate(input: {
+  section: KnowledgeSection;
+  matches: KnowledgeQueryResult[];
+  versionId?: string | null;
+  relevanceScore: number;
+}): RetrievedKnowledgeCitation {
+  const topMatch = [...input.matches].sort((left, right) => {
+    const leftScore = left.rerankScore ?? left.confidenceScore ?? left.score;
+    const rightScore =
+      right.rerankScore ?? right.confidenceScore ?? right.score;
+    return rightScore - leftScore;
+  })[0];
+  const topMatchPageStart =
+    topMatch?.chunk.metadata?.pageStart ?? topMatch?.chunk.metadata?.pageNumber;
+  const topMatchPageEnd =
+    topMatch?.chunk.metadata?.pageEnd ?? topMatch?.chunk.metadata?.pageNumber;
+
+  return {
+    versionId: input.versionId ?? null,
+    sectionId: input.section.id,
+    sectionHeading: getSectionCitationHeading(input.section),
+    pageStart: input.section.pageStart ?? topMatchPageStart ?? null,
+    pageEnd: input.section.pageEnd ?? topMatchPageEnd ?? null,
+    excerpt: buildCitationExcerpt(
+      input.section.content || topMatch?.chunk.content || input.section.summary,
+    ),
+    relevanceScore: input.relevanceScore,
+  };
+}
+
+function buildChunkCitationCandidate(input: {
+  match: KnowledgeQueryResult;
+  versionId?: string | null;
+}): RetrievedKnowledgeCitation {
+  const pageStart =
+    input.match.chunk.metadata?.pageStart ??
+    input.match.chunk.metadata?.pageNumber;
+  const pageEnd =
+    input.match.chunk.metadata?.pageEnd ??
+    input.match.chunk.metadata?.pageNumber;
+
+  return {
+    versionId: input.versionId ?? null,
+    sectionId: input.match.chunk.sectionId ?? null,
+    sectionHeading:
+      input.match.chunk.metadata?.headingPath ??
+      input.match.chunk.metadata?.section ??
+      null,
+    pageStart: pageStart ?? null,
+    pageEnd: pageEnd ?? null,
+    excerpt: buildCitationExcerpt(input.match.chunk.content),
+    relevanceScore:
+      input.match.rerankScore ??
+      input.match.confidenceScore ??
+      input.match.score,
+  };
 }
 
 function getSplitSiblingSection(
@@ -1574,6 +1649,7 @@ export interface DocRetrievalResult {
   sourceGroupId?: string | null;
   sourceGroupName?: string | null;
   isInherited?: boolean;
+  versionId?: string | null;
   /** Aggregated relevance score from chunk-level search */
   relevanceScore: number;
   /** Number of chunks from this document that appeared in search results */
@@ -1585,7 +1661,18 @@ export interface DocRetrievalResult {
     heading: string;
     score: number;
   }>;
+  citationCandidates?: RetrievedKnowledgeCitation[];
   matchedImages?: RetrievedKnowledgeImage[];
+}
+
+export interface RetrievedKnowledgeCitation {
+  versionId?: string | null;
+  sectionId?: string | null;
+  sectionHeading?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  excerpt: string;
+  relevanceScore: number;
 }
 
 export interface RetrievedKnowledgeImage
@@ -2180,15 +2267,43 @@ async function assembleFullDocResults(input: {
 
     const contentTokens = estimateTokens(docData.markdown);
     if (contentTokens + tokensUsed <= tokenBudget) {
+      const citationCandidates = Array.from(
+        new Map(
+          (chunkStats.get(doc.documentId)?.matches ?? [])
+            .sort((left, right) => {
+              const leftScore =
+                left.rerankScore ?? left.confidenceScore ?? left.score;
+              const rightScore =
+                right.rerankScore ?? right.confidenceScore ?? right.score;
+              return rightScore - leftScore;
+            })
+            .map((match) => {
+              const candidate = buildChunkCitationCandidate({
+                match,
+                versionId: doc.versionId ?? null,
+              });
+              const key = [
+                candidate.sectionId ?? "",
+                candidate.pageStart ?? "",
+                candidate.pageEnd ?? "",
+                candidate.excerpt,
+              ].join("::");
+              return [key, candidate] as const;
+            }),
+        ).values(),
+      ).slice(0, 3);
+
       results.push({
         documentId: doc.documentId,
         documentName: doc.documentName,
         sourceGroupId: doc.sourceGroupId,
         sourceGroupName: doc.sourceGroupName,
         isInherited: doc.isInherited,
+        versionId: doc.versionId ?? null,
         relevanceScore: doc.relevanceScore,
         chunkHits: doc.chunkHits,
         markdown: docData.markdown,
+        citationCandidates,
       });
       tokensUsed += contentTokens;
       continue;
@@ -2209,9 +2324,35 @@ async function assembleFullDocResults(input: {
       sourceGroupId: doc.sourceGroupId,
       sourceGroupName: doc.sourceGroupName,
       isInherited: doc.isInherited,
+      versionId: doc.versionId ?? null,
       relevanceScore: doc.relevanceScore,
       chunkHits: doc.chunkHits,
       markdown: truncated,
+      citationCandidates: Array.from(
+        new Map(
+          (chunkStats.get(doc.documentId)?.matches ?? [])
+            .sort((left, right) => {
+              const leftScore =
+                left.rerankScore ?? left.confidenceScore ?? left.score;
+              const rightScore =
+                right.rerankScore ?? right.confidenceScore ?? right.score;
+              return rightScore - leftScore;
+            })
+            .map((match) => {
+              const candidate = buildChunkCitationCandidate({
+                match,
+                versionId: doc.versionId ?? null,
+              });
+              const key = [
+                candidate.sectionId ?? "",
+                candidate.pageStart ?? "",
+                candidate.pageEnd ?? "",
+                candidate.excerpt,
+              ].join("::");
+              return [key, candidate] as const;
+            }),
+        ).values(),
+      ).slice(0, 3),
     });
     tokensUsed += estimateTokens(truncated);
     break;
@@ -2326,6 +2467,7 @@ async function assembleSectionFirstResults(input: {
     RankedDocCandidate & {
       blocks: string[];
       matchedSections: Array<{ heading: string; score: number }>;
+      citationCandidates: RetrievedKnowledgeCitation[];
     }
   >();
   let tokensUsed = 0;
@@ -2352,6 +2494,14 @@ async function assembleSectionFirstResults(input: {
         heading: formatSectionHeading(bundle.section),
         score: bundle.score,
       });
+      existing.citationCandidates.push(
+        buildSectionCitationCandidate({
+          section: bundle.section,
+          matches: bundle.matches,
+          versionId: bundle.doc.versionId ?? null,
+          relevanceScore: bundle.score,
+        }),
+      );
       continue;
     }
 
@@ -2363,6 +2513,14 @@ async function assembleSectionFirstResults(input: {
           heading: formatSectionHeading(bundle.section),
           score: bundle.score,
         },
+      ],
+      citationCandidates: [
+        buildSectionCitationCandidate({
+          section: bundle.section,
+          matches: bundle.matches,
+          versionId: bundle.doc.versionId ?? null,
+          relevanceScore: bundle.score,
+        }),
       ],
     });
   }
@@ -2376,10 +2534,24 @@ async function assembleSectionFirstResults(input: {
       sourceGroupId: doc!.sourceGroupId,
       sourceGroupName: doc!.sourceGroupName,
       isInherited: doc!.isInherited,
+      versionId: doc!.versionId ?? null,
       relevanceScore: doc!.relevanceScore,
       chunkHits: doc!.chunkHits,
       markdown: `${doc!.blocks.join("\n\n---\n\n")}\n\n[... section-first context]`,
       matchedSections: doc!.matchedSections,
+      citationCandidates: Array.from(
+        new Map(
+          doc!.citationCandidates.map((candidate) => {
+            const key = [
+              candidate.sectionId ?? "",
+              candidate.pageStart ?? "",
+              candidate.pageEnd ?? "",
+              candidate.excerpt,
+            ].join("::");
+            return [key, candidate] as const;
+          }),
+        ).values(),
+      ),
     }));
 
   return { results, tokensUsed, sectionCount };
@@ -2577,6 +2749,7 @@ export async function queryKnowledgeAsDocs(
         sourceGroupId: doc.groupId,
         sourceGroupName: sourceScope?.name ?? null,
         isInherited: doc.groupId !== group.id,
+        versionId: doc.activeVersionId ?? null,
         chunkHits: stats?.chunkHits ?? 0,
         relevanceScore,
         freshnessScore,

@@ -14,6 +14,7 @@ import { getDbModel } from "lib/ai/provider-factory";
 
 import {
   ChatContextPressureBreakdown,
+  ChatKnowledgeCitation,
   ChatMention,
   ChatKnowledgeSource,
   ChatMetadata,
@@ -106,6 +107,18 @@ import {
   mergeChatKnowledgeMetadata,
 } from "lib/chat/knowledge-sources";
 import type { DocRetrievalResult } from "lib/knowledge/retriever";
+import {
+  applyFinalizedAssistantText,
+  buildKnowledgeCitations,
+  buildKnowledgeCitationKey,
+  buildKnowledgeSourcesFromCitations,
+  normalizeKnowledgeCitationLayout,
+  enforceKnowledgeCitationCoverage,
+  formatKnowledgeEvidencePack,
+  stripAssistantKnowledgeCitationLinks,
+  validateKnowledgeCitationText,
+} from "lib/chat/knowledge-citations";
+import { buildKnowledgeToolCitationSystemPrompt } from "lib/ai/prompts";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -117,6 +130,40 @@ const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
   1200,
   0,
 ];
+
+type RetrievedKnowledgeGroup = {
+  groupId: string;
+  groupName: string;
+  docs: DocRetrievalResult[];
+};
+
+type FinalizedKnowledgeCitationState = {
+  finalizedText: string;
+  citations: ChatKnowledgeCitation[];
+  repaired: boolean;
+};
+
+function mergeRetrievedKnowledgeGroups(
+  groups: RetrievedKnowledgeGroup[],
+): RetrievedKnowledgeGroup[] {
+  const merged = new Map<string, RetrievedKnowledgeGroup>();
+
+  for (const group of groups) {
+    const existing = merged.get(group.groupId);
+    if (existing) {
+      existing.docs.push(...group.docs);
+      continue;
+    }
+
+    merged.set(group.groupId, {
+      groupId: group.groupId,
+      groupName: group.groupName,
+      docs: [...group.docs],
+    });
+  }
+
+  return Array.from(merged.values());
+}
 
 function buildCompactionFailureMessage(input: {
   failureCode?: string;
@@ -228,14 +275,14 @@ export async function POST(request: Request) {
       throw error;
     }
 
-    const messages: UIMessage[] = (thread?.messages ?? []).map((m) => {
-      return {
+    const messages: UIMessage[] = (thread?.messages ?? []).map((m) =>
+      stripAssistantKnowledgeCitationLinks({
         id: m.id,
         role: m.role,
         parts: m.parts,
         metadata: m.metadata,
-      };
-    });
+      }),
+    );
 
     if (messages.at(-1)?.id == message.id) {
       messages.pop();
@@ -278,6 +325,11 @@ export async function POST(request: Request) {
     // When the agent is a Snowflake Cortex agent, bypass the LLM entirely and
     // proxy the conversation directly to the Snowflake Cortex Agent API.
     if ((agent as any)?.agentType === "snowflake_cortex") {
+      if (agent?.knowledgeGroups?.length) {
+        logger.warn(
+          `[Knowledge Citation] attached knowledge citation guarantee is unavailable for Snowflake agent ${agent.id}; standard agents only`,
+        );
+      }
       const sfConfig =
         await snowflakeAgentRepository.selectSnowflakeConfigByAgentId(
           agent!.id,
@@ -570,6 +622,11 @@ export async function POST(request: Request) {
     // ── end Snowflake intercept ────────────────────────────────────────────
 
     if ((agent as any)?.agentType === "a2a_remote") {
+      if (agent?.knowledgeGroups?.length) {
+        logger.warn(
+          `[Knowledge Citation] attached knowledge citation guarantee is unavailable for A2A agent ${agent.id}; standard agents only`,
+        );
+      }
       const a2aConfig = await a2aAgentRepository.selectA2AConfigByAgentId(
         agent!.id,
       );
@@ -806,6 +863,10 @@ export async function POST(request: Request) {
       toolCount: 0,
       chatModel: chatModel,
     };
+    let latestPromptKnowledgeGroups: RetrievedKnowledgeGroup[] = [];
+    let latestPromptCitationKeys = new Set<string>();
+    let finalizedKnowledgeCitationState: FinalizedKnowledgeCitationState | null =
+      null;
     const toolRetrievedKnowledgeGroups = new Map<
       string,
       {
@@ -813,26 +874,103 @@ export async function POST(request: Request) {
         docs: DocRetrievalResult[];
       }
     >();
+    const toolRetrievedCitationKeys = new Set<string>();
+    const knowledgeCitationRegistry = new Map<string, ChatKnowledgeCitation>();
+    let nextKnowledgeCitationNumber = 1;
+    const registerKnowledgeCitations = (
+      retrievedGroups: RetrievedKnowledgeGroup[],
+    ) => {
+      const citations = buildKnowledgeCitations({
+        retrievedGroups,
+      })
+        .map((citation) => {
+          const key = buildKnowledgeCitationKey(citation);
+          const existing = knowledgeCitationRegistry.get(key);
+          if (existing) {
+            return existing;
+          }
+
+          const registered = {
+            ...citation,
+            number: nextKnowledgeCitationNumber++,
+          };
+          knowledgeCitationRegistry.set(key, registered);
+          return registered;
+        })
+        .sort((left, right) => left.number - right.number);
+
+      return {
+        citations,
+        citationKeys: citations.map((citation) =>
+          buildKnowledgeCitationKey(citation),
+        ),
+      };
+    };
+    const collectAvailableKnowledgeCitations = () =>
+      Array.from(
+        new Set([...latestPromptCitationKeys, ...toolRetrievedCitationKeys]),
+      )
+        .map((key) => knowledgeCitationRegistry.get(key) ?? null)
+        .filter(
+          (citation): citation is ChatKnowledgeCitation => citation !== null,
+        )
+        .sort((left, right) => left.number - right.number);
     const recordToolRetrievedKnowledge = (payload: {
       groupId: string;
       groupName: string;
+      query: string;
       docs: DocRetrievalResult[];
+      contextText: string;
     }) => {
-      if (!payload.docs.length) return;
+      if (!payload.docs.length) {
+        return {
+          contextText: payload.contextText,
+          citations: [],
+          evidencePack: null,
+        };
+      }
 
       const existing = toolRetrievedKnowledgeGroups.get(payload.groupId);
       if (existing) {
         existing.docs.push(...payload.docs);
-        return;
+      } else {
+        toolRetrievedKnowledgeGroups.set(payload.groupId, {
+          groupName: payload.groupName,
+          docs: [...payload.docs],
+        });
       }
 
-      toolRetrievedKnowledgeGroups.set(payload.groupId, {
-        groupName: payload.groupName,
-        docs: [...payload.docs],
-      });
+      const { citations, citationKeys } = registerKnowledgeCitations([
+        {
+          groupId: payload.groupId,
+          groupName: payload.groupName,
+          docs: payload.docs,
+        },
+      ]);
+      for (const citationKey of citationKeys) {
+        toolRetrievedCitationKeys.add(citationKey);
+      }
+
+      logger.info(
+        `[Knowledge Citation] captured ${payload.docs.length} docs and ${citations.length} citations from tool group ${payload.groupId} for thread ${thread!.id}`,
+      );
+
+      return {
+        contextText: payload.contextText,
+        citations,
+        evidencePack: citations.length
+          ? formatKnowledgeEvidencePack(citations)
+          : null,
+      };
     };
     const syncCapturedKnowledgeMetadata = () => {
-      if (toolRetrievedKnowledgeGroups.size === 0) return metadata;
+      const availableCitations = collectAvailableKnowledgeCitations();
+      if (
+        !availableCitations.length &&
+        toolRetrievedKnowledgeGroups.size === 0
+      ) {
+        return metadata;
+      }
 
       const merged = mergeChatKnowledgeMetadata({
         existingSources: metadata.knowledgeSources,
@@ -849,6 +987,9 @@ export async function POST(request: Request) {
 
       metadata.knowledgeSources = merged.knowledgeSources;
       metadata.knowledgeImages = merged.knowledgeImages;
+      metadata.knowledgeCitations = availableCitations.length
+        ? availableCitations
+        : metadata.knowledgeCitations;
       return metadata;
     };
 
@@ -937,7 +1078,10 @@ export async function POST(request: Request) {
             Promise<{
               contexts: string[];
               sources: ChatKnowledgeSource[];
+              citations: ChatKnowledgeCitation[];
+              citationKeys: string[];
               images: NonNullable<ChatMetadata["knowledgeImages"]>;
+              retrievedGroups: RetrievedKnowledgeGroup[];
             }>
           >();
 
@@ -950,7 +1094,10 @@ export async function POST(request: Request) {
               return {
                 contexts: [],
                 sources: [],
+                citations: [],
+                citationKeys: [],
                 images: [],
+                retrievedGroups: [],
               };
             }
 
@@ -960,6 +1107,7 @@ export async function POST(request: Request) {
                 (async () => {
                   const contexts: string[] = [];
                   const sources: ChatKnowledgeSource[] = [];
+                  const retrievedGroups: RetrievedKnowledgeGroup[] = [];
                   const images: NonNullable<ChatMetadata["knowledgeImages"]> =
                     [];
                   let remainingKnowledgeBudget = totalBudget;
@@ -992,6 +1140,11 @@ export async function POST(request: Request) {
                     });
 
                     if (docs && docs.length > 0) {
+                      retrievedGroups.push({
+                        groupId: group.id,
+                        groupName: group.name,
+                        docs,
+                      });
                       const formatted = formatDocsAsText(
                         group.name,
                         docs,
@@ -1020,10 +1173,20 @@ export async function POST(request: Request) {
                     }
                   }
 
+                  const { citations, citationKeys } =
+                    registerKnowledgeCitations(retrievedGroups);
+                  const evidencePack = formatKnowledgeEvidencePack(citations);
+                  if (evidencePack) {
+                    contexts.unshift(evidencePack);
+                  }
+
                   return {
                     contexts,
                     sources: dedupeChatKnowledgeSources(sources),
+                    citations,
+                    citationKeys,
                     images: dedupeChatKnowledgeImages(images),
+                    retrievedGroups,
                   };
                 })(),
               );
@@ -1050,12 +1213,19 @@ export async function POST(request: Request) {
           const {
             contexts: knowledgeContexts,
             sources: knowledgeSources,
+            citations: knowledgeCitations,
+            citationKeys,
             images: knowledgeImages,
+            retrievedGroups,
           } = await buildKnowledgeContextsForBudget(knowledgeBudget);
+
+          latestPromptKnowledgeGroups = retrievedGroups;
+          latestPromptCitationKeys = new Set(citationKeys);
 
           return {
             knowledgeContexts,
             knowledgeSources,
+            knowledgeCitations,
             knowledgeImages,
             systemPrompt: buildWaveAgentSystemPrompt({
               user: session.user,
@@ -1067,7 +1237,12 @@ export async function POST(request: Request) {
               knowledgeContexts,
               mcpServerCustomizations,
               toolCallUnsupported: !supportToolCall,
-              extraPrompts: [learnedPersonalizationPrompt],
+              extraPrompts: [
+                learnedPersonalizationPrompt,
+                buildKnowledgeToolCitationSystemPrompt(
+                  Object.keys(toolset.knowledgeTools ?? {}).length > 0,
+                ),
+              ],
             }),
           };
         };
@@ -1237,6 +1412,90 @@ export async function POST(request: Request) {
           checkpoint: thread?.compactionCheckpoint ?? null,
           currentLoopMessages: [],
         };
+        let responseMessageId: string | null = null;
+
+        const collectRetrievedKnowledgeGroups = () =>
+          mergeRetrievedKnowledgeGroups([
+            ...latestPromptKnowledgeGroups,
+            ...Array.from(toolRetrievedKnowledgeGroups.entries()).map(
+              ([groupId, value]) => ({
+                groupId,
+                groupName: value.groupName,
+                docs: value.docs,
+              }),
+            ),
+          ]);
+
+        const finalizeKnowledgeCitations = async (draftText: string) => {
+          let citations = collectAvailableKnowledgeCitations();
+          if (!citations.length && toolRetrievedKnowledgeGroups.size > 0) {
+            logger.warn(
+              `[Knowledge Citation] knowledge tool hits were captured without registered citations for thread ${thread!.id}; falling back to raw retrieved groups`,
+            );
+            const fallback = registerKnowledgeCitations(
+              collectRetrievedKnowledgeGroups(),
+            );
+            citations = fallback.citations;
+            latestPromptCitationKeys = new Set([
+              ...latestPromptCitationKeys,
+              ...fallback.citationKeys,
+            ]);
+          }
+
+          if (!citations.length) {
+            if (toolRetrievedKnowledgeGroups.size > 0) {
+              logger.warn(
+                `[Knowledge Citation] standard attached-agent knowledge was used but no final citations were available for thread ${thread!.id}`,
+              );
+            }
+            return null;
+          }
+
+          if (!draftText.trim()) {
+            return null;
+          }
+
+          const finalizedText = draftText.trim();
+          let repaired = false;
+          const preserveCitationAppendix =
+            /\b(reference|references|bibliography|sources?|citations?|rujukan|daftar pustaka)\b/i.test(
+              userQueryText,
+            );
+          const initialValidation = validateKnowledgeCitationText({
+            text: finalizedText,
+            citations,
+          });
+          repaired = !initialValidation.isValid;
+
+          const enforcedText = enforceKnowledgeCitationCoverage({
+            text: finalizedText,
+            citations,
+          }).trim();
+          const normalizedText = normalizeKnowledgeCitationLayout({
+            text: enforcedText,
+            citations,
+            preserveAppendix: preserveCitationAppendix,
+          }).trim();
+          const finalValidation = validateKnowledgeCitationText({
+            text: normalizedText,
+            citations,
+          });
+          if (!finalValidation.isValid) {
+            logger.warn(
+              `[Knowledge Citation] deterministic coverage fallback still left validation issues for thread ${thread!.id}`,
+            );
+          }
+
+          logger.info(
+            `[Knowledge Citation] finalized ${citations.length} citations for thread ${thread!.id}; repaired=${repaired || normalizedText !== draftText.trim()} toolKnowledge=${toolRetrievedKnowledgeGroups.size > 0}`,
+          );
+
+          return {
+            finalizedText: normalizedText,
+            citations,
+            repaired: repaired || normalizedText !== draftText.trim(),
+          } satisfies FinalizedKnowledgeCitationState;
+        };
 
         const result = streamText({
           model,
@@ -1271,6 +1530,10 @@ export async function POST(request: Request) {
               );
               metadata.knowledgeSources = promptContext.knowledgeSources.length
                 ? promptContext.knowledgeSources
+                : undefined;
+              metadata.knowledgeCitations = promptContext.knowledgeCitations
+                .length
+                ? promptContext.knowledgeCitations
                 : undefined;
               metadata.knowledgeImages = promptContext.knowledgeImages.length
                 ? promptContext.knowledgeImages
@@ -1568,26 +1831,91 @@ export async function POST(request: Request) {
             },
           }),
         });
-        result.consumeStream();
+        const consumeResultPromise = result.consumeStream();
         dataStream.merge(
           result.toUIMessageStream({
-            messageMetadata: ({ part }) => {
-              if (part.type == "finish") {
-                metadata.usage = attachUsageCost(part.totalUsage as ChatUsage);
-                return syncCapturedKnowledgeMetadata();
-              }
+            originalMessages: messages,
+            generateMessageId: () => {
+              const generatedId = generateUUID();
+              responseMessageId = generatedId;
+              return generatedId;
             },
+            sendFinish: false,
           }),
         );
+
+        await consumeResultPromise;
+        const [draftText, totalUsage, finishReason] = await Promise.all([
+          result.text,
+          result.usage,
+          result.finishReason,
+        ]);
+        syncCapturedKnowledgeMetadata();
+
+        finalizedKnowledgeCitationState =
+          await finalizeKnowledgeCitations(draftText);
+        if (finalizedKnowledgeCitationState?.citations.length) {
+          metadata.knowledgeCitations =
+            finalizedKnowledgeCitationState.citations;
+          metadata.knowledgeSources = buildKnowledgeSourcesFromCitations(
+            finalizedKnowledgeCitationState.citations,
+          );
+        }
+
+        metadata.usage = attachUsageCost(totalUsage as ChatUsage);
+        const finalMetadata = syncCapturedKnowledgeMetadata();
+
+        if (finalizedKnowledgeCitationState && responseMessageId) {
+          dataStream.write({
+            type: "data-citation-finalized",
+            data: {
+              messageId: responseMessageId,
+              finalizedText: finalizedKnowledgeCitationState.finalizedText,
+              citations: finalizedKnowledgeCitationState.citations,
+              repaired: finalizedKnowledgeCitationState.repaired,
+            },
+            transient: true,
+          });
+        }
+
+        dataStream.write({
+          type: "message-metadata",
+          messageMetadata: finalMetadata,
+        });
+        dataStream.write({
+          type: "finish",
+          finishReason,
+          messageMetadata: finalMetadata,
+        });
       },
 
       generateId: generateUUID,
       onFinish: async ({ responseMessage, isAborted }) => {
         try {
-          const finalResponseMessage = isAborted
+          const streamedResponseMessage = isAborted
             ? appendAbortedResponseNotice(responseMessage)
             : responseMessage;
           syncCapturedKnowledgeMetadata();
+          if (finalizedKnowledgeCitationState?.citations.length) {
+            metadata.knowledgeCitations =
+              finalizedKnowledgeCitationState.citations;
+            metadata.knowledgeSources = buildKnowledgeSourcesFromCitations(
+              finalizedKnowledgeCitationState.citations,
+            );
+          }
+
+          const finalResponseMessage =
+            finalizedKnowledgeCitationState?.finalizedText
+              ? applyFinalizedAssistantText(
+                  streamedResponseMessage,
+                  finalizedKnowledgeCitationState.finalizedText,
+                  {
+                    knowledgeCitations:
+                      finalizedKnowledgeCitationState.citations,
+                    knowledgeSources: metadata.knowledgeSources,
+                  },
+                )
+              : streamedResponseMessage;
 
           if (finalResponseMessage.id == message.id) {
             await chatRepository.upsertMessage({

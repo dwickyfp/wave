@@ -1296,6 +1296,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         name: KnowledgeDocumentTable.name,
         description: KnowledgeDocumentTable.description,
         metadata: KnowledgeDocumentTable.metadata,
+        activeVersionId: KnowledgeDocumentTable.activeVersionId,
         updatedAt: KnowledgeDocumentTable.updatedAt,
       })
       .from(KnowledgeDocumentTable)
@@ -1312,6 +1313,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       name: r.name,
       description: r.description ?? null,
       metadata: (r.metadata as Record<string, unknown>) ?? null,
+      activeVersionId: r.activeVersionId ?? null,
       updatedAt: r.updatedAt,
     }));
   },

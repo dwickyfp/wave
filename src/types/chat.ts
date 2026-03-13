@@ -109,6 +109,24 @@ export type ChatKnowledgeSource = {
   matchedSections?: string[];
 };
 
+export type ChatKnowledgeCitation = {
+  number: number;
+  groupId: string;
+  groupName: string;
+  documentId: string;
+  documentName: string;
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  isInherited?: boolean;
+  versionId?: string | null;
+  sectionId?: string | null;
+  sectionHeading?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  excerpt: string;
+  relevanceScore: number;
+};
+
 export type ChatKnowledgeImage = {
   groupId: string;
   groupName: string;
@@ -141,6 +159,7 @@ export type ChatMetadata = {
   pilotVisualCaptureCount?: number;
   compaction?: ChatCompactionMetadata;
   knowledgeSources?: ChatKnowledgeSource[];
+  knowledgeCitations?: ChatKnowledgeCitation[];
   knowledgeImages?: ChatKnowledgeImage[];
 };
 

@@ -12,8 +12,6 @@ import { formatKnowledgeDocumentProcessingState } from "lib/knowledge/processing
 import { cn } from "lib/utils";
 import {
   Clock3Icon,
-  DownloadIcon,
-  ExternalLinkIcon,
   FileIcon,
   FileTextIcon,
   LinkIcon,
@@ -52,6 +50,7 @@ import {
 } from "ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
 import { Textarea } from "ui/textarea";
+import { KnowledgeDocumentViewer } from "./knowledge-document-viewer";
 
 const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   pdf: FileTextIcon,
@@ -280,7 +279,13 @@ export function DocumentPreviewSheet({
   };
 
   const loadPreview = useEffectEvent(
-    async ({ showLoader = true }: { showLoader?: boolean } = {}) => {
+    async ({
+      showLoader = true,
+      versionId,
+    }: {
+      showLoader?: boolean;
+      versionId?: string | null;
+    } = {}) => {
       if (!doc) return;
       if (showLoader) {
         setLoading(true);
@@ -288,8 +293,14 @@ export function DocumentPreviewSheet({
       setError(null);
 
       try {
+        const searchParams = new URLSearchParams({
+          ts: String(Date.now()),
+        });
+        if (versionId) {
+          searchParams.set("versionId", versionId);
+        }
         const response = await fetch(
-          `/api/knowledge/${groupId}/documents/${doc.id}/preview?ts=${Date.now()}`,
+          `/api/knowledge/${groupId}/documents/${doc.id}/preview?${searchParams.toString()}`,
           {
             cache: "no-store",
           },
@@ -360,6 +371,7 @@ export function DocumentPreviewSheet({
       versionId?: string | null,
       { silent = false }: { silent?: boolean } = {},
     ) => {
+      const currentPreview = previewData;
       const cacheKey = getImageCacheKey(versionId);
       const cachedImages = imagesByVersion[cacheKey];
       if (cachedImages !== undefined) {
@@ -369,14 +381,16 @@ export function DocumentPreviewSheet({
 
       if (
         versionId &&
-        versionId === previewData?.activeVersionId &&
-        previewData.images.length > 0
+        versionId ===
+          (currentPreview?.resolvedVersionId ??
+            currentPreview?.activeVersionId) &&
+        (currentPreview?.images.length ?? 0) > 0
       ) {
         setImagesByVersion((current) => ({
           ...current,
-          [cacheKey]: previewData.images,
+          [cacheKey]: currentPreview?.images ?? [],
         }));
-        setDocumentImages(previewData.images);
+        setDocumentImages(currentPreview?.images ?? []);
         return;
       }
 
@@ -503,9 +517,14 @@ export function DocumentPreviewSheet({
   ]);
 
   useEffect(() => {
-    if (!previewData?.activeVersionId) return;
-    const activeImages = previewData.images ?? [];
-    const activeCacheKey = getImageCacheKey(previewData.activeVersionId);
+    const currentPreview = previewData;
+    if (!currentPreview) return;
+
+    const previewVersionId =
+      currentPreview.resolvedVersionId ?? currentPreview.activeVersionId;
+    if (!previewVersionId) return;
+    const activeImages = currentPreview.images ?? [];
+    const activeCacheKey = getImageCacheKey(previewVersionId);
     setImagesByVersion((current) =>
       current[activeCacheKey] === activeImages
         ? current
@@ -515,13 +534,15 @@ export function DocumentPreviewSheet({
           },
     );
 
-    if (
-      (selectedVersionId ?? previewData.activeVersionId) ===
-      previewData.activeVersionId
-    ) {
+    if ((selectedVersionId ?? previewVersionId) === previewVersionId) {
       setDocumentImages(activeImages);
     }
-  }, [previewData?.activeVersionId, previewData?.images, selectedVersionId]);
+  }, [
+    previewData?.activeVersionId,
+    previewData?.resolvedVersionId,
+    previewData?.images,
+    selectedVersionId,
+  ]);
 
   useEffect(() => {
     if (mainTab === "history" && previewData?.doc?.id) {
@@ -541,6 +562,29 @@ export function DocumentPreviewSheet({
     loadVersionMarkdown,
   ]);
 
+  useEffect(() => {
+    if (
+      !open ||
+      !doc ||
+      mainTab !== "original" ||
+      !selectedVersionId ||
+      selectedVersionId ===
+        (previewData?.resolvedVersionId ?? previewData?.activeVersionId ?? null)
+    ) {
+      return;
+    }
+
+    void loadPreview({ versionId: selectedVersionId });
+  }, [
+    open,
+    doc,
+    mainTab,
+    selectedVersionId,
+    previewData?.resolvedVersionId,
+    previewData?.activeVersionId,
+    loadPreview,
+  ]);
+
   const hasPendingVersionJob =
     previewData?.versions.some((version) => version.status === "processing") ??
     false;
@@ -551,7 +595,10 @@ export function DocumentPreviewSheet({
     }
 
     const pollId = window.setInterval(() => {
-      void loadPreview({ showLoader: false });
+      void loadPreview({
+        showLoader: false,
+        versionId: selectedVersionId ?? null,
+      });
       if (mainTab === "history" && previewData.doc.id) {
         void loadHistory(previewData.doc.id, { silent: true });
       }
@@ -564,6 +611,7 @@ export function DocumentPreviewSheet({
     previewData,
     hasPendingVersionJob,
     mainTab,
+    selectedVersionId,
     loadPreview,
     loadHistory,
   ]);
@@ -1122,7 +1170,9 @@ export function DocumentPreviewSheet({
                 </TabsContent>
 
                 <TabsContent value="original" className="mt-0 h-full">
-                  <PreviewContent data={previewData} />
+                  <div className="h-full overflow-hidden">
+                    <KnowledgeDocumentViewer data={previewData} />
+                  </div>
                 </TabsContent>
 
                 <TabsContent value="images" className="mt-0 h-full">
@@ -1516,82 +1566,5 @@ export function DocumentPreviewSheet({
         </Tabs>
       </SheetContent>
     </Sheet>
-  );
-}
-
-function PreviewContent({ data }: { data: KnowledgeDocumentPreview }) {
-  const { doc, previewUrl, sourceUrl, content, isUrlOnly } = data;
-  const url = previewUrl ?? sourceUrl;
-
-  if (isUrlOnly) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-        <LinkIcon className="size-10 text-muted-foreground/50" />
-        <p className="text-sm text-muted-foreground">
-          This is a URL source document.
-        </p>
-        {sourceUrl && (
-          <Button variant="outline" size="sm" asChild>
-            <a href={sourceUrl} target="_blank" rel="noreferrer">
-              <ExternalLinkIcon className="mr-1.5 size-3.5" />
-              Open URL
-            </a>
-          </Button>
-        )}
-      </div>
-    );
-  }
-
-  if (doc.fileType === "pdf" && url) {
-    return (
-      <iframe src={url} className="h-full w-full border-0" title={doc.name} />
-    );
-  }
-
-  if (["png", "jpg", "jpeg", "gif", "webp"].includes(doc.fileType) && url) {
-    return (
-      <div className="flex h-full items-center justify-center overflow-auto p-4">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={url}
-          alt={doc.name}
-          className="max-h-full max-w-full rounded-lg object-contain"
-        />
-      </div>
-    );
-  }
-
-  if (content !== null) {
-    return (
-      <ScrollArea className="h-full">
-        <pre
-          className={cn(
-            "p-6 text-xs font-mono whitespace-pre-wrap break-words leading-relaxed text-foreground/90",
-            doc.fileType === "md" &&
-              "prose prose-sm dark:prose-invert max-w-none",
-          )}
-        >
-          {content}
-        </pre>
-      </ScrollArea>
-    );
-  }
-
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
-      <FileIcon className="size-10 text-muted-foreground/50" />
-      <p className="text-sm text-muted-foreground">
-        Preview not available for{" "}
-        <span className="font-medium">{doc.fileType.toUpperCase()}</span> files.
-      </p>
-      {url && (
-        <Button variant="outline" size="sm" asChild>
-          <a href={url} download={doc.originalFilename}>
-            <DownloadIcon className="mr-1.5 size-3.5" />
-            Download to view
-          </a>
-        </Button>
-      )}
-    </div>
   );
 }

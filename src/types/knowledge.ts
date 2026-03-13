@@ -369,11 +369,16 @@ export interface KnowledgeDocumentPreview {
     embeddingTokenCount?: number;
     processingState?: KnowledgeDocumentProcessingState | null;
   };
+  assetUrl: string | null;
   previewUrl: string | null;
   sourceUrl: string | null;
   content: string | null;
   markdownAvailable: boolean;
   isUrlOnly: boolean;
+  requestedVersionId?: string | null;
+  resolvedVersionId?: string | null;
+  binaryMatchesRequestedVersion?: boolean;
+  fallbackWarning?: string | null;
   activeVersionId: string | null;
   activeVersionNumber: number | null;
   versions: KnowledgeDocumentVersionSummary[];
@@ -633,6 +638,7 @@ export interface KnowledgeRepository {
       name: string;
       description?: string | null;
       metadata?: Record<string, unknown> | null;
+      activeVersionId?: string | null;
       updatedAt: Date;
     }>
   >;

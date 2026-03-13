@@ -12,6 +12,18 @@ const { queryKnowledgeAsDocs, formatDocsAsText } = await import(
   "lib/knowledge/retriever"
 );
 
+function expectKnowledgeToolResult<T>(
+  result: T | AsyncIterable<unknown> | undefined,
+): Exclude<T, AsyncIterable<unknown> | undefined> {
+  expect(result).toBeDefined();
+  expect(
+    typeof (result as { [Symbol.asyncIterator]?: unknown })?.[
+      Symbol.asyncIterator
+    ],
+  ).toBe("undefined");
+  return result as Exclude<T, AsyncIterable<unknown> | undefined>;
+}
+
 describe("knowledge-tool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -59,7 +71,16 @@ describe("knowledge-tool", () => {
       }),
     );
     expect(formatDocsAsText).toHaveBeenCalled();
-    expect(result).toBe("formatted knowledge");
+    expect(result).toMatchObject({
+      source: "attached_agent_knowledge",
+      groupId: "group-1",
+      groupName: "Product Docs",
+      query: "how to sign in",
+      contextText: "formatted knowledge",
+      citations: [],
+      evidencePack: null,
+      hasResults: false,
+    });
   });
 
   it("passes through explicit full-doc mode", async () => {
@@ -223,6 +244,177 @@ describe("knowledge-tool", () => {
       groupName: "Product Docs",
       query: "how to sign in",
       docs,
+      contextText: "formatted knowledge",
     });
+  });
+
+  it("returns stable citation payload from the callback for the model to cite", async () => {
+    const docs = [
+      {
+        documentId: "doc-1",
+        documentName: "Tax Guide",
+        versionId: "version-1",
+        relevanceScore: 0.93,
+        chunkHits: 2,
+        markdown: "## Vape tax\n\nVape is taxed.",
+        matchedSections: [{ heading: "Vape tax", score: 0.93 }],
+        citationCandidates: [
+          {
+            versionId: "version-1",
+            sectionId: "section-1",
+            sectionHeading: "Vape tax",
+            pageStart: 12,
+            pageEnd: 12,
+            excerpt: "Vape is taxed.",
+            relevanceScore: 0.93,
+          },
+        ],
+      },
+    ];
+    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+
+    const tool = createKnowledgeDocsTool(
+      {
+        id: "group-1",
+        name: "Product Docs",
+        userId: "user-1",
+        visibility: "private",
+        purpose: "default",
+        isSystemManaged: false,
+        embeddingModel: "embed",
+        embeddingProvider: "openai",
+        rerankingModel: null,
+        rerankingProvider: null,
+        parsingModel: null,
+        parsingProvider: null,
+        parseMode: "auto",
+        parseRepairPolicy: "section-safe-reorder",
+        contextMode: "deterministic",
+        imageMode: "auto",
+        lazyRefinementEnabled: true,
+        retrievalThreshold: 0,
+        mcpEnabled: false,
+        documentCount: 1,
+        chunkCount: 10,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        onRetrieved: () => ({
+          citations: [
+            {
+              number: 4,
+              groupId: "group-1",
+              groupName: "Product Docs",
+              documentId: "doc-1",
+              documentName: "Tax Guide",
+              versionId: "version-1",
+              sectionId: "section-1",
+              sectionHeading: "Vape tax",
+              pageStart: 12,
+              pageEnd: 12,
+              excerpt: "Vape is taxed.",
+              relevanceScore: 0.93,
+            },
+          ],
+          evidencePack:
+            "<knowledge_evidence_pack>\n\n[4] Tax Guide\nSection: Vape tax\nPage 12\nExcerpt: Vape is taxed.\n\n</knowledge_evidence_pack>",
+        }),
+      },
+    );
+
+    const result = await tool.execute?.({ query: "is vape taxed?" }, {
+      toolCallId: "call-4",
+      messages: [],
+    } as any);
+    const typedResult = expectKnowledgeToolResult(result);
+
+    expect(typedResult).toMatchObject({
+      hasResults: true,
+      contextText: "formatted knowledge",
+      evidencePack: expect.stringContaining("[4] Tax Guide"),
+      citations: [
+        {
+          number: 4,
+          pageStart: 12,
+          sectionHeading: "Vape tax",
+        },
+      ],
+    });
+    expect(typedResult.citationInstructions).toContain('"[n]"');
+  });
+
+  it("falls back to retrieval-derived citations when the callback does not provide them", async () => {
+    const docs = [
+      {
+        documentId: "doc-1",
+        documentName: "Tax Guide",
+        versionId: "version-1",
+        relevanceScore: 0.93,
+        chunkHits: 2,
+        markdown: "## Vape tax\n\nVape is taxed.",
+        matchedSections: [{ heading: "Vape tax", score: 0.93 }],
+        citationCandidates: [
+          {
+            versionId: "version-1",
+            sectionId: "section-1",
+            sectionHeading: "Vape tax",
+            pageStart: 12,
+            pageEnd: 12,
+            excerpt: "Vape is taxed.",
+            relevanceScore: 0.93,
+          },
+        ],
+      },
+    ];
+    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+
+    const tool = createKnowledgeDocsTool({
+      id: "group-1",
+      name: "Product Docs",
+      userId: "user-1",
+      visibility: "private",
+      purpose: "default",
+      isSystemManaged: false,
+      embeddingModel: "embed",
+      embeddingProvider: "openai",
+      rerankingModel: null,
+      rerankingProvider: null,
+      parsingModel: null,
+      parsingProvider: null,
+      parseMode: "auto",
+      parseRepairPolicy: "section-safe-reorder",
+      contextMode: "deterministic",
+      imageMode: "auto",
+      lazyRefinementEnabled: true,
+      retrievalThreshold: 0,
+      mcpEnabled: false,
+      documentCount: 1,
+      chunkCount: 10,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const result = await tool.execute?.({ query: "is vape taxed?" }, {
+      toolCallId: "call-5",
+      messages: [],
+    } as any);
+    const typedResult = expectKnowledgeToolResult(result);
+
+    expect(typedResult).toMatchObject({
+      hasResults: true,
+      citations: [
+        {
+          number: 1,
+          documentId: "doc-1",
+          pageStart: 12,
+          sectionHeading: "Vape tax",
+        },
+      ],
+    });
+    expect(typedResult.evidencePack).toContain("[1] Tax Guide");
+    expect(typedResult.citationInstructions).toContain(
+      "Uncited factual claims",
+    );
   });
 });

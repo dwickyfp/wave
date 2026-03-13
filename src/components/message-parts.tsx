@@ -71,6 +71,7 @@ import {
   getShortcutKeyList,
   isShortcutEvent,
 } from "lib/keyboard-shortcuts";
+import { stripKnowledgeCitationLinks } from "lib/chat/knowledge-citations";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { TextShimmer } from "ui/text-shimmer";
 
@@ -387,6 +388,8 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   showActions,
   message,
   prevMessage,
+  isLast,
+  isLoading: isResponseLoading,
   isError,
   threadId,
   setMessages,
@@ -394,7 +397,6 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   sendMessage,
 }: AssistMessagePartProps) {
   const { copied, copy } = useCopy();
-  const [isLoading, setIsLoading] = useState(false);
   const agentList = appStore((state) => state.agentList);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isBranching, setIsBranching] = useState(false);
@@ -403,7 +405,9 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   const ref = useRef<HTMLDivElement>(null);
   const metadata = message.metadata as ChatMetadata | undefined;
   const knowledgeSources = metadata?.knowledgeSources ?? [];
+  const knowledgeCitations = metadata?.knowledgeCitations ?? [];
   const knowledgeImages = metadata?.knowledgeImages ?? [];
+  const isStreaming = Boolean(isLast && isResponseLoading);
 
   const [feedback, setFeedback] = useState<ChatFeedbackType | null>(null);
   const [isCling, setIsCling] = useState(false);
@@ -530,7 +534,7 @@ export const AssistMessagePart = memo(function AssistMessagePart({
 
   const handleModelChange = (model: ChatModel) => {
     if (!setMessages || !sendMessage || !prevMessage) return;
-    safe(() => setIsLoading(true))
+    safe(() => undefined)
       .ifOk(() =>
         threadId
           ? deleteMessagesByChatIdAfterTimestampAction(message.id, "regenerate")
@@ -553,17 +557,11 @@ export const AssistMessagePart = memo(function AssistMessagePart({
         }),
       )
       .ifFail((error) => toast.error(error.message))
-      .watch(() => setIsLoading(false))
       .unwrap();
   };
 
   return (
-    <div
-      className={cn(
-        isLoading && "animate-pulse",
-        "flex flex-col gap-2 group/message",
-      )}
-    >
+    <div className="flex flex-col gap-2 group/message">
       <div
         data-testid="message-content"
         className={cn("flex flex-col gap-4 px-2", {
@@ -576,6 +574,9 @@ export const AssistMessagePart = memo(function AssistMessagePart({
               ? "snowflake"
               : undefined
           }
+          knowledgeCitations={knowledgeCitations}
+          animate={false}
+          streaming={isStreaming}
         >
           {part.text}
         </Markdown>
@@ -596,7 +597,7 @@ export const AssistMessagePart = memo(function AssistMessagePart({
                   variant="ghost"
                   size="icon"
                   className="size-3! p-4!"
-                  onClick={() => copy(part.text)}
+                  onClick={() => copy(stripKnowledgeCitationLinks(part.text))}
                 >
                   {copied ? <Check /> : <Copy />}
                 </Button>
@@ -963,7 +964,7 @@ export const ReasoningPart = memo(function ReasoningPart({
               style={{ overflow: "hidden" }}
               className="pl-6 text-muted-foreground border-l flex flex-col gap-4"
             >
-              <Markdown>
+              <Markdown animate={!isThinking}>
                 {reasoningText || (isThinking ? "" : "Hmm, let's see...🤔")}
               </Markdown>
             </motion.div>

@@ -1614,4 +1614,19 @@
   .transition-colors-300 {
     @apply transition-colors duration-300;
   }
+
+  .pdf-text-layer {
+    pointer-events: none;
+    color: transparent;
+    line-height: 1;
+    text-size-adjust: none;
+    forced-color-adjust: none;
+  }
+
+  .pdf-text-layer span,
+  .pdf-text-layer br {
+    position: absolute;
+    transform-origin: 0 0;
+    white-space: pre;
+  }
 }

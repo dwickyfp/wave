@@ -19,6 +19,7 @@ import {
 import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import {
   createKnowledgeDocsTool,
+  type KnowledgeDocsPreparedPayload,
   type KnowledgeDocsRetrievedPayload,
   knowledgeDocsToolName,
 } from "lib/ai/tools/knowledge-tool";
@@ -62,7 +63,10 @@ export async function loadWaveAgentContinueCapabilities(options: {
   isToolCallAllowed?: boolean;
   onKnowledgeDocsRetrieved?: (
     payload: KnowledgeDocsRetrievedPayload,
-  ) => void | Promise<void>;
+  ) =>
+    | KnowledgeDocsPreparedPayload
+    | void
+    | Promise<KnowledgeDocsPreparedPayload | void>;
 }) {
   const isToolCallAllowed = options.isToolCallAllowed ?? true;
   const agent = options.agent;
@@ -151,7 +155,10 @@ export async function loadWaveAgentBoundTools(options: {
   isToolCallAllowed?: boolean;
   onKnowledgeDocsRetrieved?: (
     payload: KnowledgeDocsRetrievedPayload,
-  ) => void | Promise<void>;
+  ) =>
+    | KnowledgeDocsPreparedPayload
+    | void
+    | Promise<KnowledgeDocsPreparedPayload | void>;
 }) {
   const isToolCallAllowed = options.isToolCallAllowed ?? true;
   const agent = options.agent;

@@ -236,7 +236,8 @@ ${userPreferences.responseStyleExample}
 
 - When using tools, briefly mention which tool you'll use with natural phrases
 - Examples: "I'll search for that information", "Let me check the weather", "I'll run some calculations"
-- Use \`mermaid\` code blocks for diagrams and charts when helpful
+- Use \`mermaid\` only for valid Mermaid DSL diagrams
+- Use \`vegalite\` or \`json\` code blocks for structured chart specs or raw JSON data
 </communication_preferences>`;
   }
 
@@ -449,14 +450,33 @@ ${joined}
 <rag_instructions>
 IMPORTANT — Use the retrieved context above as your primary source of truth:
 1. Base your response primarily on the content inside <knowledge_retrieval_context>.
-2. Cite the document sources (e.g. "[1]", "[2]") when referencing specific information.
-3. If the retrieved context fully answers the question, DO NOT speculate beyond it.
-4. If the context is incomplete or missing key details, you may supplement with
+2. Cite every knowledge-backed sentence or bullet with inline citation ids (e.g. "[1]", "[2]") from the provided evidence pack.
+3. Only use citation ids that appear in the retrieved context. Never invent or renumber citations.
+4. Answers that rely on retrieved context are invalid without inline citations. If you use retrieved knowledge, do not output uncited factual prose.
+5. Do not output a separate Sources, References, or bibliography section unless the user explicitly asks for one.
+6. If the retrieved context fully answers the question, DO NOT speculate beyond it.
+7. If the context is incomplete or missing key details, you may supplement with
    general knowledge, but clearly state which parts come from retrieved context
    vs. your own training knowledge.
-5. If no relevant content was retrieved (score near 0 or "No relevant content found"),
+8. If no relevant content was retrieved (score near 0 or "No relevant content found"),
    acknowledge the limitation and answer from general knowledge if possible.
 </rag_instructions>`.trim();
+}
+
+export function buildKnowledgeToolCitationSystemPrompt(
+  enabled: boolean,
+): string | false {
+  if (!enabled) return false;
+
+  return `
+<knowledge_tool_citation_instructions>
+If you use any attached knowledge tool named like get_docs_*:
+1. Read the tool result's contextText, citations, and evidencePack fields together.
+2. Treat citations[].number as the only valid inline citation ids for facts grounded in that tool result.
+3. Cite every knowledge-backed sentence or bullet from that tool result with inline markers like "[4]".
+4. Do not invent, renumber, or omit citation ids from knowledge tool results.
+5. Answers based on get_docs_* tool results are invalid without inline citations.
+</knowledge_tool_citation_instructions>`.trim();
 }
 
 export function buildAgentSkillsSystemPrompt(

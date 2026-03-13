@@ -2,7 +2,14 @@
 
 import { useChat } from "@ai-sdk/react";
 import { toast } from "sonner";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import PromptInput from "./prompt-input";
 import clsx from "clsx";
 import { appStore } from "@/app/store";
@@ -52,6 +59,10 @@ import { useThreadFileUploader } from "@/hooks/use-thread-file-uploader";
 import { useFileDragOverlay } from "@/hooks/use-file-drag-overlay";
 import { CitationPreviewPanel } from "./citation-preview-panel";
 import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
+import {
+  applyFinalizedAssistantText,
+  stripKnowledgeCitationLinks,
+} from "lib/chat/knowledge-citations";
 
 type Props = {
   threadId: string;
@@ -105,7 +116,6 @@ export default function ChatBot({
     toolChoice,
     allowedAppDefaultToolkit,
     allowedMcpServers,
-    threadList,
     threadMentions,
     pendingThreadMention,
     threadImageToolModel,
@@ -117,7 +127,6 @@ export default function ChatBot({
       state.toolChoice,
       state.allowedAppDefaultToolkit,
       state.allowedMcpServers,
-      state.threadList,
       state.threadMentions,
       state.pendingThreadMention,
       state.threadImageToolModel,
@@ -173,9 +182,9 @@ export default function ChatBot({
       }
 
       setIsCompactingContext(false);
-      const prevThread = latestRef.current.threadList.find(
-        (v) => v.id === threadId,
-      );
+      const prevThread = appStore
+        .getState()
+        .threadList.find((value) => value.id === threadId);
       const isNewThread =
         !prevThread?.title &&
         normalizedMessages.filter(
@@ -195,7 +204,7 @@ export default function ChatBot({
         if (part.length > 0) {
           generateTitle(part.join("\n\n"));
         }
-      } else if (latestRef.current.threadList[0]?.id !== threadId) {
+      } else if (appStore.getState().threadList[0]?.id !== threadId) {
         mutate("/api/thread");
       }
     },
@@ -307,6 +316,40 @@ export default function ChatBot({
             messageCount: latestRef.current.messages.length,
           });
         }
+        return;
+      }
+
+      if (part?.type === "data-citation-finalized") {
+        const messageId =
+          typeof part.data?.messageId === "string" ? part.data.messageId : null;
+        const finalizedText =
+          typeof part.data?.finalizedText === "string"
+            ? part.data.finalizedText
+            : null;
+        if (!messageId || !finalizedText) {
+          return;
+        }
+
+        startTransition(() => {
+          setMessagesRef.current?.((currentMessages) =>
+            currentMessages.map((currentMessage) =>
+              currentMessage.id === messageId
+                ? applyFinalizedAssistantText(
+                    currentMessage,
+                    finalizedText,
+                    {
+                      knowledgeCitations: Array.isArray(part.data?.citations)
+                        ? part.data.citations
+                        : undefined,
+                    },
+                    {
+                      linkifyCitations: false,
+                    },
+                  )
+                : currentMessage,
+            ),
+          );
+        });
       }
     },
   });
@@ -328,7 +371,6 @@ export default function ChatBot({
     allowedAppDefaultToolkit,
     allowedMcpServers,
     messages,
-    threadList,
     threadId,
     mentions: threadMentions[threadId],
     threadImageToolModel,
@@ -365,20 +407,21 @@ export default function ChatBot({
 
   const shouldShowCompactionStatusRow = isCompactingContext;
 
-  const space = useMemo(() => {
+  const shouldShowPendingResponseRow = useMemo(() => {
     if (!isLoading || error) return false;
     const lastMessage = messages.at(-1);
-    if (lastMessage?.role == "user") return "think";
-    const lastPart = lastMessage?.parts.at(-1);
-    if (!lastPart) return "think";
-    const secondPart = lastMessage?.parts[1];
-    if (secondPart?.type == "text" && secondPart.text.length == 0)
-      return "think";
-    if (lastPart?.type == "step-start") {
-      return lastMessage?.parts.length == 1 ? "think" : "space";
-    }
+    if (!lastMessage) return false;
+    if (lastMessage.role === "user") return true;
+    const hasStreamingText = lastMessage.parts.some(
+      (part) =>
+        part.type === "text" &&
+        typeof part.text === "string" &&
+        part.text.trim().length > 0 &&
+        !(part as any).ingestionPreview,
+    );
+    if (!hasStreamingText) return true;
     return false;
-  }, [isLoading, messages.at(-1)]);
+  }, [error, isLoading, messages]);
 
   const particle = useMemo(() => {
     return (
@@ -487,7 +530,9 @@ export default function ChatBot({
           .filter((part): part is TextUIPart => part.type == "text")
           ?.at(-1)?.text;
         if (!lastMessageText) return;
-        navigator.clipboard.writeText(lastMessageText);
+        navigator.clipboard.writeText(
+          stripKnowledgeCitationLinks(lastMessageText),
+        );
         toast.success("Last message copied to clipboard");
       }
       if (isDeleteThread) {
@@ -549,6 +594,8 @@ export default function ChatBot({
               >
                 {messages.map((message, index) => {
                   const isLastMessage = messages.length - 1 === index;
+                  const messageIsLoading =
+                    isLastMessage && (isLoading || isPendingToolCall);
                   return (
                     <PreviewMessage
                       threadId={threadId}
@@ -558,32 +605,15 @@ export default function ChatBot({
                       message={message}
                       status={status}
                       addToolResult={addToolResult}
-                      isLoading={isLoading || isPendingToolCall}
+                      isLoading={messageIsLoading}
                       isLastMessage={isLastMessage}
                       setMessages={setMessages}
                       sendMessage={sendMessage}
-                      className={
-                        isLastMessage &&
-                        message.role != "user" &&
-                        !space &&
-                        message.parts.length > 1
-                          ? "min-h-[calc(55dvh-40px)]"
-                          : ""
-                      }
                     />
                   );
                 })}
                 {shouldShowCompactionStatusRow && <CompactionStatusRow />}
-                {space && (
-                  <>
-                    <div className="w-full mx-auto max-w-3xl px-6 relative">
-                      <div className={space == "space" ? "opacity-0" : ""}>
-                        <Think />
-                      </div>
-                    </div>
-                    <div className="min-h-[calc(55dvh-56px)]" />
-                  </>
-                )}
+                {shouldShowPendingResponseRow && <PendingResponseRow />}
 
                 {error && <ErrorMessage error={error} />}
                 <div className="min-w-0 min-h-52" />
@@ -626,6 +656,16 @@ export default function ChatBot({
         <CitationPreviewPanel />
       </div>
     </>
+  );
+}
+
+function PendingResponseRow() {
+  return (
+    <div className="w-full mx-auto max-w-3xl px-6">
+      <div className="px-2 py-2">
+        <Think />
+      </div>
+    </div>
   );
 }
 

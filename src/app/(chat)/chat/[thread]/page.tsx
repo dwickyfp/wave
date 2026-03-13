@@ -1,12 +1,9 @@
 import { selectThreadWithMessagesAction } from "@/app/api/chat/actions";
 import ChatBot from "@/components/chat-bot";
 
-import { ChatThreadDetails } from "app-types/chat";
 import { redirect, RedirectType } from "next/navigation";
 
-const fetchThread = async (
-  threadId: string,
-): Promise<ChatThreadDetails | null> => {
+const fetchThread = async (threadId: string) => {
   return await selectThreadWithMessagesAction(threadId);
 };
 

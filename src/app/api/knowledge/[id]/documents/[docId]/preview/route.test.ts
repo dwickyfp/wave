@@ -24,11 +24,15 @@ vi.mock("lib/file-storage", () => ({
 
 vi.mock("lib/knowledge/versioning", () => ({
   listDocumentVersions: vi.fn(),
+  getDocumentVersionContent: vi.fn(),
 }));
 
 const { getSession } = await import("auth/server");
 const { knowledgeRepository } = await import("lib/db/repository");
-const { listDocumentVersions } = await import("lib/knowledge/versioning");
+const { serverFileStorage } = await import("lib/file-storage");
+const { getDocumentVersionContent, listDocumentVersions } = await import(
+  "lib/knowledge/versioning"
+);
 const { GET } = await import("./route");
 
 function withParams(id: string, docId: string) {
@@ -37,6 +41,12 @@ function withParams(id: string, docId: string) {
   } as {
     params: Promise<{ id: string; docId: string }>;
   };
+}
+
+function withRequest(url: string) {
+  return {
+    nextUrl: new URL(url),
+  } as any;
 }
 
 describe("knowledge document preview route", () => {
@@ -125,9 +135,9 @@ describe("knowledge document preview route", () => {
     );
 
     const response = await GET(
-      new Request(
+      withRequest(
         "http://localhost/api/knowledge/group-1/documents/doc-1/preview",
-      ) as any,
+      ),
       withParams("group-1", "doc-1"),
     );
 
@@ -135,6 +145,7 @@ describe("knowledge document preview route", () => {
     await expect(response.json()).resolves.toMatchObject({
       activeVersionId: "version-2",
       activeVersionNumber: 2,
+      content: "# Draft",
       versions: [
         {
           id: "version-2",
@@ -156,5 +167,156 @@ describe("knowledge document preview route", () => {
       },
       markdownAvailable: true,
     });
+  });
+
+  it("returns version-aware asset metadata for historical previews", async () => {
+    vi.mocked(knowledgeRepository.selectGroupById).mockResolvedValue({
+      id: "group-1",
+      userId: "user-1",
+    } as any);
+    vi.mocked(knowledgeRepository.selectDocumentById).mockResolvedValue({
+      id: "doc-1",
+      groupId: "group-1",
+      userId: "user-1",
+      name: "Annual Report",
+      description: "Processed markdown",
+      originalFilename: "report.pdf",
+      fileType: "pdf",
+      fileSize: 2048,
+      storagePath: "knowledge/doc-1/report.pdf",
+      sourceUrl: null,
+      markdownContent: "# Active report",
+      activeVersionId: "version-2",
+      latestVersionNumber: 2,
+    } as any);
+    vi.mocked(listDocumentVersions).mockResolvedValue([
+      {
+        id: "version-1",
+        versionNumber: 1,
+        status: "ready",
+        changeType: "initial_ingest",
+        isActive: false,
+        resolvedTitle: "Annual Report",
+        resolvedDescription: "Archived source",
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingTokenCount: 42,
+        chunkCount: 3,
+        tokenCount: 120,
+        sourceVersionId: null,
+        createdByUserId: "user-1",
+        createdAt: new Date("2026-03-08T08:00:00.000Z"),
+        updatedAt: new Date("2026-03-08T08:00:00.000Z"),
+        canRollback: true,
+        rollbackBlockedReason: null,
+      },
+      {
+        id: "version-2",
+        versionNumber: 2,
+        status: "ready",
+        changeType: "edit",
+        isActive: true,
+        resolvedTitle: "Annual Report",
+        resolvedDescription: "Current source",
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingTokenCount: 42,
+        chunkCount: 3,
+        tokenCount: 120,
+        sourceVersionId: "version-1",
+        createdByUserId: "user-1",
+        createdAt: new Date("2026-03-09T08:00:00.000Z"),
+        updatedAt: new Date("2026-03-09T08:00:00.000Z"),
+        canRollback: false,
+        rollbackBlockedReason: null,
+      },
+    ]);
+    vi.mocked(getDocumentVersionContent).mockResolvedValue({
+      documentId: "doc-1",
+      versionId: "version-1",
+      markdownContent: "# Historical report",
+      title: "Annual Report",
+      description: "Archived source",
+      createdAt: new Date("2026-03-08T08:00:00.000Z"),
+      updatedAt: new Date("2026-03-08T08:00:00.000Z"),
+    } as any);
+    vi.mocked(knowledgeRepository.getDocumentImagesByVersion).mockResolvedValue(
+      [],
+    );
+    vi.mocked(knowledgeRepository.getDocumentImages).mockResolvedValue([]);
+    vi.mocked(serverFileStorage.getDownloadUrl!).mockResolvedValue(
+      "https://storage.example/report.pdf",
+    );
+
+    const response = await GET(
+      withRequest(
+        "http://localhost/api/knowledge/group-1/documents/doc-1/preview?versionId=version-1",
+      ),
+      withParams("group-1", "doc-1"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      requestedVersionId: "version-1",
+      resolvedVersionId: "version-1",
+      binaryMatchesRequestedVersion: false,
+      fallbackWarning: expect.stringContaining("historical file snapshots"),
+      assetUrl:
+        "/api/knowledge/group-1/documents/doc-1/asset?versionId=version-1",
+      content: "# Historical report",
+    });
+  });
+
+  it("returns 404 when the requested version does not exist", async () => {
+    vi.mocked(knowledgeRepository.selectGroupById).mockResolvedValue({
+      id: "group-1",
+      userId: "user-1",
+    } as any);
+    vi.mocked(knowledgeRepository.selectDocumentById).mockResolvedValue({
+      id: "doc-1",
+      groupId: "group-1",
+      userId: "user-1",
+      name: "Annual Report",
+      description: "Processed markdown",
+      originalFilename: "report.pdf",
+      fileType: "pdf",
+      fileSize: 2048,
+      storagePath: "knowledge/doc-1/report.pdf",
+      sourceUrl: null,
+      markdownContent: "# Active report",
+      activeVersionId: "version-2",
+      latestVersionNumber: 2,
+    } as any);
+    vi.mocked(listDocumentVersions).mockResolvedValue([
+      {
+        id: "version-2",
+        versionNumber: 2,
+        status: "ready",
+        changeType: "edit",
+        isActive: true,
+        resolvedTitle: "Annual Report",
+        resolvedDescription: "Current source",
+        embeddingProvider: "openai",
+        embeddingModel: "text-embedding-3-small",
+        embeddingTokenCount: 42,
+        chunkCount: 3,
+        tokenCount: 120,
+        sourceVersionId: "version-1",
+        createdByUserId: "user-1",
+        createdAt: new Date("2026-03-09T08:00:00.000Z"),
+        updatedAt: new Date("2026-03-09T08:00:00.000Z"),
+        canRollback: false,
+        rollbackBlockedReason: null,
+      },
+    ]);
+
+    const response = await GET(
+      withRequest(
+        "http://localhost/api/knowledge/group-1/documents/doc-1/preview?versionId=missing-version",
+      ),
+      withParams("group-1", "doc-1"),
+    );
+
+    expect(response.status).toBe(404);
   });
 });

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { tool } from "ai";
+import type { ChatKnowledgeCitation } from "app-types/chat";
 import { z } from "zod";
 import { KnowledgeSummary } from "app-types/knowledge";
 import {
@@ -9,6 +10,10 @@ import {
   formatDocsAsText,
   QueryKnowledgeDocsOptions,
 } from "lib/knowledge/retriever";
+import {
+  buildKnowledgeCitations,
+  formatKnowledgeEvidencePack,
+} from "lib/chat/knowledge-citations";
 
 const DEFAULT_AGENT_KNOWLEDGE_TOKENS = 5000;
 
@@ -17,6 +22,25 @@ export type KnowledgeDocsRetrievedPayload = {
   groupName: string;
   query: string;
   docs: DocRetrievalResult[];
+  contextText: string;
+};
+
+export type KnowledgeDocsPreparedPayload = {
+  contextText?: string;
+  citations?: ChatKnowledgeCitation[];
+  evidencePack?: string | null;
+};
+
+export type KnowledgeDocsToolResult = {
+  source: "attached_agent_knowledge";
+  groupId: string;
+  groupName: string;
+  query: string;
+  hasResults: boolean;
+  contextText: string;
+  citationInstructions: string;
+  evidencePack: string | null;
+  citations: ChatKnowledgeCitation[];
 };
 
 export function createKnowledgeDocsTool(
@@ -24,7 +48,10 @@ export function createKnowledgeDocsTool(
   options: Pick<QueryKnowledgeDocsOptions, "userId" | "source"> & {
     onRetrieved?: (
       payload: KnowledgeDocsRetrievedPayload,
-    ) => void | Promise<void>;
+    ) =>
+      | KnowledgeDocsPreparedPayload
+      | void
+      | Promise<KnowledgeDocsPreparedPayload | void>;
   } = {},
 ) {
   const { onRetrieved, ...queryOptions } = options;
@@ -85,15 +112,46 @@ export function createKnowledgeDocsTool(
         tokens: tokens ?? DEFAULT_AGENT_KNOWLEDGE_TOKENS,
         resultMode: mode ?? "section-first",
       });
-      await Promise.resolve(
+      const contextText = formatDocsAsText(group.name, docs, query);
+      const prepared = await Promise.resolve(
         onRetrieved?.({
           groupId: group.id,
           groupName: group.name,
           query,
           docs,
+          contextText,
         }),
-      ).catch(() => {});
-      return formatDocsAsText(group.name, docs, query);
+      ).catch(() => undefined);
+
+      const fallbackCitations = buildKnowledgeCitations({
+        retrievedGroups: [
+          {
+            groupId: group.id,
+            groupName: group.name,
+            docs,
+          },
+        ],
+      });
+      const citations = [...(prepared?.citations ?? fallbackCitations)].sort(
+        (left, right) => left.number - right.number,
+      );
+      const evidencePack =
+        prepared?.evidencePack ??
+        (citations.length ? formatKnowledgeEvidencePack(citations) : null);
+
+      return {
+        source: "attached_agent_knowledge",
+        groupId: group.id,
+        groupName: group.name,
+        query,
+        hasResults: docs.length > 0,
+        contextText: prepared?.contextText ?? contextText,
+        citationInstructions: citations.length
+          ? 'When you answer from this tool result, cite the matching inline ids exactly as "[n]". Uncited factual claims from this tool result are invalid.'
+          : "No cited knowledge was retrieved from this tool result.",
+        evidencePack,
+        citations,
+      } satisfies KnowledgeDocsToolResult;
     },
   });
 }

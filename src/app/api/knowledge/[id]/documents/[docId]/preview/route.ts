@@ -2,7 +2,10 @@ import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { withKnowledgeImageAssetUrl } from "lib/knowledge/document-images";
-import { listDocumentVersions } from "lib/knowledge/versioning";
+import {
+  getDocumentVersionContent,
+  listDocumentVersions,
+} from "lib/knowledge/versioning";
 import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
@@ -36,6 +39,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id: groupId, docId } = await params;
+  const requestedVersionId = _req.nextUrl.searchParams.get("versionId");
 
   // Verify group access
   const group = await knowledgeRepository.selectGroupById(
@@ -48,12 +52,31 @@ export async function GET(_req: NextRequest, { params }: Params) {
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const versions = await listDocumentVersions(docId);
   const activeVersion = versions.find((version) => version.isActive) ?? null;
-  const activeImages = activeVersion?.id
+  const requestedVersion = requestedVersionId
+    ? (versions.find((version) => version.id === requestedVersionId) ?? null)
+    : null;
+  if (requestedVersionId && !requestedVersion) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const resolvedVersion = requestedVersion ?? activeVersion;
+  const binaryMatchesRequestedVersion =
+    !requestedVersionId ||
+    requestedVersionId === activeVersion?.id ||
+    requestedVersionId === doc.activeVersionId;
+  const fallbackWarning =
+    requestedVersionId && !binaryMatchesRequestedVersion
+      ? "Showing the current document binary because historical file snapshots are not stored separately for this version."
+      : null;
+  const activeImages = resolvedVersion?.id
     ? await knowledgeRepository.getDocumentImagesByVersion(
         docId,
-        activeVersion.id,
+        resolvedVersion.id,
       )
     : await knowledgeRepository.getDocumentImages(docId);
+  const versionContent =
+    resolvedVersion?.id && resolvedVersion.id !== activeVersion?.id
+      ? await getDocumentVersionContent(docId, resolvedVersion.id)
+      : null;
 
   let sourceMeta: {
     id: string;
@@ -106,12 +129,17 @@ export async function GET(_req: NextRequest, { params }: Params) {
         embeddingTokenCount: doc.embeddingTokenCount ?? 0,
         processingState: doc.processingState ?? null,
       },
+      assetUrl: null,
       sourceUrl: doc.sourceUrl ?? null,
       previewUrl: null,
-      content: null,
+      content: versionContent?.markdownContent ?? doc.markdownContent ?? null,
       markdownAvailable:
         Boolean(activeVersion?.id) || Boolean(doc.markdownContent),
       isUrlOnly: true,
+      requestedVersionId,
+      resolvedVersionId: resolvedVersion?.id ?? doc.activeVersionId ?? null,
+      binaryMatchesRequestedVersion,
+      fallbackWarning,
       activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
       activeVersionNumber:
         activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,
@@ -166,11 +194,17 @@ export async function GET(_req: NextRequest, { params }: Params) {
         embeddingTokenCount: doc.embeddingTokenCount ?? 0,
         processingState: doc.processingState ?? null,
       },
+      assetUrl: `/api/knowledge/${groupId}/documents/${docId}/asset${resolvedVersion?.id ? `?versionId=${encodeURIComponent(resolvedVersion.id)}` : ""}`,
       previewUrl,
-      content,
+      sourceUrl: doc.sourceUrl ?? null,
+      content: versionContent?.markdownContent ?? content,
       markdownAvailable:
         Boolean(activeVersion?.id) || Boolean(doc.markdownContent),
       isUrlOnly: false,
+      requestedVersionId,
+      resolvedVersionId: resolvedVersion?.id ?? doc.activeVersionId ?? null,
+      binaryMatchesRequestedVersion,
+      fallbackWarning,
       activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
       activeVersionNumber:
         activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,

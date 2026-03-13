@@ -39,6 +39,7 @@ import {
   requireMessageAccess,
   requireThreadAccess,
 } from "lib/chat/access";
+import { linkifyAssistantKnowledgeCitations } from "lib/chat/knowledge-citations";
 import {
   recordSelfLearningSignal,
   syncExplicitFeedbackSignal,
@@ -83,7 +84,7 @@ export async function selectThreadWithMessagesAction(threadId: string) {
   }
   return {
     ...thread,
-    messages: thread.messages ?? [],
+    messages: (thread.messages ?? []).map(linkifyAssistantKnowledgeCitations),
     compactionCheckpoint: thread.compactionCheckpoint ?? null,
     compactionState: thread.compactionState ?? null,
   };
