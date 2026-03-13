@@ -4,6 +4,7 @@ import TurndownService from "turndown";
 import { LanguageModel, generateText } from "ai";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
+import { optimizeKnowledgeImageBuffer } from "./image-optimization";
 import type {
   ContextImageBlock,
   DocumentProcessingOptions,
@@ -71,6 +72,27 @@ type ResolvedImageAnalysisModel = {
   model: LanguageModel;
   supportsImageInput: boolean | null;
 };
+
+async function normalizeImageCandidate(
+  candidate: ImageCandidate,
+): Promise<ImageCandidate> {
+  if (!candidate.buffer?.length) {
+    return candidate;
+  }
+
+  const optimized = await optimizeKnowledgeImageBuffer({
+    buffer: candidate.buffer,
+    mediaType: candidate.mediaType,
+  });
+
+  return {
+    ...candidate,
+    buffer: optimized.buffer,
+    mediaType: optimized.mediaType ?? candidate.mediaType ?? null,
+    width: optimized.width ?? candidate.width ?? null,
+    height: optimized.height ?? candidate.height ?? null,
+  };
+}
 
 type HtmlConversionOptions = DocumentProcessingOptions & {
   baseUrl?: string;
@@ -810,6 +832,10 @@ export async function generateContextImageArtifacts(
 ): Promise<ProcessedDocumentImage[]> {
   if (candidates.length === 0) return [];
 
+  const normalizedCandidates = await Promise.all(
+    candidates.map((candidate) => normalizeImageCandidate(candidate)),
+  );
+
   const resolvedModel = await resolveImageAnalysisModel(options.imageAnalysis);
   if (options.imageAnalysisRequired && !resolvedModel) {
     throw new Error(
@@ -817,35 +843,39 @@ export async function generateContextImageArtifacts(
     );
   }
   const analyses = await processInBatches(
-    candidates,
+    normalizedCandidates,
     IMAGE_ANALYSIS_CONCURRENCY,
     (candidate) => analyzeImageCandidate(candidate, options, resolvedModel),
   );
-  const distinctAnalyses = ensureDistinctImageAnalyses(candidates, analyses);
+  const distinctAnalyses = ensureDistinctImageAnalyses(
+    normalizedCandidates,
+    analyses,
+  );
 
   return distinctAnalyses.map((analysis, index) => ({
     kind: "embedded",
-    marker: candidates[index].marker,
-    index: candidates[index].index,
-    buffer: candidates[index].buffer ?? null,
-    mediaType: candidates[index].mediaType ?? null,
-    sourceUrl: candidates[index].sourceUrl ?? null,
-    pageNumber: candidates[index].pageNumber ?? null,
-    width: candidates[index].width ?? null,
-    height: candidates[index].height ?? null,
-    altText: candidates[index].altText ?? null,
-    caption: candidates[index].caption ?? null,
-    surroundingText: candidates[index].surroundingText ?? null,
-    precedingText: candidates[index].precedingText ?? null,
-    followingText: candidates[index].followingText ?? null,
+    marker: normalizedCandidates[index].marker,
+    index: normalizedCandidates[index].index,
+    buffer: normalizedCandidates[index].buffer ?? null,
+    mediaType: normalizedCandidates[index].mediaType ?? null,
+    sourceUrl: normalizedCandidates[index].sourceUrl ?? null,
+    pageNumber: normalizedCandidates[index].pageNumber ?? null,
+    width: normalizedCandidates[index].width ?? null,
+    height: normalizedCandidates[index].height ?? null,
+    altText: normalizedCandidates[index].altText ?? null,
+    caption: normalizedCandidates[index].caption ?? null,
+    surroundingText: normalizedCandidates[index].surroundingText ?? null,
+    precedingText: normalizedCandidates[index].precedingText ?? null,
+    followingText: normalizedCandidates[index].followingText ?? null,
     label: analysis.label,
     description: analysis.description,
-    anchor: candidates[index].anchor ?? null,
+    anchor: normalizedCandidates[index].anchor ?? null,
     headingPath: null,
     stepHint: null,
     isRenderable: Boolean(
-      candidates[index].sourceUrl ||
-        (candidates[index].buffer && candidates[index].mediaType),
+      normalizedCandidates[index].sourceUrl ||
+        (normalizedCandidates[index].buffer &&
+          normalizedCandidates[index].mediaType),
     ),
     manualLabel: false,
     manualDescription: false,

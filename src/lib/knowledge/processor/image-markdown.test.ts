@@ -7,11 +7,13 @@ const {
   getProviderByNameMock,
   getModelForChatMock,
   createModelFromConfigMock,
+  optimizeKnowledgeImageBufferMock,
 } = vi.hoisted(() => ({
   generateTextMock: vi.fn(),
   getProviderByNameMock: vi.fn(),
   getModelForChatMock: vi.fn(),
   createModelFromConfigMock: vi.fn(),
+  optimizeKnowledgeImageBufferMock: vi.fn(),
 }));
 
 vi.mock("ai", async () => {
@@ -33,6 +35,10 @@ vi.mock("lib/ai/provider-factory", () => ({
   createModelFromConfig: createModelFromConfigMock,
 }));
 
+vi.mock("./image-optimization", () => ({
+  optimizeKnowledgeImageBuffer: optimizeKnowledgeImageBufferMock,
+}));
+
 import {
   applyContextImageBlocks,
   convertHtmlFragmentToProcessedDocument,
@@ -49,6 +55,15 @@ describe("image-markdown", () => {
     getProviderByNameMock.mockResolvedValue(null);
     getModelForChatMock.mockResolvedValue(null);
     createModelFromConfigMock.mockReturnValue({});
+    optimizeKnowledgeImageBufferMock.mockImplementation(
+      async ({ buffer, mediaType }) => ({
+        buffer,
+        mediaType: mediaType ?? null,
+        width: null,
+        height: null,
+        optimized: false,
+      }),
+    );
   });
 
   it("replaces image markers and appends missing blocks", () => {
@@ -371,6 +386,63 @@ describe("image-markdown", () => {
     expect(generateTextMock).toHaveBeenCalledTimes(1);
     expect(images[0]).toMatchObject({
       label: "Enrollment screen",
+    });
+  });
+
+  it("uses optimized image payloads before vision analysis and persistence", async () => {
+    getProviderByNameMock.mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: null,
+    });
+    getModelForChatMock.mockResolvedValue({
+      apiName: "vision-model",
+      supportsImageInput: true,
+    });
+    generateTextMock.mockResolvedValue({
+      text: "Label: Architecture diagram\nDescription: Diagram showing the service flow.",
+    });
+    optimizeKnowledgeImageBufferMock.mockResolvedValue({
+      buffer: Buffer.from("optimized-image"),
+      mediaType: "image/webp",
+      width: 320,
+      height: 180,
+      optimized: true,
+    });
+
+    const images = await generateContextImageArtifacts(
+      [
+        {
+          index: 1,
+          marker: "CTX_IMAGE_1",
+          buffer: Buffer.from("original-image"),
+          mediaType: "image/png",
+          pageNumber: 2,
+        },
+      ],
+      {
+        documentTitle: "System Design",
+        imageAnalysis: {
+          provider: "openai",
+          model: "vision-model",
+        },
+      },
+    );
+
+    const imagePart =
+      generateTextMock.mock.calls[0]?.[0]?.messages?.[0]?.content?.[1];
+
+    expect(optimizeKnowledgeImageBufferMock).toHaveBeenCalledTimes(1);
+    expect(imagePart).toMatchObject({
+      type: "image",
+      image: Buffer.from("optimized-image"),
+      mediaType: "image/webp",
+    });
+    expect(images[0]).toMatchObject({
+      mediaType: "image/webp",
+      width: 320,
+      height: 180,
     });
   });
 });
