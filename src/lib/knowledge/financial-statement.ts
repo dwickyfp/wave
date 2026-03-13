@@ -171,7 +171,9 @@ export function classifyFinancialStatementDocument(input: {
     isFinancialStatement:
       matchedPhrases.length >= 2 ||
       noteHeadingCount >= 5 ||
-      (pageCount >= 40 && (matchedPhrases.length >= 1 || filenameSignal)),
+      (pageCount >= 40 &&
+        ((matchedPhrases.length >= 1 && filenameSignal) ||
+          noteHeadingCount >= 2)),
     noteHeadingCount,
     pageCount,
     matchedPhrases,

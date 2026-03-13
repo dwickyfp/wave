@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { buildFinancialStatementRetrievalIdentity } from "./financial-statement";
+import {
+  buildFinancialStatementRetrievalIdentity,
+  classifyFinancialStatementDocument,
+} from "./financial-statement";
 
 describe("financial statement retrieval identity", () => {
   it("does not infer financial issuer metadata from filename alone for non-financial documents", () => {
@@ -32,5 +35,18 @@ describe("financial statement retrieval identity", () => {
 
     expect(identity.isFinancialStatement).toBe(true);
     expect(identity.issuerTicker).toBe("BBRI");
+  });
+
+  it("does not classify long non-financial documents as financial from filename hints alone", () => {
+    const classification = classifyFinancialStatementDocument({
+      markdown:
+        "# Peraturan Menteri Keuangan Republik Indonesia\n\n" +
+        "Peraturan ini mengatur perubahan atas pemberitahuan barang kena cukai yang selesai dibuat.\n\n" +
+        "Ketentuan ini berlaku untuk proses administrasi dan pengawasan kepabeanan.",
+      filename: "bbri-2019-laporan-kepatuhan.pdf",
+      pageCount: 120,
+    });
+
+    expect(classification.isFinancialStatement).toBe(false);
   });
 });
