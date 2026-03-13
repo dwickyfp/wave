@@ -109,12 +109,15 @@ function hastToText(node: any): string {
 }
 
 // Recursively render HAST nodes to React, preserving inline formatting
-function renderHastNode(node: any): React.ReactNode {
+function renderHastNode(
+  node: any,
+  knowledgeCitations?: ChatKnowledgeCitation[],
+): React.ReactNode {
   if (!node) return null;
   if (node.type === "text") return node.value;
   if (node.type === "element") {
     const children = node.children?.map((c: any, i: number) => (
-      <Fragment key={i}>{renderHastNode(c)}</Fragment>
+      <Fragment key={i}>{renderHastNode(c, knowledgeCitations)}</Fragment>
     ));
     switch (node.tagName) {
       case "strong":
@@ -128,6 +131,16 @@ function renderHastNode(node: any): React.ReactNode {
           </code>
         );
       case "a":
+        if (typeof node.properties?.href === "string") {
+          const href = node.properties.href;
+          if (href.startsWith("knowledge://")) {
+            return (
+              <CitationLink href={href} citations={knowledgeCitations}>
+                {children}
+              </CitationLink>
+            );
+          }
+        }
         return (
           <a
             href={node.properties?.href}
@@ -146,7 +159,15 @@ function renderHastNode(node: any): React.ReactNode {
 }
 
 const MarkdownTable = memo(
-  ({ node, animate = true }: { node?: any; animate?: boolean }) => {
+  ({
+    node,
+    animate = true,
+    knowledgeCitations,
+  }: {
+    node?: any;
+    animate?: boolean;
+    knowledgeCitations?: ChatKnowledgeCitation[];
+  }) => {
     const [page, setPage] = useState(1);
     const [exporting, setExporting] = useState(false);
 
@@ -230,7 +251,9 @@ const MarkdownTable = memo(
                   >
                     {renderMarkdownChildren(
                       th.children?.map((c: any, j: number) => (
-                        <Fragment key={j}>{renderHastNode(c)}</Fragment>
+                        <Fragment key={j}>
+                          {renderHastNode(c, knowledgeCitations)}
+                        </Fragment>
                       )),
                       animate,
                     )}
@@ -251,7 +274,9 @@ const MarkdownTable = memo(
                       >
                         {renderMarkdownChildren(
                           td.children?.map((c: any, j: number) => (
-                            <Fragment key={j}>{renderHastNode(c)}</Fragment>
+                            <Fragment key={j}>
+                              {renderHastNode(c, knowledgeCitations)}
+                            </Fragment>
                           )),
                           animate,
                         )}
@@ -439,7 +464,11 @@ const buildComponents = (
   table: ({ node }) => {
     return (
       <div {...getSourceAttrs(node)}>
-        <MarkdownTable node={node} animate={animate} />
+        <MarkdownTable
+          node={node}
+          animate={animate}
+          knowledgeCitations={knowledgeCitations}
+        />
       </div>
     );
   },

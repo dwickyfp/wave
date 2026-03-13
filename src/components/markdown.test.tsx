@@ -117,6 +117,35 @@ describe("Markdown citations", () => {
     expect(html).toContain("<li");
   });
 
+  it("renders citations inside markdown tables as interactive buttons", () => {
+    const citations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-1",
+        documentName: "Tax Guide",
+        versionId: "version-1",
+        sectionId: "section-1",
+        sectionHeading: "Vape tax",
+        pageStart: 12,
+        pageEnd: 12,
+        excerpt: "Vape is taxed.",
+        relevanceScore: 0.93,
+      },
+    ];
+
+    const html = renderToStaticMarkup(
+      <Markdown animate={false} knowledgeCitations={citations}>
+        {"| Item |\n| --- |\n| Vape [1] |"}
+      </Markdown>,
+    );
+
+    expect(html).toContain("<table");
+    expect(html).toContain("<button");
+    expect(html).not.toContain('target="_blank"');
+  });
+
   it("does not linkify citation markers during streaming", () => {
     const citations: ChatKnowledgeCitation[] = [
       {
