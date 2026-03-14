@@ -124,6 +124,18 @@ const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
 });
 
+function logChatPersistenceError(input: {
+  flow: "snowflake" | "a2a" | "chat";
+  threadId: string;
+  messageId: string;
+  error: unknown;
+}) {
+  logger.error(
+    `Failed to persist ${input.flow} chat message ${input.messageId} for thread ${input.threadId}`,
+    input.error,
+  );
+}
+
 const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
   CHAT_KNOWLEDGE_CONTEXT_TOKENS,
   2500,
@@ -541,71 +553,76 @@ export async function POST(request: Request) {
           }
         },
         generateId: generateUUID,
-        onFinish: async ({ responseMessage, isAborted }) => {
-          try {
-            const finalResponseMessage = isAborted
-              ? appendAbortedResponseNotice(responseMessage)
-              : responseMessage;
+        onFinish: ({ responseMessage, isAborted }) => {
+          void (async () => {
+            try {
+              const finalResponseMessage = isAborted
+                ? appendAbortedResponseNotice(responseMessage)
+                : responseMessage;
 
-            // Populate metadata from the captured Snowflake usage/model info
-            if (sfCapture.usage) {
-              sfMetadata.usage = attachUsageCost({
-                inputTokens: sfCapture.usage.input,
-                outputTokens: sfCapture.usage.output,
-                totalTokens: sfCapture.usage.input + sfCapture.usage.output,
-                inputTokenDetails: {
-                  noCacheTokens: undefined,
-                  cacheReadTokens: undefined,
-                  cacheWriteTokens: undefined,
-                },
-                outputTokenDetails: {
-                  textTokens: undefined,
-                  reasoningTokens: undefined,
-                },
-              });
-              sfMetadata.chatModel = {
-                provider: "snowflake",
-                model: sfCapture.usage.model || "Snowflake Cortex",
-              };
-            }
+              if (sfCapture.usage) {
+                sfMetadata.usage = attachUsageCost({
+                  inputTokens: sfCapture.usage.input,
+                  outputTokens: sfCapture.usage.output,
+                  totalTokens: sfCapture.usage.input + sfCapture.usage.output,
+                  inputTokenDetails: {
+                    noCacheTokens: undefined,
+                    cacheReadTokens: undefined,
+                    cacheWriteTokens: undefined,
+                  },
+                  outputTokenDetails: {
+                    textTokens: undefined,
+                    reasoningTokens: undefined,
+                  },
+                });
+                sfMetadata.chatModel = {
+                  provider: "snowflake",
+                  model: sfCapture.usage.model || "Snowflake Cortex",
+                };
+              }
 
-            // Advance parent_message_id so the next turn continues the thread
-            // from this assistant reply.  If Snowflake didn't emit message IDs
-            // (rare failure case per the docs) we leave the existing value.
-            if (sfCapture.newAssistantMessageId !== null) {
-              await chatRepository.updateThread(thread!.id, {
-                snowflakeParentMessageId: sfCapture.newAssistantMessageId,
-              });
-              logger.info(
-                `Advanced Snowflake thread ${sfThreadId} parent_message_id → ${sfCapture.newAssistantMessageId}`,
-              );
-            }
+              if (sfCapture.newAssistantMessageId !== null) {
+                await chatRepository.updateThread(thread!.id, {
+                  snowflakeParentMessageId: sfCapture.newAssistantMessageId,
+                });
+                logger.info(
+                  `Advanced Snowflake thread ${sfThreadId} parent_message_id → ${sfCapture.newAssistantMessageId}`,
+                );
+              }
 
-            if (finalResponseMessage.id === message.id) {
-              await chatRepository.upsertMessage({
+              if (finalResponseMessage.id === message.id) {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  ...finalResponseMessage,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: sfMetadata,
+                });
+              } else {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: message.role,
+                  parts: message.parts.map(convertToSavePart),
+                  id: message.id,
+                });
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: finalResponseMessage.role,
+                  id: finalResponseMessage.id,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: sfMetadata,
+                });
+              }
+            } catch (error) {
+              logChatPersistenceError({
+                flow: "snowflake",
                 threadId: thread!.id,
-                ...finalResponseMessage,
-                parts: finalResponseMessage.parts.map(convertToSavePart),
-                metadata: sfMetadata,
+                messageId: responseMessage.id,
+                error,
               });
-            } else {
-              await chatRepository.upsertMessage({
-                threadId: thread!.id,
-                role: message.role,
-                parts: message.parts.map(convertToSavePart),
-                id: message.id,
-              });
-              await chatRepository.upsertMessage({
-                threadId: thread!.id,
-                role: finalResponseMessage.role,
-                id: finalResponseMessage.id,
-                parts: finalResponseMessage.parts.map(convertToSavePart),
-                metadata: sfMetadata,
-              });
+            } finally {
+              await releaseChatConcurrencyLease();
             }
-          } finally {
-            await releaseChatConcurrencyLease();
-          }
+          })();
         },
         onError: (error) => {
           void releaseChatConcurrencyLease();
@@ -727,45 +744,54 @@ export async function POST(request: Request) {
           });
         },
         generateId: generateUUID,
-        onFinish: async ({ responseMessage, isAborted }) => {
-          try {
-            const finalResponseMessage = isAborted
-              ? appendAbortedResponseNotice(responseMessage)
-              : responseMessage;
+        onFinish: ({ responseMessage, isAborted }) => {
+          void (async () => {
+            try {
+              const finalResponseMessage = isAborted
+                ? appendAbortedResponseNotice(responseMessage)
+                : responseMessage;
 
-            if (!isAborted) {
-              await chatRepository.updateThread(thread!.id, {
-                a2aAgentId: agent!.id,
-                a2aContextId: a2aCapture.contextId ?? null,
-                a2aTaskId: a2aCapture.taskId ?? null,
-              });
-            }
+              if (!isAborted) {
+                await chatRepository.updateThread(thread!.id, {
+                  a2aAgentId: agent!.id,
+                  a2aContextId: a2aCapture.contextId ?? null,
+                  a2aTaskId: a2aCapture.taskId ?? null,
+                });
+              }
 
-            if (finalResponseMessage.id === message.id) {
-              await chatRepository.upsertMessage({
+              if (finalResponseMessage.id === message.id) {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  ...finalResponseMessage,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: a2aMetadata,
+                });
+              } else {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: message.role,
+                  parts: message.parts.map(convertToSavePart),
+                  id: message.id,
+                });
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: finalResponseMessage.role,
+                  id: finalResponseMessage.id,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: a2aMetadata,
+                });
+              }
+            } catch (error) {
+              logChatPersistenceError({
+                flow: "a2a",
                 threadId: thread!.id,
-                ...finalResponseMessage,
-                parts: finalResponseMessage.parts.map(convertToSavePart),
-                metadata: a2aMetadata,
+                messageId: responseMessage.id,
+                error,
               });
-            } else {
-              await chatRepository.upsertMessage({
-                threadId: thread!.id,
-                role: message.role,
-                parts: message.parts.map(convertToSavePart),
-                id: message.id,
-              });
-              await chatRepository.upsertMessage({
-                threadId: thread!.id,
-                role: finalResponseMessage.role,
-                id: finalResponseMessage.id,
-                parts: finalResponseMessage.parts.map(convertToSavePart),
-                metadata: a2aMetadata,
-              });
+            } finally {
+              await releaseChatConcurrencyLease();
             }
-          } finally {
-            await releaseChatConcurrencyLease();
-          }
+          })();
         },
         onError: (error) => {
           void releaseChatConcurrencyLease();
@@ -1890,64 +1916,73 @@ export async function POST(request: Request) {
       },
 
       generateId: generateUUID,
-      onFinish: async ({ responseMessage, isAborted }) => {
-        try {
-          const streamedResponseMessage = isAborted
-            ? appendAbortedResponseNotice(responseMessage)
-            : responseMessage;
-          syncCapturedKnowledgeMetadata();
-          if (finalizedKnowledgeCitationState?.citations.length) {
-            metadata.knowledgeCitations =
-              finalizedKnowledgeCitationState.citations;
-            metadata.knowledgeSources = buildKnowledgeSourcesFromCitations(
-              finalizedKnowledgeCitationState.citations,
-            );
-          }
+      onFinish: ({ responseMessage, isAborted }) => {
+        void (async () => {
+          try {
+            const streamedResponseMessage = isAborted
+              ? appendAbortedResponseNotice(responseMessage)
+              : responseMessage;
+            syncCapturedKnowledgeMetadata();
+            if (finalizedKnowledgeCitationState?.citations.length) {
+              metadata.knowledgeCitations =
+                finalizedKnowledgeCitationState.citations;
+              metadata.knowledgeSources = buildKnowledgeSourcesFromCitations(
+                finalizedKnowledgeCitationState.citations,
+              );
+            }
 
-          const finalResponseMessage =
-            finalizedKnowledgeCitationState?.finalizedText
-              ? applyFinalizedAssistantText(
-                  streamedResponseMessage,
-                  finalizedKnowledgeCitationState.finalizedText,
-                  {
-                    knowledgeCitations:
-                      finalizedKnowledgeCitationState.citations,
-                    knowledgeSources: metadata.knowledgeSources,
-                  },
-                )
-              : streamedResponseMessage;
+            const finalResponseMessage =
+              finalizedKnowledgeCitationState?.finalizedText
+                ? applyFinalizedAssistantText(
+                    streamedResponseMessage,
+                    finalizedKnowledgeCitationState.finalizedText,
+                    {
+                      knowledgeCitations:
+                        finalizedKnowledgeCitationState.citations,
+                      knowledgeSources: metadata.knowledgeSources,
+                    },
+                  )
+                : streamedResponseMessage;
 
-          if (finalResponseMessage.id == message.id) {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              ...finalResponseMessage,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata,
-            });
-          } else {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: message.role,
-              parts: message.parts.map(convertToSavePart),
-              id: message.id,
-            });
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: finalResponseMessage.role,
-              id: finalResponseMessage.id,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata,
-            });
-          }
+            if (finalResponseMessage.id == message.id) {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                ...finalResponseMessage,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata,
+              });
+            } else {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: message.role,
+                parts: message.parts.map(convertToSavePart),
+                id: message.id,
+              });
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: finalResponseMessage.role,
+                id: finalResponseMessage.id,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata,
+              });
+            }
 
-          if (agent) {
-            agentRepository.updateAgent(agent.id, session.user.id, {
-              updatedAt: new Date(),
-            } as any);
+            if (agent) {
+              agentRepository.updateAgent(agent.id, session.user.id, {
+                updatedAt: new Date(),
+              } as any);
+            }
+          } catch (error) {
+            logChatPersistenceError({
+              flow: "chat",
+              threadId: thread!.id,
+              messageId: responseMessage.id,
+              error,
+            });
+          } finally {
+            await releaseChatConcurrencyLease();
           }
-        } finally {
-          await releaseChatConcurrencyLease();
-        }
+        })();
       },
       onError: (error) => {
         void releaseChatConcurrencyLease();

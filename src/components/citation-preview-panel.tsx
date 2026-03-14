@@ -242,6 +242,12 @@ export function CitationPreviewPanel() {
     if (citationPreview.excerpt?.trim()) {
       searchParams.set("excerpt", citationPreview.excerpt.trim().slice(0, 800));
     }
+    if (citationPreview.sectionHeading?.trim()) {
+      searchParams.set(
+        "sectionHeading",
+        citationPreview.sectionHeading.trim().slice(0, 200),
+      );
+    }
 
     setLoading(true);
     setError(null);

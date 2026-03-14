@@ -1,6 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ChatKnowledgeCitation } from "app-types/chat";
+import {
+  enforceKnowledgeCitationCoverage,
+  normalizeKnowledgeCitationLayout,
+} from "lib/chat/knowledge-citations";
 import { Markdown } from "./markdown";
 
 vi.mock("server-only", () => ({}));
@@ -144,6 +148,139 @@ describe("Markdown citations", () => {
     expect(html).toContain("<table");
     expect(html).toContain("<button");
     expect(html).not.toContain('target="_blank"');
+  });
+
+  it("keeps saved citation tables renderable after hydrated history linkification", () => {
+    const citations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-1",
+        documentName: "Compliance Guide",
+        versionId: "version-1",
+        sectionId: "section-1",
+        sectionHeading: "Initial reporting",
+        pageStart: 6,
+        pageEnd: 6,
+        excerpt: "Initial reporting to customs office.",
+        relevanceScore: 0.94,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-1",
+        documentName: "Compliance Guide",
+        versionId: "version-1",
+        sectionId: "section-2",
+        sectionHeading: "Monthly reporting",
+        pageStart: 7,
+        pageEnd: 7,
+        excerpt: "Monthly reporting due by the tenth day.",
+        relevanceScore: 0.93,
+      },
+      {
+        number: 3,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-1",
+        documentName: "Compliance Guide",
+        versionId: "version-1",
+        sectionId: "section-3",
+        sectionHeading: "Administrative sanctions",
+        pageStart: 10,
+        pageEnd: 10,
+        excerpt: "Administrative sanctions for missed notices.",
+        relevanceScore: 0.92,
+      },
+    ];
+
+    const savedText = normalizeKnowledgeCitationLayout({
+      text: enforceKnowledgeCitationCoverage({
+        text: [
+          "| Tahap | Kewajiban Utama | Tenggat Waktu | Sanksi |",
+          "[1][2][3]",
+          "| --- | --- | --- | --- |",
+          "| Pelaporan Bulanan | Pemberitahuan data | Paling lambat tgl 10 bulan berikutnya | Denda administratif |",
+        ].join("\n"),
+        citations,
+      }),
+      citations,
+    });
+
+    const html = renderToStaticMarkup(
+      <Markdown animate={false} knowledgeCitations={citations}>
+        {savedText}
+      </Markdown>,
+    );
+
+    expect(html).toContain("<table");
+    expect(html).toContain("<button");
+    expect(html).not.toContain("| --- | --- | --- | --- |");
+  });
+
+  it("repairs previously malformed saved citation tables during hydrated rendering", () => {
+    const citations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-1",
+        documentName: "Compliance Guide",
+        versionId: "version-1",
+        sectionId: "section-1",
+        sectionHeading: "Initial reporting",
+        pageStart: 6,
+        pageEnd: 6,
+        excerpt: "Initial reporting to customs office.",
+        relevanceScore: 0.94,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-1",
+        documentName: "Compliance Guide",
+        versionId: "version-1",
+        sectionId: "section-2",
+        sectionHeading: "Monthly reporting",
+        pageStart: 7,
+        pageEnd: 7,
+        excerpt: "Monthly reporting due by the tenth day.",
+        relevanceScore: 0.93,
+      },
+      {
+        number: 3,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-1",
+        documentName: "Compliance Guide",
+        versionId: "version-1",
+        sectionId: "section-3",
+        sectionHeading: "Administrative sanctions",
+        pageStart: 10,
+        pageEnd: 10,
+        excerpt: "Administrative sanctions for missed notices.",
+        relevanceScore: 0.92,
+      },
+    ];
+
+    const malformedSavedText = [
+      "| Tahap | Kewajiban Utama [1] | Tenggat Waktu [2] | Sanksi | [1][2] |",
+      "| --- | --- | --- | --- |",
+      "| Pelaporan Bulanan | Pemberitahuan data [2] | Paling lambat tgl 10 bulan berikutnya [2] | Denda administratif [3] | [2][3] |",
+    ].join("\n");
+
+    const html = renderToStaticMarkup(
+      <Markdown animate={false} knowledgeCitations={citations}>
+        {malformedSavedText}
+      </Markdown>,
+    );
+
+    expect(html).toContain("<table");
+    expect(html).toContain("<button");
+    expect(html).not.toContain("| Tahap |");
   });
 
   it("does not linkify citation markers during streaming", () => {

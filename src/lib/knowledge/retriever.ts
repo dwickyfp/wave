@@ -12,8 +12,12 @@ import { serverCache } from "lib/cache";
 import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
 import { knowledgeRepository } from "lib/db/repository";
 import { settingsRepository } from "lib/db/repository";
+import {
+  inferCitationPageFromMarkdown,
+  normalizeCitationLookupText,
+} from "./citation-page-resolution";
 import { embedSingleText } from "./embedder";
-import { parsePageMarker } from "./page-markers";
+import { extractPrimaryLegalReferenceKey } from "./legal-references";
 import {
   mergeKnowledgeQueryConstraints,
   matchesRetrievalIdentityConstraints,
@@ -1458,142 +1462,6 @@ function buildCitationExcerpt(
   return `${(lastSpace > maxLength * 0.7 ? cut.slice(0, lastSpace) : cut).trim()}...`;
 }
 
-type MarkdownPageSlice = {
-  pageNumber: number;
-  normalized: string;
-  tokenSet: Set<string>;
-};
-
-function normalizeCitationLookupText(value: string): string {
-  return value
-    .normalize("NFKC")
-    .replace(/<!--CTX_PAGE:\d+-->/g, " ")
-    .replace(/`{1,3}[^`]*`{1,3}/g, " ")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function tokenizeCitationLookupText(value: string): string[] {
-  return Array.from(
-    new Set(
-      normalizeCitationLookupText(value)
-        .split(/\s+/)
-        .map((token) => token.trim())
-        .filter((token) => token.length >= 4),
-    ),
-  );
-}
-
-function splitMarkdownIntoPageSlices(markdown: string): MarkdownPageSlice[] {
-  const pages: MarkdownPageSlice[] = [];
-  let currentPage = 1;
-  let currentLines: string[] = [];
-
-  const flush = () => {
-    const normalized = normalizeCitationLookupText(currentLines.join("\n"));
-    if (!normalized) return;
-
-    pages.push({
-      pageNumber: currentPage,
-      normalized,
-      tokenSet: new Set(tokenizeCitationLookupText(normalized)),
-    });
-  };
-
-  for (const line of markdown.split("\n")) {
-    const pageMarker = parsePageMarker(line.trim());
-    if (pageMarker != null) {
-      flush();
-      currentPage = pageMarker;
-      currentLines = [];
-      continue;
-    }
-
-    currentLines.push(line);
-  }
-
-  flush();
-
-  if (pages.length > 0) return pages;
-
-  const fallback = normalizeCitationLookupText(markdown);
-  return fallback
-    ? [
-        {
-          pageNumber: 1,
-          normalized: fallback,
-          tokenSet: new Set(tokenizeCitationLookupText(fallback)),
-        },
-      ]
-    : [];
-}
-
-function scorePageSliceForSnippet(
-  page: MarkdownPageSlice,
-  normalizedSnippet: string,
-  snippetTokens: string[],
-): number {
-  if (!normalizedSnippet) return 0;
-
-  const anchors = [
-    normalizedSnippet,
-    normalizedSnippet.slice(0, 160),
-    normalizedSnippet.slice(0, 96),
-    normalizedSnippet.slice(0, 64),
-    normalizedSnippet.slice(0, 40),
-  ].filter((anchor, index, items) => {
-    return anchor.length >= 24 && items.indexOf(anchor) === index;
-  });
-
-  for (let index = 0; index < anchors.length; index += 1) {
-    const anchor = anchors[index];
-    if (page.normalized.includes(anchor)) {
-      return 1000 - index * 100 + anchor.length / 1000;
-    }
-  }
-
-  if (snippetTokens.length === 0) return 0;
-
-  const overlapCount = snippetTokens.filter((token) =>
-    page.tokenSet.has(token),
-  ).length;
-  const overlapRatio = overlapCount / snippetTokens.length;
-  return overlapRatio >= 0.45 ? overlapRatio : 0;
-}
-
-function inferCitationPageFromMarkdown(input: {
-  markdown: string;
-  snippets: string[];
-}): number | null {
-  const pages = splitMarkdownIntoPageSlices(input.markdown);
-  if (pages.length === 0) return null;
-
-  let bestPage: number | null = null;
-  let bestScore = 0;
-
-  for (const snippet of input.snippets) {
-    const normalizedSnippet = normalizeCitationLookupText(snippet);
-    if (normalizedSnippet.length < 24) continue;
-
-    const snippetTokens = tokenizeCitationLookupText(snippet);
-    for (const page of pages) {
-      const score = scorePageSliceForSnippet(
-        page,
-        normalizedSnippet,
-        snippetTokens,
-      );
-      if (score > bestScore) {
-        bestScore = score;
-        bestPage = page.pageNumber;
-      }
-    }
-  }
-
-  return bestScore > 0 ? bestPage : null;
-}
-
 function shouldRefineCitationPage(
   candidate: Pick<RetrievedKnowledgeCitation, "pageStart" | "pageEnd">,
 ): boolean {
@@ -1613,19 +1481,115 @@ function refineCitationCandidatePage(input: {
     return input.candidate;
   }
 
-  const precisePage = inferCitationPageFromMarkdown({
+  const inference = inferCitationPageFromMarkdown({
     markdown: input.markdown,
     snippets: input.snippets,
   });
-  if (precisePage == null) {
+  if (inference == null) {
+    return input.candidate;
+  }
+
+  const canSafelyOverride =
+    input.candidate.pageStart == null ||
+    input.candidate.pageEnd == null ||
+    inference.usedLegalReference ||
+    inference.score >= 100;
+  if (!canSafelyOverride) {
     return input.candidate;
   }
 
   return {
     ...input.candidate,
-    pageStart: precisePage,
-    pageEnd: precisePage,
+    pageStart: inference.pageNumber,
+    pageEnd: inference.pageNumber,
   };
+}
+
+function getMatchCitationScore(match: KnowledgeQueryResult): number {
+  return match.rerankScore ?? match.confidenceScore ?? match.score ?? 0;
+}
+
+function buildCitationReferenceText(match: KnowledgeQueryResult): string {
+  return [
+    match.chunk.metadata?.headingPath,
+    match.chunk.metadata?.section,
+    match.chunk.contextSummary,
+    match.chunk.content,
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(" ");
+}
+
+function extractPrimaryCitationAnchorKey(
+  match: KnowledgeQueryResult,
+): string | null {
+  const legalReference = extractPrimaryLegalReferenceKey(
+    buildCitationReferenceText(match),
+  );
+  if (legalReference) {
+    return `legal:${legalReference}`;
+  }
+
+  const headingAnchor = normalizeCitationLookupText(
+    match.chunk.metadata?.headingPath ?? match.chunk.metadata?.section ?? "",
+  );
+  if (headingAnchor) {
+    return `heading:${headingAnchor}`;
+  }
+
+  const contentAnchor = normalizeCitationLookupText(match.chunk.content)
+    .split(/\s+/)
+    .slice(0, 8)
+    .join(" ");
+  return contentAnchor ? `content:${contentAnchor}` : null;
+}
+
+function selectDiverseCitationMatches(
+  matches: KnowledgeQueryResult[],
+  maxCandidates = 4,
+): KnowledgeQueryResult[] {
+  if (maxCandidates <= 0 || matches.length === 0) return [];
+
+  const rankedMatches = [...matches].sort(
+    (left, right) => getMatchCitationScore(right) - getMatchCitationScore(left),
+  );
+  const selected: KnowledgeQueryResult[] = [];
+  const selectedChunkIds = new Set<string>();
+  const selectedPrimaryAnchors = new Set<string>();
+
+  const trySelect = (
+    match: KnowledgeQueryResult,
+    requireNewPrimary: boolean,
+  ) => {
+    if (selected.length >= maxCandidates) return;
+    if (selectedChunkIds.has(match.chunk.id)) return;
+
+    const primaryAnchor = extractPrimaryCitationAnchorKey(match);
+    if (requireNewPrimary && !primaryAnchor) return;
+    if (
+      requireNewPrimary &&
+      primaryAnchor &&
+      selectedPrimaryAnchors.has(primaryAnchor)
+    ) {
+      return;
+    }
+
+    selected.push(match);
+    selectedChunkIds.add(match.chunk.id);
+    if (primaryAnchor) {
+      selectedPrimaryAnchors.add(primaryAnchor);
+    }
+  };
+
+  for (const match of rankedMatches) {
+    trySelect(match, true);
+  }
+
+  for (const match of rankedMatches) {
+    trySelect(match, false);
+  }
+
+  return selected;
 }
 
 function buildCitationSnippetHints(input: {
@@ -1642,7 +1606,12 @@ function buildCitationSnippetHints(input: {
           right.rerankScore ?? right.confidenceScore ?? right.score;
         return rightScore - leftScore;
       })
-      .flatMap((match) => [match.chunk.content, match.chunk.contextSummary]),
+      .flatMap((match) => [
+        match.chunk.metadata?.headingPath,
+        match.chunk.metadata?.section,
+        match.chunk.contextSummary,
+        match.chunk.content,
+      ]),
     ...(input.fallbacks ?? []),
   ];
 
@@ -1695,12 +1664,10 @@ function buildSectionCitationEntries(input: {
   candidate: RetrievedKnowledgeCitation;
   pageSnippets: string[];
 }> {
-  const rankedMatches = [...input.matches].sort((left, right) => {
-    const leftScore = left.rerankScore ?? left.confidenceScore ?? left.score;
-    const rightScore =
-      right.rerankScore ?? right.confidenceScore ?? right.score;
-    return rightScore - leftScore;
-  });
+  const rankedMatches = selectDiverseCitationMatches(
+    input.matches,
+    input.maxCandidates ?? 3,
+  );
   const entries: Array<{
     candidate: RetrievedKnowledgeCitation;
     pageSnippets: string[];
@@ -1739,10 +1706,6 @@ function buildSectionCitationEntries(input: {
         ],
       }),
     });
-
-    if (entries.length >= (input.maxCandidates ?? 3)) {
-      break;
-    }
   }
 
   if (entries.length > 0) {
@@ -2635,41 +2598,38 @@ async function assembleFullDocResults(input: {
             query,
             scopeById,
             embeddingCache,
+            limit: 6,
           });
 
     const contentTokens = estimateTokens(docData.markdown);
     if (contentTokens + tokensUsed <= tokenBudget) {
+      const selectedCitationMatches = selectDiverseCitationMatches(
+        citationMatches,
+        4,
+      );
       const citationCandidates = Array.from(
         new Map(
-          citationMatches
-            .sort((left, right) => {
-              const leftScore =
-                left.rerankScore ?? left.confidenceScore ?? left.score;
-              const rightScore =
-                right.rerankScore ?? right.confidenceScore ?? right.score;
-              return rightScore - leftScore;
-            })
-            .map((match) => {
-              const candidate = refineCitationCandidatePage({
-                candidate: buildChunkCitationCandidate({
-                  match,
-                  versionId: doc.versionId ?? null,
-                }),
-                markdown: docData.markdown,
-                snippets: buildCitationSnippetHints({
-                  matches: [match],
-                }),
-              });
-              const key = [
-                candidate.sectionId ?? "",
-                candidate.pageStart ?? "",
-                candidate.pageEnd ?? "",
-                candidate.excerpt,
-              ].join("::");
-              return [key, candidate] as const;
-            }),
+          selectedCitationMatches.map((match) => {
+            const candidate = refineCitationCandidatePage({
+              candidate: buildChunkCitationCandidate({
+                match,
+                versionId: doc.versionId ?? null,
+              }),
+              markdown: docData.markdown,
+              snippets: buildCitationSnippetHints({
+                matches: [match],
+              }),
+            });
+            const key = [
+              candidate.sectionId ?? "",
+              candidate.pageStart ?? "",
+              candidate.pageEnd ?? "",
+              candidate.excerpt,
+            ].join("::");
+            return [key, candidate] as const;
+          }),
         ).values(),
-      ).slice(0, 3);
+      ).slice(0, 4);
 
       results.push({
         documentId: doc.documentId,
@@ -2696,6 +2656,10 @@ async function assembleFullDocResults(input: {
     });
     if (!truncated) break;
 
+    const selectedCitationMatches = selectDiverseCitationMatches(
+      citationMatches,
+      4,
+    );
     results.push({
       documentId: doc.documentId,
       documentName: doc.documentName,
@@ -2708,35 +2672,27 @@ async function assembleFullDocResults(input: {
       markdown: truncated,
       citationCandidates: Array.from(
         new Map(
-          citationMatches
-            .sort((left, right) => {
-              const leftScore =
-                left.rerankScore ?? left.confidenceScore ?? left.score;
-              const rightScore =
-                right.rerankScore ?? right.confidenceScore ?? right.score;
-              return rightScore - leftScore;
-            })
-            .map((match) => {
-              const candidate = refineCitationCandidatePage({
-                candidate: buildChunkCitationCandidate({
-                  match,
-                  versionId: doc.versionId ?? null,
-                }),
-                markdown: docData.markdown,
-                snippets: buildCitationSnippetHints({
-                  matches: [match],
-                }),
-              });
-              const key = [
-                candidate.sectionId ?? "",
-                candidate.pageStart ?? "",
-                candidate.pageEnd ?? "",
-                candidate.excerpt,
-              ].join("::");
-              return [key, candidate] as const;
-            }),
+          selectedCitationMatches.map((match) => {
+            const candidate = refineCitationCandidatePage({
+              candidate: buildChunkCitationCandidate({
+                match,
+                versionId: doc.versionId ?? null,
+              }),
+              markdown: docData.markdown,
+              snippets: buildCitationSnippetHints({
+                matches: [match],
+              }),
+            });
+            const key = [
+              candidate.sectionId ?? "",
+              candidate.pageStart ?? "",
+              candidate.pageEnd ?? "",
+              candidate.excerpt,
+            ].join("::");
+            return [key, candidate] as const;
+          }),
         ).values(),
-      ).slice(0, 3),
+      ).slice(0, 4),
     });
     tokensUsed += estimateTokens(truncated);
     break;

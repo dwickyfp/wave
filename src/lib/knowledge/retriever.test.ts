@@ -734,6 +734,256 @@ describe("queryKnowledgeAsDocs", () => {
     );
   });
 
+  it("keeps distinct legal article citation candidates from PMK 161 in full-doc mode", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockImplementation(
+      async (_groupId, _embedding, _limit, filters) => {
+        if (filters?.documentIds?.includes("doc-1")) {
+          return [
+            makeChunkHit({
+              chunk: {
+                id: "chunk-pasal-3a",
+                content:
+                  "Pengusaha Pabrik wajib memberitahukan secara berkala kepada Kepala Kantor mengenai barang kena cukai yang selesai dibuat.",
+                metadata: {
+                  headingPath: "161_PMK.04_2022 > Pasal 3",
+                  section: "Pasal 3",
+                  pageStart: 6,
+                  pageEnd: 6,
+                },
+              },
+              score: 0.94,
+            }),
+            makeChunkHit({
+              chunk: {
+                id: "chunk-pasal-3b",
+                content:
+                  "Barang kena cukai yang selesai dibuat diberitahukan sebagaimana dimaksud pada ayat (1).",
+                metadata: {
+                  headingPath: "161_PMK.04_2022 > Pasal 3",
+                  section: "Pasal 3",
+                  pageStart: 6,
+                  pageEnd: 6,
+                },
+              },
+              score: 0.92,
+            }),
+            makeChunkHit({
+              chunk: {
+                id: "chunk-pasal-7",
+                content:
+                  "Pemberitahuan bulanan disampaikan oleh Pengusaha Pabrik paling lambat pada tanggal 10 (sepuluh) bulan berikutnya.",
+                metadata: {
+                  headingPath: "161_PMK.04_2022 > Pasal 7",
+                  section: "Pasal 7",
+                  pageStart: 7,
+                  pageEnd: 7,
+                },
+              },
+              score: 0.91,
+            }),
+            makeChunkHit({
+              chunk: {
+                id: "chunk-pasal-13",
+                content:
+                  "Pengusaha Pabrik yang tidak menyampaikan pemberitahuan dikenai sanksi administrasi sesuai ketentuan peraturan perundang-undangan di bidang cukai.",
+                metadata: {
+                  headingPath: "161_PMK.04_2022 > Pasal 13",
+                  section: "Pasal 13",
+                  pageStart: 10,
+                  pageEnd: 10,
+                },
+              },
+              score: 0.9,
+            }),
+          ];
+        }
+
+        return [];
+      },
+    );
+    vi.mocked(knowledgeRepository.fullTextSearch).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "161_PMK.04_2022.pdf",
+        description: null,
+        metadata: null,
+        activeVersionId: "version-161",
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue({
+      name: "161_PMK.04_2022.pdf",
+      description: null,
+      markdown: [
+        "<!--CTX_PAGE:6-->",
+        "Pasal 3",
+        "Pengusaha Pabrik wajib memberitahukan secara berkala kepada Kepala Kantor mengenai barang kena cukai yang selesai dibuat.",
+        "",
+        "<!--CTX_PAGE:7-->",
+        "Pasal 7",
+        "Pemberitahuan bulanan disampaikan oleh Pengusaha Pabrik paling lambat pada tanggal 10 (sepuluh) bulan berikutnya.",
+        "",
+        "<!--CTX_PAGE:10-->",
+        "Pasal 13",
+        "Pengusaha Pabrik yang tidak menyampaikan pemberitahuan dikenai sanksi administrasi sesuai ketentuan peraturan perundang-undangan di bidang cukai.",
+      ].join("\n"),
+    });
+
+    const docs = await queryKnowledgeAsDocs(group, "PMK 161 pasal 3 pasal 7", {
+      tokens: 5000,
+      resultMode: "full-doc",
+    });
+
+    expect(docs[0]?.citationCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sectionHeading: "161_PMK.04_2022 > Pasal 3",
+          pageStart: 6,
+          pageEnd: 6,
+        }),
+        expect.objectContaining({
+          sectionHeading: "161_PMK.04_2022 > Pasal 7",
+          pageStart: 7,
+          pageEnd: 7,
+        }),
+        expect.objectContaining({
+          sectionHeading: "161_PMK.04_2022 > Pasal 13",
+          pageStart: 10,
+          pageEnd: 10,
+        }),
+      ]),
+    );
+  });
+
+  it("keeps distinct non-legal section citation candidates in full-doc mode", async () => {
+    vi.mocked(knowledgeRepository.vectorSearch).mockImplementation(
+      async (_groupId, _embedding, _limit, filters) => {
+        if (filters?.documentIds?.includes("doc-1")) {
+          return [
+            makeChunkHit({
+              chunk: {
+                id: "chunk-install-1",
+                content:
+                  "Install the desktop app from the downloads page and sign in.",
+                metadata: {
+                  headingPath: "Product Manual > Installation",
+                  section: "Installation",
+                  pageStart: 2,
+                  pageEnd: 2,
+                },
+              },
+              score: 0.95,
+            }),
+            makeChunkHit({
+              chunk: {
+                id: "chunk-install-2",
+                content:
+                  "After installation, connect the device to power and network.",
+                metadata: {
+                  headingPath: "Product Manual > Installation",
+                  section: "Installation",
+                  pageStart: 2,
+                  pageEnd: 2,
+                },
+              },
+              score: 0.94,
+            }),
+            makeChunkHit({
+              chunk: {
+                id: "chunk-settings",
+                content:
+                  "To enable automatic backup, open Settings > Backup and toggle Auto Backup.",
+                metadata: {
+                  headingPath: "Product Manual > Workspace Settings",
+                  section: "Workspace Settings",
+                  pageStart: 5,
+                  pageEnd: 5,
+                },
+              },
+              score: 0.91,
+            }),
+            makeChunkHit({
+              chunk: {
+                id: "chunk-troubleshooting",
+                content:
+                  "If the backup fails, restart the device and retry the sync.",
+                metadata: {
+                  headingPath: "Product Manual > Troubleshooting",
+                  section: "Troubleshooting",
+                  pageStart: 8,
+                  pageEnd: 8,
+                },
+              },
+              score: 0.9,
+            }),
+          ];
+        }
+
+        return [];
+      },
+    );
+    vi.mocked(knowledgeRepository.fullTextSearch).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "Product Manual",
+        description: null,
+        metadata: null,
+        activeVersionId: "version-1",
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue({
+      name: "Product Manual",
+      description: null,
+      markdown: [
+        "<!--CTX_PAGE:2-->",
+        "Installation",
+        "Install the desktop app from the downloads page and sign in.",
+        "",
+        "<!--CTX_PAGE:5-->",
+        "Workspace Settings",
+        "To enable automatic backup, open Settings > Backup and toggle Auto Backup.",
+        "",
+        "<!--CTX_PAGE:8-->",
+        "Troubleshooting",
+        "If the backup fails, restart the device and retry the sync.",
+      ].join("\n"),
+    });
+
+    const docs = await queryKnowledgeAsDocs(group, "enable automatic backup", {
+      tokens: 5000,
+      resultMode: "full-doc",
+    });
+
+    expect(docs[0]?.citationCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sectionHeading: "Product Manual > Installation",
+          pageStart: 2,
+          pageEnd: 2,
+        }),
+        expect.objectContaining({
+          sectionHeading: "Product Manual > Workspace Settings",
+          pageStart: 5,
+          pageEnd: 5,
+        }),
+        expect.objectContaining({
+          sectionHeading: "Product Manual > Troubleshooting",
+          pageStart: 8,
+          pageEnd: 8,
+        }),
+      ]),
+    );
+  });
+
   it("attaches matched images scoped to the returned documents", async () => {
     vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
       { documentId: "doc-1", score: 0.9 },

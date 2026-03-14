@@ -1,3 +1,4 @@
+import type { ChatKnowledgeCitation } from "app-types/chat";
 import { describe, expect, it } from "vitest";
 import {
   applyFinalizedAssistantText,
@@ -172,6 +173,427 @@ describe("knowledge citations", () => {
 
     expect(output).toContain("[2]");
     expect(output).not.toContain("[1].");
+  });
+
+  it("re-scores markdown table cells independently for PMK comparison rows", () => {
+    const pmkCitations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-94",
+        documentName: "94/PMK.04/2016",
+        versionId: "version-94",
+        sectionId: "section-hari-kerja-94",
+        sectionHeading:
+          "15. Hari Kerja di Lingkungan Direktorat Jenderal Bea dan",
+        pageStart: 4,
+        pageEnd: 4,
+        excerpt:
+          "15. Hari Kerja di Lingkungan Direktorat Jenderal Bea dan Cukai yang selanjutnya disebut Hari Kerja adalah hari yang dimulai dari hari Senin sampai dengah hari Jumat.",
+        relevanceScore: 0.95,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-94",
+        documentName: "94/PMK.04/2016",
+        versionId: "version-94",
+        sectionId: "section-data-94",
+        sectionHeading:
+          "15. Hari Kerja di Lingkungan Direktorat Jenderal Bea dan > d. merek hasil tembakau, harga jual eceran, 1s1",
+        pageStart: 8,
+        pageEnd: 8,
+        excerpt:
+          "d. merek hasil tembakau, harga jual eceran, 1s1 masing-masing kemasan, dan jumlah kemasan.",
+        relevanceScore: 0.88,
+      },
+      {
+        number: 3,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161/PMK.04/2022",
+        versionId: "version-161",
+        sectionId: "section-hari-kerja-161",
+        sectionHeading:
+          "18. Harl Kerja di Lingkungan DirektoratJenderal Beadan",
+        pageStart: 4,
+        pageEnd: 4,
+        excerpt:
+          "18. Harl Kerja di Lingkungan DirektoratJenderal Beadan CukaiyangselanjutnyadisebutHarlKerjaadalahharl yangdimulaidarlharlSellinsampaidenganharlJumat.",
+        relevanceScore: 0.94,
+      },
+      {
+        number: 4,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161/PMK.04/2022",
+        versionId: "version-161",
+        sectionId: "section-data-161",
+        sectionHeading:
+          "1. HasilTembakauuntukjenisHPTLberupatembakau > c. merekHasilTembakau,hargajualeceran,isimasing-",
+        pageStart: 7,
+        pageEnd: 7,
+        excerpt:
+          "c. merekHasilTembakau,hargajualeceran,isimasing-masingkemasan,danjumlahkemasan.",
+        relevanceScore: 0.91,
+      },
+      {
+        number: 5,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-134",
+        documentName: "134/PMK.04/2019",
+        versionId: "version-134",
+        sectionId: "section-hptl-134",
+        sectionHeading: "tembakau jenis HPTL diatur dengan·Peraturan",
+        pageStart: 4,
+        pageEnd: 4,
+        excerpt:
+          "tembakau jenis HPTL diatur dengan Peraturan DirekturJenderal.",
+        relevanceScore: 0.9,
+      },
+    ];
+
+    const output = enforceKnowledgeCitationCoverage({
+      text: [
+        "| Aspek | PMK 94 | PMK 161 | PMK 134 |",
+        "| --- | --- | --- | --- |",
+        "| Perubahan | Senin - Jumat (5 hari) [2] | + Merek, HJE, Isi Kemasan, Jumlah Kemasan [5] | HPTL diatur dengan Peraturan Direktur Jenderal [4] |",
+      ].join("\n"),
+      citations: pmkCitations,
+    });
+
+    expect(output).toContain(
+      "| Perubahan | Senin - Jumat (5 hari) [1] | + Merek, HJE, Isi Kemasan, Jumlah Kemasan [4] | HPTL diatur dengan Peraturan Direktur Jenderal [5] |",
+    );
+  });
+
+  it("matches OCR-noisy PMK 161 hari kerja excerpts instead of drifting to HPTL pages", () => {
+    const pmk161Citations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161/PMK.04/2022",
+        versionId: "version-161",
+        sectionId: "section-hari-kerja-161",
+        sectionHeading:
+          "18. Harl Kerja di Lingkungan DirektoratJenderal Beadan",
+        pageStart: 4,
+        pageEnd: 4,
+        excerpt:
+          "18. Harl Kerja di Lingkungan DirektoratJenderal Beadan CukaiyangselanjutnyadisebutHarlKerjaadalahharl yangdimulaidarlharlSellinsampaidenganharlJumat.",
+        relevanceScore: 0.94,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161/PMK.04/2022",
+        versionId: "version-161",
+        sectionId: "section-hptl-161",
+        sectionHeading:
+          "18. Harl Kerja di Lingkungan DirektoratJenderal Beadan > j. HasilTembakauuntukjenisHPTLberupatembakau",
+        pageStart: 5,
+        pageEnd: 5,
+        excerpt:
+          "j. HasilTembakauuntukjenisHPTLberupatembakaumolasses yaitu pada saat proses pengolahan daun tembakau.",
+        relevanceScore: 0.89,
+      },
+    ];
+
+    const output = enforceKnowledgeCitationCoverage({
+      text: "| Hari kerja pelaporan | Hari kerja sampai Jumat [2] |",
+      citations: pmk161Citations,
+    });
+
+    expect(output).toContain(
+      "| Hari kerja pelaporan | Hari kerja sampai Jumat [1] |",
+    );
+  });
+
+  it("keeps PMK 161 pasal 3, pasal 7, and pasal 13 on distinct citation pages", () => {
+    const legalCitations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-3",
+        sectionHeading: "Pasal 3",
+        pageStart: 6,
+        pageEnd: 6,
+        excerpt:
+          "Pengusaha Pabrik wajib memberitahukan secara berkala kepada Kepala Kantor mengenai barang kena cukai yang selesai dibuat.",
+        relevanceScore: 0.96,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-7",
+        sectionHeading: "Pasal 7",
+        pageStart: 7,
+        pageEnd: 7,
+        excerpt:
+          "Pemberitahuan bulanan disampaikan oleh Pengusaha Pabrik paling lambat pada tanggal 10 (sepuluh) bulan berikutnya.",
+        relevanceScore: 0.95,
+      },
+      {
+        number: 3,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-13",
+        sectionHeading: "Pasal 13",
+        pageStart: 10,
+        pageEnd: 10,
+        excerpt:
+          "Pengusaha Pabrik yang tidak menyampaikan pemberitahuan dikenai sanksi administrasi sesuai ketentuan peraturan perundang-undangan di bidang cukai.",
+        relevanceScore: 0.94,
+      },
+    ];
+
+    const output = enforceKnowledgeCitationCoverage({
+      text: [
+        "- Pelaporan awal ke Direktorat Jenderal Bea dan Cukai (Pasal 3) [2].",
+        "- Pemberitahuan bulanan, paling lambat tanggal 10 bulan berikutnya (Pasal 7) [1].",
+        "- Sanksi jika tidak patuh: denda administratif sesuai UU Cukai (Pasal 13) [1].",
+      ].join("\n"),
+      citations: legalCitations,
+    });
+
+    expect(output).toContain("(Pasal 3) [1].");
+    expect(output).toContain("(Pasal 7) [2].");
+    expect(output).toContain("(Pasal 13) [3].");
+  });
+
+  it("re-scores table references with exact pasal anchors instead of reusing an earlier page", () => {
+    const legalCitations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-3",
+        sectionHeading: "Pasal 3",
+        pageStart: 6,
+        pageEnd: 6,
+        excerpt:
+          "Pengusaha Pabrik wajib memberitahukan secara berkala kepada Kepala Kantor mengenai barang kena cukai yang selesai dibuat.",
+        relevanceScore: 0.96,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-7",
+        sectionHeading: "Pasal 7",
+        pageStart: 7,
+        pageEnd: 7,
+        excerpt:
+          "Pemberitahuan bulanan disampaikan oleh Pengusaha Pabrik paling lambat pada tanggal 10 (sepuluh) bulan berikutnya.",
+        relevanceScore: 0.95,
+      },
+    ];
+
+    const output = enforceKnowledgeCitationCoverage({
+      text: [
+        "| Aspek | Detail | Referensi |",
+        "| --- | --- | --- |",
+        "| Tenggat pelaporan | Paling lambat tanggal 10 bulan berikutnya | Pasal 7 [1] |",
+      ].join("\n"),
+      citations: legalCitations,
+    });
+
+    expect(output).toContain(
+      "| Tenggat pelaporan | Paling lambat tanggal 10 bulan berikutnya [2] | Pasal 7 [2] |",
+    );
+  });
+
+  it("preserves markdown table headers and drops detached citation-only lines around tables", () => {
+    const tableCitations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-3",
+        sectionHeading: "Pasal 3",
+        pageStart: 6,
+        pageEnd: 6,
+        excerpt:
+          "Pengusaha Pabrik wajib memberitahukan secara berkala kepada Kepala Kantor mengenai barang kena cukai yang selesai dibuat.",
+        relevanceScore: 0.96,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-7",
+        sectionHeading: "Pasal 7",
+        pageStart: 7,
+        pageEnd: 7,
+        excerpt:
+          "Pemberitahuan bulanan disampaikan oleh Pengusaha Pabrik paling lambat pada tanggal 10 (sepuluh) bulan berikutnya.",
+        relevanceScore: 0.95,
+      },
+      {
+        number: 3,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161_PMK.04_2022.pdf",
+        versionId: "version-161",
+        sectionId: "section-pasal-13",
+        sectionHeading: "Pasal 13",
+        pageStart: 10,
+        pageEnd: 10,
+        excerpt:
+          "Pengusaha Pabrik yang tidak menyampaikan pemberitahuan dikenai sanksi administrasi sesuai ketentuan peraturan perundang-undangan di bidang cukai.",
+        relevanceScore: 0.94,
+      },
+    ];
+
+    const finalized = normalizeKnowledgeCitationLayout({
+      text: enforceKnowledgeCitationCoverage({
+        text: [
+          "| Tahap | Kewajiban Utama | Tenggat Waktu | Sanksi |",
+          "[1][2][3]",
+          "| --- | --- | --- | --- |",
+          "| Pelaporan Bulanan | Pemberitahuan data | Paling lambat tgl 10 bulan berikutnya | Denda administratif |",
+        ].join("\n"),
+        citations: tableCitations,
+      }),
+      citations: tableCitations,
+    });
+
+    expect(finalized).toContain(
+      "| Tahap | Kewajiban Utama | Tenggat Waktu | Sanksi |",
+    );
+    expect(finalized).toContain("| --- | --- | --- | --- |");
+    expect(finalized).not.toContain("| Tahap | Kewajiban Utama [");
+    expect(finalized).not.toContain("[1][2][3]");
+  });
+
+  it("replaces a wrong generic citation with the better same-document section citation", () => {
+    const manualCitations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-manual",
+        documentName: "Product Manual",
+        versionId: "version-manual",
+        sectionId: "section-installation",
+        sectionHeading: "Product Manual > Installation",
+        pageStart: 2,
+        pageEnd: 2,
+        excerpt: "Install the desktop app from the downloads page and sign in.",
+        relevanceScore: 0.95,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "Docs",
+        documentId: "doc-manual",
+        documentName: "Product Manual",
+        versionId: "version-manual",
+        sectionId: "section-settings",
+        sectionHeading: "Product Manual > Workspace Settings",
+        pageStart: 5,
+        pageEnd: 5,
+        excerpt:
+          "To enable automatic backup, open Settings > Backup and toggle Auto Backup.",
+        relevanceScore: 0.92,
+      },
+    ];
+
+    const output = enforceKnowledgeCitationCoverage({
+      text: "To enable automatic backup, open Settings > Backup and toggle Auto Backup [1].",
+      citations: manualCitations,
+    });
+
+    expect(output).toContain("[2].");
+    expect(output).not.toContain("[1].");
+  });
+
+  it("validates missing citations inside markdown table cells", () => {
+    const pmkCitations: ChatKnowledgeCitation[] = [
+      {
+        number: 1,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-94",
+        documentName: "94/PMK.04/2016",
+        versionId: "version-94",
+        sectionId: "section-hari-kerja-94",
+        sectionHeading:
+          "15. Hari Kerja di Lingkungan Direktorat Jenderal Bea dan",
+        pageStart: 4,
+        pageEnd: 4,
+        excerpt:
+          "15. Hari Kerja di Lingkungan Direktorat Jenderal Bea dan Cukai yang selanjutnya disebut Hari Kerja adalah hari yang dimulai dari hari Senin sampai dengah hari Jumat.",
+        relevanceScore: 0.95,
+      },
+      {
+        number: 2,
+        groupId: "group-1",
+        groupName: "LegalDocument",
+        documentId: "doc-161",
+        documentName: "161/PMK.04/2022",
+        versionId: "version-161",
+        sectionId: "section-data-161",
+        sectionHeading:
+          "1. HasilTembakauuntukjenisHPTLberupatembakau > c. merekHasilTembakau,hargajualeceran,isimasing-",
+        pageStart: 7,
+        pageEnd: 7,
+        excerpt:
+          "c. merekHasilTembakau,hargajualeceran,isimasing-masingkemasan,danjumlahkemasan.",
+        relevanceScore: 0.91,
+      },
+    ];
+
+    const validation = validateKnowledgeCitationText({
+      text: [
+        "| Aspek | PMK 94 | PMK 161 |",
+        "| --- | --- | --- |",
+        "| Perubahan | Senin - Jumat (5 hari) | + Merek, HJE, Isi Kemasan, Jumlah Kemasan [2] |",
+      ].join("\n"),
+      citations: pmkCitations,
+    });
+
+    expect(validation.isValid).toBe(false);
+    expect(validation.missingCitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          line: "Senin - Jumat (5 hari)",
+        }),
+      ]),
+    );
   });
 
   it("linkifies markers outside code blocks and inline code only", () => {

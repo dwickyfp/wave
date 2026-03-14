@@ -4,6 +4,11 @@ import type {
   ChatKnowledgeSource,
   ChatMetadata,
 } from "app-types/chat";
+import {
+  countLegalReferenceOverlap,
+  extractLegalReferenceKeys,
+  normalizeLegalReferenceText,
+} from "lib/knowledge/legal-references";
 import type { DocRetrievalResult } from "lib/knowledge/retriever";
 
 type RetrievedKnowledgeGroup = {
@@ -368,9 +373,25 @@ function mergeDetachedCitationLines(text: string): string {
         continue;
       }
 
+      const previousLine = nextLines[previousIndex] ?? "";
+      if (
+        parseMarkdownTableRow(previousLine) != null ||
+        MARKDOWN_TABLE_SEPARATOR_RE.test(previousLine.trim())
+      ) {
+        continue;
+      }
+
       nextLines[previousIndex] = normalizeCitationInlineMarkers(
         `${nextLines[previousIndex]} ${formatCitationSequence(citationNumbers)}`,
       );
+      continue;
+    }
+
+    if (
+      parseMarkdownTableRow(line) != null ||
+      MARKDOWN_TABLE_SEPARATOR_RE.test(line.trim())
+    ) {
+      nextLines.push(line);
       continue;
     }
 
@@ -453,13 +474,68 @@ function stripEvidencePackEcho(text: string): string {
     .trim();
 }
 
-function tokenizeForCitationMatch(value: string): Set<string> {
+function normalizeCitationMatchText(value: string): string {
+  return normalizeLegalReferenceText(stripMarkdown(value));
+}
+
+function buildCharacterNgrams(value: string, size = 4): Set<string> {
+  const compact = normalizeCitationMatchText(value).replace(/\s+/g, "");
+  if (!compact) return new Set();
+  if (compact.length <= size) return new Set([compact]);
+
+  const ngrams = new Set<string>();
+  for (let index = 0; index <= compact.length - size; index += 1) {
+    ngrams.add(compact.slice(index, index + size));
+  }
+  return ngrams;
+}
+
+function extractCitationIdentifiers(value: string): Set<string> {
   return new Set(
-    stripMarkdown(value)
-      .toLowerCase()
-      .split(/[^a-z0-9]+/i)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3),
+    normalizeCitationMatchText(value)
+      .match(/\b\d{2,4}\b/g)
+      ?.filter((token) => token.length >= 2) ?? [],
+  );
+}
+
+function tokenizeForCitationMatch(value: string): Set<string> {
+  const normalized = normalizeCitationMatchText(value);
+  const tokens = normalized
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3);
+  const expanded = new Set(tokens);
+
+  for (const token of tokens) {
+    if (token.length < 12) continue;
+
+    for (let index = 0; index <= token.length - 5; index += 1) {
+      const slice = token.slice(index, index + 5);
+      if (slice.length >= 4) {
+        expanded.add(slice);
+      }
+    }
+  }
+
+  return expanded;
+}
+
+function computeSetOverlap(left: Set<string>, right: Set<string>): number {
+  if (left.size === 0 || right.size === 0) return 0;
+  let overlap = 0;
+  for (const token of left) {
+    if (right.has(token)) overlap += 1;
+  }
+  return overlap / left.size;
+}
+
+function buildCitationLegalReferenceSet(
+  citation: ChatKnowledgeCitation,
+): Set<string> {
+  return extractLegalReferenceKeys(
+    [citation.sectionHeading, citation.excerpt, citation.documentName]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .join(" "),
   );
 }
 
@@ -468,25 +544,53 @@ function scoreCitationForLine(
   citation: ChatKnowledgeCitation,
 ): number {
   const lineTokens = tokenizeForCitationMatch(line);
-  if (lineTokens.size === 0) return citation.relevanceScore;
-
-  const citationTokens = tokenizeForCitationMatch(
-    [
-      citation.documentName,
-      citation.sectionHeading,
-      citation.excerpt,
-      citation.groupName,
-    ]
-      .filter(Boolean)
-      .join(" "),
-  );
-
-  let overlap = 0;
-  for (const token of lineTokens) {
-    if (citationTokens.has(token)) overlap += 1;
+  const lineNgrams = buildCharacterNgrams(line);
+  if (lineTokens.size === 0 && lineNgrams.size === 0) {
+    return citation.relevanceScore * 0.25;
   }
 
-  return overlap * 2 + citation.relevanceScore;
+  const excerptTokens = tokenizeForCitationMatch(citation.excerpt);
+  const headingTokens = tokenizeForCitationMatch(citation.sectionHeading ?? "");
+  const documentTokens = tokenizeForCitationMatch(citation.documentName);
+  const excerptNgrams = buildCharacterNgrams(citation.excerpt);
+  const headingNgrams = buildCharacterNgrams(citation.sectionHeading ?? "");
+  const lineIdentifiers = extractCitationIdentifiers(line);
+  const documentIdentifiers = extractCitationIdentifiers(citation.documentName);
+  const lineLegalReferences = extractLegalReferenceKeys(line);
+  const citationLegalReferences = buildCitationLegalReferenceSet(citation);
+
+  const excerptTokenOverlap = computeSetOverlap(lineTokens, excerptTokens);
+  const headingTokenOverlap = computeSetOverlap(lineTokens, headingTokens);
+  const documentTokenOverlap = computeSetOverlap(lineTokens, documentTokens);
+  const excerptCharacterOverlap = computeSetOverlap(lineNgrams, excerptNgrams);
+  const headingCharacterOverlap = computeSetOverlap(lineNgrams, headingNgrams);
+  const documentIdentifierOverlap = computeSetOverlap(
+    lineIdentifiers,
+    documentIdentifiers,
+  );
+  const legalReferenceOverlap = countLegalReferenceOverlap(
+    lineLegalReferences,
+    citationLegalReferences,
+  );
+  const hasConflictingLegalReferences =
+    lineLegalReferences.size > 0 &&
+    citationLegalReferences.size > 0 &&
+    legalReferenceOverlap === 0;
+  const missingLegalReferenceSignal =
+    lineLegalReferences.size > 0 && citationLegalReferences.size === 0;
+
+  return (
+    excerptTokenOverlap * 8 +
+    excerptCharacterOverlap * 6 +
+    documentIdentifierOverlap * 12 +
+    legalReferenceOverlap * 36 +
+    headingTokenOverlap * 1.75 +
+    headingCharacterOverlap * 1.25 +
+    documentTokenOverlap * 0.75 +
+    citation.relevanceScore * 0.25 -
+    (hasConflictingLegalReferences ? 24 : 0) -
+    (missingLegalReferenceSignal ? 4 : 0)
+  );
 }
 
 type RankedCitationForLine = {
@@ -511,12 +615,18 @@ function rankCitationsForLine(
 function pickBestCitationsForLine(
   line: string,
   citations: ChatKnowledgeCitation[],
+  options?: {
+    maxCount?: number;
+  },
 ): ChatKnowledgeCitation[] {
   const ranked = rankCitationsForLine(line, citations);
   if (!ranked.length) return [];
 
   const top = ranked[0];
   if (!top || top.score <= 0) return [];
+  if ((options?.maxCount ?? 2) <= 1) {
+    return [top.citation];
+  }
 
   const selected = [top];
   const second = ranked.find(
@@ -559,6 +669,258 @@ function sameCitationSet(left: number[], right: number[]): boolean {
   return left.every((value, index) => value === right[index]);
 }
 
+const MARKDOWN_TABLE_SEPARATOR_RE =
+  /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/;
+
+function parseMarkdownTableRow(line: string): {
+  indent: string;
+  trailingWhitespace: string;
+  leadingPipe: boolean;
+  trailingPipe: boolean;
+  cells: string[];
+} | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+  if (MARKDOWN_TABLE_SEPARATOR_RE.test(trimmed)) return null;
+
+  const leadingPipe = trimmed.startsWith("|");
+  const trailingPipe = trimmed.endsWith("|");
+  const inner = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  const cells = inner.split("|").map((cell) => cell.trim());
+  if (cells.length < 2) return null;
+
+  return {
+    indent: line.match(/^\s*/)?.[0] ?? "",
+    trailingWhitespace: line.match(/\s*$/)?.[0] ?? "",
+    leadingPipe,
+    trailingPipe,
+    cells,
+  };
+}
+
+function isMarkdownTableHeaderRow(lines: string[], lineIndex: number): boolean {
+  for (let index = lineIndex + 1; index < lines.length; index += 1) {
+    const candidate = lines[index] ?? "";
+    if (!candidate.trim()) continue;
+    if (isCitationOnlyLine(candidate)) continue;
+    return MARKDOWN_TABLE_SEPARATOR_RE.test(candidate.trim());
+  }
+
+  return false;
+}
+
+function stripCitationMarkersFromTableRow(line: string): string {
+  const parsed = parseMarkdownTableRow(line);
+  if (!parsed) return stripAllCitationMarkers(line);
+
+  return joinMarkdownTableRow(
+    parsed,
+    parsed.cells.map((cell) => stripAllCitationMarkers(cell)),
+  );
+}
+
+function sanitizeMarkdownTableStructure(text: string): string {
+  const lines = text.split("\n");
+  const nextLines: string[] = [];
+  let activeTableColumnCount: number | null = null;
+
+  for (const [index, line] of lines.entries()) {
+    if (MARKDOWN_TABLE_SEPARATOR_RE.test(line.trim())) {
+      nextLines.push(line);
+      continue;
+    }
+
+    const parsedTableRow = parseMarkdownTableRow(line);
+    if (!parsedTableRow) {
+      if (isCitationOnlyLine(line)) {
+        const previousLine = nextLines[nextLines.length - 1] ?? "";
+        const nextNonEmptyLine = lines
+          .slice(index + 1)
+          .find((candidate) => candidate.trim().length > 0);
+        if (
+          parseMarkdownTableRow(previousLine) != null ||
+          MARKDOWN_TABLE_SEPARATOR_RE.test(previousLine.trim()) ||
+          parseMarkdownTableRow(nextNonEmptyLine ?? "") != null ||
+          MARKDOWN_TABLE_SEPARATOR_RE.test((nextNonEmptyLine ?? "").trim())
+        ) {
+          continue;
+        }
+      }
+
+      if (line.trim() === "") {
+        activeTableColumnCount = null;
+      }
+      nextLines.push(line);
+      continue;
+    }
+
+    if (isMarkdownTableHeaderRow(lines, index)) {
+      const sanitizedCells = [...parsedTableRow.cells];
+      while (
+        sanitizedCells.length > 2 &&
+        stripAllCitationMarkers(sanitizedCells[sanitizedCells.length - 1] ?? "")
+          .length === 0
+      ) {
+        sanitizedCells.pop();
+      }
+      const strippedCells = sanitizedCells.map((cell) =>
+        stripAllCitationMarkers(cell),
+      );
+      activeTableColumnCount = strippedCells.length;
+      nextLines.push(joinMarkdownTableRow(parsedTableRow, strippedCells));
+      continue;
+    }
+
+    if (activeTableColumnCount != null) {
+      const sanitizedCells = [...parsedTableRow.cells];
+      while (sanitizedCells.length > activeTableColumnCount) {
+        const lastCell = sanitizedCells[sanitizedCells.length - 1] ?? "";
+        if (stripAllCitationMarkers(lastCell).length > 0) {
+          break;
+        }
+        sanitizedCells.pop();
+      }
+      nextLines.push(joinMarkdownTableRow(parsedTableRow, sanitizedCells));
+      continue;
+    }
+
+    nextLines.push(line);
+  }
+
+  return nextLines.join("\n");
+}
+
+function joinMarkdownTableRow(
+  row: NonNullable<ReturnType<typeof parseMarkdownTableRow>>,
+  cells: string[],
+) {
+  return `${row.indent}${row.leadingPipe ? "| " : ""}${cells.join(" | ")}${row.trailingPipe ? " |" : ""}${row.trailingWhitespace}`;
+}
+
+function buildTableCellScoringText(input: {
+  rowLabel?: string | null;
+  columnLabel?: string | null;
+  cell: string;
+}) {
+  return [input.columnLabel, input.rowLabel, input.cell]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(" ");
+}
+
+function enforceCitationCoverageForSpan(input: {
+  text: string;
+  citations: ChatKnowledgeCitation[];
+  scoringText?: string;
+  maxCount?: number;
+}): string {
+  const cleanedLine = input.text.replace(/\[(\d+)\](?!\()/g, (full, raw) => {
+    const citationNumber = Number.parseInt(raw, 10);
+    return input.citations.some(
+      (citation) => citation.number === citationNumber,
+    )
+      ? full
+      : "";
+  });
+  const baseLine = stripAllCitationMarkers(cleanedLine);
+  const scoringText = input.scoringText?.trim() || baseLine;
+  const existingCitationNumbers = dedupeCitationNumbers(
+    extractCitationNumbers(cleanedLine),
+  );
+  const existingCitations = existingCitationNumbers
+    .map((citationNumber) =>
+      input.citations.find((citation) => citation.number === citationNumber),
+    )
+    .filter((citation): citation is ChatKnowledgeCitation => citation != null);
+  const recommendedCitations = pickBestCitationsForLine(
+    scoringText,
+    input.citations,
+    {
+      maxCount: input.maxCount,
+    },
+  );
+
+  if (existingCitations.length > 0) {
+    const normalizedExistingLine = appendCitationSequence(
+      baseLine,
+      formatCitationSequence(existingCitationNumbers),
+    );
+    if (!recommendedCitations.length) {
+      return normalizedExistingLine;
+    }
+
+    const recommendedNumbers = recommendedCitations.map(
+      (citation) => citation.number,
+    );
+    if (sameCitationSet(existingCitationNumbers, recommendedNumbers)) {
+      return normalizedExistingLine;
+    }
+
+    const existingScore = scoreCitationSelectionForLine(
+      scoringText,
+      existingCitations,
+    );
+    const recommendedScore = scoreCitationSelectionForLine(
+      scoringText,
+      recommendedCitations,
+    );
+
+    if (recommendedScore <= existingScore + 1) {
+      return normalizedExistingLine;
+    }
+
+    return appendCitationSequence(
+      baseLine,
+      formatCitationSequence(recommendedNumbers),
+    );
+  }
+
+  if (!recommendedCitations.length) return cleanedLine;
+
+  return appendCitationSequence(
+    baseLine,
+    formatCitationSequence(
+      recommendedCitations.map((citation) => citation.number),
+    ),
+  );
+}
+
+function enforceCitationCoverageForLine(input: {
+  line: string;
+  citations: ChatKnowledgeCitation[];
+  tableHeaderCells?: string[] | null;
+}): string {
+  const parsedTableRow = parseMarkdownTableRow(input.line);
+  if (!parsedTableRow) {
+    return enforceCitationCoverageForSpan({
+      text: input.line,
+      citations: input.citations,
+    });
+  }
+
+  const nextCells = parsedTableRow.cells.map((cell, index) => {
+    if (index === 0) return cell;
+    if (
+      !shouldRequireCitation(cell) &&
+      extractCitationNumbers(cell).length === 0
+    ) {
+      return cell;
+    }
+
+    return enforceCitationCoverageForSpan({
+      text: cell,
+      citations: input.citations,
+      scoringText: buildTableCellScoringText({
+        columnLabel: input.tableHeaderCells?.[index] ?? null,
+        rowLabel: parsedTableRow.cells[0] ?? null,
+        cell,
+      }),
+      maxCount: 1,
+    });
+  });
+
+  return joinMarkdownTableRow(parsedTableRow, nextCells);
+}
+
 export function validateKnowledgeCitationText(input: {
   text: string;
   citations: ChatKnowledgeCitation[];
@@ -574,7 +936,38 @@ export function validateKnowledgeCitationText(input: {
   for (const segment of splitTextAndCodeSegments(input.text)) {
     if (segment.type === "code") continue;
 
-    for (const line of segment.value.split("\n")) {
+    const lines = segment.value.split("\n");
+    for (const [segmentLineIndex, line] of lines.entries()) {
+      const parsedTableRow = parseMarkdownTableRow(line);
+      if (parsedTableRow) {
+        if (isMarkdownTableHeaderRow(lines, segmentLineIndex)) {
+          lineIndex += 1;
+          continue;
+        }
+
+        for (const [cellIndex, cell] of parsedTableRow.cells.entries()) {
+          if (cellIndex === 0) continue;
+
+          const citationNumbers = extractCitationNumbers(cell);
+          for (const citationNumber of citationNumbers) {
+            usedCitationNumbers.add(citationNumber);
+            if (!allowedNumbers.has(citationNumber)) {
+              invalidCitationNumbers.add(citationNumber);
+            }
+          }
+
+          if (shouldRequireCitation(cell) && citationNumbers.length === 0) {
+            missingCitations.push({
+              lineIndex,
+              line: cell.trim(),
+            });
+          }
+        }
+
+        lineIndex += 1;
+        continue;
+      }
+
       if (isCitationOnlyLine(line)) {
         missingCitations.push({
           lineIndex,
@@ -626,78 +1019,49 @@ export function enforceKnowledgeCitationCoverage(input: {
 
       return segment.value
         .split("\n")
-        .map((line) => {
-          if (!shouldRequireCitation(line)) return line;
-
-          const cleanedLine = line.replace(/\[(\d+)\](?!\()/g, (full, raw) => {
-            const citationNumber = Number.parseInt(raw, 10);
-            return input.citations.some(
-              (citation) => citation.number === citationNumber,
+        .map((line, lineIndex, lines) => {
+          const parsedTableRow = parseMarkdownTableRow(line);
+          if (parsedTableRow) {
+            if (isMarkdownTableHeaderRow(lines, lineIndex)) {
+              return stripCitationMarkersFromTableRow(line);
+            }
+            const previousLine = lines[lineIndex - 1] ?? "";
+            const nextLine = lines[lineIndex + 1] ?? "";
+            const tableHeaderCells = MARKDOWN_TABLE_SEPARATOR_RE.test(
+              previousLine.trim(),
             )
-              ? full
-              : "";
-          });
-          const baseLine = stripAllCitationMarkers(cleanedLine);
-          const existingCitationNumbers = dedupeCitationNumbers(
-            extractCitationNumbers(cleanedLine),
-          );
-          const existingCitations = existingCitationNumbers
-            .map((citationNumber) =>
-              input.citations.find(
-                (citation) => citation.number === citationNumber,
-              ),
-            )
-            .filter(
-              (citation): citation is ChatKnowledgeCitation => citation != null,
-            );
-          const recommendedCitations = pickBestCitationsForLine(
-            baseLine,
-            input.citations,
-          );
-
-          if (existingCitations.length > 0) {
-            const normalizedExistingLine = appendCitationSequence(
-              baseLine,
-              formatCitationSequence(existingCitationNumbers),
-            );
-            if (!recommendedCitations.length) {
-              return normalizedExistingLine;
-            }
-
-            const recommendedNumbers = recommendedCitations.map(
-              (citation) => citation.number,
-            );
-            if (sameCitationSet(existingCitationNumbers, recommendedNumbers)) {
-              return normalizedExistingLine;
-            }
-
-            const existingScore = scoreCitationSelectionForLine(
-              baseLine,
-              existingCitations,
-            );
-            const recommendedScore = scoreCitationSelectionForLine(
-              baseLine,
-              recommendedCitations,
-            );
-
-            if (recommendedScore <= existingScore + 1) {
-              return normalizedExistingLine;
-            }
-
-            return appendCitationSequence(
-              baseLine,
-              formatCitationSequence(recommendedNumbers),
-            );
+              ? (parseMarkdownTableRow(lines[lineIndex - 2] ?? "")?.cells ??
+                null)
+              : MARKDOWN_TABLE_SEPARATOR_RE.test(nextLine.trim())
+                ? null
+                : (() => {
+                    let searchIndex = lineIndex - 1;
+                    while (searchIndex >= 0) {
+                      const candidateLine = lines[searchIndex] ?? "";
+                      if (
+                        MARKDOWN_TABLE_SEPARATOR_RE.test(candidateLine.trim())
+                      ) {
+                        return (
+                          parseMarkdownTableRow(lines[searchIndex - 1] ?? "")
+                            ?.cells ?? null
+                        );
+                      }
+                      if (!parseMarkdownTableRow(candidateLine)) break;
+                      searchIndex -= 1;
+                    }
+                    return null;
+                  })();
+            return enforceCitationCoverageForLine({
+              line,
+              citations: input.citations,
+              tableHeaderCells,
+            });
           }
-
-          if (!recommendedCitations.length) return cleanedLine;
-
-          return appendCitationSequence(
-            baseLine,
-            formatCitationSequence(
-              recommendedCitations.map((citation) => citation.number),
-            ),
-          );
+          if (!shouldRequireCitation(line)) return line;
+          return enforceCitationCoverageForLine({
+            line,
+            citations: input.citations,
+          });
         })
         .join("\n");
     })
@@ -795,11 +1159,12 @@ export function linkifyKnowledgeCitationMarkers(input: {
   citations: ChatKnowledgeCitation[];
 }): string {
   if (!input.citations.length) return input.text;
+  const sanitizedText = sanitizeMarkdownTableStructure(input.text);
   const citationsByNumber = new Map(
     input.citations.map((citation) => [citation.number, citation]),
   );
 
-  return splitTextAndCodeSegments(input.text)
+  return splitTextAndCodeSegments(sanitizedText)
     .map((segment) => {
       if (segment.type === "code") return segment.value;
 

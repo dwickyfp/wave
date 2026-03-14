@@ -11,6 +11,7 @@ import {
   PaginatedChatThreads,
   ChatThreadListItem,
 } from "app-types/chat";
+import globalLogger from "logger";
 
 import { pgDb as db } from "../db.pg";
 import {
@@ -22,8 +23,13 @@ import {
   ChatThreadCompactionCheckpointTable,
   ChatThreadCompactionStateTable,
 } from "../schema.pg";
+import { withRetryableChatWrite } from "./chat-write-retry";
 
 import { and, count, desc, eq, gte, sql } from "drizzle-orm";
+
+const logger = globalLogger.withDefaults({
+  message: "Chat Repository: ",
+});
 
 async function invalidateCheckpointIfMessageIsCompacted(messageId: string) {
   const [message] = await db
@@ -346,27 +352,45 @@ export const pgChatRepository: ChatRepository = {
       ...message,
       id: message.id,
     };
-    const [result] = await db
-      .insert(ChatMessageTable)
-      .values(entity)
-      .returning();
+    const [result] = await withRetryableChatWrite(
+      () => db.insert(ChatMessageTable).values(entity).returning(),
+      {
+        onRetry: ({ attempt, error, nextDelayMs }) => {
+          logger.warn(
+            `Retrying chat message insert ${message.id} after transient DB error (attempt ${attempt + 1}, next delay ${nextDelayMs}ms)`,
+            error,
+          );
+        },
+      },
+    );
     return result as ChatMessage;
   },
 
   upsertMessage: async (
     message: Omit<ChatMessage, "createdAt">,
   ): Promise<ChatMessage> => {
-    const result = await db
-      .insert(ChatMessageTable)
-      .values(message)
-      .onConflictDoUpdate({
-        target: [ChatMessageTable.id],
-        set: {
-          parts: message.parts,
-          metadata: message.metadata,
+    const result = await withRetryableChatWrite(
+      () =>
+        db
+          .insert(ChatMessageTable)
+          .values(message)
+          .onConflictDoUpdate({
+            target: [ChatMessageTable.id],
+            set: {
+              parts: message.parts,
+              metadata: message.metadata,
+            },
+          })
+          .returning(),
+      {
+        onRetry: ({ attempt, error, nextDelayMs }) => {
+          logger.warn(
+            `Retrying chat message upsert ${message.id} after transient DB error (attempt ${attempt + 1}, next delay ${nextDelayMs}ms)`,
+            error,
+          );
         },
-      })
-      .returning();
+      },
+    );
     return result[0] as ChatMessage;
   },
 
