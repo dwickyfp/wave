@@ -644,6 +644,50 @@ describe("knowledge citations", () => {
     );
   });
 
+  it("does not duplicate citations when the line already ends with cited punctuation", () => {
+    const normalized = normalizeKnowledgeCitationLayout({
+      text: [
+        "Authentication uses passkeys [1].",
+        "",
+        "Status: enabled [1][1].",
+        "",
+        "Recovery codes stay available [1][2][1][2].",
+      ].join("\n"),
+      citations,
+    });
+
+    expect(normalized).toBe(
+      [
+        "Authentication uses passkeys [1].",
+        "",
+        "Status: enabled [1].",
+        "",
+        "Recovery codes stay available [1][2].",
+      ].join("\n"),
+    );
+  });
+
+  it("repairs duplicated saved citation markers before linkifying hydrated history", () => {
+    const linked = linkifyKnowledgeCitationMarkers({
+      text: [
+        "Authentication uses passkeys [1] [1].",
+        "",
+        "Recovery codes stay available [1][1].",
+      ].join("\n"),
+      citations,
+    });
+
+    expect(linked).toContain(
+      "Authentication uses passkeys [1](knowledge://group-1/doc-1?",
+    );
+    expect(linked).not.toContain(
+      "[1](knowledge://group-1/doc-1?citationNumber=1&pageStart=3&pageEnd=3&sectionHeading=Guide+%3E+Authentication&excerpt=Authentication+excerpt) [1](knowledge://group-1/doc-1?",
+    );
+    expect(linked.match(/\[1\]\(knowledge:\/\/group-1\/doc-1\?/g)).toHaveLength(
+      2,
+    );
+  });
+
   it("removes trailing citation appendices unless explicitly preserved", () => {
     const appendixCitations = citations.map((citation) => ({
       ...citation,

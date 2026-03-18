@@ -298,10 +298,6 @@ function normalizeCitationLine(line: string): string {
     .trim();
 }
 
-function stripTrailingCitationMarkers(line: string): string {
-  return line.replace(/\s*(?:\[(\d+)\](?!\())+\s*$/g, "").trimEnd();
-}
-
 function shouldRequireCitation(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
@@ -344,12 +340,42 @@ function replaceCitationMarkersInLine(
 }
 
 function normalizeCitationInlineMarkers(line: string): string {
+  if (line.includes("`")) return line.trimEnd();
   const numbers = extractCitationNumbers(line);
   if (numbers.length === 0) return line.trimEnd();
-  const base = stripTrailingCitationMarkers(line).trim();
+  const base = stripAllCitationMarkers(line);
   const formatted = formatCitationSequence(numbers);
   if (!base) return formatted;
   return appendCitationSequence(base, formatted);
+}
+
+function normalizeCitationMarkersForDisplay(text: string): string {
+  return splitTextAndCodeSegments(text)
+    .map((segment) => {
+      if (segment.type === "code") return segment.value;
+
+      return segment.value
+        .split("\n")
+        .map((line) => {
+          if (MARKDOWN_TABLE_SEPARATOR_RE.test(line.trim())) {
+            return line;
+          }
+
+          const parsedTableRow = parseMarkdownTableRow(line);
+          if (!parsedTableRow) {
+            return normalizeCitationInlineMarkers(line);
+          }
+
+          return joinMarkdownTableRow(
+            parsedTableRow,
+            parsedTableRow.cells.map((cell) =>
+              normalizeCitationInlineMarkers(cell),
+            ),
+          );
+        })
+        .join("\n");
+    })
+    .join("");
 }
 
 function mergeDetachedCitationLines(text: string): string {
@@ -1160,11 +1186,12 @@ export function linkifyKnowledgeCitationMarkers(input: {
 }): string {
   if (!input.citations.length) return input.text;
   const sanitizedText = sanitizeMarkdownTableStructure(input.text);
+  const normalizedText = normalizeCitationMarkersForDisplay(sanitizedText);
   const citationsByNumber = new Map(
     input.citations.map((citation) => [citation.number, citation]),
   );
 
-  return splitTextAndCodeSegments(sanitizedText)
+  return splitTextAndCodeSegments(normalizedText)
     .map((segment) => {
       if (segment.type === "code") return segment.value;
 
