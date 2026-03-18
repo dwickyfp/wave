@@ -5,6 +5,11 @@ import {
   MCPToolInfo,
   type McpPublishAuthMode,
 } from "app-types/mcp";
+import type {
+  AdminUsageEventResourceType,
+  AdminUsageEventSource,
+  AdminUsageEventStatus,
+} from "app-types/admin-dashboard";
 import type { ProviderSettings } from "app-types/settings";
 import { UserPreferences } from "app-types/user";
 import type { TeamResourceType, TeamRole } from "app-types/team";
@@ -2040,6 +2045,59 @@ export const AgentExternalUsageLogTable = pgTable(
   ],
 );
 
+export const AdminUsageEventTable = pgTable(
+  "admin_usage_event",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    resourceType: text("resource_type")
+      .$type<AdminUsageEventResourceType>()
+      .notNull(),
+    resourceId: uuid("resource_id").notNull(),
+    eventName: text("event_name").notNull(),
+    actorUserId: uuid("actor_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    source: text("source").$type<AdminUsageEventSource>().notNull(),
+    status: text("status")
+      .$type<AdminUsageEventStatus>()
+      .notNull()
+      .default("success"),
+    latencyMs: integer("latency_ms"),
+    agentId: uuid("agent_id").references(() => AgentTable.id, {
+      onDelete: "set null",
+    }),
+    threadId: uuid("thread_id").references(() => ChatThreadTable.id, {
+      onDelete: "set null",
+    }),
+    toolName: text("tool_name"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("admin_usage_event_resource_created_at_idx").on(
+      table.resourceType,
+      table.resourceId,
+      table.createdAt,
+    ),
+    index("admin_usage_event_actor_created_at_idx").on(
+      table.resourceType,
+      table.actorUserId,
+      table.createdAt,
+    ),
+    index("admin_usage_event_type_created_at_idx").on(
+      table.resourceType,
+      table.createdAt,
+    ),
+    index("admin_usage_event_resource_event_created_at_idx").on(
+      table.resourceType,
+      table.resourceId,
+      table.eventName,
+      table.createdAt,
+    ),
+  ],
+);
+
 export type KnowledgeGroupEntity = typeof KnowledgeGroupTable.$inferSelect;
 export type KnowledgeGroupSourceEntity =
   typeof KnowledgeGroupSourceTable.$inferSelect;
@@ -2075,3 +2133,4 @@ export type AgentExternalChatSessionEntity =
   typeof AgentExternalChatSessionTable.$inferSelect;
 export type AgentExternalUsageLogEntity =
   typeof AgentExternalUsageLogTable.$inferSelect;
+export type AdminUsageEventEntity = typeof AdminUsageEventTable.$inferSelect;

@@ -16,6 +16,10 @@ import {
   ChatMetadata,
   ManualToolConfirmTag,
 } from "app-types/chat";
+import type {
+  AdminDashboardUsageContext,
+  AdminUsageEventStatus,
+} from "app-types/admin-dashboard";
 import { errorToString, exclude, objectFlow } from "lib/utils";
 import logger from "logger";
 import {
@@ -28,7 +32,7 @@ import { MANUAL_REJECT_RESPONSE_PROMPT } from "lib/ai/prompts";
 
 import { ObjectJsonSchema7 } from "app-types/util";
 import { safe } from "ts-safe";
-import { workflowRepository } from "lib/db/repository";
+import { usageEventRepository, workflowRepository } from "lib/db/repository";
 import { listAccessibleMcpServerIds } from "lib/mcp/access";
 
 import {
@@ -117,6 +121,7 @@ export function manualToolExecuteByLastMessage(
   part: ToolUIPart,
   tools: Record<string, VercelAIMcpTool | VercelAIWorkflowTool | Tool>,
   abortSignal?: AbortSignal,
+  usageContext?: AdminDashboardUsageContext,
 ) {
   const { input } = part;
 
@@ -142,6 +147,7 @@ export function manualToolExecuteByLastMessage(
           tool._mcpServerId,
           tool._originToolName,
           input,
+          usageContext,
         );
       }
       return tool.execute!(input, {
@@ -226,12 +232,14 @@ export const workflowToVercelAITool = ({
   schema,
   dataStream,
   name,
+  usageContext,
 }: {
   id: string;
   name: string;
   description?: string;
   schema: ObjectJsonSchema7;
   dataStream: UIMessageStreamWriter;
+  usageContext?: AdminDashboardUsageContext;
 }): VercelAIWorkflowTool => {
   const toolName = name
     .replace(/[^a-zA-Z0-9\s]/g, "")
@@ -242,7 +250,8 @@ export const workflowToVercelAITool = ({
   const tool = createTool({
     description: `${name} ${description?.trim().slice(0, 50)}`,
     inputSchema: jsonSchema(schema),
-    execute(query, { toolCallId, abortSignal }) {
+    async execute(query, { toolCallId, abortSignal }) {
+      const startedAt = Date.now();
       const history: VercelAIWorkflowToolStreaming[] = [];
       const toolResult = VercelAIWorkflowToolStreamingResultTag.create({
         toolCallId,
@@ -254,7 +263,7 @@ export const workflowToVercelAITool = ({
         result: undefined,
         status: "running",
       });
-      return safe(id)
+      const result = await safe(id)
         .map((id) =>
           workflowRepository.selectStructureById(id, {
             ignoreNote: true,
@@ -359,6 +368,29 @@ export const workflowToVercelAITool = ({
           };
         })
         .unwrap();
+
+      if (usageContext) {
+        const status: AdminUsageEventStatus =
+          (result as any)?.status === "success" ? "success" : "error";
+
+        try {
+          await usageEventRepository.recordEvent({
+            resourceType: "workflow",
+            resourceId: id,
+            eventName: "execute",
+            source: usageContext.source,
+            actorUserId: usageContext.actorUserId ?? null,
+            agentId: usageContext.agentId ?? null,
+            threadId: usageContext.threadId ?? null,
+            status,
+            latencyMs: Date.now() - startedAt,
+          });
+        } catch {
+          // Workflow execution should not fail because analytics logging failed.
+        }
+      }
+
+      return result;
     },
   }) as VercelAIWorkflowTool;
 
@@ -377,12 +409,14 @@ export const workflowToVercelAITools = (
     schema: ObjectJsonSchema7;
   }[],
   dataStream: UIMessageStreamWriter,
+  usageContext?: AdminDashboardUsageContext,
 ) => {
   return workflows
     .map((v) =>
       workflowToVercelAITool({
         ...v,
         dataStream,
+        usageContext,
       }),
     )
     .reduce(
@@ -400,6 +434,7 @@ export const loadMcpTools = (opt?: {
   userId?: string;
   additionalUserIds?: string[];
   includeAllAccessible?: boolean;
+  usageContext?: AdminDashboardUsageContext;
 }) =>
   safe(async () => {
     const accessibleUserIds = Array.from(
@@ -428,12 +463,38 @@ export const loadMcpTools = (opt?: {
       accessibleServerIds.has(_tool._mcpServerId),
     );
 
+    const wrapWithUsageContext = (
+      tools: Record<string, VercelAIMcpTool>,
+    ): Record<string, VercelAIMcpTool> => {
+      if (!opt?.usageContext) {
+        return tools;
+      }
+
+      return Object.fromEntries(
+        Object.entries(tools).map(([toolId, tool]) => [
+          toolId,
+          VercelAIMcpToolTag.create({
+            ...tool,
+            execute: (params, _options) =>
+              mcpClientsManager.toolCall(
+                tool._mcpServerId,
+                tool._originToolName,
+                params,
+                opt.usageContext,
+              ),
+          }),
+        ]),
+      );
+    };
+
     if (opt?.includeAllAccessible) {
-      return accessibleTools;
+      return wrapWithUsageContext(accessibleTools);
     }
 
     if (opt?.mentions?.length) {
-      return filterMCPToolsByMentions(accessibleTools, opt.mentions);
+      return wrapWithUsageContext(
+        filterMCPToolsByMentions(accessibleTools, opt.mentions),
+      );
     }
 
     const allowedMcpServers = opt?.allowedMcpServers
@@ -444,15 +505,15 @@ export const loadMcpTools = (opt?: {
         )
       : undefined;
 
-    return filterMCPToolsByAllowedMCPServers(
-      accessibleTools,
-      allowedMcpServers,
+    return wrapWithUsageContext(
+      filterMCPToolsByAllowedMCPServers(accessibleTools, allowedMcpServers),
     );
   }).orElse({} as Record<string, VercelAIMcpTool>);
 
 export const loadWorkFlowTools = (opt: {
   mentions?: ChatMention[];
   dataStream: UIMessageStreamWriter;
+  usageContext?: AdminDashboardUsageContext;
 }) =>
   safe(() =>
     opt?.mentions?.length
@@ -466,7 +527,9 @@ export const loadWorkFlowTools = (opt: {
         )
       : [],
   )
-    .map((tools) => workflowToVercelAITools(tools, opt.dataStream))
+    .map((tools) =>
+      workflowToVercelAITools(tools, opt.dataStream, opt.usageContext),
+    )
     .orElse({} as Record<string, VercelAIWorkflowTool>);
 
 export const loadAppDefaultTools = (opt?: {

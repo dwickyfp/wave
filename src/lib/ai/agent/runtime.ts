@@ -1,4 +1,11 @@
+import {
+  loadAppDefaultTools,
+  loadMcpTools,
+  loadWorkFlowTools,
+  mergeSystemPrompt,
+} from "@/app/api/chat/shared.chat";
 import type { Tool, UIMessageStreamWriter } from "ai";
+import type { AdminDashboardUsageContext } from "app-types/admin-dashboard";
 import type { Agent } from "app-types/agent";
 import type { ChatMention, ChatModel } from "app-types/chat";
 import type {
@@ -8,6 +15,9 @@ import type {
 import type { SkillSummary } from "app-types/skill";
 import type { UserPreferences } from "app-types/user";
 import type { User } from "better-auth";
+import { getAgentAttachedSkills } from "lib/ai/agent/attached-skills";
+import type { ActiveAgentSkill } from "lib/ai/agent/skill-activation";
+import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import {
   buildAgentSkillsSystemPrompt,
   buildKnowledgeContextSystemPrompt,
@@ -16,26 +26,17 @@ import {
   buildToolCallUnsupportedModelSystemPrompt,
   buildUserSystemPrompt,
 } from "lib/ai/prompts";
-import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import {
-  createKnowledgeDocsTool,
   type KnowledgeDocsPreparedPayload,
   type KnowledgeDocsRetrievedPayload,
+  createKnowledgeDocsTool,
   knowledgeDocsToolName,
 } from "lib/ai/tools/knowledge-tool";
 import {
-  createLoadSkillTool,
   LOAD_SKILL_TOOL_NAME,
+  createLoadSkillTool,
 } from "lib/ai/tools/skill-tool";
-import type { ActiveAgentSkill } from "lib/ai/agent/skill-activation";
-import { getAgentAttachedSkills } from "lib/ai/agent/attached-skills";
 import { knowledgeRepository, subAgentRepository } from "lib/db/repository";
-import {
-  loadAppDefaultTools,
-  loadMcpTools,
-  loadWorkFlowTools,
-  mergeSystemPrompt,
-} from "@/app/api/chat/shared.chat";
 
 export function createNoopDataStream() {
   return {
@@ -56,6 +57,7 @@ export async function loadWaveAgentContinueCapabilities(options: {
   agent?: Agent | null;
   userId: string;
   capabilityUserId?: string;
+  usageContext?: AdminDashboardUsageContext;
   dataStream: UIMessageStreamWriter;
   abortSignal: AbortSignal;
   chatModel: ChatModel;
@@ -109,6 +111,7 @@ export async function loadWaveAgentContinueCapabilities(options: {
           options.abortSignal,
           options.chatModel,
           attachedSkills,
+          options.usageContext,
         )
       : {};
 
@@ -126,7 +129,10 @@ export async function loadWaveAgentContinueCapabilities(options: {
 
   const skillTools: Record<string, Tool> = attachedSkills.length
     ? {
-        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
+        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(
+          attachedSkills,
+          options.usageContext,
+        ),
       }
     : {};
 
@@ -144,6 +150,7 @@ export async function loadWaveAgentBoundTools(options: {
   agent?: Agent | null;
   userId: string;
   capabilityUserId?: string;
+  usageContext?: AdminDashboardUsageContext;
   additionalMcpUserIds?: string[];
   mentions?: ChatMention[];
   allowedMcpServers?: Record<string, AllowedMCPServer>;
@@ -192,10 +199,12 @@ export async function loadWaveAgentBoundTools(options: {
         allowedMcpServers: options.allowedMcpServers,
         userId: options.userId,
         additionalUserIds: additionalMcpUserIds,
+        usageContext: options.usageContext,
       }),
       loadWorkFlowTools({
         mentions: options.mentions,
         dataStream: options.dataStream,
+        usageContext: options.usageContext,
       }),
       loadAppDefaultTools({
         mentions: options.mentions,

@@ -1,4 +1,8 @@
 import type { SkillSummary } from "app-types/skill";
+import type {
+  AdminDashboardUsageContext,
+  AdminUsageEventInsert,
+} from "app-types/admin-dashboard";
 import { buildActiveAgentSkillsSystemPrompt } from "lib/ai/prompts";
 
 const SKILL_STOP_WORDS = new Set([
@@ -27,7 +31,7 @@ const INSTRUCTIONS_PROMPT_LIMIT = 2500;
 
 export type ActiveAgentSkill = Pick<
   SkillSummary,
-  "title" | "description" | "instructions"
+  "id" | "title" | "description" | "instructions"
 > & {
   instructionsExcerpt: string;
   instructionsTruncated: boolean;
@@ -133,7 +137,9 @@ export function getLatestUserMessageText(
 }
 
 export function resolveActiveAgentSkills(options: {
-  skills: Array<Pick<SkillSummary, "title" | "description" | "instructions">>;
+  skills: Array<
+    Pick<SkillSummary, "id" | "title" | "description" | "instructions">
+  >;
   taskText?: string;
   contextText?: string;
 }) {
@@ -205,4 +211,20 @@ export function resolveActiveAgentSkills(options: {
     activeSkillTitles: scoredSkills.map((skill) => skill.title),
     activeSkillPrompt: buildActiveAgentSkillsSystemPrompt(scoredSkills),
   };
+}
+
+export function buildActiveSkillUsageEvents(
+  activeSkills: ActiveAgentSkill[],
+  context: AdminDashboardUsageContext,
+): AdminUsageEventInsert[] {
+  return activeSkills.map((skill) => ({
+    resourceType: "skill",
+    resourceId: skill.id,
+    eventName: "activated",
+    source: context.source,
+    actorUserId: context.actorUserId ?? null,
+    agentId: context.agentId ?? null,
+    threadId: context.threadId ?? null,
+    status: "success",
+  }));
 }

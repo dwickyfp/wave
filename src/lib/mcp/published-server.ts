@@ -209,7 +209,9 @@ async function callPublishedTool(
     }
   }
 
-  return mcpClientsManager.toolCall(server.id, toolName, input);
+  return mcpClientsManager.toolCall(server.id, toolName, input, {
+    source: "published",
+  });
 }
 
 export async function createPublishedMcpResponse(

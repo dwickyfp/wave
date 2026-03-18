@@ -1,4 +1,7 @@
+import { convertToSavePart } from "@/app/api/chat/shared.chat";
 import {
+  type ToolUIPart,
+  type UIMessage,
   convertToModelMessages,
   generateText,
   getToolName,
@@ -7,8 +10,6 @@ import {
   stepCountIs,
   streamText,
   tool,
-  type ToolUIPart,
-  type UIMessage,
 } from "ai";
 import type { Agent } from "app-types/agent";
 import type {
@@ -26,17 +27,17 @@ import type {
   PilotTaskState,
   PilotVisualContext,
 } from "app-types/pilot";
-import { z } from "zod";
-import { convertToSavePart } from "@/app/api/chat/shared.chat";
 import {
   buildWaveAgentSystemPrompt,
   createNoopDataStream,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
-import { resolveActiveAgentSkills } from "lib/ai/agent/skill-activation";
-import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
-import { AppDefaultToolkit } from "lib/ai/tools";
+import {
+  buildActiveSkillUsageEvents,
+  resolveActiveAgentSkills,
+} from "lib/ai/agent/skill-activation";
 import { getDbModel } from "lib/ai/provider-factory";
+import { AppDefaultToolkit } from "lib/ai/tools";
 import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
 import {
   applyChatAttachmentsToMessage,
@@ -45,9 +46,12 @@ import {
 import {
   agentRepository,
   chatRepository,
+  usageEventRepository,
   userRepository,
 } from "lib/db/repository";
+import { getLearnedPersonalizationPromptForUser } from "lib/self-learning/runtime";
 import { generateUUID, truncateString } from "lib/utils";
+import { z } from "zod";
 import {
   applyPilotUserApprovalGrant,
   createPilotActionProposal,
@@ -471,6 +475,11 @@ async function executePilotModelTurn(input: {
     agent: input.selectedAgent,
     userId: input.userId,
     mentions: input.mentions,
+    usageContext: {
+      source: "pilot",
+      actorUserId: input.userId,
+      agentId: input.selectedAgent?.id ?? null,
+    },
     allowedAppDefaultToolkit: [
       AppDefaultToolkit.Code,
       AppDefaultToolkit.Http,
@@ -491,6 +500,17 @@ async function executePilotModelTurn(input: {
     skills: toolset.attachedSkills,
     taskText: input.taskUserText,
   });
+  if (activeSkillResolution.activeSkills.length) {
+    void usageEventRepository
+      .recordEvents(
+        buildActiveSkillUsageEvents(activeSkillResolution.activeSkills, {
+          source: "pilot",
+          actorUserId: input.userId,
+          agentId: input.selectedAgent?.id ?? null,
+        }),
+      )
+      .catch(() => {});
+  }
   const system = buildWaveAgentSystemPrompt({
     user: input.user ?? undefined,
     userPreferences: input.userPreferences ?? undefined,
@@ -682,6 +702,12 @@ async function streamPilotModelTurn(input: {
     agent: input.selectedAgent,
     userId: input.user.id,
     mentions: input.mentions,
+    usageContext: {
+      source: "pilot",
+      actorUserId: input.user.id,
+      agentId: input.selectedAgent?.id ?? null,
+      threadId: input.threadId,
+    },
     allowedAppDefaultToolkit: [
       AppDefaultToolkit.Code,
       AppDefaultToolkit.Http,
@@ -702,6 +728,18 @@ async function streamPilotModelTurn(input: {
     skills: toolset.attachedSkills,
     taskText: input.taskUserText,
   });
+  if (activeSkillResolution.activeSkills.length) {
+    void usageEventRepository
+      .recordEvents(
+        buildActiveSkillUsageEvents(activeSkillResolution.activeSkills, {
+          source: "pilot",
+          actorUserId: input.user.id,
+          agentId: input.selectedAgent?.id ?? null,
+          threadId: input.threadId,
+        }),
+      )
+      .catch(() => {});
+  }
   const system = buildWaveAgentSystemPrompt({
     user: input.user ?? undefined,
     userPreferences: input.userPreferences ?? undefined,

@@ -20,6 +20,7 @@ import { pgAgentAnalyticsRepository } from "./pg/repositories/agent-analytics-re
 import { pgPilotExtensionRepository } from "./pg/repositories/pilot-extension-repository.pg";
 import { pgSelfLearningRepository } from "./pg/repositories/self-learning-repository.pg";
 import { pgTeamRepository } from "./pg/repositories/team-repository.pg";
+import { pgUsageEventRepository } from "./pg/repositories/usage-event-repository.pg";
 
 export const chatRepository = pgChatRepository;
 export const userRepository = pgUserRepository;
@@ -46,3 +47,4 @@ export const agentAnalyticsRepository = pgAgentAnalyticsRepository;
 export const pilotExtensionRepository = pgPilotExtensionRepository;
 export const selfLearningRepository = pgSelfLearningRepository;
 export const teamRepository = pgTeamRepository;
+export const usageEventRepository = pgUsageEventRepository;

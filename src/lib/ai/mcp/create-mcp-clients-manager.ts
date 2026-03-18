@@ -1,27 +1,30 @@
+import { ToolExecutionOptions, jsonSchema } from "ai";
+import type { AdminDashboardUsageContext } from "app-types/admin-dashboard";
 import {
-  VercelAIMcpToolTag,
+  type CallToolResult,
   type MCPConnectionStatus,
   type MCPServerConfig,
   type MCPToolInfo,
   type McpServerInsert,
   type McpServerSelect,
   type VercelAIMcpTool,
+  VercelAIMcpToolTag,
 } from "app-types/mcp";
-import { createMCPClient, type MCPClient } from "./create-mcp-client";
+import { colorize } from "consola/utils";
+import { McpServerTable } from "lib/db/pg/schema.pg";
+import { usageEventRepository } from "lib/db/repository";
 import {
+  Locker,
   errorToString,
   generateUUID,
-  Locker,
   safeJSONParse,
   toAny,
 } from "lib/utils";
-import { safe } from "ts-safe";
-import { McpServerTable } from "lib/db/pg/schema.pg";
-import { createMCPToolId } from "./mcp-tool-id";
 import globalLogger from "logger";
-import { jsonSchema, ToolExecutionOptions } from "ai";
+import { safe } from "ts-safe";
+import { type MCPClient, createMCPClient } from "./create-mcp-client";
+import { createMCPToolId } from "./mcp-tool-id";
 import { createMemoryMCPConfigStorage } from "./memory-mcp-config-storage";
-import { colorize } from "consola/utils";
 
 /**
  * Interface for storage of MCP server configurations.
@@ -301,6 +304,7 @@ export class MCPClientsManager {
     serverName: string,
     toolName: string,
     input: unknown,
+    usageContext?: AdminDashboardUsageContext,
   ) {
     const clients = await this.getClients();
     const client = clients.find((c) => c.client.getInfo().name === serverName);
@@ -309,50 +313,91 @@ export class MCPClientsManager {
         const servers = await this.storage.loadAll();
         const server = servers.find((s) => s.name === serverName);
         if (server) {
-          return this.toolCall(server.id, toolName, input);
+          return this.toolCall(server.id, toolName, input, usageContext);
         }
       }
       throw new Error(`Client ${serverName} not found`);
     }
-    return this.toolCall(client.id, toolName, input);
+    return this.toolCall(client.id, toolName, input, usageContext);
   }
-  async toolCall(id: string, toolName: string, input: unknown) {
-    return safe(() => this.getClient(id))
-      .map((client) => {
-        if (!client) throw new Error(`Client ${id} not found`);
-        return client.client;
-      })
-      .map((client) => client.callTool(toolName, input))
-      .map((res) => {
-        if (res?.content && Array.isArray(res.content)) {
-          const parsedResult = {
-            ...res,
-            content: res.content.map((c: any) => {
-              if (c?.type === "text" && c?.text) {
-                const parsed = safeJSONParse(c.text);
-                return {
-                  type: "text",
-                  text: parsed.success ? parsed.value : c.text,
-                };
-              }
-              return c;
-            }),
-          };
-          return parsedResult;
-        }
-        return res;
-      })
-      .ifFail((err) => {
-        return {
-          isError: true,
+  async toolCall(
+    id: string,
+    toolName: string,
+    input: unknown,
+    usageContext?: AdminDashboardUsageContext,
+  ) {
+    const startedAt = Date.now();
+    let result:
+      | CallToolResult
+      | {
+          isError: true;
           error: {
-            message: errorToString(err),
-            name: err?.name || "ERROR",
-          },
-          content: [],
+            message: string;
+            name: string;
+          };
+          content: never[];
         };
-      })
-      .unwrap();
+
+    try {
+      const client = await this.getClient(id);
+      if (!client) throw new Error(`Client ${id} not found`);
+
+      const response = await client.client.callTool(toolName, input);
+      result =
+        response?.content && Array.isArray(response.content)
+          ? {
+              ...response,
+              content: response.content.map((c: any) => {
+                if (c?.type === "text" && c?.text) {
+                  const parsed = safeJSONParse(c.text);
+                  return {
+                    type: "text",
+                    text: parsed.success ? parsed.value : c.text,
+                  };
+                }
+                return c;
+              }),
+            }
+          : ((response ?? {
+              isError: true,
+              error: {
+                message: "Empty MCP tool response",
+                name: "EMPTY_RESPONSE",
+              },
+              content: [],
+            }) as CallToolResult);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(errorToString(err));
+      result = {
+        isError: true,
+        error: {
+          message: error.message,
+          name: error.name || "ERROR",
+        },
+        content: [],
+      };
+    }
+
+    if (usageContext) {
+      try {
+        await usageEventRepository.recordEvent({
+          resourceType: "mcp",
+          resourceId: id,
+          eventName: "call",
+          toolName,
+          source: usageContext.source,
+          actorUserId: usageContext.actorUserId ?? null,
+          agentId: usageContext.agentId ?? null,
+          threadId: usageContext.threadId ?? null,
+          status: result.isError ? "error" : "success",
+          latencyMs: Date.now() - startedAt,
+        });
+      } catch {
+        // MCP tool execution should not fail because analytics logging failed.
+      }
+    }
+
+    return result;
   }
 }
 

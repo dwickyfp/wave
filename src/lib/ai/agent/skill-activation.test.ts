@@ -6,6 +6,7 @@ describe("resolveActiveAgentSkills", () => {
     const result = resolveActiveAgentSkills({
       skills: [
         {
+          id: "skill-rfc",
           title: "Technical RFC Writer",
           description: "Draft engineering RFC documents",
           instructions: "## Workflow\n- Gather requirements\n- Write the RFC",
@@ -23,12 +24,14 @@ describe("resolveActiveAgentSkills", () => {
     const result = resolveActiveAgentSkills({
       skills: [
         {
+          id: "skill-sql-migration",
           title: "SQL Migration Planner",
           description: "Plan schema changes safely",
           instructions:
             "## Plan\n- Review tables\n- Stage migrations\n- Write rollout notes",
         },
         {
+          id: "skill-release-helper",
           title: "Release Helper",
           description: "Helps with SQL migration planning and rollout notes",
           instructions:
@@ -45,6 +48,7 @@ describe("resolveActiveAgentSkills", () => {
     const result = resolveActiveAgentSkills({
       skills: [
         {
+          id: "skill-rfc",
           title: "Technical RFC Writer",
           description: "Draft engineering RFC documents",
           instructions: "## Workflow\n- Gather requirements\n- Write the RFC",
@@ -61,11 +65,13 @@ describe("resolveActiveAgentSkills", () => {
     const result = resolveActiveAgentSkills({
       skills: [
         {
+          id: "skill-beta-review",
           title: "Beta Review",
           description: "Review pull requests",
           instructions: "## Review\n- Check tests\n- Check risks",
         },
         {
+          id: "skill-alpha-review",
           title: "Alpha Review",
           description: "Review pull requests",
           instructions: "## Review\n- Check tests\n- Check risks",
@@ -81,21 +87,25 @@ describe("resolveActiveAgentSkills", () => {
     const result = resolveActiveAgentSkills({
       skills: [
         {
+          id: "workflow-one",
           title: "Workflow One",
           description: "Handle rollout workflow",
           instructions: "workflow rollout planning",
         },
         {
+          id: "workflow-two",
           title: "Workflow Two",
           description: "Handle rollout workflow",
           instructions: "workflow rollout planning",
         },
         {
+          id: "workflow-three",
           title: "Workflow Three",
           description: "Handle rollout workflow",
           instructions: "workflow rollout planning",
         },
         {
+          id: "workflow-four",
           title: "Workflow Four",
           description: "Handle rollout workflow",
           instructions: "workflow rollout planning",
@@ -116,6 +126,7 @@ describe("resolveActiveAgentSkills", () => {
     const result = resolveActiveAgentSkills({
       skills: [
         {
+          id: "review-workflow",
           title: "Review Workflow",
           description: "Review changes with a checklist",
           instructions: longInstructions,

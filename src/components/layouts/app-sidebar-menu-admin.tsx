@@ -1,14 +1,3 @@
-import { useMemo, useState, useEffect } from "react";
-import { usePathname, useRouter } from "next/navigation";
-import {
-  SidebarMenu,
-  SidebarMenuSub,
-  SidebarMenuSubButton,
-  SidebarMenuSubItem,
-} from "ui/sidebar";
-import { Tooltip } from "ui/tooltip";
-import { SidebarMenuItem } from "ui/sidebar";
-import { SidebarMenuButton } from "ui/sidebar";
 import {
   BarChart2,
   BrainCircuit,
@@ -17,6 +6,17 @@ import {
   Users,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import {
+  SidebarMenu,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+} from "ui/sidebar";
+import { SidebarMenuItem } from "ui/sidebar";
+import { SidebarMenuButton } from "ui/sidebar";
+import { Tooltip } from "ui/tooltip";
 
 const AppSidebarAdmin = () => {
   const router = useRouter();
@@ -49,6 +49,41 @@ const AppSidebarAdmin = () => {
         isActive: pathname.startsWith("/admin/usage-monitoring"),
       },
       {
+        id: "agent-dashboard",
+        title: "Agent Dashboard",
+        url: "/admin/dashboard/agent",
+        icon: BarChart2,
+        isActive: pathname.startsWith("/admin/dashboard/agent"),
+      },
+      {
+        id: "mcp-dashboard",
+        title: "MCP Dashboard",
+        url: "/admin/dashboard/mcp",
+        icon: BarChart2,
+        isActive: pathname.startsWith("/admin/dashboard/mcp"),
+      },
+      {
+        id: "contextx-dashboard",
+        title: "ContextX Dashboard",
+        url: "/admin/dashboard/contextx",
+        icon: BarChart2,
+        isActive: pathname.startsWith("/admin/dashboard/contextx"),
+      },
+      {
+        id: "skills-dashboard",
+        title: "Skills Dashboard",
+        url: "/admin/dashboard/skill",
+        icon: BarChart2,
+        isActive: pathname.startsWith("/admin/dashboard/skill"),
+      },
+      {
+        id: "workflow-dashboard",
+        title: "Workflow Dashboard",
+        url: "/admin/dashboard/workflow",
+        icon: BarChart2,
+        isActive: pathname.startsWith("/admin/dashboard/workflow"),
+      },
+      {
         id: "evaluation-system",
         title: "Evaluation System",
         url: "/admin/evaluation",
@@ -77,7 +112,7 @@ const AppSidebarAdmin = () => {
         </SidebarMenuItem>
       </Tooltip>
       <div
-        className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? "max-h-40 opacity-100" : "max-h-0 opacity-0"}`}
+        className={`overflow-hidden transition-all duration-200 ease-in-out ${isOpen ? "max-h-96 opacity-100" : "max-h-0 opacity-0"}`}
       >
         <SidebarMenuSub className="mb-2">
           {adminNavItems.map((item) => (

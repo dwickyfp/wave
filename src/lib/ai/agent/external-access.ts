@@ -1,54 +1,56 @@
-import { compare } from "bcrypt-ts";
+import { workflowToVercelAITool } from "@/app/api/chat/shared.chat";
 import {
-  jsonSchema,
-  streamText,
-  tool as createTool,
   type LanguageModel,
   type ModelMessage,
-  stepCountIs,
   type Tool,
   type ToolChoice,
+  tool as createTool,
+  jsonSchema,
+  stepCountIs,
+  streamText,
 } from "ai";
 import type { Agent } from "app-types/agent";
 import type { ChatModel } from "app-types/chat";
 import type { KnowledgeSummary } from "app-types/knowledge";
 import type { SubAgent } from "app-types/subagent";
+import { compare } from "bcrypt-ts";
+import { getAgentAttachedSkills } from "lib/ai/agent/attached-skills";
+import {
+  buildContinueAutocompleteSystemMessage,
+  buildContinueRoutePrompt,
+} from "lib/ai/agent/continue-prompts";
 import {
   getExternalAgentAutocompleteOpenAiModelId,
   getExternalAgentOpenAiModelId,
   sanitizeExternalAgentModelName,
 } from "lib/ai/agent/external-agent-model-id";
 import {
-  buildContinueAutocompleteSystemMessage,
-  buildContinueRoutePrompt,
-} from "lib/ai/agent/continue-prompts";
-import {
   buildEmmaAgentSystemPrompt,
   createNoopDataStream,
-  loadEmmaAgentContinueCapabilities,
   loadEmmaAgentBoundTools,
+  loadEmmaAgentContinueCapabilities,
 } from "lib/ai/agent/runtime";
 import {
+  buildActiveSkillUsageEvents,
   getLatestUserMessageText,
   resolveActiveAgentSkills,
 } from "lib/ai/agent/skill-activation";
-import { getAgentAttachedSkills } from "lib/ai/agent/attached-skills";
 import {
   sanitizeModelMessagesForProvider,
   shouldSendToolDefinitionsToProvider,
 } from "lib/ai/provider-compatibility";
 import { getDbModel } from "lib/ai/provider-factory";
-import { workflowToVercelAITool } from "@/app/api/chat/shared.chat";
 import { createKnowledgeDocsTool } from "lib/ai/tools/knowledge-tool";
 import {
-  createLoadSkillTool,
   LOAD_SKILL_TOOL_NAME,
+  createLoadSkillTool,
 } from "lib/ai/tools/skill-tool";
 import {
   agentRepository,
   knowledgeRepository,
   settingsRepository,
   subAgentRepository,
+  usageEventRepository,
   workflowRepository,
 } from "lib/db/repository";
 import logger from "logger";
@@ -550,6 +552,10 @@ export async function streamEmmaManagedAgentRun(options: {
     agent: resolvedAgent,
     userId: resolvedAgent.userId,
     mentions: resolvedAgent.instructions?.mentions ?? [],
+    usageContext: {
+      source: "mcp",
+      agentId: resolvedAgent.id,
+    },
     dataStream,
     abortSignal: options.abortSignal,
     chatModel,
@@ -559,6 +565,16 @@ export async function streamEmmaManagedAgentRun(options: {
     skills: toolset.attachedSkills,
     taskText: getLatestUserMessageText(options.messages),
   });
+  if (activeSkillResolution.activeSkills.length) {
+    void usageEventRepository
+      .recordEvents(
+        buildActiveSkillUsageEvents(activeSkillResolution.activeSkills, {
+          source: "mcp",
+          agentId: resolvedAgent.id,
+        }),
+      )
+      .catch(() => {});
+  }
 
   const systemPrompt = buildEmmaAgentSystemPrompt({
     agent: resolvedAgent,
@@ -688,6 +704,10 @@ export async function executeSubAgentExternalTool(
   const toolset = await loadEmmaAgentBoundTools({
     userId: context.agent.userId,
     mentions: subagent.tools,
+    usageContext: {
+      source: "mcp",
+      agentId: context.agent.id,
+    },
     dataStream,
     abortSignal: context.abortSignal,
     chatModel,
@@ -699,9 +719,22 @@ export async function executeSubAgentExternalTool(
     skills: attachedSkills,
     taskText: input.task,
   });
+  if (activeSkillResolution.activeSkills.length) {
+    void usageEventRepository
+      .recordEvents(
+        buildActiveSkillUsageEvents(activeSkillResolution.activeSkills, {
+          source: "mcp",
+          agentId: context.agent.id,
+        }),
+      )
+      .catch(() => {});
+  }
   const skillTools: Record<string, Tool> = attachedSkills.length
     ? {
-        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
+        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills, {
+          source: "mcp",
+          agentId: context.agent.id,
+        }),
       }
     : {};
 
@@ -757,6 +790,7 @@ export async function executeWorkflowExternalTool(
   },
   rawInput: unknown,
   context: {
+    agent: ExternalAccessAgent;
     abortSignal: AbortSignal;
     onProgress?: ProgressReporter;
   },
@@ -772,6 +806,10 @@ export async function executeWorkflowExternalTool(
     description: workflow.description,
     schema: workflow.schema as any,
     dataStream: createNoopDataStream(),
+    usageContext: {
+      source: "mcp",
+      agentId: context.agent.id,
+    },
   });
 
   context.onProgress?.(10, `Running workflow: ${workflow.name}`);
@@ -1162,9 +1200,14 @@ export async function streamContinueManagedTools(options: {
   const convertedMessages = convertOpenAiMessagesToModelMessages(
     options.request.messages,
   );
+  const usageContext = {
+    source: "mcp" as const,
+    agentId: resolvedAgent.id,
+  };
   const internalCapabilities = await loadEmmaAgentContinueCapabilities({
     agent: resolvedAgent,
     userId: resolvedAgent.userId,
+    usageContext,
     dataStream,
     abortSignal: options.abortSignal,
     chatModel,
@@ -1182,6 +1225,16 @@ export async function streamContinueManagedTools(options: {
     skills: internalCapabilities.attachedSkills,
     taskText: getLatestUserMessageText(convertedMessages),
   });
+  if (activeSkillResolution.activeSkills.length) {
+    void usageEventRepository
+      .recordEvents(
+        buildActiveSkillUsageEvents(
+          activeSkillResolution.activeSkills,
+          usageContext,
+        ),
+      )
+      .catch(() => {});
+  }
 
   return streamText({
     model,

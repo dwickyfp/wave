@@ -1,8 +1,8 @@
 import {
   ModelMessage,
   Tool,
-  consumeStream,
   UIMessage,
+  consumeStream,
   createUIMessageStream,
   createUIMessageStreamResponse,
   smoothStream,
@@ -15,8 +15,8 @@ import { getDbModel } from "lib/ai/provider-factory";
 import {
   ChatContextPressureBreakdown,
   ChatKnowledgeCitation,
-  ChatMention,
   ChatKnowledgeSource,
+  ChatMention,
   ChatMetadata,
   ChatThreadCompactionCheckpoint,
   ChatUsage,
@@ -24,12 +24,13 @@ import {
 } from "app-types/chat";
 import { McpServerCustomizationsPrompt } from "app-types/mcp";
 import {
-  agentRepository,
   a2aAgentRepository,
+  agentRepository,
   chatRepository,
   knowledgeRepository,
   settingsRepository,
   snowflakeAgentRepository,
+  usageEventRepository,
 } from "lib/db/repository";
 import globalLogger from "logger";
 
@@ -37,43 +38,25 @@ import { safe } from "ts-safe";
 
 import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
+import { streamA2AAgentResponse } from "lib/a2a/client";
+import { resolveAgentPersonalizationPrompt } from "lib/ai/agent/personalization";
 import {
   buildWaveAgentSystemPrompt,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
-import { resolveActiveAgentSkills } from "lib/ai/agent/skill-activation";
 import {
-  acquireChatConcurrencyLease,
-  type ChatConcurrencyLease,
-} from "lib/ai/chat-concurrency";
-import { ImageToolName } from "lib/ai/tools";
-import { createDbImageTool } from "lib/ai/tools/image";
+  buildActiveSkillUsageEvents,
+  resolveActiveAgentSkills,
+} from "lib/ai/agent/skill-activation";
+import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
 import {
-  queryKnowledgeAsDocs,
-  formatDocsAsText,
-} from "lib/knowledge/retriever";
-import {
-  allocateSequentialKnowledgeTokens,
-  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
-  estimateKnowledgePromptTokens,
-} from "lib/knowledge/token-budget";
-import {
-  type SnowflakeCortexMessage,
-  callSnowflakeCortexStream,
-  createSnowflakeThread,
-} from "lib/snowflake/client";
-import { streamA2AAgentResponse } from "lib/a2a/client";
-import { generateUUID } from "lib/utils";
-import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
-import { shouldSendToolDefinitionsToProvider } from "lib/ai/provider-compatibility";
-import {
-  buildCompactionAssembly,
-  buildChatStreamSeedMessages,
-  collectUsedToolNamesFromModelMessages,
   CONTEXT_COMPACTION_HARD_ERROR_MESSAGE,
   CONTEXT_COMPACTION_HARD_RATIO,
   CONTEXT_COMPACTION_TARGET_RATIO,
   CONTEXT_COMPACTION_TRIGGER_RATIO,
+  buildChatStreamSeedMessages,
+  buildCompactionAssembly,
+  collectUsedToolNamesFromModelMessages,
   extractAttachmentPreviewText,
   generateCompactionCheckpoint,
   stripAttachmentPreviewParts,
@@ -81,11 +64,57 @@ import {
 } from "lib/ai/chat-compaction";
 import { updateThreadCompactionState } from "lib/ai/chat-compaction-background";
 import {
+  type ChatConcurrencyLease,
+  acquireChatConcurrencyLease,
+} from "lib/ai/chat-concurrency";
+import { buildKnowledgeToolCitationSystemPrompt } from "lib/ai/prompts";
+import { shouldSendToolDefinitionsToProvider } from "lib/ai/provider-compatibility";
+import { ImageToolName } from "lib/ai/tools";
+import { createDbImageTool } from "lib/ai/tools/image";
+import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
+import {
+  applyChatAttachmentsToMessage,
+  ensureUserChatThread,
+} from "lib/chat/chat-session";
+import {
+  applyFinalizedAssistantText,
+  buildKnowledgeCitationKey,
+  buildKnowledgeCitations,
+  buildKnowledgeSourcesFromCitations,
+  enforceKnowledgeCitationCoverage,
+  formatKnowledgeEvidencePack,
+  normalizeKnowledgeCitationLayout,
+  stripAssistantKnowledgeCitationLinks,
+  validateKnowledgeCitationText,
+} from "lib/chat/knowledge-citations";
+import {
+  buildChatKnowledgeImages,
+  buildChatKnowledgeSources,
+  dedupeChatKnowledgeImages,
+  dedupeChatKnowledgeSources,
+  mergeChatKnowledgeMetadata,
+} from "lib/chat/knowledge-sources";
+import {
+  formatDocsAsText,
+  queryKnowledgeAsDocs,
+} from "lib/knowledge/retriever";
+import type { DocRetrievalResult } from "lib/knowledge/retriever";
+import {
+  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
+  allocateSequentialKnowledgeTokens,
+  estimateKnowledgePromptTokens,
+} from "lib/knowledge/token-budget";
+import { recordSelfLearningSignal } from "lib/self-learning/service";
+import {
+  type SnowflakeCortexMessage,
+  callSnowflakeCortexStream,
+  createSnowflakeThread,
+} from "lib/snowflake/client";
+import { generateUUID } from "lib/utils";
+import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
 } from "./actions";
-import { recordSelfLearningSignal } from "lib/self-learning/service";
-import { resolveAgentPersonalizationPrompt } from "lib/ai/agent/personalization";
 import {
   convertToSavePart,
   excludeToolExecution,
@@ -94,31 +123,6 @@ import {
   handleError,
   manualToolExecuteByLastMessage,
 } from "./shared.chat";
-import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
-import {
-  applyChatAttachmentsToMessage,
-  ensureUserChatThread,
-} from "lib/chat/chat-session";
-import {
-  buildChatKnowledgeImages,
-  buildChatKnowledgeSources,
-  dedupeChatKnowledgeImages,
-  dedupeChatKnowledgeSources,
-  mergeChatKnowledgeMetadata,
-} from "lib/chat/knowledge-sources";
-import type { DocRetrievalResult } from "lib/knowledge/retriever";
-import {
-  applyFinalizedAssistantText,
-  buildKnowledgeCitations,
-  buildKnowledgeCitationKey,
-  buildKnowledgeSourcesFromCitations,
-  normalizeKnowledgeCitationLayout,
-  enforceKnowledgeCitationCoverage,
-  formatKnowledgeEvidencePack,
-  stripAssistantKnowledgeCitationLinks,
-  validateKnowledgeCitationText,
-} from "lib/chat/knowledge-citations";
-import { buildKnowledgeToolCitationSystemPrompt } from "lib/ai/prompts";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -1021,12 +1025,19 @@ export async function POST(request: Request) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
+        const usageContext = {
+          source: "chat" as const,
+          actorUserId: session.user.id,
+          threadId: thread?.id ?? null,
+          agentId: agent?.id ?? null,
+        };
         const toolset = await loadWaveAgentBoundTools({
           agent,
           userId: session.user.id,
           mentions,
           allowedMcpServers,
           allowedAppDefaultToolkit,
+          usageContext,
           dataStream,
           abortSignal: request.signal,
           chatModel: chatModel!,
@@ -1047,6 +1058,7 @@ export async function POST(request: Request) {
                   ...toolset.appDefaultTools,
                 },
                 request.signal,
+                usageContext,
               );
               part.output = output;
 
@@ -1094,6 +1106,16 @@ export async function POST(request: Request) {
           taskText: userQueryText,
           contextText: attachmentPreviewText,
         });
+        if (activeSkillResolution.activeSkills.length) {
+          void usageEventRepository
+            .recordEvents(
+              buildActiveSkillUsageEvents(
+                activeSkillResolution.activeSkills,
+                usageContext,
+              ),
+            )
+            .catch(() => {});
+        }
         metadata.activatedSkills = activeSkillResolution.activeSkillTitles
           .length
           ? activeSkillResolution.activeSkillTitles

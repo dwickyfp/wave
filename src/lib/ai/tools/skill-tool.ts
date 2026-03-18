@@ -1,7 +1,9 @@
 import "server-only";
 
 import { tool } from "ai";
+import type { AdminDashboardUsageContext } from "app-types/admin-dashboard";
 import { SkillSummary } from "app-types/skill";
+import { usageEventRepository } from "lib/db/repository";
 import { z } from "zod";
 
 export const LOAD_SKILL_TOOL_NAME = "load_skill";
@@ -15,7 +17,10 @@ function normalize(value: string) {
   return value.trim().toLowerCase();
 }
 
-export function createLoadSkillTool(skills: SkillToolPayload[]) {
+export function createLoadSkillTool(
+  skills: SkillToolPayload[],
+  usageContext?: AdminDashboardUsageContext,
+) {
   return tool({
     description:
       "Load full instructions for one attached skill by title before executing that skill workflow.",
@@ -42,6 +47,23 @@ export function createLoadSkillTool(skills: SkillToolPayload[]) {
           guidance: `No attached skill matched "${title}". Try one of the available skill titles.`,
           availableSkills: skills.map((skill) => skill.title),
         };
+      }
+
+      if (usageContext) {
+        try {
+          await usageEventRepository.recordEvent({
+            resourceType: "skill",
+            resourceId: fuzzyMatch.id,
+            eventName: "load",
+            source: usageContext.source,
+            actorUserId: usageContext.actorUserId ?? null,
+            agentId: usageContext.agentId ?? null,
+            threadId: usageContext.threadId ?? null,
+            status: "success",
+          });
+        } catch {
+          // Skill loading must keep working even if analytics storage fails.
+        }
       }
 
       return {

@@ -1,6 +1,6 @@
 import { getSession } from "auth/server";
 import { createWorkflowExecutor } from "lib/ai/workflow/executor/workflow-executor";
-import { workflowRepository } from "lib/db/repository";
+import { usageEventRepository, workflowRepository } from "lib/db/repository";
 import { encodeWorkflowEvent } from "lib/ai/workflow/shared.workflow";
 import logger from "logger";
 import { colorize } from "consola/utils";
@@ -77,6 +77,7 @@ export async function POST(
       });
 
       // Start the workflow
+      const startedAt = Date.now();
       app
         .run(
           { query },
@@ -85,9 +86,23 @@ export async function POST(
             timeout: 1000 * 60 * 5,
           },
         )
-        .then((result) => {
+        .then(async (result) => {
           if (!result.isOk) {
             logger.error("Workflow execution error:", result.error);
+          }
+
+          try {
+            await usageEventRepository.recordEvent({
+              resourceType: "workflow",
+              resourceId: id,
+              eventName: "execute",
+              source: "manual",
+              actorUserId: session.user.id,
+              status: result.isOk ? "success" : "error",
+              latencyMs: Date.now() - startedAt,
+            });
+          } catch {
+            // Workflow execution should not fail because analytics logging failed.
           }
         });
     },
