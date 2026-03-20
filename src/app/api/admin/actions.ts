@@ -28,8 +28,14 @@ export const updateUserRolesAction = validatedActionWithAdminPermission(
         message: t("cannotUpdateOwnRole"),
       };
     }
+    type SetRoleInput = NonNullable<Parameters<typeof auth.api.setRole>[0]>;
     await auth.api.setRole({
-      body: { userId, role: role as "user" | "admin" },
+      // Better Auth's published types still narrow setRole to the default
+      // built-in roles, even though the runtime accepts our custom creator role.
+      body: {
+        userId,
+        role: role as unknown as SetRoleInput["body"]["role"],
+      },
       headers: await headers(),
     });
     await auth.api.revokeUserSessions({

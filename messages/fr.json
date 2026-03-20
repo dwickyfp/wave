@@ -215,6 +215,8 @@
     "newChat": "Nouveau Chat",
     "mcpConfiguration": "Configuration MCP",
     "agents": "Agents",
+    "creator": "Créateur",
+    "contextx": "ContextX",
     "newAgent": "Nouvel Agent",
     "createAgent": "Créer un agent",
     "createYourOwnAgent": "Créez votre propre agent IA spécialisé avec des fonctionnalités et une personnalité uniques",
@@ -259,6 +261,7 @@
     "reportAnIssue": "Signaler un problème",
     "joinCommunity": "Rejoindre la Communauté",
     "workflow": "Flux de Travail",
+    "skills": "Compétences",
     "userSettings": "Paramètres Utilisateur"
   },
   "Archive": {

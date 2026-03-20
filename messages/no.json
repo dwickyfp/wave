@@ -346,6 +346,9 @@
   },
   "Layout": {
     "workflow": "Arbeidsflyt",
+    "skills": "Ferdigheter",
+    "contextx": "ContextX",
+    "creator": "Skaper",
     "admin": "Admin",
     "users": "Brukere",
     "toggleSidebar": "Åpne sidefelt",

@@ -140,7 +140,7 @@ describe("User Validations", () => {
     });
 
     it("should accept all valid user roles", () => {
-      const roles = [USER_ROLES.USER, USER_ROLES.EDITOR, USER_ROLES.ADMIN];
+      const roles = [USER_ROLES.USER, USER_ROLES.CREATOR, USER_ROLES.ADMIN];
 
       for (const role of roles) {
         const validData = {

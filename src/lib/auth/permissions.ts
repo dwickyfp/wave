@@ -1,9 +1,8 @@
 import "server-only";
 import { getSession } from "./auth-instance";
-import { getIsUserAdmin } from "lib/user/utils";
-import { admin, editor, user as userRole } from "./roles";
+import { admin, creator, user as userRole } from "./roles";
 import type { BetterAuthRole } from "./types";
-import { parseRoleString, isBetterAuthRole } from "./types";
+import { isCreatorRole, parseRoleString, isBetterAuthRole } from "./types";
 
 /**
  * Simple permission helpers that wrap Better Auth's role system
@@ -24,8 +23,7 @@ export async function hasAdminPermission(): Promise<boolean> {
     const session = await getSession();
     if (!session?.user) return false;
 
-    const isAdmin = getIsUserAdmin(session.user);
-    return isAdmin;
+    return parseRoleString(session.user.role) === "admin";
   } catch (error) {
     console.error("Error checking admin permission:", error);
     return false;
@@ -129,17 +127,16 @@ export async function getCurrentUser() {
 }
 
 /**
- * Check if user is editor or admin (can create/edit resources)
+ * Check if user is creator or admin (can create/edit resources)
  */
-export async function hasEditorPermission(): Promise<boolean> {
+export async function hasCreatorPermission(): Promise<boolean> {
   try {
     const session = await getSession();
     if (!session?.user) return false;
 
-    // Check if user is admin or editor
-    return session.user.role === "admin" || session.user.role === "editor";
+    return isCreatorRole(session.user.role);
   } catch (error) {
-    console.error("Error checking editor permission:", error);
+    console.error("Error checking creator permission:", error);
     return false;
   }
 }
@@ -153,8 +150,8 @@ function getRolePermissions(role: string | undefined | null): BetterAuthRole {
   switch (cleanRole) {
     case "admin":
       return admin as BetterAuthRole;
-    case "editor":
-      return editor as BetterAuthRole;
+    case "creator":
+      return creator as BetterAuthRole;
     case "user":
     default:
       return userRole as BetterAuthRole;
@@ -286,7 +283,7 @@ export async function canDeleteWorkflow(): Promise<boolean> {
  * Check if user can create teams
  */
 export async function canCreateTeam(): Promise<boolean> {
-  return await hasEditorPermission();
+  return await hasCreatorPermission();
 }
 
 /**
@@ -350,15 +347,15 @@ export async function canDeleteMCP(): Promise<boolean> {
 }
 
 /**
- * Require editor permissions or throw error
+ * Require creator permissions or throw error
  */
-export async function requireEditorPermission(
+export async function requireCreatorPermission(
   action: string = "perform this action",
 ): Promise<void> {
-  const hasPermission = await hasEditorPermission();
+  const hasPermission = await hasCreatorPermission();
   if (!hasPermission) {
     throw new Error(
-      `Unauthorized: Editor or Admin access required to ${action}`,
+      `Unauthorized: Creator or Admin access required to ${action}`,
     );
   }
 }
@@ -376,7 +373,7 @@ export async function canManageMCPServer(
     if (!session?.user) return false;
 
     // Admins can manage all MCP servers
-    if (getIsUserAdmin(session.user)) return true;
+    if (parseRoleString(session.user.role) === "admin") return true;
 
     // Owners can manage their own MCP servers regardless of visibility
     if (session.user.id === mcpOwnerId) return true;

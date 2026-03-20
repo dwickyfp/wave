@@ -34,7 +34,7 @@ describe("User Utils", () => {
     it("should detect admin role in single role", () => {
       expect(getIsUserAdmin({ role: USER_ROLES.ADMIN })).toBe(true);
       expect(getIsUserAdmin({ role: USER_ROLES.USER })).toBe(false);
-      expect(getIsUserAdmin({ role: USER_ROLES.EDITOR })).toBe(false);
+      expect(getIsUserAdmin({ role: USER_ROLES.CREATOR })).toBe(false);
     });
 
     it("should detect admin role in comma-separated roles", () => {
@@ -42,10 +42,10 @@ describe("User Utils", () => {
         getIsUserAdmin({ role: `${USER_ROLES.USER},${USER_ROLES.ADMIN}` }),
       ).toBe(true);
       expect(
-        getIsUserAdmin({ role: `${USER_ROLES.ADMIN},${USER_ROLES.EDITOR}` }),
+        getIsUserAdmin({ role: `${USER_ROLES.ADMIN},${USER_ROLES.CREATOR}` }),
       ).toBe(true);
       expect(
-        getIsUserAdmin({ role: `${USER_ROLES.USER},${USER_ROLES.EDITOR}` }),
+        getIsUserAdmin({ role: `${USER_ROLES.USER},${USER_ROLES.CREATOR}` }),
       ).toBe(false);
     });
 

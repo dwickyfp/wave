@@ -1,5 +1,6 @@
 import { createKnowledgeGroupSchema } from "app-types/knowledge";
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { knowledgeRepository } from "lib/db/repository";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -25,6 +26,12 @@ export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX" },
+      { status: 403 },
+    );
+  }
 
   const body = await req.json();
   const parsed = createKnowledgeGroupSchema.safeParse(body);

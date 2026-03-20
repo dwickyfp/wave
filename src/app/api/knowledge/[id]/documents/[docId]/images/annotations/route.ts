@@ -1,4 +1,5 @@
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { knowledgeRepository } from "lib/db/repository";
 import { syncContextImageBlocksInMarkdown } from "lib/knowledge/document-images";
 import {
@@ -32,6 +33,12 @@ export async function POST(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
   }
 
   const { id: groupId, docId } = await params;

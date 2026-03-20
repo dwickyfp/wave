@@ -1,5 +1,6 @@
 import { createSkillGroupSchema } from "app-types/skill";
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { skillGroupRepository } from "lib/db/repository";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -7,6 +8,12 @@ export async function GET(req: NextRequest) {
   const session = await getSession();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can access skill groups" },
+      { status: 403 },
+    );
   }
 
   const url = new URL(req.url);
@@ -29,6 +36,12 @@ export async function POST(req: NextRequest) {
   const session = await getSession();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage skill groups" },
+      { status: 403 },
+    );
   }
 
   const body = await req.json();

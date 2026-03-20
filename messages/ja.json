@@ -215,6 +215,8 @@
     "newChat": "新しいチャット",
     "mcpConfiguration": "MCP設定",
     "agents": "エージェント",
+    "creator": "クリエイター",
+    "contextx": "ContextX",
     "newAgent": "新しいエージェント",
     "createAgent": "エージェントを作成",
     "createYourOwnAgent": "独自の機能と個性を持つ専門AIエージェントを作成してみましょう",
@@ -258,6 +260,7 @@
     "reportAnIssue": "問題を報告",
     "joinCommunity": "コミュニティに参加",
     "workflow": "ワークフロー",
+    "skills": "スキル",
     "userSettings": "ユーザー設定"
   },
   "Archive": {

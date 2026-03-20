@@ -1,5 +1,6 @@
 import { updateSkillGroupSchema } from "app-types/skill";
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { skillGroupRepository } from "lib/db/repository";
 import { hasIncompatibleSkillsForGroupVisibility } from "lib/skill/skill-group-visibility";
 import { NextRequest, NextResponse } from "next/server";
@@ -12,6 +13,12 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can access skill groups" },
+      { status: 403 },
+    );
   }
 
   const { id } = await params;
@@ -27,6 +34,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage skill groups" },
+      { status: 403 },
+    );
   }
 
   const { id } = await params;
@@ -76,6 +89,12 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage skill groups" },
+      { status: 403 },
+    );
   }
 
   const { id } = await params;

@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
 
   if (!(await canCreateTeam())) {
     return NextResponse.json(
-      { error: "Only editors and admins can create teams" },
+      { error: "Only creators and admins can create teams" },
       { status: 403 },
     );
   }

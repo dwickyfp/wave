@@ -1,4 +1,5 @@
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { buildDocumentMetadataEmbeddingText } from "lib/knowledge/document-metadata";
@@ -86,6 +87,12 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
+  }
 
   const { id: groupId, docId } = await params;
 
@@ -139,6 +146,12 @@ export async function POST(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
+  }
 
   const { id: groupId, docId } = await params;
 
@@ -198,6 +211,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
+  }
 
   const { id: groupId, docId } = await params;
   const group = await knowledgeRepository.selectGroupById(

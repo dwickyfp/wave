@@ -70,7 +70,7 @@ export async function PUT(
   const canEdit = await canEditAgent();
   if (!canEdit) {
     return Response.json(
-      { error: "Only editors and admins can edit agents" },
+      { error: "Only creators and admins can edit agents" },
       { status: 403 },
     );
   }

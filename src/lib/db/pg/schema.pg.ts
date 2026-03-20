@@ -449,7 +449,7 @@ export const UserTable = pgTable("user", {
   banned: boolean("banned"),
   banReason: text("ban_reason"),
   banExpires: timestamp("ban_expires", { withTimezone: true }),
-  role: text("role").notNull().default("user"),
+  role: text("role").notNull().default("creator"),
 });
 
 // Role tables removed - using Better Auth's built-in role system

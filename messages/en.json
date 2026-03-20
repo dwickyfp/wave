@@ -347,6 +347,8 @@
   "Layout": {
     "workflow": "Workflow",
     "skills": "Skills",
+    "contextx": "ContextX",
+    "creator": "Creator",
     "admin": "Admin",
     "users": "Users",
     "toggleSidebar": "Toggle Sidebar",

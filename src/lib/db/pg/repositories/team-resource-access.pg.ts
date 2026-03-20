@@ -1,11 +1,11 @@
 import { TeamResourceType } from "app-types/team";
 import { sql } from "drizzle-orm";
-import type { AnyColumn } from "drizzle-orm/pg-core";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { TeamMemberTable, TeamResourceShareTable } from "../schema.pg";
 
 export function buildTeamShareExists(
   resourceType: TeamResourceType,
-  resourceIdColumn: AnyColumn,
+  resourceIdColumn: AnyPgColumn,
   userId: string,
 ) {
   return sql<boolean>`exists (

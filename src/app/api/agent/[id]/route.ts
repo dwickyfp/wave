@@ -40,7 +40,7 @@ export async function PUT(
   const canEdit = await canEditAgent();
   if (!canEdit) {
     return Response.json(
-      { error: "Only editors and admins can edit agents" },
+      { error: "Only creators and admins can edit agents" },
       { status: 403 },
     );
   }
@@ -109,7 +109,7 @@ export async function DELETE(
   const canDelete = await canDeleteAgent();
   if (!canDelete) {
     return Response.json(
-      { error: "Only editors and admins can delete agents" },
+      { error: "Only creators and admins can delete agents" },
       { status: 403 },
     );
   }

@@ -31,7 +31,7 @@ describe("Admin Validations", () => {
     });
 
     it("should accept all valid user roles", () => {
-      const roles = [USER_ROLES.USER, USER_ROLES.EDITOR, USER_ROLES.ADMIN];
+      const roles = [USER_ROLES.USER, USER_ROLES.CREATOR, USER_ROLES.ADMIN];
 
       for (const role of roles) {
         const validData = {
@@ -139,7 +139,7 @@ describe("Admin Validations", () => {
     it("should work with role enum values exactly", () => {
       // Test that the enum values match exactly what's expected
       expect(USER_ROLES.USER).toBe("user");
-      expect(USER_ROLES.EDITOR).toBe("editor");
+      expect(USER_ROLES.CREATOR).toBe("creator");
       expect(USER_ROLES.ADMIN).toBe("admin");
 
       const testData = {
@@ -152,7 +152,7 @@ describe("Admin Validations", () => {
     });
 
     it("should validate against actual role string values", () => {
-      const roleStrings = ["user", "editor", "admin"];
+      const roleStrings = ["user", "creator", "admin"];
 
       for (const roleString of roleStrings) {
         const validData = {

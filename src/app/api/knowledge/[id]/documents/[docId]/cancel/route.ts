@@ -1,4 +1,5 @@
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { knowledgeRepository } from "lib/db/repository";
 import { KNOWLEDGE_INGEST_CANCELED_MESSAGE } from "lib/knowledge/ingest-pipeline";
 import { cancelDocumentVersionProcessing } from "lib/knowledge/versioning";
@@ -13,6 +14,12 @@ export async function POST(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
   }
 
   const { id: groupId, docId } = await params;

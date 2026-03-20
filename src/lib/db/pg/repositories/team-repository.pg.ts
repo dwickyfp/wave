@@ -4,7 +4,6 @@ import {
   TeamMember,
   TeamRepository,
   TeamResourceShare,
-  TeamRole,
   TeamSummary,
 } from "app-types/team";
 import { and, count, eq, inArray, or, sql } from "drizzle-orm";

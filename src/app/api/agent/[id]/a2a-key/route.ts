@@ -59,7 +59,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     const canEdit = await canEditAgent();
     if (!canEdit) {
       return NextResponse.json(
-        { error: "Only editors and admins can edit agents" },
+        { error: "Only creators and admins can edit agents" },
         { status: 403 },
       );
     }
@@ -113,7 +113,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const canEdit = await canEditAgent();
     if (!canEdit) {
       return NextResponse.json(
-        { error: "Only editors and admins can edit agents" },
+        { error: "Only creators and admins can edit agents" },
         { status: 403 },
       );
     }

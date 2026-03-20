@@ -94,10 +94,10 @@ describe("mcp detail route", () => {
 
   it("returns full manage detail payload for owners", async () => {
     vi.mocked(getSession).mockResolvedValue({
-      user: { id: "owner-1", role: "editor" },
+      user: { id: "owner-1", role: "creator" },
     } as any);
     vi.mocked(getAccessibleMcpServerOrThrow).mockResolvedValue({
-      currentUser: { id: "owner-1", role: "editor" },
+      currentUser: { id: "owner-1", role: "creator" },
       isOwner: true,
       server: {
         id: "server-1",

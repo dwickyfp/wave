@@ -15,7 +15,7 @@ import { getAuthConfig } from "./config";
 import logger from "logger";
 import { userRepository } from "lib/db/repository";
 import { DEFAULT_USER_ROLE, USER_ROLES } from "app-types/roles";
-import { admin, editor, user, ac } from "./roles";
+import { admin, creator, user, ac } from "./roles";
 
 const {
   emailAndPasswordEnabled,
@@ -32,7 +32,7 @@ const options = {
       ac,
       roles: {
         admin,
-        editor,
+        creator,
         user,
       },
     }),

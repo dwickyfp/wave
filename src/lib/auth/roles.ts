@@ -30,9 +30,9 @@ export const user = ac.newRole({
   temporaryChat: [...Object.values(PERMISSION_TYPES)],
 });
 
-// Editor role: app permissions but no user management
-export const editor = ac.newRole({
-  // No user/session management permissions for editors
+// Creator role: app permissions but no user management
+export const creator = ac.newRole({
+  // No user/session management permissions for creators
   user: [],
   session: [],
   // Full app permissions

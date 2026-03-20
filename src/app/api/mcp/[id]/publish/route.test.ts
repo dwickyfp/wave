@@ -39,7 +39,7 @@ describe("mcp publish route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getAccessibleMcpServerOrThrow).mockResolvedValue({
-      currentUser: { id: "owner-1", role: "editor" },
+      currentUser: { id: "owner-1", role: "creator" },
       isOwner: true,
       server: { id: "server-1" },
     } as any);
@@ -61,7 +61,7 @@ describe("mcp publish route", () => {
 
   it("updates publish state", async () => {
     vi.mocked(getSession).mockResolvedValue({
-      user: { id: "owner-1", role: "editor" },
+      user: { id: "owner-1", role: "creator" },
     } as any);
 
     const res = await PUT(
@@ -84,7 +84,7 @@ describe("mcp publish route", () => {
 
   it("rejects enabling bearer mode without a stored key", async () => {
     vi.mocked(getSession).mockResolvedValue({
-      user: { id: "owner-1", role: "editor" },
+      user: { id: "owner-1", role: "creator" },
     } as any);
     vi.mocked(mcpRepository.selectById).mockResolvedValue({
       id: "server-1",
@@ -104,7 +104,7 @@ describe("mcp publish route", () => {
 
   it("generates a publish key", async () => {
     vi.mocked(getSession).mockResolvedValue({
-      user: { id: "owner-1", role: "editor" },
+      user: { id: "owner-1", role: "creator" },
     } as any);
 
     const res = await POST(
@@ -128,7 +128,7 @@ describe("mcp publish route", () => {
 
   it("revokes publish key and disables publishing", async () => {
     vi.mocked(getSession).mockResolvedValue({
-      user: { id: "owner-1", role: "editor" },
+      user: { id: "owner-1", role: "creator" },
     } as any);
 
     const res = await POST(

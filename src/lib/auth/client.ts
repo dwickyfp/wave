@@ -4,7 +4,7 @@ import { createAuthClient } from "better-auth/react"; // make sure to import fro
 import { adminClient, inferAdditionalFields } from "better-auth/client/plugins";
 
 import { DEFAULT_USER_ROLE, USER_ROLES } from "app-types/roles";
-import { ac, admin, editor, user } from "./roles";
+import { ac, admin, creator, user } from "./roles";
 import type { auth } from "./auth-instance";
 
 export const authClient = createAuthClient({
@@ -16,7 +16,7 @@ export const authClient = createAuthClient({
       ac,
       roles: {
         admin,
-        editor,
+        creator,
         user,
       },
     }),

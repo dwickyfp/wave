@@ -130,6 +130,10 @@ export function createDbImageTool(
       // ── OpenAI — uses native imageGeneration tool via generateText ───────
       if (provider === "openai") {
         const openaiProvider = apiKey ? createOpenAI({ apiKey }) : openai;
+        const imageGenerationTool = openaiProvider.tools.imageGeneration({
+          outputFormat: "webp",
+          model: modelApiName,
+        }) as unknown as Tool;
         let hasFoundImage = false;
         const latestMessages = messages
           .slice(-6)
@@ -152,10 +156,7 @@ export function createDbImageTool(
           abortSignal,
           messages: latestMessages,
           tools: {
-            image_generation: openaiProvider.tools.imageGeneration({
-              outputFormat: "webp",
-              model: modelApiName,
-            }),
+            image_generation: imageGenerationTool,
           },
           toolChoice: "required",
         });

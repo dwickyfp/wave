@@ -1,5 +1,6 @@
 import { updateKnowledgeGroupSchema } from "app-types/knowledge";
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { knowledgeRepository } from "lib/db/repository";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -23,6 +24,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX" },
+      { status: 403 },
+    );
+  }
 
   const { id } = await params;
   const body = await req.json();
@@ -63,6 +70,12 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX" },
+      { status: 403 },
+    );
+  }
 
   const { id } = await params;
   await knowledgeRepository.deleteGroup(id, session.user.id);
