@@ -76,9 +76,7 @@ export function AppSidebar({
       className="border-r border-sidebar-border/80"
     >
       <SidebarHeaderShared
-        title={
-          <EmmaBrand aiClassName="from-cyan-300 via-sky-200 to-emerald-200" />
-        }
+        title={<EmmaBrand />}
         href="/"
         enableShortcuts={true}
         onLinkClick={() => {
