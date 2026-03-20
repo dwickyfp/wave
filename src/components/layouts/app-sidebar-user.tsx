@@ -43,6 +43,7 @@ import { useThemeStyle } from "@/hooks/use-theme-style";
 import { BasicUser } from "app-types/user";
 import { TeamSummary } from "app-types/team";
 import { getUserAvatar } from "lib/user/utils";
+import { parseRoleString } from "lib/auth/types";
 import { Skeleton } from "ui/skeleton";
 import { canCreateTeam } from "lib/auth/client-permissions";
 
@@ -67,6 +68,7 @@ export function AppSidebarUserInner(props: {
   };
 
   if (!user) return null;
+  const isAdmin = parseRoleString(user.role) === "admin";
 
   return (
     <SidebarMenu>
@@ -151,7 +153,7 @@ export function AppSidebarUserInner(props: {
               <Settings className="size-4 text-foreground" />
               <span>{t("userSettings")}</span>
             </DropdownMenuItem>
-            {user?.role === "admin" && (
+            {isAdmin && (
               <DropdownMenuItem
                 onClick={() => appStoreMutate({ openSettings: true })}
                 className="cursor-pointer"
