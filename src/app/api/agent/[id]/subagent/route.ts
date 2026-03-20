@@ -16,8 +16,8 @@ export async function GET(
 
   const { id } = await params;
 
-  const hasAccess = await agentRepository.checkAccess(id, session.user.id);
-  if (!hasAccess) {
+  const agent = await agentRepository.selectAgentById(id, session.user.id);
+  if (!agent) {
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -38,7 +38,7 @@ export async function POST(
   const canEdit = await canEditAgent();
   if (!canEdit) {
     return Response.json(
-      { error: "Only editors and admins can edit agents" },
+      { error: "Only creators and admins can edit agents" },
       { status: 403 },
     );
   }

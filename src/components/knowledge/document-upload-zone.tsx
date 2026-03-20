@@ -64,9 +64,14 @@ export function DocumentUploadZone({
       setUploading(true);
 
       let successCount = 0;
+      let duplicateCount = 0;
       for (const file of accepted) {
         try {
-          await uploadFile(file);
+          const result = (await uploadFile(file)) as { duplicate?: boolean };
+          if (result.duplicate) {
+            duplicateCount++;
+            continue;
+          }
           successCount++;
         } catch {
           toast.error(`Failed to upload ${file.name}`);
@@ -76,6 +81,10 @@ export function DocumentUploadZone({
       setUploading(false);
       if (successCount > 0) {
         toast.success(`${successCount} file(s) queued for processing`);
+        onUploaded();
+      }
+      if (duplicateCount > 0) {
+        toast.info(`${duplicateCount} file(s) already exist in this knowledge`);
         onUploaded();
       }
     },
@@ -99,7 +108,12 @@ export function DocumentUploadZone({
         body: JSON.stringify({ sourceUrl: url }),
       });
       if (!res.ok) throw new Error();
-      toast.success("URL queued for processing");
+      const data = (await res.json()) as { duplicate?: boolean };
+      if (data.duplicate) {
+        toast.info("This URL already exists in this knowledge");
+      } else {
+        toast.success("URL queued for processing");
+      }
       setUrl("");
       setUrlMode(false);
       onUploaded();

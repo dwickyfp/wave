@@ -12,6 +12,10 @@ vi.mock("lib/db/repository", () => ({
   knowledgeRepository: {
     getGroupsByAgentId: vi.fn(),
   },
+  skillGroupRepository: {
+    getGroupsByAgentId: vi.fn(),
+    getSkillsByAgentGroupId: vi.fn(),
+  },
   settingsRepository: {
     getProviders: vi.fn(),
   },
@@ -73,12 +77,17 @@ vi.mock("lib/ai/tools/skill-tool", () => ({
 }));
 
 vi.mock("lib/ai/prompts", () => ({
+  buildActiveAgentSkillsSystemPrompt: vi.fn(() => ""),
   buildAgentSkillsSystemPrompt: vi.fn(() => "skills"),
   buildKnowledgeContextSystemPrompt: vi.fn(() => ""),
   buildMcpServerCustomizationsSystemPrompt: vi.fn(() => ""),
   buildParallelSubAgentSystemPrompt: vi.fn(() => "parallel"),
   buildToolCallUnsupportedModelSystemPrompt: "unsupported",
   buildUserSystemPrompt: vi.fn(() => "base"),
+}));
+
+vi.mock("lib/self-learning/runtime", () => ({
+  getLearnedPersonalizationPromptForUser: vi.fn(async () => "learned prompt"),
 }));
 
 function makeAsyncStream(parts: any[]) {
@@ -116,11 +125,15 @@ const { GET: GET_MODELS } = await import("../../models/route");
 const { compare } = await import("bcrypt-ts");
 const { streamText } = await import("ai");
 const { getDbModel } = await import("lib/ai/provider-factory");
+const { getLearnedPersonalizationPromptForUser } = await import(
+  "lib/self-learning/runtime"
+);
 const {
   agentRepository,
   agentAnalyticsRepository,
   knowledgeRepository,
   settingsRepository,
+  skillGroupRepository,
   skillRepository,
   subAgentRepository,
   workflowRepository,
@@ -198,6 +211,12 @@ describe("agent continue/openai route", () => {
       supportsFileInput: false,
     });
     vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([]);
+    vi.mocked(skillGroupRepository.getGroupsByAgentId).mockResolvedValue(
+      [] as any,
+    );
+    vi.mocked(skillGroupRepository.getSkillsByAgentGroupId).mockResolvedValue(
+      [] as any,
+    );
     vi.mocked(skillRepository.getSkillsByAgentId).mockResolvedValue([]);
     vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue(
       [],
@@ -365,6 +384,26 @@ describe("agent continue/openai route", () => {
     expect(callArgs.tools.read_file.description).toBe("Read a workspace file");
   });
 
+  it("does not load learned personalization for continue/openai external access", async () => {
+    const res = (await POST(
+      makeNextRequest(
+        "http://localhost/api/agent/agent-1/openai/v1/chat/completions",
+        {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            model: "codex-agent_one",
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        },
+      ) as any,
+      withParams("agent-1"),
+    )) as Response;
+
+    expect(res.status).toBe(200);
+    expect(getLearnedPersonalizationPromptForUser).not.toHaveBeenCalled();
+  });
+
   it("maps tool follow-up messages into model messages", async () => {
     const res = (await POST(
       makeNextRequest(
@@ -522,7 +561,7 @@ describe("agent continue/openai route", () => {
     expect(callArgs.tools.get_docs_kg1).toBeDefined();
     expect(callArgs.tools.subagent_planner_sa1).toBeDefined();
     expect(callArgs.tools.load_skill).toBeDefined();
-    expect(callArgs.system).toContain("Attached Emma knowledge tools");
+    expect(callArgs.system).toContain("Attached Wave knowledge tools");
     expect(callArgs.system).not.toContain(
       "Focus on production-grade software work",
     );

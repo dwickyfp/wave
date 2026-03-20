@@ -1,4 +1,11 @@
+import {
+  loadAppDefaultTools,
+  loadMcpTools,
+  loadWorkFlowTools,
+  mergeSystemPrompt,
+} from "@/app/api/chat/shared.chat";
 import type { Tool, UIMessageStreamWriter } from "ai";
+import type { AdminDashboardUsageContext } from "app-types/admin-dashboard";
 import type { Agent } from "app-types/agent";
 import type { ChatMention, ChatModel } from "app-types/chat";
 import type {
@@ -8,6 +15,9 @@ import type {
 import type { SkillSummary } from "app-types/skill";
 import type { UserPreferences } from "app-types/user";
 import type { User } from "better-auth";
+import { getAgentAttachedSkills } from "lib/ai/agent/attached-skills";
+import type { ActiveAgentSkill } from "lib/ai/agent/skill-activation";
+import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import {
   buildAgentSkillsSystemPrompt,
   buildKnowledgeContextSystemPrompt,
@@ -16,26 +26,17 @@ import {
   buildToolCallUnsupportedModelSystemPrompt,
   buildUserSystemPrompt,
 } from "lib/ai/prompts";
-import { loadSubAgentTools } from "lib/ai/agent/subagent-loader";
 import {
+  type KnowledgeDocsPreparedPayload,
+  type KnowledgeDocsRetrievedPayload,
   createKnowledgeDocsTool,
   knowledgeDocsToolName,
 } from "lib/ai/tools/knowledge-tool";
 import {
-  createLoadSkillTool,
   LOAD_SKILL_TOOL_NAME,
+  createLoadSkillTool,
 } from "lib/ai/tools/skill-tool";
-import {
-  knowledgeRepository,
-  skillRepository,
-  subAgentRepository,
-} from "lib/db/repository";
-import {
-  loadAppDefaultTools,
-  loadMcpTools,
-  loadWorkFlowTools,
-  mergeSystemPrompt,
-} from "@/app/api/chat/shared.chat";
+import { knowledgeRepository, subAgentRepository } from "lib/db/repository";
 
 export function createNoopDataStream() {
   return {
@@ -44,14 +45,30 @@ export function createNoopDataStream() {
   } as unknown as UIMessageStreamWriter;
 }
 
+function resolveWaveAgentCapabilityUserId(options: {
+  agent?: Agent | null;
+  userId: string;
+  capabilityUserId?: string;
+}) {
+  return options.capabilityUserId ?? options.agent?.userId ?? options.userId;
+}
+
 export async function loadWaveAgentContinueCapabilities(options: {
   agent?: Agent | null;
   userId: string;
+  capabilityUserId?: string;
+  usageContext?: AdminDashboardUsageContext;
   dataStream: UIMessageStreamWriter;
   abortSignal: AbortSignal;
   chatModel: ChatModel;
   source: "agent" | "mcp";
   isToolCallAllowed?: boolean;
+  onKnowledgeDocsRetrieved?: (
+    payload: KnowledgeDocsRetrievedPayload,
+  ) =>
+    | KnowledgeDocsPreparedPayload
+    | void
+    | Promise<KnowledgeDocsPreparedPayload | void>;
 }) {
   const isToolCallAllowed = options.isToolCallAllowed ?? true;
   const agent = options.agent;
@@ -71,13 +88,16 @@ export async function loadWaveAgentContinueCapabilities(options: {
     return emptyResult;
   }
 
-  const [subAgents, knowledgeGroups, attachedSkills] = await Promise.all([
+  const capabilityUserId = resolveWaveAgentCapabilityUserId(options);
+
+  const [subAgents, knowledgeGroups, skillState] = await Promise.all([
     agent.subAgentsEnabled
       ? subAgentRepository.selectSubAgentsByAgentId(agent.id)
       : Promise.resolve([]),
     knowledgeRepository.getGroupsByAgentId(agent.id),
-    skillRepository.getSkillsByAgentId(agent.id),
+    getAgentAttachedSkills(agent.id),
   ]);
+  const attachedSkills = skillState.attachedSkills;
 
   const subagentTools =
     agent.subAgentsEnabled && subAgents.length > 0
@@ -86,18 +106,21 @@ export async function loadWaveAgentContinueCapabilities(options: {
             ...agent,
             subAgents,
           },
-          options.userId,
+          capabilityUserId,
           options.dataStream,
           options.abortSignal,
           options.chatModel,
+          attachedSkills,
+          options.usageContext,
         )
       : {};
 
   const knowledgeTools = knowledgeGroups.reduce(
     (acc, group) => {
       acc[knowledgeDocsToolName(group.id)] = createKnowledgeDocsTool(group, {
-        userId: options.userId,
+        userId: capabilityUserId,
         source: options.source,
+        onRetrieved: options.onKnowledgeDocsRetrieved,
       });
       return acc;
     },
@@ -106,7 +129,10 @@ export async function loadWaveAgentContinueCapabilities(options: {
 
   const skillTools: Record<string, Tool> = attachedSkills.length
     ? {
-        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(attachedSkills),
+        [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(
+          attachedSkills,
+          options.usageContext,
+        ),
       }
     : {};
 
@@ -123,6 +149,9 @@ export async function loadWaveAgentContinueCapabilities(options: {
 export async function loadWaveAgentBoundTools(options: {
   agent?: Agent | null;
   userId: string;
+  capabilityUserId?: string;
+  usageContext?: AdminDashboardUsageContext;
+  additionalMcpUserIds?: string[];
   mentions?: ChatMention[];
   allowedMcpServers?: Record<string, AllowedMCPServer>;
   allowedAppDefaultToolkit?: string[];
@@ -131,6 +160,12 @@ export async function loadWaveAgentBoundTools(options: {
   chatModel: ChatModel;
   source: "agent" | "mcp";
   isToolCallAllowed?: boolean;
+  onKnowledgeDocsRetrieved?: (
+    payload: KnowledgeDocsRetrievedPayload,
+  ) =>
+    | KnowledgeDocsPreparedPayload
+    | void
+    | Promise<KnowledgeDocsPreparedPayload | void>;
 }) {
   const isToolCallAllowed = options.isToolCallAllowed ?? true;
   const agent = options.agent;
@@ -153,16 +188,23 @@ export async function loadWaveAgentBoundTools(options: {
     return emptyResult;
   }
 
+  const additionalMcpUserIds =
+    options.additionalMcpUserIds ??
+    (agent?.userId && agent.userId !== options.userId ? [agent.userId] : []);
+
   const [mcpTools, workflowTools, appDefaultTools, subAgents] =
     await Promise.all([
       loadMcpTools({
         mentions: options.mentions,
         allowedMcpServers: options.allowedMcpServers,
         userId: options.userId,
+        additionalUserIds: additionalMcpUserIds,
+        usageContext: options.usageContext,
       }),
       loadWorkFlowTools({
         mentions: options.mentions,
         dataStream: options.dataStream,
+        usageContext: options.usageContext,
       }),
       loadAppDefaultTools({
         mentions: options.mentions,
@@ -200,6 +242,7 @@ export function buildWaveAgentSystemPrompt(options: {
   agent?: Agent | null;
   subAgents?: Agent["subAgents"];
   attachedSkills?: Pick<SkillSummary, "title" | "description">[];
+  activeSkills?: ActiveAgentSkill[];
   knowledgeContexts?: string[];
   mcpServerCustomizations?: Record<string, McpServerCustomizationsPrompt>;
   toolCallUnsupported?: boolean;
@@ -215,7 +258,10 @@ export function buildWaveAgentSystemPrompt(options: {
       options.mcpServerCustomizations ?? {},
     ),
     buildParallelSubAgentSystemPrompt(options.subAgents ?? []),
-    buildAgentSkillsSystemPrompt(options.attachedSkills ?? []),
+    buildAgentSkillsSystemPrompt(
+      options.attachedSkills ?? [],
+      options.activeSkills ?? [],
+    ),
     options.toolCallUnsupported && buildToolCallUnsupportedModelSystemPrompt,
     buildKnowledgeContextSystemPrompt(options.knowledgeContexts ?? []),
     ...(options.extraPrompts ?? []),

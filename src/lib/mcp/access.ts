@@ -1,19 +1,27 @@
 import type { McpServerSelect } from "app-types/mcp";
 import { getCurrentUser } from "lib/auth/permissions";
-import { mcpRepository } from "lib/db/repository";
+import { mcpRepository, teamRepository } from "lib/db/repository";
 import { getIsUserAdmin } from "lib/user/utils";
 
 type MCPAccessMode = "read" | "manage";
 
-function canReadMcpServer(
+async function canReadMcpServer(
   server: McpServerSelect,
   currentUser: NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>,
 ) {
-  return (
+  if (
     server.userId === currentUser.id ||
     server.visibility === "public" ||
     getIsUserAdmin(currentUser)
-  );
+  ) {
+    return true;
+  }
+
+  return await teamRepository.isResourceSharedWithUserTeam({
+    userId: currentUser.id,
+    resourceType: "mcp",
+    resourceId: server.id,
+  });
 }
 
 function canManageMcpServer(
@@ -23,7 +31,7 @@ function canManageMcpServer(
   return server.userId === currentUser.id || getIsUserAdmin(currentUser);
 }
 
-function assertMcpAccess(
+async function assertMcpAccess(
   server: McpServerSelect | null,
   currentUser: Awaited<ReturnType<typeof getCurrentUser>>,
   mode: MCPAccessMode,
@@ -39,7 +47,7 @@ function assertMcpAccess(
   const hasAccess =
     mode === "manage"
       ? canManageMcpServer(server, currentUser)
-      : canReadMcpServer(server, currentUser);
+      : await canReadMcpServer(server, currentUser);
 
   if (!hasAccess) {
     throw new Error("Unauthorized");
@@ -61,7 +69,7 @@ export async function getAccessibleMcpServerOrThrow(
     mcpRepository.selectById(id),
   ]);
 
-  return assertMcpAccess(server, currentUser, mode);
+  return await assertMcpAccess(server, currentUser, mode);
 }
 
 export async function getAccessibleMcpServerByNameOrThrow(
@@ -73,7 +81,7 @@ export async function getAccessibleMcpServerByNameOrThrow(
     mcpRepository.selectByServerName(serverName),
   ]);
 
-  return assertMcpAccess(server, currentUser, mode);
+  return await assertMcpAccess(server, currentUser, mode);
 }
 
 export async function listAccessibleMcpServerIds(userId: string) {

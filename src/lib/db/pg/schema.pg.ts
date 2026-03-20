@@ -1,8 +1,18 @@
 import { Agent } from "app-types/agent";
 import type { A2AAgentCard, A2AAgentConfig } from "app-types/a2a-agent";
-import { MCPServerConfig, MCPToolInfo } from "app-types/mcp";
+import {
+  MCPServerConfig,
+  MCPToolInfo,
+  type McpPublishAuthMode,
+} from "app-types/mcp";
+import type {
+  AdminUsageEventResourceType,
+  AdminUsageEventSource,
+  AdminUsageEventStatus,
+} from "app-types/admin-dashboard";
 import type { ProviderSettings } from "app-types/settings";
 import { UserPreferences } from "app-types/user";
+import type { TeamResourceType, TeamRole } from "app-types/team";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -17,6 +27,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -26,7 +37,7 @@ const vector = customType<{ data: number[]; config?: { dimensions?: number } }>(
   {
     dataType(config) {
       if (config?.dimensions) return `vector(${config.dimensions})`;
-      return "vector"; // no dimension constraint — accepts any size
+      return "vector"; // no dimension constraint Ã¢â‚¬â€ accepts any size
     },
     toDriver(value: number[]): string {
       return `[${value.join(",")}]`;
@@ -50,7 +61,19 @@ import {
   ChatMention,
   ChatMetadata,
 } from "app-types/chat";
+import { KnowledgePurpose } from "app-types/knowledge";
 import { PilotBrowser } from "app-types/pilot";
+import {
+  SelfLearningAuditAction,
+  SelfLearningEvaluationStatus,
+  SelfLearningJudgeOutput,
+  SelfLearningMemoryCategory,
+  SelfLearningMemoryStatus,
+  SelfLearningRunStatus,
+  SelfLearningRunTrigger,
+  SelfLearningSignalPayload,
+  SelfLearningSignalType,
+} from "app-types/self-learning";
 import { DBEdge, DBNode, DBWorkflow } from "app-types/workflow";
 import { isNotNull } from "drizzle-orm";
 
@@ -65,7 +88,7 @@ export const ChatThreadTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
-    // Snowflake Cortex Threads — persisted per chat session so we can pass
+    // Snowflake Cortex Threads Ã¢â‚¬â€ persisted per chat session so we can pass
     // thread_id + parent_message_id to agent:run on every subsequent turn.
     // Only populated when the thread is backed by a Snowflake Cortex agent.
     snowflakeThreadId: text("snowflake_thread_id"),
@@ -246,6 +269,9 @@ export const AgentTable = pgTable("agent", {
   })
     .notNull()
     .default("standard"),
+  chatPersonalizationEnabled: boolean("chat_personalization_enabled")
+    .notNull()
+    .default(true),
   mcpEnabled: boolean("mcp_enabled").notNull().default(false),
   mcpApiKeyHash: text("mcp_api_key_hash"),
   mcpApiKeyPreview: text("mcp_api_key_preview"),
@@ -389,6 +415,15 @@ export const McpServerTable = pgTable("mcp_server", {
   lastConnectionStatus: varchar("last_connection_status", {
     enum: ["connected", "error"],
   }),
+  publishEnabled: boolean("publish_enabled").notNull().default(false),
+  publishAuthMode: varchar("publish_auth_mode", {
+    enum: ["none", "bearer"],
+  })
+    .$type<McpPublishAuthMode>()
+    .notNull()
+    .default("none"),
+  publishApiKeyHash: text("publish_api_key_hash"),
+  publishApiKeyPreview: text("publish_api_key_preview"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
@@ -414,11 +449,96 @@ export const UserTable = pgTable("user", {
   banned: boolean("banned"),
   banReason: text("ban_reason"),
   banExpires: timestamp("ban_expires", { withTimezone: true }),
-  role: text("role").notNull().default("user"),
+  role: text("role").notNull().default("creator"),
 });
 
 // Role tables removed - using Better Auth's built-in role system
 // Roles are now managed via the 'role' field on UserTable
+export const TeamTable = pgTable(
+  "team",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    name: text("name").notNull(),
+    description: text("description"),
+    ownerUserId: uuid("owner_user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("team_owner_user_id_idx").on(table.ownerUserId)],
+);
+
+export const TeamMemberTable = pgTable(
+  "team_member",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => TeamTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    role: varchar("role", {
+      enum: ["owner", "admin", "member"],
+    })
+      .$type<TeamRole>()
+      .notNull(),
+    addedByUserId: uuid("added_by_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.teamId, table.userId),
+    uniqueIndex("team_member_single_owner_idx")
+      .on(table.teamId)
+      .where(sql`${table.role} = 'owner'`),
+    index("team_member_team_id_idx").on(table.teamId),
+    index("team_member_user_id_idx").on(table.userId),
+    index("team_member_team_id_role_idx").on(table.teamId, table.role),
+  ],
+);
+
+export const TeamResourceShareTable = pgTable(
+  "team_resource_share",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => TeamTable.id, { onDelete: "cascade" }),
+    resourceType: varchar("resource_type", {
+      enum: ["agent", "mcp", "skill"],
+    })
+      .$type<TeamResourceType>()
+      .notNull(),
+    resourceId: uuid("resource_id").notNull(),
+    sharedByUserId: uuid("shared_by_user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.teamId, table.resourceType, table.resourceId),
+    index("team_resource_share_team_id_idx").on(table.teamId),
+    index("team_resource_share_resource_idx").on(
+      table.resourceType,
+      table.resourceId,
+    ),
+    index("team_resource_share_team_type_idx").on(
+      table.teamId,
+      table.resourceType,
+    ),
+  ],
+);
 
 export const SessionTable = pgTable("session", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -741,7 +861,7 @@ export type ArchiveEntity = typeof ArchiveTable.$inferSelect;
 export type ArchiveItemEntity = typeof ArchiveItemTable.$inferSelect;
 export type BookmarkEntity = typeof BookmarkTable.$inferSelect;
 
-// ─── LLM Provider & Model Configuration ───────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ LLM Provider & Model Configuration Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 export const LlmProviderConfigTable = pgTable("llm_provider_config", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -833,7 +953,7 @@ export type LlmProviderConfigEntity =
 export type LlmModelConfigEntity = typeof LlmModelConfigTable.$inferSelect;
 export type SystemSettingsEntity = typeof SystemSettingsTable.$inferSelect;
 
-// ─── ContextX Knowledge Management ────────────────────────────────────────────
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ ContextX Knowledge Management Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 export const KnowledgeGroupTable = pgTable("knowledge_group", {
   id: uuid("id").primaryKey().notNull().defaultRandom(),
@@ -851,17 +971,45 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
   })
     .notNull()
     .default("private"),
+  purpose: varchar("purpose", { enum: ["default", "personalization"] })
+    .notNull()
+    .default("default")
+    .$type<KnowledgePurpose>(),
+  isSystemManaged: boolean("is_system_managed").notNull().default(false),
   embeddingModel: text("embedding_model")
     .notNull()
     .default("text-embedding-3-small"),
   embeddingProvider: text("embedding_provider").notNull().default("openai"),
   rerankingModel: text("reranking_model"),
   rerankingProvider: text("reranking_provider"),
+  parseMode: varchar("parse_mode", {
+    enum: ["off", "auto", "always"],
+  })
+    .notNull()
+    .default("always"),
+  parseRepairPolicy: varchar("parse_repair_policy", {
+    enum: ["strict", "section-safe-reorder", "aggressive"],
+  })
+    .notNull()
+    .default("section-safe-reorder"),
+  contextMode: varchar("context_mode", {
+    enum: ["deterministic", "auto-llm", "always-llm"],
+  })
+    .notNull()
+    .default("always-llm"),
+  imageMode: varchar("image_mode", {
+    enum: ["off", "auto", "always"],
+  })
+    .notNull()
+    .default("always"),
+  lazyRefinementEnabled: boolean("lazy_refinement_enabled")
+    .notNull()
+    .default(true),
   mcpEnabled: boolean("mcp_enabled").notNull().default(false),
   mcpApiKeyHash: text("mcp_api_key_hash"),
   mcpApiKeyPreview: text("mcp_api_key_preview"),
-  chunkSize: integer("chunk_size").notNull().default(512),
-  chunkOverlapPercent: integer("chunk_overlap_percent").notNull().default(20),
+  chunkSize: integer("chunk_size").notNull().default(768),
+  chunkOverlapPercent: integer("chunk_overlap_percent").notNull().default(10),
   parsingModel: text("parsing_model"),
   parsingProvider: text("parsing_provider"),
   retrievalThreshold: real("retrieval_threshold").notNull().default(0.0),
@@ -915,20 +1063,24 @@ export const KnowledgeDocumentTable = pgTable(
     fileSize: bigint("file_size", { mode: "number" }),
     storagePath: text("storage_path"),
     sourceUrl: text("source_url"),
+    fingerprint: text("fingerprint"),
     status: varchar("status", {
       enum: ["pending", "processing", "ready", "failed"],
     })
       .notNull()
       .default("pending"),
     errorMessage: text("error_message"),
-    /** Ingestion progress percentage (0–100). Null when not processing. */
+    /** Ingestion progress percentage (0Ã¢â‚¬â€œ100). Null when not processing. */
     processingProgress: integer("processing_progress"),
     chunkCount: integer("chunk_count").notNull().default(0),
     tokenCount: integer("token_count").notNull().default(0),
+    embeddingTokenCount: integer("embedding_token_count").notNull().default(0),
     metadata: json("metadata"),
     metadataEmbedding: vector("metadata_embedding"),
     /** Full markdown content of the processed document (Context7-style retrieval) */
     markdownContent: text("markdown_content"),
+    activeVersionId: uuid("active_version_id"),
+    latestVersionNumber: integer("latest_version_number").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -936,7 +1088,70 @@ export const KnowledgeDocumentTable = pgTable(
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
-  (t) => [index("knowledge_document_group_id_idx").on(t.groupId)],
+  (t) => [
+    index("knowledge_document_group_id_idx").on(t.groupId),
+    unique("knowledge_document_group_fingerprint_unique").on(
+      t.groupId,
+      t.fingerprint,
+    ),
+  ],
+);
+
+export const KnowledgeDocumentVersionTable = pgTable(
+  "knowledge_document_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    status: varchar("status", {
+      enum: ["processing", "ready", "failed"],
+    })
+      .notNull()
+      .default("processing"),
+    changeType: varchar("change_type", {
+      enum: ["initial_ingest", "edit", "rollback", "reingest"],
+    }).notNull(),
+    markdownContent: text("markdown_content"),
+    resolvedTitle: text("resolved_title").notNull(),
+    resolvedDescription: text("resolved_description"),
+    metadata: json("metadata"),
+    metadataEmbedding: vector("metadata_embedding"),
+    embeddingProvider: text("embedding_provider").notNull(),
+    embeddingModel: text("embedding_model").notNull(),
+    chunkCount: integer("chunk_count").notNull().default(0),
+    tokenCount: integer("token_count").notNull().default(0),
+    embeddingTokenCount: integer("embedding_token_count").notNull().default(0),
+    sourceVersionId: uuid("source_version_id"),
+    createdByUserId: uuid("created_by_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique("knowledge_document_version_document_version_unique").on(
+      t.documentId,
+      t.versionNumber,
+    ),
+    index("knowledge_document_version_document_id_idx").on(t.documentId),
+    index("knowledge_document_version_group_id_idx").on(t.groupId),
+    index("knowledge_document_version_source_version_id_idx").on(
+      t.sourceVersionId,
+    ),
+  ],
 );
 
 export const KnowledgeSectionTable = pgTable(
@@ -960,6 +1175,13 @@ export const KnowledgeSectionTable = pgTable(
     content: text("content").notNull(),
     summary: text("summary").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
+    noteNumber: text("note_number"),
+    noteTitle: text("note_title"),
+    noteSubsection: text("note_subsection"),
+    continued: boolean("continued").notNull().default(false),
+    embedding: vector("embedding"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -968,6 +1190,12 @@ export const KnowledgeSectionTable = pgTable(
     index("knowledge_section_group_id_idx").on(t.groupId),
     index("knowledge_section_document_id_idx").on(t.documentId),
     index("knowledge_section_parent_section_id_idx").on(t.parentSectionId),
+    index("knowledge_section_note_number_idx").on(t.groupId, t.noteNumber),
+    index("knowledge_section_page_span_idx").on(
+      t.groupId,
+      t.pageStart,
+      t.pageEnd,
+    ),
   ],
 );
 
@@ -994,6 +1222,16 @@ export const KnowledgeChunkTable = pgTable(
       sectionTitle?: string;
       headings?: string[];
       headingPath?: string;
+      canonicalTitle?: string;
+      issuerName?: string;
+      issuerTicker?: string;
+      reportType?: string;
+      fiscalYear?: number;
+      periodEnd?: string;
+      noteNumber?: string;
+      noteTitle?: string;
+      noteSubsection?: string;
+      continued?: boolean;
       chunkType?:
         | "code"
         | "directive"
@@ -1006,6 +1244,11 @@ export const KnowledgeChunkTable = pgTable(
       libraryId?: string;
       libraryVersion?: string;
       pageNumber?: number;
+      pageStart?: number;
+      pageEnd?: number;
+      extractionMode?: "raw" | "normalized" | "refined";
+      qualityScore?: number;
+      repairReason?: string;
       sheetName?: string;
     }>(),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -1016,6 +1259,286 @@ export const KnowledgeChunkTable = pgTable(
     index("knowledge_chunk_group_id_idx").on(t.groupId),
     index("knowledge_chunk_document_id_idx").on(t.documentId),
     index("knowledge_chunk_section_id_idx").on(t.sectionId),
+  ],
+);
+
+export const KnowledgeDocumentImageTable = pgTable(
+  "knowledge_document_image",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    versionId: uuid("version_id").references(
+      () => KnowledgeDocumentVersionTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    kind: varchar("kind", {
+      enum: ["embedded", "region"],
+    })
+      .notNull()
+      .default("embedded"),
+    ordinal: integer("ordinal").notNull(),
+    marker: text("marker").notNull(),
+    label: text("label").notNull(),
+    description: text("description").notNull(),
+    headingPath: text("heading_path"),
+    stepHint: text("step_hint"),
+    storagePath: text("storage_path"),
+    sourceUrl: text("source_url"),
+    mediaType: text("media_type"),
+    pageNumber: integer("page_number"),
+    width: integer("width"),
+    height: integer("height"),
+    altText: text("alt_text"),
+    caption: text("caption"),
+    surroundingText: text("surrounding_text"),
+    precedingText: text("preceding_text"),
+    followingText: text("following_text"),
+    isRenderable: boolean("is_renderable").notNull().default(false),
+    manualLabel: boolean("manual_label").notNull().default(false),
+    manualDescription: boolean("manual_description").notNull().default(false),
+    embedding: vector("embedding"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_document_image_group_id_idx").on(t.groupId),
+    index("knowledge_document_image_document_id_idx").on(t.documentId),
+    index("knowledge_document_image_version_id_idx").on(t.versionId),
+    index("knowledge_document_image_document_ordinal_idx").on(
+      t.documentId,
+      t.ordinal,
+    ),
+  ],
+);
+
+export const KnowledgeSectionVersionTable = pgTable(
+  "knowledge_section_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => KnowledgeDocumentVersionTable.id, {
+        onDelete: "cascade",
+      }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    parentSectionId: uuid("parent_section_id"),
+    prevSectionId: uuid("prev_section_id"),
+    nextSectionId: uuid("next_section_id"),
+    heading: text("heading").notNull(),
+    headingPath: text("heading_path").notNull(),
+    level: integer("level").notNull().default(1),
+    partIndex: integer("part_index").notNull().default(0),
+    partCount: integer("part_count").notNull().default(1),
+    content: text("content").notNull(),
+    summary: text("summary").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
+    noteNumber: text("note_number"),
+    noteTitle: text("note_title"),
+    noteSubsection: text("note_subsection"),
+    continued: boolean("continued").notNull().default(false),
+    embedding: vector("embedding"),
+    sourcePath: text("source_path"),
+    libraryId: text("library_id"),
+    libraryVersion: text("library_version"),
+    includeHeadingInChunkContent: boolean("include_heading_in_chunk_content")
+      .notNull()
+      .default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_section_version_version_id_idx").on(t.versionId),
+    index("knowledge_section_version_document_id_idx").on(t.documentId),
+  ],
+);
+
+export const KnowledgeChunkVersionTable = pgTable(
+  "knowledge_chunk_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => KnowledgeDocumentVersionTable.id, {
+        onDelete: "cascade",
+      }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    sectionVersionId: uuid("section_version_id").references(
+      () => KnowledgeSectionVersionTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    content: text("content").notNull(),
+    contextSummary: text("context_summary"),
+    embedding: vector("embedding"),
+    chunkIndex: integer("chunk_index").notNull(),
+    tokenCount: integer("token_count").notNull().default(0),
+    metadata: json("metadata").$type<{
+      section?: string;
+      sectionTitle?: string;
+      headings?: string[];
+      headingPath?: string;
+      canonicalTitle?: string;
+      issuerName?: string;
+      issuerTicker?: string;
+      reportType?: string;
+      fiscalYear?: number;
+      periodEnd?: string;
+      noteNumber?: string;
+      noteTitle?: string;
+      noteSubsection?: string;
+      continued?: boolean;
+      chunkType?:
+        | "code"
+        | "directive"
+        | "api"
+        | "narrative"
+        | "table"
+        | "list"
+        | "other";
+      sourcePath?: string;
+      libraryId?: string;
+      libraryVersion?: string;
+      pageNumber?: number;
+      pageStart?: number;
+      pageEnd?: number;
+      extractionMode?: "raw" | "normalized" | "refined";
+      qualityScore?: number;
+      repairReason?: string;
+      sheetName?: string;
+    }>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_chunk_version_version_id_idx").on(t.versionId),
+    index("knowledge_chunk_version_document_id_idx").on(t.documentId),
+    index("knowledge_chunk_version_section_version_id_idx").on(
+      t.sectionVersionId,
+    ),
+  ],
+);
+
+export const KnowledgeDocumentImageVersionTable = pgTable(
+  "knowledge_document_image_version",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    versionId: uuid("version_id")
+      .notNull()
+      .references(() => KnowledgeDocumentVersionTable.id, {
+        onDelete: "cascade",
+      }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    kind: varchar("kind", {
+      enum: ["embedded", "region"],
+    })
+      .notNull()
+      .default("embedded"),
+    ordinal: integer("ordinal").notNull(),
+    marker: text("marker").notNull(),
+    label: text("label").notNull(),
+    description: text("description").notNull(),
+    headingPath: text("heading_path"),
+    stepHint: text("step_hint"),
+    storagePath: text("storage_path"),
+    sourceUrl: text("source_url"),
+    mediaType: text("media_type"),
+    pageNumber: integer("page_number"),
+    width: integer("width"),
+    height: integer("height"),
+    altText: text("alt_text"),
+    caption: text("caption"),
+    surroundingText: text("surrounding_text"),
+    precedingText: text("preceding_text"),
+    followingText: text("following_text"),
+    isRenderable: boolean("is_renderable").notNull().default(false),
+    manualLabel: boolean("manual_label").notNull().default(false),
+    manualDescription: boolean("manual_description").notNull().default(false),
+    embedding: vector("embedding"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_document_image_version_version_id_idx").on(t.versionId),
+    index("knowledge_document_image_version_document_id_idx").on(t.documentId),
+    index("knowledge_document_image_version_document_ordinal_idx").on(
+      t.documentId,
+      t.ordinal,
+    ),
+  ],
+);
+
+export const KnowledgeDocumentHistoryEventTable = pgTable(
+  "knowledge_document_history_event",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    actorUserId: uuid("actor_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    eventType: varchar("event_type", {
+      enum: [
+        "created",
+        "edited",
+        "rollback",
+        "failed",
+        "bootstrap",
+        "reingest",
+      ],
+    }).notNull(),
+    fromVersionId: uuid("from_version_id"),
+    toVersionId: uuid("to_version_id"),
+    details: json("details"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    index("knowledge_document_history_event_document_id_idx").on(t.documentId),
+    index("knowledge_document_history_event_group_id_idx").on(t.groupId),
   ],
 );
 
@@ -1057,6 +1580,47 @@ export const SkillTable = pgTable("skill", {
     .default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const SkillGroupTable = pgTable("skill_group", {
+  id: uuid("id").primaryKey().notNull().defaultRandom(),
+  name: text("name").notNull(),
+  description: text("description"),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => UserTable.id, { onDelete: "cascade" }),
+  visibility: varchar("visibility", {
+    enum: ["public", "private", "readonly"],
+  })
+    .notNull()
+    .default("private"),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const SkillGroupSkillTable = pgTable(
+  "skill_group_skill",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => SkillGroupTable.id, { onDelete: "cascade" }),
+    skillId: uuid("skill_id")
+      .notNull()
+      .references(() => SkillTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique().on(t.groupId, t.skillId),
+    index("skill_group_skill_group_id_idx").on(t.groupId),
+    index("skill_group_skill_skill_id_idx").on(t.skillId),
+  ],
+);
+
 export const SkillAgentTable = pgTable(
   "skill_agent",
   {
@@ -1075,6 +1639,27 @@ export const SkillAgentTable = pgTable(
     unique().on(t.agentId, t.skillId),
     index("skill_agent_agent_id_idx").on(t.agentId),
     index("skill_agent_skill_id_idx").on(t.skillId),
+  ],
+);
+
+export const SkillGroupAgentTable = pgTable(
+  "skill_group_agent",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => AgentTable.id, { onDelete: "cascade" }),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => SkillGroupTable.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    unique().on(t.agentId, t.groupId),
+    index("skill_group_agent_agent_id_idx").on(t.agentId),
+    index("skill_group_agent_group_id_idx").on(t.groupId),
   ],
 );
 
@@ -1102,6 +1687,283 @@ export const KnowledgeUsageLogTable = pgTable(
   (t) => [
     index("knowledge_usage_log_group_id_idx").on(t.groupId),
     index("knowledge_usage_log_created_at_idx").on(t.createdAt),
+  ],
+);
+
+export const SelfLearningUserConfigTable = pgTable(
+  "self_learning_user_config",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    personalizationEnabled: boolean("personalization_enabled")
+      .notNull()
+      .default(true),
+    hiddenKnowledgeGroupId: uuid("hidden_knowledge_group_id").references(
+      () => KnowledgeGroupTable.id,
+      { onDelete: "set null" },
+    ),
+    hiddenKnowledgeDocumentId: uuid("hidden_knowledge_document_id").references(
+      () => KnowledgeDocumentTable.id,
+      { onDelete: "set null" },
+    ),
+    lastManualRunAt: timestamp("last_manual_run_at", { withTimezone: true }),
+    lastEvaluatedAt: timestamp("last_evaluated_at", { withTimezone: true }),
+    lastResetAt: timestamp("last_reset_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.userId),
+    index("self_learning_user_config_user_id_idx").on(table.userId),
+  ],
+);
+
+export const SelfLearningSignalEventTable = pgTable(
+  "self_learning_signal_event",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    threadId: uuid("thread_id").references(() => ChatThreadTable.id, {
+      onDelete: "cascade",
+    }),
+    messageId: text("message_id").references(() => ChatMessageTable.id, {
+      onDelete: "cascade",
+    }),
+    signalType: varchar("signal_type", {
+      enum: [
+        "feedback_like",
+        "feedback_dislike",
+        "regenerate_response",
+        "branch_from_response",
+        "delete_response",
+        "follow_up_continue",
+      ],
+    })
+      .notNull()
+      .$type<SelfLearningSignalType>(),
+    value: real("value").notNull().default(0),
+    payload: json("payload").$type<SelfLearningSignalPayload>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_signal_event_user_id_idx").on(table.userId),
+    index("self_learning_signal_event_message_id_idx").on(table.messageId),
+    index("self_learning_signal_event_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const SelfLearningRunTable = pgTable(
+  "self_learning_run",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    trigger: varchar("trigger", { enum: ["daily", "manual", "rebuild"] })
+      .notNull()
+      .$type<SelfLearningRunTrigger>(),
+    status: varchar("status", {
+      enum: ["queued", "running", "completed", "failed"],
+    })
+      .notNull()
+      .default("queued")
+      .$type<SelfLearningRunStatus>(),
+    queuedAt: timestamp("queued_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    totalCandidates: integer("total_candidates").notNull().default(0),
+    processedCandidates: integer("processed_candidates").notNull().default(0),
+    appliedMemoryCount: integer("applied_memory_count").notNull().default(0),
+    skippedMemoryCount: integer("skipped_memory_count").notNull().default(0),
+    errorMessage: text("error_message"),
+    metadata: json("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_run_user_id_idx").on(table.userId),
+    index("self_learning_run_status_idx").on(table.status),
+    index("self_learning_run_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const SelfLearningMemoryTable = pgTable(
+  "self_learning_memory",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    category: varchar("category", {
+      enum: [
+        "preference",
+        "style",
+        "format",
+        "avoidance",
+        "workflow",
+        "factual",
+        "policy",
+      ],
+    })
+      .notNull()
+      .$type<SelfLearningMemoryCategory>(),
+    status: varchar("status", {
+      enum: ["active", "inactive", "superseded", "deleted"],
+    })
+      .notNull()
+      .default("inactive")
+      .$type<SelfLearningMemoryStatus>(),
+    isAutoSafe: boolean("is_auto_safe").notNull().default(false),
+    fingerprint: text("fingerprint").notNull(),
+    contradictionFingerprint: text("contradiction_fingerprint"),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    supportCount: integer("support_count").notNull().default(0),
+    distinctThreadCount: integer("distinct_thread_count").notNull().default(0),
+    sourceEvaluationId: uuid("source_evaluation_id"),
+    supersededByMemoryId: uuid("superseded_by_memory_id"),
+    lastAppliedAt: timestamp("last_applied_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    unique().on(table.userId, table.fingerprint),
+    index("self_learning_memory_user_id_idx").on(table.userId),
+    index("self_learning_memory_status_idx").on(table.status),
+  ],
+);
+
+export const SelfLearningEvaluationTable = pgTable(
+  "self_learning_evaluation",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    runId: uuid("run_id")
+      .notNull()
+      .references(() => SelfLearningRunTable.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    threadId: uuid("thread_id").references(() => ChatThreadTable.id, {
+      onDelete: "set null",
+    }),
+    messageId: text("message_id").references(() => ChatMessageTable.id, {
+      onDelete: "set null",
+    }),
+    signalEventId: uuid("signal_event_id").references(
+      () => SelfLearningSignalEventTable.id,
+      { onDelete: "set null" },
+    ),
+    status: varchar("status", {
+      enum: ["proposed", "applied", "skipped", "rejected"],
+    })
+      .notNull()
+      .default("proposed")
+      .$type<SelfLearningEvaluationStatus>(),
+    explicitScore: real("explicit_score").notNull().default(0),
+    implicitScore: real("implicit_score").notNull().default(0),
+    llmScore: real("llm_score").notNull().default(0),
+    compositeScore: real("composite_score").notNull().default(0),
+    confidence: real("confidence").notNull().default(0),
+    category: varchar("category", {
+      enum: [
+        "preference",
+        "style",
+        "format",
+        "avoidance",
+        "workflow",
+        "factual",
+        "policy",
+      ],
+    }).$type<SelfLearningMemoryCategory>(),
+    candidateFingerprint: text("candidate_fingerprint"),
+    candidateTitle: text("candidate_title"),
+    candidateContent: text("candidate_content"),
+    judgeOutput: json("judge_output").$type<SelfLearningJudgeOutput>(),
+    metrics: json("metrics"),
+    appliedMemoryId: uuid("applied_memory_id").references(
+      () => SelfLearningMemoryTable.id,
+      { onDelete: "set null" },
+    ),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_evaluation_run_id_idx").on(table.runId),
+    index("self_learning_evaluation_user_id_idx").on(table.userId),
+    index("self_learning_evaluation_status_idx").on(table.status),
+    index("self_learning_evaluation_message_id_idx").on(table.messageId),
+  ],
+);
+
+export const SelfLearningAuditLogTable = pgTable(
+  "self_learning_audit_log",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => UserTable.id, { onDelete: "cascade" }),
+    actorUserId: uuid("actor_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    runId: uuid("run_id").references(() => SelfLearningRunTable.id, {
+      onDelete: "set null",
+    }),
+    evaluationId: uuid("evaluation_id").references(
+      () => SelfLearningEvaluationTable.id,
+      { onDelete: "set null" },
+    ),
+    memoryId: uuid("memory_id").references(() => SelfLearningMemoryTable.id, {
+      onDelete: "set null",
+    }),
+    action: varchar("action", {
+      enum: [
+        "signal_recorded",
+        "manual_run_requested",
+        "run_completed",
+        "run_failed",
+        "memory_applied",
+        "memory_skipped",
+        "memory_superseded",
+        "personalization_reset",
+        "learning_deleted",
+        "user_toggle_updated",
+        "system_toggle_updated",
+      ],
+    })
+      .notNull()
+      .$type<SelfLearningAuditAction>(),
+    details: json("details"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("self_learning_audit_log_user_id_idx").on(table.userId),
+    index("self_learning_audit_log_created_at_idx").on(table.createdAt),
   ],
 );
 
@@ -1183,6 +2045,59 @@ export const AgentExternalUsageLogTable = pgTable(
   ],
 );
 
+export const AdminUsageEventTable = pgTable(
+  "admin_usage_event",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    resourceType: text("resource_type")
+      .$type<AdminUsageEventResourceType>()
+      .notNull(),
+    resourceId: uuid("resource_id").notNull(),
+    eventName: text("event_name").notNull(),
+    actorUserId: uuid("actor_user_id").references(() => UserTable.id, {
+      onDelete: "set null",
+    }),
+    source: text("source").$type<AdminUsageEventSource>().notNull(),
+    status: text("status")
+      .$type<AdminUsageEventStatus>()
+      .notNull()
+      .default("success"),
+    latencyMs: integer("latency_ms"),
+    agentId: uuid("agent_id").references(() => AgentTable.id, {
+      onDelete: "set null",
+    }),
+    threadId: uuid("thread_id").references(() => ChatThreadTable.id, {
+      onDelete: "set null",
+    }),
+    toolName: text("tool_name"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("admin_usage_event_resource_created_at_idx").on(
+      table.resourceType,
+      table.resourceId,
+      table.createdAt,
+    ),
+    index("admin_usage_event_actor_created_at_idx").on(
+      table.resourceType,
+      table.actorUserId,
+      table.createdAt,
+    ),
+    index("admin_usage_event_type_created_at_idx").on(
+      table.resourceType,
+      table.createdAt,
+    ),
+    index("admin_usage_event_resource_event_created_at_idx").on(
+      table.resourceType,
+      table.resourceId,
+      table.eventName,
+      table.createdAt,
+    ),
+  ],
+);
+
 export type KnowledgeGroupEntity = typeof KnowledgeGroupTable.$inferSelect;
 export type KnowledgeGroupSourceEntity =
   typeof KnowledgeGroupSourceTable.$inferSelect;
@@ -1192,11 +2107,30 @@ export type KnowledgeSectionEntity = typeof KnowledgeSectionTable.$inferSelect;
 export type KnowledgeChunkEntity = typeof KnowledgeChunkTable.$inferSelect;
 export type KnowledgeGroupAgentEntity =
   typeof KnowledgeGroupAgentTable.$inferSelect;
+export type TeamEntity = typeof TeamTable.$inferSelect;
+export type TeamMemberEntity = typeof TeamMemberTable.$inferSelect;
+export type TeamResourceShareEntity =
+  typeof TeamResourceShareTable.$inferSelect;
 export type SkillEntity = typeof SkillTable.$inferSelect;
+export type SkillGroupEntity = typeof SkillGroupTable.$inferSelect;
+export type SkillGroupSkillEntity = typeof SkillGroupSkillTable.$inferSelect;
 export type SkillAgentEntity = typeof SkillAgentTable.$inferSelect;
+export type SkillGroupAgentEntity = typeof SkillGroupAgentTable.$inferSelect;
 export type KnowledgeUsageLogEntity =
   typeof KnowledgeUsageLogTable.$inferSelect;
+export type SelfLearningUserConfigEntity =
+  typeof SelfLearningUserConfigTable.$inferSelect;
+export type SelfLearningSignalEventEntity =
+  typeof SelfLearningSignalEventTable.$inferSelect;
+export type SelfLearningRunEntity = typeof SelfLearningRunTable.$inferSelect;
+export type SelfLearningEvaluationEntity =
+  typeof SelfLearningEvaluationTable.$inferSelect;
+export type SelfLearningMemoryEntity =
+  typeof SelfLearningMemoryTable.$inferSelect;
+export type SelfLearningAuditLogEntity =
+  typeof SelfLearningAuditLogTable.$inferSelect;
 export type AgentExternalChatSessionEntity =
   typeof AgentExternalChatSessionTable.$inferSelect;
 export type AgentExternalUsageLogEntity =
   typeof AgentExternalUsageLogTable.$inferSelect;
+export type AdminUsageEventEntity = typeof AdminUsageEventTable.$inferSelect;

@@ -74,7 +74,16 @@ export interface AppState {
     documentId: string;
     groupId: string;
     documentName: string;
+    citationNumber?: number;
     fileType?: string;
+    imageId?: string | null;
+    versionId?: string | null;
+    pageStart?: number | null;
+    pageEnd?: number | null;
+    sectionHeading?: string | null;
+    excerpt?: string | null;
+    viewerSearch?: string | null;
+    fallbackWarning?: string | null;
   } | null;
 }
 

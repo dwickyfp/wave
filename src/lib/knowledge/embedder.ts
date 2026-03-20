@@ -1,18 +1,88 @@
+import { createHash } from "node:crypto";
 import { embedMany, embed } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createAzure } from "@ai-sdk/azure";
 import { createCohere } from "@ai-sdk/cohere";
 import { createOllama } from "ollama-ai-provider-v2";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { CacheKeys } from "lib/cache/cache-keys";
+import { serverCache } from "lib/cache";
 import { settingsRepository } from "lib/db/repository";
 import { EmbeddingModel } from "ai";
+import type { ProviderSettings } from "app-types/settings";
+
+const EMBEDDING_CACHE_MAX_ENTRIES = 500;
+const EMBEDDING_CACHE_TTL_MS = 15 * 60 * 1000;
+const EMBEDDING_CACHE_TTL_SERVER_MS = 15 * 60 * 1000;
+
+class EmbeddingLruCache {
+  private readonly entries = new Map<
+    string,
+    { embedding: number[]; expiresAt: number }
+  >();
+
+  get(key: string): number[] | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (entry.expiresAt <= Date.now()) {
+      this.entries.delete(key);
+      return undefined;
+    }
+
+    this.entries.delete(key);
+    this.entries.set(key, entry);
+    return entry.embedding;
+  }
+
+  set(key: string, embedding: number[]) {
+    this.entries.delete(key);
+    this.entries.set(key, {
+      embedding,
+      expiresAt: Date.now() + EMBEDDING_CACHE_TTL_MS,
+    });
+
+    while (this.entries.size > EMBEDDING_CACHE_MAX_ENTRIES) {
+      const oldest = this.entries.keys().next().value;
+      if (!oldest) break;
+      this.entries.delete(oldest);
+    }
+  }
+}
+
+const embeddingCache = new EmbeddingLruCache();
+
+type EmbeddingBatchResult = {
+  embeddings: number[][];
+  usageTokens: number;
+};
+
+type EmbeddingSingleResult = {
+  embedding: number[];
+  usageTokens: number;
+};
+
+type SingleEmbeddingOptions = {
+  cache?: boolean;
+};
 
 // ─── Model Creation ────────────────────────────────────────────────────────────
+
+function readSetting(
+  settings: ProviderSettings | null | undefined,
+  key: string,
+): string | null {
+  const value = settings?.[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
 
 function createEmbeddingModel(
   provider: string,
   modelApiName: string,
   apiKey?: string | null,
   baseUrl?: string | null,
+  settings?: ProviderSettings | null,
 ): EmbeddingModel | null {
   try {
     switch (provider) {
@@ -45,6 +115,32 @@ function createEmbeddingModel(
         const p = createOpenRouter({ apiKey: key });
         return p.textEmbeddingModel(modelApiName as any);
       }
+      case "azure": {
+        const key = apiKey || process.env.AZURE_API_KEY;
+        if (!key) return null;
+        const isHttpUrl = baseUrl ? /^https?:\/\//i.test(baseUrl) : false;
+        const configuredBaseUrl =
+          readSetting(settings, "baseURL") ||
+          readSetting(settings, "baseUrl") ||
+          (isHttpUrl ? baseUrl : null);
+        const configuredResourceName =
+          readSetting(settings, "resourceName") ||
+          readSetting(settings, "resource") ||
+          (!isHttpUrl && baseUrl ? baseUrl : null) ||
+          process.env.AZURE_RESOURCE_NAME ||
+          null;
+        const configuredApiVersion =
+          readSetting(settings, "apiVersion") || null;
+        const p = createAzure({
+          apiKey: key,
+          ...(configuredBaseUrl ? { baseURL: configuredBaseUrl } : {}),
+          ...(!configuredBaseUrl && configuredResourceName
+            ? { resourceName: configuredResourceName }
+            : {}),
+          ...(configuredApiVersion ? { apiVersion: configuredApiVersion } : {}),
+        });
+        return p.embedding(modelApiName);
+      }
       default:
         return null;
     }
@@ -66,6 +162,7 @@ async function getEmbeddingModelFromDb(
       modelName,
       providerConfig.apiKey,
       providerConfig.baseUrl,
+      providerConfig.settings,
     );
   } catch {
     return null;
@@ -114,6 +211,15 @@ function preprocessForEmbedding(text: string): string {
 
 const BATCH_SIZE = 100;
 
+function buildEmbeddingCacheKey(
+  provider: string,
+  modelName: string,
+  text: string,
+) {
+  const hash = createHash("sha256").update(text).digest("hex");
+  return CacheKeys.embedding(provider, modelName, hash);
+}
+
 /**
  * Embed multiple texts with preprocessing.
  * Texts are normalized and cleaned before being sent to the embedding model.
@@ -123,6 +229,15 @@ export async function embedTexts(
   provider: string,
   modelName: string,
 ): Promise<number[][]> {
+  const { embeddings } = await embedTextsWithUsage(texts, provider, modelName);
+  return embeddings;
+}
+
+export async function embedTextsWithUsage(
+  texts: string[],
+  provider: string,
+  modelName: string,
+): Promise<EmbeddingBatchResult> {
   const model = await getEmbeddingModelFromDb(provider, modelName);
   if (!model) {
     throw new Error(
@@ -132,16 +247,26 @@ export async function embedTexts(
 
   // Preprocess all texts
   const preprocessed = texts.map(preprocessForEmbedding);
-
+  let usageTokens = 0;
   const allEmbeddings: number[][] = [];
 
   for (let i = 0; i < preprocessed.length; i += BATCH_SIZE) {
     const batch = preprocessed.slice(i, i + BATCH_SIZE);
-    const { embeddings } = await embedMany({ model, values: batch });
-    allEmbeddings.push(...embeddings);
+    const { embeddings, usage } = await embedMany({
+      model,
+      values: batch,
+    });
+    if (Number.isFinite(usage.tokens)) {
+      usageTokens += Number(usage.tokens);
+    }
+
+    allEmbeddings.push(...embeddings.map((embedding) => embedding ?? []));
   }
 
-  return allEmbeddings;
+  return {
+    embeddings: allEmbeddings,
+    usageTokens,
+  };
 }
 
 /**
@@ -151,7 +276,23 @@ export async function embedSingleText(
   text: string,
   provider: string,
   modelName: string,
+  options: SingleEmbeddingOptions = {},
 ): Promise<number[]> {
+  const { embedding } = await embedSingleTextWithUsage(
+    text,
+    provider,
+    modelName,
+    options,
+  );
+  return embedding;
+}
+
+export async function embedSingleTextWithUsage(
+  text: string,
+  provider: string,
+  modelName: string,
+  options: SingleEmbeddingOptions = {},
+): Promise<EmbeddingSingleResult> {
   const model = await getEmbeddingModelFromDb(provider, modelName);
   if (!model) {
     throw new Error(
@@ -160,6 +301,33 @@ export async function embedSingleText(
   }
 
   const preprocessed = preprocessForEmbedding(text);
-  const { embedding } = await embed({ model, value: preprocessed });
-  return embedding;
+  const cacheKey = buildEmbeddingCacheKey(provider, modelName, preprocessed);
+  if (options.cache !== false) {
+    const cached = embeddingCache.get(cacheKey);
+    if (cached) {
+      return {
+        embedding: cached,
+        usageTokens: 0,
+      };
+    }
+
+    const sharedCached = await serverCache.get<number[]>(cacheKey);
+    if (sharedCached) {
+      embeddingCache.set(cacheKey, sharedCached);
+      return {
+        embedding: sharedCached,
+        usageTokens: 0,
+      };
+    }
+  }
+
+  const { embedding, usage } = await embed({ model, value: preprocessed });
+  if (options.cache !== false) {
+    embeddingCache.set(cacheKey, embedding);
+    await serverCache.set(cacheKey, embedding, EMBEDDING_CACHE_TTL_SERVER_MS);
+  }
+  return {
+    embedding,
+    usageTokens: Number.isFinite(usage.tokens) ? Number(usage.tokens) : 0,
+  };
 }

@@ -13,6 +13,14 @@ export async function GET(_req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id: agentId } = await params;
+  const hasAccess = await agentRepository.checkAccess(
+    agentId,
+    session.user.id,
+    false,
+  );
+  if (!hasAccess)
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+
   const groups = await knowledgeRepository.getGroupsByAgentId(agentId);
   return NextResponse.json(groups);
 }

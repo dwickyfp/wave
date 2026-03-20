@@ -4,17 +4,17 @@ import { useKnowledgeUsage } from "@/hooks/queries/use-knowledge";
 import { Card, CardContent, CardHeader, CardTitle } from "ui/card";
 import { Badge } from "ui/badge";
 import { Skeleton } from "ui/skeleton";
+import { BarChart, Bar, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "ui/chart";
 import { format } from "date-fns";
 import {
   MessageSquareIcon,
+  CoinsIcon,
   UsersIcon,
   ServerIcon,
   TimerIcon,
@@ -24,14 +24,24 @@ interface Props {
   groupId: string;
 }
 
+const dailyQueriesChartConfig = {
+  count: {
+    label: "Queries",
+    color: "var(--chart-1)",
+  },
+} satisfies ChartConfig;
+
 export function KnowledgeUsageTab({ groupId }: Props) {
   const { data: stats, isLoading } = useKnowledgeUsage(groupId, 7);
+
+  const formatTokens = (value: number) =>
+    new Intl.NumberFormat("en-US").format(value);
 
   if (isLoading) {
     return (
       <div className="flex flex-col gap-4">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {Array.from({ length: 4 }).map((_, i) => (
+          {Array.from({ length: 7 }).map((_, i) => (
             <Skeleton key={i} className="h-20 rounded-lg" />
           ))}
         </div>
@@ -51,6 +61,21 @@ export function KnowledgeUsageTab({ groupId }: Props) {
     { title: "Unique Users", value: stats.uniqueUsers, icon: UsersIcon },
     { title: "MCP Queries", value: stats.mcpQueries, icon: ServerIcon },
     { title: "Avg Latency", value: `${stats.avgLatencyMs}ms`, icon: TimerIcon },
+    {
+      title: "Stored Embedding Tokens",
+      value: formatTokens(stats.storedEmbeddingTokens),
+      icon: CoinsIcon,
+    },
+    {
+      title: "Processed Embedding Tokens",
+      value: formatTokens(stats.processedEmbeddingTokens),
+      icon: CoinsIcon,
+    },
+    {
+      title: "Recent Embedding Tokens",
+      value: formatTokens(stats.recentEmbeddingTokens),
+      icon: CoinsIcon,
+    },
   ];
 
   const SOURCE_COLORS: Record<string, string> = {
@@ -85,31 +110,75 @@ export function KnowledgeUsageTab({ groupId }: Props) {
             <CardTitle className="text-sm font-medium">Daily Queries</CardTitle>
           </CardHeader>
           <CardContent className="p-4 pt-0">
-            <ResponsiveContainer width="100%" height={120}>
+            <ChartContainer
+              config={dailyQueriesChartConfig}
+              className="h-[140px] w-full aspect-auto"
+            >
               <BarChart
                 data={stats.dailyStats}
-                margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
+                margin={{ top: 8, right: 8, left: -12, bottom: 0 }}
               >
+                <CartesianGrid vertical={false} strokeDasharray="3 3" />
                 <XAxis
                   dataKey="date"
                   tickFormatter={(v) => format(new Date(v), "MMM d")}
-                  tick={{ fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickMargin={8}
                 />
-                <YAxis tick={{ fontSize: 11 }} />
-                <Tooltip
-                  formatter={(v) => [v, "Queries"]}
-                  labelFormatter={(l) => format(new Date(l), "MMM d, yyyy")}
+                <YAxis axisLine={false} tickLine={false} width={32} />
+                <ChartTooltip
+                  cursor={false}
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(label) =>
+                        format(new Date(String(label)), "MMM d, yyyy")
+                      }
+                    />
+                  }
                 />
                 <Bar
                   dataKey="count"
-                  fill="hsl(var(--primary))"
-                  radius={[3, 3, 0, 0]}
+                  fill="var(--color-count)"
+                  radius={[6, 6, 0, 0]}
+                  maxBarSize={48}
                 />
               </BarChart>
-            </ResponsiveContainer>
+            </ChartContainer>
           </CardContent>
         </Card>
       )}
+
+      <div className="flex flex-col gap-2">
+        <h3 className="text-sm font-medium">Embedding Usage by Document</h3>
+        {stats.documentEmbeddingUsage.length === 0 ? (
+          <p className="text-sm text-muted-foreground text-center py-8">
+            No embedded documents yet
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {stats.documentEmbeddingUsage.map((doc) => (
+              <div
+                key={doc.documentId}
+                className="flex items-center gap-3 rounded-lg border border-transparent bg-secondary/30 px-3 py-2 transition-colors hover:border-input"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm">{doc.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatTokens(doc.embeddingTokenCount)} stored embedding
+                    tokens
+                    {doc.latestVersionNumber != null &&
+                      ` · v${doc.latestVersionNumber}`}
+                  </p>
+                </div>
+                <time className="shrink-0 text-xs text-muted-foreground">
+                  {format(new Date(doc.updatedAt), "MMM d HH:mm")}
+                </time>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Recent Queries */}
       <div className="flex flex-col gap-2">

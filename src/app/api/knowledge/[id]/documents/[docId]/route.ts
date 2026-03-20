@@ -1,9 +1,14 @@
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { buildDocumentMetadataEmbeddingText } from "lib/knowledge/document-metadata";
 import { embedSingleText } from "lib/knowledge/embedder";
-import { enqueueIngestDocument } from "lib/knowledge/worker-client";
+import { reconcileDocumentIngestFailure } from "lib/knowledge/versioning";
+import {
+  cancelIngestDocument,
+  enqueueIngestDocument,
+} from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -19,6 +24,22 @@ const updateDocumentMetadataSchema = z
 
 interface Params {
   params: Promise<{ id: string; docId: string }>;
+}
+
+async function enqueueDocumentIngestOrFail(
+  documentId: string,
+  groupId: string,
+): Promise<void> {
+  try {
+    await enqueueIngestDocument(documentId, groupId);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await reconcileDocumentIngestFailure({
+      documentId,
+      errorMessage: `Failed to enqueue ingest job: ${errorMessage}`,
+    }).catch(() => {});
+    throw error;
+  }
 }
 
 export async function GET(_req: NextRequest, { params }: Params) {
@@ -66,6 +87,12 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
+  }
 
   const { id: groupId, docId } = await params;
 
@@ -96,6 +123,19 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   if (doc.storagePath) {
     await serverFileStorage.delete(doc.storagePath).catch(() => {});
   }
+  await cancelIngestDocument(docId).catch((error) => {
+    console.warn(
+      `[ContextX] Failed to cancel ingest jobs before deleting document ${docId}:`,
+      error,
+    );
+  });
+  const imageStoragePaths =
+    await knowledgeRepository.listDocumentImageStoragePaths(docId);
+  await Promise.all(
+    imageStoragePaths.map((path) =>
+      serverFileStorage.delete(path).catch(() => {}),
+    ),
+  );
 
   // Cascade deletes chunks too
   await knowledgeRepository.deleteDocument(docId);
@@ -106,6 +146,12 @@ export async function POST(_req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
+  }
 
   const { id: groupId, docId } = await params;
 
@@ -132,9 +178,31 @@ export async function POST(_req: NextRequest, { params }: Params) {
     );
   }
 
-  // Reset status to pending and re-queue
-  await knowledgeRepository.updateDocumentStatus(docId, "pending");
-  await enqueueIngestDocument(docId, groupId);
+  if (doc.activeVersionId) {
+    await knowledgeRepository.updateDocumentProcessing(docId, {
+      errorMessage: null,
+      processingProgress: 0,
+      processingState: { stage: "extracting" },
+    });
+  } else {
+    await knowledgeRepository.updateDocumentStatus(docId, "pending", {
+      processingProgress: null,
+      processingState: null,
+    });
+  }
+
+  try {
+    await enqueueDocumentIngestOrFail(docId, groupId);
+  } catch {
+    return NextResponse.json(
+      {
+        error:
+          "Document was saved but ContextX workers are unavailable. Please retry shortly.",
+        documentId: docId,
+      },
+      { status: 503 },
+    );
+  }
 
   return NextResponse.json({ success: true });
 }
@@ -143,6 +211,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX documents" },
+      { status: 403 },
+    );
+  }
 
   const { id: groupId, docId } = await params;
   const group = await knowledgeRepository.selectGroupById(
@@ -202,6 +276,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
           metadataText,
           group.embeddingProvider,
           group.embeddingModel,
+          { cache: false },
         );
       } catch (err) {
         console.warn(

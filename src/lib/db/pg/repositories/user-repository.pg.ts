@@ -1,4 +1,5 @@
 import {
+  BasicUser,
   BasicUserWithLastLogin,
   User,
   UserPreferences,
@@ -93,6 +94,14 @@ export const pgUserRepository: UserRepository = {
       })
       .from(UserTable)
       .where(eq(UserTable.id, userId));
+
+    return result || null;
+  },
+  getUserByEmail: async (email: string): Promise<BasicUser | null> => {
+    const [result] = await pgDb
+      .select(getUserColumnsWithoutPassword())
+      .from(UserTable)
+      .where(eq(UserTable.email, email.toLowerCase()));
 
     return result || null;
   },

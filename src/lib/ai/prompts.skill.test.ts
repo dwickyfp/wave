@@ -27,6 +27,30 @@ describe("skill prompts", () => {
     expect(prompt).toContain("PR Review Assistant");
   });
 
+  it("adds active skill excerpts and precedence rules", () => {
+    const prompt = buildAgentSkillsSystemPrompt(
+      [
+        {
+          title: "Technical RFC Writer",
+          description: "Draft RFC documents",
+        },
+      ],
+      [
+        {
+          title: "Technical RFC Writer",
+          description: "Draft RFC documents",
+          instructionsExcerpt: "## Workflow\n- Gather context\n- Write RFC",
+          instructionsTruncated: true,
+        },
+      ],
+    );
+
+    expect(prompt).toContain("selected automatically for this request");
+    expect(prompt).toContain("Gather context");
+    expect(prompt).toContain("current-turn instructions");
+    expect(prompt).toContain("load_skill");
+  });
+
   it("buildSkillGenerationPrompt includes local pattern hints", () => {
     const prompt = buildSkillGenerationPrompt(
       "- sample-skill: frontmatter=yes; headings=# Intro | ## Workflow",

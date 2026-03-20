@@ -244,6 +244,7 @@ export const toolNodeExecutor: NodeExecutor<ToolNodeData> = async ({
       node.tool.serverId,
       node.tool.id,
       result.input.parameter,
+      { source: "workflow" },
     )) as any;
     if (toolResult.isError) {
       throw new Error(

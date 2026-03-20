@@ -71,7 +71,7 @@ async function clearExistingTestUsers() {
     // Also get legacy test users by exact email match
     const legacyTestEmails = [
       "admin@testuser.com",
-      "editor@testuser.com",
+      "creator@testuser.com",
       "user@testuser.com",
     ];
 
@@ -262,23 +262,23 @@ async function seedTestUsers() {
     });
     console.log("✅ Created admin user:", adminUser?.id);
 
-    // 2. Editor User
+    // 2. Creator User
     const editorUser = await createUserWithBetterAuth({
       email: TEST_USERS.editor.email,
       password: TEST_USERS.editor.password,
       name: TEST_USERS.editor.name,
-      role: USER_ROLES.EDITOR,
+      role: USER_ROLES.CREATOR,
     });
-    console.log("✅ Created editor user:", editorUser?.id);
+    console.log("✅ Created creator user:", editorUser?.id);
 
-    // 3. Editor2 User
+    // 3. Creator2 User
     const editor2User = await createUserWithBetterAuth({
       email: TEST_USERS.editor2.email,
       password: TEST_USERS.editor2.password,
       name: TEST_USERS.editor2.name,
-      role: USER_ROLES.EDITOR,
+      role: USER_ROLES.CREATOR,
     });
-    console.log("✅ Created editor2 user:", editor2User?.id);
+    console.log("✅ Created creator2 user:", editor2User?.id);
 
     // 4. Regular User
     const regularUser = await createUserWithBetterAuth({
@@ -295,7 +295,7 @@ async function seedTestUsers() {
 
     for (let i = 4; i <= 21; i++) {
       try {
-        const isEditor = i <= 9;
+        const isCreator = i <= 9;
         const isBanned = i === 21;
         const email = `testuser${i}@test-seed.local`;
 
@@ -303,7 +303,7 @@ async function seedTestUsers() {
           email,
           password: `TestPass${i}!`,
           name: `Test User ${i}`,
-          role: isEditor ? USER_ROLES.EDITOR : USER_ROLES.USER,
+          role: isCreator ? USER_ROLES.CREATOR : USER_ROLES.USER,
           banned: isBanned,
           banReason: isBanned ? "Test ban for E2E testing" : undefined,
         });
@@ -337,10 +337,10 @@ async function seedTestUsers() {
       `  Admin: ${TEST_USERS.admin.email} / ${TEST_USERS.admin.password}`,
     );
     console.log(
-      `  Editor: ${TEST_USERS.editor.email} / ${TEST_USERS.editor.password}`,
+      `  Creator: ${TEST_USERS.editor.email} / ${TEST_USERS.editor.password}`,
     );
     console.log(
-      `  Editor2: ${TEST_USERS.editor2.email} / ${TEST_USERS.editor2.password}`,
+      `  Creator2: ${TEST_USERS.editor2.email} / ${TEST_USERS.editor2.password}`,
     );
     console.log(
       `  Regular: ${TEST_USERS.regular.email} / ${TEST_USERS.regular.password}`,
@@ -349,7 +349,7 @@ async function seedTestUsers() {
 
     console.log("\n📁 Auth Files Will Be Created:");
     console.log(`  - tests/.auth/${TEST_USERS.admin.authFile} (admin user)`);
-    console.log(`  - tests/.auth/${TEST_USERS.editor.authFile} (editor user)`);
+    console.log(`  - tests/.auth/${TEST_USERS.editor.authFile} (creator user)`);
     console.log(
       `  - tests/.auth/${TEST_USERS.editor2.authFile} (editor2 user)`,
     );
@@ -428,9 +428,9 @@ async function seedSampleUsageData(userIds: string[]) {
 
     console.log(`✅ Created sample usage data for admin user`);
 
-    // Editor user has no messages (should show empty state)
+    // Creator user has no messages (should show empty state)
     console.log(
-      `✅ Editor user left without usage data for empty state testing`,
+      `✅ Creator user left without usage data for empty state testing`,
     );
   } catch (error) {
     console.warn("⚠️ Failed to seed usage data:", error);

@@ -329,7 +329,7 @@ function DrawerTemporaryContent({
               key={index}
               message={message}
               status={status}
-              isLoading={isLoading}
+              isLoading={isLastMessage && isLoading}
               isLastMessage={isLastMessage}
               setMessages={setMessages}
               prevMessage={messages[index - 1]}

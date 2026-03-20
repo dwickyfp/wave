@@ -1,44 +1,62 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { useTranslations } from "next-intl";
-import { toast } from "sonner";
+import { KnowledgeAgentSection } from "@/components/knowledge/knowledge-agent-section";
+import { ShareableActions, Visibility } from "@/components/shareable-actions";
+import { SkillAgentSection } from "@/components/skill/skill-agent-section";
 import { useMutateAgents } from "@/hooks/queries/use-agents";
+import { useBookmark } from "@/hooks/queries/use-bookmark";
+import { useChatModels } from "@/hooks/queries/use-chat-models";
 import { useMcpList } from "@/hooks/queries/use-mcp-list";
 import { useWorkflowToolList } from "@/hooks/queries/use-workflow-tool-list";
-import { useChatModels } from "@/hooks/queries/use-chat-models";
 import { useObjectState } from "@/hooks/use-object-state";
-import { useBookmark } from "@/hooks/queries/use-bookmark";
 import { Agent, AgentCreateSchema, AgentUpdateSchema } from "app-types/agent";
-import { SubAgent } from "app-types/subagent";
 import { ChatMention, ChatModel } from "app-types/chat";
+import type { KnowledgeSummary } from "app-types/knowledge";
 import { MCPServerInfo } from "app-types/mcp";
+import type { SkillGroupSummary, SkillSummary } from "app-types/skill";
+import { SubAgent } from "app-types/subagent";
 import { WorkflowSummary } from "app-types/workflow";
+import {
+  buildContinueAgentSystemMessage,
+  buildContinuePlanSystemMessage,
+} from "lib/ai/agent/continue-prompts";
+import {
+  RandomDataGeneratorExample,
+  WeatherExample,
+} from "lib/ai/agent/example";
+import {
+  getExternalAgentAutocompleteOpenAiModelId,
+  getExternalAgentOpenAiModelId,
+} from "lib/ai/agent/external-agent-model-id";
 import { DefaultToolName } from "lib/ai/tools";
 import { BACKGROUND_COLORS } from "lib/const";
+import { notify } from "lib/notify";
 import { cn, fetcher, objectFlow } from "lib/utils";
-import { safe } from "ts-safe";
-import { handleErrorWithToast } from "ui/shared-toast";
 import {
+  ChevronDownIcon,
   CopyIcon,
   KeyIcon,
-  ChevronDownIcon,
   Loader,
   RefreshCwIcon,
+  SaveIcon,
   ServerIcon,
   ShieldAlertIcon,
-  WaypointsIcon,
+  Trash2Icon,
   WandSparklesIcon,
+  WaypointsIcon,
 } from "lucide-react";
-import { Button } from "ui/button";
+import { useTranslations } from "next-intl";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
+import { safe } from "ts-safe";
 import {
   Accordion,
   AccordionContent,
   AccordionItem,
   AccordionTrigger,
 } from "ui/accordion";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
+import { Button } from "ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,6 +65,7 @@ import {
 } from "ui/dropdown-menu";
 import { Input } from "ui/input";
 import { Label } from "ui/label";
+import { ScrollArea } from "ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -56,35 +75,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "ui/select";
-import { Textarea } from "ui/textarea";
-import { ScrollArea } from "ui/scroll-area";
+import { handleErrorWithToast } from "ui/shared-toast";
 import { Skeleton } from "ui/skeleton";
 import { Switch } from "ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "ui/tabs";
 import { TextShimmer } from "ui/text-shimmer";
-import { ShareableActions, Visibility } from "@/components/shareable-actions";
-import { GenerateAgentDialog } from "./generate-agent-dialog";
-import { AgentIconPicker } from "./agent-icon-picker";
-import { AgentToolSelector } from "./agent-tool-selector";
-import { SubAgentSection } from "./subagent-section";
+import { Textarea } from "ui/textarea";
 import { A2APublishPanel } from "./a2a-publish-panel";
-import { KnowledgeAgentSection } from "@/components/knowledge/knowledge-agent-section";
-import type { KnowledgeSummary } from "app-types/knowledge";
-import { SkillAgentSection } from "@/components/skill/skill-agent-section";
-import type { SkillSummary } from "app-types/skill";
-import {
-  RandomDataGeneratorExample,
-  WeatherExample,
-} from "lib/ai/agent/example";
-import { notify } from "lib/notify";
-import {
-  buildContinueAgentSystemMessage,
-  buildContinuePlanSystemMessage,
-} from "lib/ai/agent/continue-prompts";
-import {
-  getExternalAgentAutocompleteOpenAiModelId,
-  getExternalAgentOpenAiModelId,
-} from "lib/ai/agent/external-agent-model-id";
 import { AgentDashboardTab } from "./agent-dashboard-tab";
+import { AgentIconPicker } from "./agent-icon-picker";
+import { AgentInstructionDiffPreview } from "./agent-instruction-diff-preview";
+import { AgentInstructionEnhancePopover } from "./agent-instruction-enhance-popover";
+import { AgentToolSelector } from "./agent-tool-selector";
+import { GenerateAgentDialog } from "./generate-agent-dialog";
+import { SubAgentSection } from "./subagent-section";
 
 const defaultConfig = (): PartialBy<
   Omit<Agent, "createdAt" | "updatedAt" | "userId">,
@@ -93,6 +97,7 @@ const defaultConfig = (): PartialBy<
   return {
     name: "",
     description: "",
+    chatPersonalizationEnabled: true,
     icon: {
       type: "emoji",
       value:
@@ -158,7 +163,12 @@ export default function EditAgent({
   const router = useRouter();
 
   const [openGenerateAgentDialog, setOpenGenerateAgentDialog] = useState(false);
+  const [instructionReview, setInstructionReview] = useState<{
+    before: string;
+    after: string;
+  } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [isVisibilityChangeLoading, setIsVisibilityChangeLoading] =
     useState(false);
 
@@ -177,12 +187,18 @@ export default function EditAgent({
   const [skills, setSkills] = useState<SkillSummary[]>(
     (initialAgent as any)?.skills ?? [],
   );
+  const [skillGroups, setSkillGroups] = useState<SkillGroupSummary[]>(
+    (initialAgent as any)?.skillGroups ?? [],
+  );
   const [skillsEnabled, setSkillsEnabled] = useState<boolean>(
-    ((initialAgent as any)?.skills ?? []).length > 0,
+    ((initialAgent as any)?.skills ?? []).length > 0 ||
+      ((initialAgent as any)?.skillGroups ?? []).length > 0,
   );
   const [agentMcpEnabled, setAgentMcpEnabled] = useState(
     initialAgent?.mcpEnabled ?? false,
   );
+  const [agentChatPersonalizationEnabled, setAgentChatPersonalizationEnabled] =
+    useState(initialAgent?.chatPersonalizationEnabled ?? true);
   const [agentMcpApiKey, setAgentMcpApiKey] = useState<string | null>(null);
   const [agentMcpKeyPreview, setAgentMcpKeyPreview] = useState(
     initialAgent?.mcpApiKeyPreview ?? initialAgent?.a2aApiKeyPreview ?? null,
@@ -198,6 +214,10 @@ export default function EditAgent({
   const [
     isAgentContinueUpdatingAutocompleteModel,
     setIsAgentContinueUpdatingAutocompleteModel,
+  ] = useState(false);
+  const [
+    isAgentChatPersonalizationUpdating,
+    setIsAgentChatPersonalizationUpdating,
   ] = useState(false);
   const [
     isAgentMcpUpdatingPresentationMode,
@@ -234,6 +254,7 @@ export default function EditAgent({
   const [browserOrigin, setBrowserOrigin] = useState("");
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isInstructionReviewActive = instructionReview !== null;
 
   // Initialize agent state with initial data or defaults
   const [agent, setAgent] = useObjectState(initialAgent || defaultConfig());
@@ -492,6 +513,36 @@ export default function EditAgent({
     [skills, skillsEnabled, initialAgent],
   );
 
+  const syncSkillGroups = useCallback(
+    async (agentId: string) => {
+      const current = (initialAgent as any)?.skillGroups ?? [];
+      const targetGroups = skillsEnabled ? skillGroups : [];
+      const currentIds = new Set(current.map((group: any) => group.id));
+      const newIds = new Set(targetGroups.map((group) => group.id));
+
+      const toAdd = targetGroups.filter((group) => !currentIds.has(group.id));
+      const toRemove = current.filter((group: any) => !newIds.has(group.id));
+
+      await Promise.all([
+        ...toAdd.map((group) =>
+          fetch(`/api/agent/${agentId}/skill-group`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId: group.id }),
+          }),
+        ),
+        ...toRemove.map((group: any) =>
+          fetch(`/api/agent/${agentId}/skill-group`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ groupId: group.id }),
+          }),
+        ),
+      ]);
+    },
+    [skillGroups, skillsEnabled, initialAgent],
+  );
+
   const saveAgent = useCallback(() => {
     if (initialAgent) {
       safe(() => setIsSaving(true))
@@ -514,6 +565,7 @@ export default function EditAgent({
           await Promise.all([
             syncKnowledgeGroups(initialAgent.id),
             syncSkills(initialAgent.id),
+            syncSkillGroups(initialAgent.id),
           ]);
           mutateAgents(updatedAgent);
           toast.success(t("Agent.updated"));
@@ -545,6 +597,7 @@ export default function EditAgent({
             await Promise.all([
               syncKnowledgeGroups(updatedAgent.id),
               syncSkills(updatedAgent.id),
+              syncSkillGroups(updatedAgent.id),
             ]);
           }
           mutateAgents(updatedAgent);
@@ -565,6 +618,7 @@ export default function EditAgent({
     subAgentsEnabled,
     syncKnowledgeGroups,
     syncSkills,
+    syncSkillGroups,
   ]);
 
   const updateVisibility = useCallback(
@@ -599,7 +653,7 @@ export default function EditAgent({
       description: t("Agent.deleteConfirm"),
     });
     if (!ok) return;
-    safe(() => setIsSaving(true))
+    safe(() => setIsDeleting(true))
       .map(() =>
         fetcher(`/api/agent/${initialAgent.id}`, {
           method: "DELETE",
@@ -611,7 +665,7 @@ export default function EditAgent({
         router.push("/agents");
       })
       .ifFail(handleErrorWithToast)
-      .watch(() => setIsSaving(false));
+      .watch(() => setIsDeleting(false));
   }, [initialAgent?.id, mutateAgents, router, t]);
 
   const handleBookmarkToggle = useCallback(async () => {
@@ -843,6 +897,40 @@ export default function EditAgent({
     [initialAgent?.id, t],
   );
 
+  const handleToggleAgentChatPersonalization = useCallback(
+    async (enabled: boolean) => {
+      if (!initialAgent?.id) return;
+
+      setIsAgentChatPersonalizationUpdating(true);
+      try {
+        const res = await fetch(`/api/agent/${initialAgent.id}/mcp-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chatPersonalizationEnabled: enabled,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error("Failed to update chat personalization");
+        }
+
+        setAgentChatPersonalizationEnabled(enabled);
+        setAgent({ chatPersonalizationEnabled: enabled });
+        toast.success(
+          enabled
+            ? t("Agent.agentChatPersonalizationEnabled")
+            : t("Agent.agentChatPersonalizationDisabled"),
+        );
+      } catch {
+        toast.error(t("Agent.agentChatPersonalizationUpdateFailed"));
+      } finally {
+        setIsAgentChatPersonalizationUpdating(false);
+      }
+    },
+    [initialAgent?.id, setAgent, t],
+  );
+
   const handleChangeAgentAutocompleteModel = useCallback(
     async (value: string) => {
       if (!initialAgent?.id) return;
@@ -915,6 +1003,47 @@ export default function EditAgent({
     [initialAgent?.id, t],
   );
 
+  const handleApplyInstructionEnhancement = useCallback(
+    (nextInstructions: string) => {
+      const before = agent.instructions?.systemPrompt || "";
+
+      setAgent((prev) => ({
+        instructions: {
+          ...prev.instructions,
+          systemPrompt: nextInstructions,
+        },
+      }));
+      setInstructionReview({
+        before,
+        after: nextInstructions,
+      });
+
+      if (textareaRef.current) {
+        textareaRef.current.scrollTo({
+          top: 0,
+        });
+      }
+    },
+    [agent.instructions?.systemPrompt, setAgent],
+  );
+
+  const handleAcceptInstructionEnhancement = useCallback(() => {
+    setInstructionReview(null);
+  }, []);
+
+  const handleCancelInstructionEnhancement = useCallback(() => {
+    if (!instructionReview) {
+      return;
+    }
+
+    setAgent((prev) => ({
+      instructions: {
+        ...prev.instructions,
+        systemPrompt: instructionReview.before,
+      },
+    }));
+    setInstructionReview(null);
+  }, [instructionReview, setAgent]);
   const handleAgentChange = useCallback(
     (generatedData: any) => {
       if (textareaRef.current) {
@@ -922,6 +1051,7 @@ export default function EditAgent({
           top: textareaRef.current.scrollHeight,
         });
       }
+      setInstructionReview(null);
       setAgent((prev) => {
         const update: Partial<Agent> = {};
         objectFlow(generatedData).forEach((data, key) => {
@@ -1075,6 +1205,7 @@ export default function EditAgent({
       isAgentMcpRevokingKey ||
       isAgentMcpToggling ||
       isAgentMcpUpdatingModel ||
+      isAgentChatPersonalizationUpdating ||
       isAgentContinueUpdatingCodingMode ||
       isAgentContinueUpdatingAutocompleteModel ||
       isAgentMcpUpdatingPresentationMode,
@@ -1083,6 +1214,7 @@ export default function EditAgent({
       isAgentMcpRevokingKey,
       isAgentMcpToggling,
       isAgentMcpUpdatingModel,
+      isAgentChatPersonalizationUpdating,
       isAgentContinueUpdatingCodingMode,
       isAgentContinueUpdatingAutocompleteModel,
       isAgentMcpUpdatingPresentationMode,
@@ -1098,12 +1230,14 @@ export default function EditAgent({
     return (
       isLoadingTool ||
       isSaving ||
+      isDeleting ||
       isVisibilityChangeLoading ||
       isBookmarkToggleLoading
     );
   }, [
     isLoadingTool,
     isSaving,
+    isDeleting,
     isVisibilityChangeLoading,
     isBookmarkToggleLoading,
   ]);
@@ -1114,17 +1248,19 @@ export default function EditAgent({
     <ScrollArea className="h-full w-full relative">
       <div className="w-full h-8 absolute bottom-0 left-0 bg-gradient-to-t from-background to-transparent z-20 pointer-events-none" />
       <div className="z-10 relative flex flex-col gap-4 px-8 pt-8 pb-14 max-w-3xl h-full mx-auto">
-        <div className="sticky top-0 bg-background z-10 flex items-center justify-between pb-4 gap-2">
+        <div className="sticky top-0 bg-background z-10 flex flex-wrap items-center justify-between pb-4 gap-2">
           <div className="w-full h-8 absolute top-[100%] left-0 bg-gradient-to-b from-background to-transparent z-20 pointer-events-none" />
           {isGenerating ? (
-            <TextShimmer className="w-full text-2xl font-bold">
+            <TextShimmer className="min-w-0 flex-1 text-2xl font-bold">
               {t("Agent.generatingAgent")}
             </TextShimmer>
           ) : (
-            <p className="w-full text-2xl font-bold">{t("Agent.title")}</p>
+            <p className="min-w-0 flex-1 text-2xl font-bold">
+              {t("Agent.title")}
+            </p>
           )}
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             {hasEditAccess && !initialAgent && (
               <>
                 <Button
@@ -1153,7 +1289,7 @@ export default function EditAgent({
                       onClick={() => setAgent(RandomDataGeneratorExample)}
                     >
                       <div className="flex items-center gap-2">
-                        <span>🎲</span>
+                        <span>ðŸŽ²</span>
                         <span>Generate Random Data</span>
                       </div>
                     </DropdownMenuItem>
@@ -1162,12 +1298,66 @@ export default function EditAgent({
                       onClick={() => setAgent(WeatherExample)}
                     >
                       <div className="flex items-center gap-2">
-                        <span>🌤️</span>
+                        <span>ðŸŒ¤ï¸</span>
                         <span>Weather Checker</span>
                       </div>
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
+              </>
+            )}
+
+            {hasEditAccess && !initialAgent && (
+              <Button
+                onClick={saveAgent}
+                disabled={
+                  isLoading || !hasEditAccess || isInstructionReviewActive
+                }
+                data-testid="agent-save-button"
+              >
+                {isSaving ? (
+                  <Loader className="size-4 animate-spin" />
+                ) : (
+                  <SaveIcon className="size-4" />
+                )}
+                {isSaving ? t("Common.saving") : t("Common.save")}
+              </Button>
+            )}
+
+            {hasEditAccess && initialAgent && (
+              <>
+                {isOwner && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={deleteAgent}
+                    disabled={isLoading}
+                    aria-label={t("Common.delete")}
+                    title={t("Common.delete")}
+                  >
+                    {isDeleting ? (
+                      <Loader className="size-4 animate-spin" />
+                    ) : (
+                      <Trash2Icon className="size-4" />
+                    )}
+                  </Button>
+                )}
+
+                <Button
+                  onClick={saveAgent}
+                  disabled={
+                    isLoading || !hasEditAccess || isInstructionReviewActive
+                  }
+                  data-testid="agent-save-button"
+                >
+                  {isSaving ? (
+                    <Loader className="size-4 animate-spin" />
+                  ) : (
+                    <SaveIcon className="size-4" />
+                  )}
+                  {isSaving ? t("Common.saving") : t("Common.save")}
+                </Button>
               </>
             )}
 
@@ -1272,7 +1462,7 @@ export default function EditAgent({
           </TabsList>
 
           <TabsContent value="details" className="flex flex-col gap-6 mt-2">
-            <div className="mt-4 flex items-center gap-2">
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
               <p className="text-sm text-muted-foreground">
                 {t("Agent.agentSettingsDescription")}
               </p>
@@ -1305,9 +1495,24 @@ export default function EditAgent({
             </div>
 
             <div className="flex gap-2 flex-col">
-              <Label htmlFor="agent-prompt" className="text-base">
-                {t("Agent.agentInstructionsLabel")}
-              </Label>
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor="agent-prompt" className="text-base">
+                  {t("Agent.agentInstructionsLabel")}
+                </Label>
+                {hasEditAccess && initialAgent && (
+                  <AgentInstructionEnhancePopover
+                    currentInstructions={agent.instructions?.systemPrompt || ""}
+                    agentContext={{
+                      name: agent.name || "",
+                      description: agent.description || "",
+                      role: agent.instructions?.role || "",
+                    }}
+                    disabled={isLoading || isInstructionReviewActive}
+                    iconOnly
+                    onGenerated={handleApplyInstructionEnhancement}
+                  />
+                )}
+              </div>
               {false ? (
                 <Skeleton className="w-full h-48" />
               ) : (
@@ -1317,7 +1522,11 @@ export default function EditAgent({
                   ref={textareaRef}
                   disabled={isLoading || !hasEditAccess}
                   placeholder={t("Agent.agentInstructionsPlaceholder")}
-                  className="p-6 hover:bg-input min-h-48 max-h-96 overflow-y-auto resize-none placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!"
+                  className={cn(
+                    "p-6 hover:bg-input min-h-48 max-h-96 overflow-y-auto resize-none placeholder:text-xs bg-secondary/40 transition-colors border-transparent border-none! focus-visible:bg-input! ring-0!",
+                    isInstructionReviewActive &&
+                      "cursor-not-allowed opacity-90",
+                  )}
                   value={agent.instructions?.systemPrompt || ""}
                   onChange={(e) =>
                     setAgent({
@@ -1327,8 +1536,41 @@ export default function EditAgent({
                       },
                     })
                   }
-                  readOnly={!hasEditAccess}
+                  readOnly={!hasEditAccess || isInstructionReviewActive}
                 />
+              )}
+              {instructionReview && (
+                <>
+                  <AgentInstructionDiffPreview
+                    before={instructionReview.before}
+                    after={instructionReview.after}
+                  />
+                  <div
+                    className="flex flex-wrap items-center justify-between gap-3"
+                    data-testid="agent-instruction-review-actions"
+                  >
+                    <p className="text-xs text-muted-foreground">
+                      {t("Agent.instructionsAiAcceptHint")}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={handleCancelInstructionEnhancement}
+                        data-testid="agent-instruction-review-cancel-button"
+                      >
+                        {t("Common.cancel")}
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={handleAcceptInstructionEnhancement}
+                        data-testid="agent-instruction-review-accept-button"
+                      >
+                        {t("Agent.instructionsAiAccept")}
+                      </Button>
+                    </div>
+                  </div>
+                </>
               )}
             </div>
 
@@ -1386,42 +1628,16 @@ export default function EditAgent({
             <div className="flex gap-2 flex-col border-t pt-4 mt-2">
               <SkillAgentSection
                 skills={skills}
+                skillGroups={skillGroups}
                 enabled={skillsEnabled}
                 hasEditAccess={hasEditAccess}
-                onChange={(updatedSkills, enabled) => {
+                onChange={(updatedSkills, updatedGroups, enabled) => {
                   setSkills(updatedSkills);
+                  setSkillGroups(updatedGroups);
                   setSkillsEnabled(enabled);
                 }}
               />
             </div>
-
-            {hasEditAccess && (
-              <div className={cn("flex justify-end gap-2")}>
-                {initialAgent && isOwner && (
-                  <Button
-                    className="mt-2 hover:text-destructive"
-                    variant="ghost"
-                    onClick={deleteAgent}
-                    disabled={isLoading}
-                  >
-                    {t("Common.delete")}
-                  </Button>
-                )}
-
-                <Button
-                  className={cn(
-                    "mt-2",
-                    !initialAgent || !isOwner ? "ml-auto" : "",
-                  )}
-                  onClick={saveAgent}
-                  disabled={isLoading || !hasEditAccess}
-                  data-testid="agent-save-button"
-                >
-                  {isSaving ? t("Common.saving") : t("Common.save")}
-                  {isSaving && <Loader className="size-4 animate-spin" />}
-                </Button>
-              </div>
-            )}
           </TabsContent>
 
           {showAgentAccessTab && (
@@ -1523,6 +1739,22 @@ export default function EditAgent({
                       </p>
                     </div>
 
+                    <div className="flex items-start justify-between gap-4 rounded-lg border bg-secondary/30 p-3">
+                      <div className="space-y-1">
+                        <p className="text-xs font-medium">
+                          {t("Agent.agentChatPersonalizationLabel")}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {t("Agent.agentChatPersonalizationDescription")}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={agentChatPersonalizationEnabled}
+                        onCheckedChange={handleToggleAgentChatPersonalization}
+                        disabled={isAgentMcpBusy}
+                      />
+                    </div>
+
                     <div className="space-y-2">
                       <Label className="text-sm">
                         {t("Agent.agentMcpApiKeyLabel")}
@@ -1533,7 +1765,8 @@ export default function EditAgent({
                             <span>{agentMcpApiKey}</span>
                           ) : agentMcpKeyPreview ? (
                             <span className="text-muted-foreground">
-                              ••••••••••••{agentMcpKeyPreview}
+                              â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢
+                              {agentMcpKeyPreview}
                             </span>
                           ) : (
                             <span className="text-muted-foreground italic">

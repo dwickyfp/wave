@@ -3,11 +3,8 @@
 [![MCP Supported](https://img.shields.io/badge/MCP-Supported-00c853)](https://modelcontextprotocol.io/introduction)
 [![Local First](https://img.shields.io/badge/Local-First-blue)](https://localfirstweb.dev/)
 [![AI SDK](https://img.shields.io/badge/AI_SDK-v6-blueviolet)](https://sdk.vercel.ai/)
-[![Discord](https://img.shields.io/discord/1374047276074537103?label=Discord&logo=discord&color=5865F2)](https://discord.gg/gCRu69Upnp)
 
 **Emma Chatbot** is an open-source AI chatbot for individuals and teams, inspired by ChatGPT, Claude, Grok, and Gemini. Built with **[Vercel AI SDK v6](https://sdk.vercel.ai/)** and **Next.js**, it combines the best capabilities of leading AI services into a single customizable platform.
-
-**[Live Demo](https://emma-chatbot-demo.vercel.app/)**
 
 ---
 
@@ -21,6 +18,10 @@
 - [Feature Details](#feature-details)
   - [Custom Agents](#custom-agents)
   - [Agent-to-Agent (Sub-Agents)](#agent-to-agent-sub-agents)
+  - [A2A Federation](#a2a-federation)
+  - [Snowflake Intelligence Agents](#snowflake-intelligence-agents)
+  - [Emma Pilot Browser Copilot](#emma-pilot-browser-copilot)
+  - [ContextX Knowledge System](#contextx-knowledge-system)
   - [Visual Workflows](#visual-workflows)
   - [MCP Tool Integration](#mcp-tool-integration)
   - [@mention & Tool Presets](#mention--tool-presets)
@@ -37,16 +38,17 @@
 
 ## Features Overview
 
-| Category          | Features                                                                                  |
-| ----------------- | ----------------------------------------------------------------------------------------- |
-| **AI Providers**  | OpenAI, Anthropic, Google, xAI, Ollama, OpenRouter, and any OpenAI-compatible provider    |
-| **Agents**        | Custom agents with system prompts, tool access, and agent-to-agent (sub-agent) delegation |
-| **Tools**         | MCP protocol, web search, JS/Python execution, data visualization, image generation       |
-| **Workflows**     | Visual node-based workflows as callable tools                                             |
-| **Voice**         | Realtime voice assistant with full MCP tool integration                                   |
-| **UX**            | `@mention` to invoke any tool, agent, or workflow instantly                               |
-| **Collaboration** | Share agents, workflows, and MCP configurations with your team                            |
-| **Deployment**    | One-click Vercel deploy, Docker Compose, or local setup                                   |
+| Category          | Features                                                                                                          |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **AI Providers**  | OpenAI, Anthropic, Google, xAI, Ollama, OpenRouter, and any OpenAI-compatible provider                            |
+| **Agents**        | Custom agents, sub-agents, remote A2A agents, Snowflake Cortex agents, and browser-aware Emma Pilot orchestration |
+| **Knowledge**     | ContextX ingestion, chunking, enrichment, retrieval, reranking, and group-scoped knowledge memories               |
+| **Tools**         | MCP protocol, web search, JS/Python execution, data visualization, image generation, HTTP client                  |
+| **Workflows**     | Visual node-based workflows as callable tools                                                                     |
+| **Voice**         | Realtime voice assistant with full MCP tool integration                                                           |
+| **UX**            | `@mention` to invoke any tool, agent, or workflow instantly, plus Emma Pilot browser copilot for Chrome and Edge  |
+| **Collaboration** | Share agents, workflows, MCP configurations, and published A2A endpoints with your team                           |
+| **Deployment**    | One-click Vercel deploy, Docker Compose, local setup, and extension packaging for Emma Pilot                      |
 
 ---
 
@@ -204,6 +206,256 @@ The parent orchestrates across all three, producing a final comprehensive answer
 
 ---
 
+### A2A Federation
+
+Emma supports the **Agent-to-Agent (A2A) protocol** in two directions:
+
+- **Consume remote A2A agents** by discovering and connecting to external agent cards
+- **Publish local Emma agents** as A2A-compatible endpoints that other runtimes can call
+
+This is different from sub-agents. Sub-agents are private, in-process delegation inside Emma. A2A federation is for **cross-runtime interoperability**.
+
+**How it works:**
+
+1. A user enters an A2A endpoint URL
+2. Emma resolves likely agent card URLs, fetches the card, validates the JSON card payload, and stores the remote config
+3. The remote A2A agent becomes available inside Emma as an agent target
+4. When invoked, Emma streams the remote task/events, extracts visible text/artifacts, and returns the result inside the normal chat experience
+5. For published local agents, Emma exposes an A2A server endpoint and agent card so other clients can discover and call that agent
+
+**What the published A2A server can execute:**
+
+- Standard Emma custom agents
+- Remote A2A-backed agents
+- Snowflake Cortex agents
+
+**Implementation flow:**
+
+1. **Discovery**: Emma normalizes the input URL, tries direct and fallback card paths, then validates the returned card document
+2. **Authentication**: Remote A2A configs can use bearer or custom header auth
+3. **Invocation**: Emma creates a transport client, sends the user message/task, and streams task status plus artifact updates
+4. **Published serving**: Local agents are wrapped in an A2A executor and exposed with an agent card, skill metadata, and optional bearer auth
+5. **State continuity**: Emma keeps task/context identifiers and, when needed, remote context/task IDs so the next turn can continue the same remote task
+
+**Why it matters:**
+
+- Connect Emma to external agent ecosystems without rewriting them as native tools
+- Publish internal Emma agents to other A2A-capable platforms
+- Build mixed orchestration where Emma is both an A2A client and an A2A server
+
+---
+
+### Snowflake Intelligence Agents
+
+Emma can connect directly to **Snowflake Cortex Agents** and expose them as first-class Emma agents.
+
+These agents are useful when the main reasoning or data access should run inside Snowflake, close to governed enterprise data.
+
+**How it works:**
+
+1. Create an agent with Snowflake account, schema, Cortex agent name, and key-pair auth details
+2. Emma generates a Snowflake JWT on demand for each request
+3. Emma opens or continues a Snowflake Cortex thread
+4. The latest user message is sent to the Snowflake agent
+5. Emma streams back text deltas and rendered markdown tables into the chat UI
+
+**Execution flow:**
+
+1. **Configuration**: Store Snowflake account identifiers, database/schema, Cortex agent name, optional role, and private key credentials
+2. **Auth**: Emma signs a short-lived Snowflake JWT using the configured key pair
+3. **Threading**: Emma can create a Snowflake Cortex thread and keep `thread_id` plus `parent_message_id` metadata for multi-turn continuity
+4. **Streaming**: Snowflake SSE events are parsed so visible answer text and result tables stream back progressively
+5. **Presentation**: Table events are converted into GitHub-flavored markdown tables so they render naturally in chat
+
+**Why it matters:**
+
+- Bring governed warehouse-native intelligence into the same agent surface as LLM agents, MCP tools, and workflows
+- Keep long-running analytical reasoning inside Snowflake while Emma handles chat UX, sharing, and orchestration
+- Use Snowflake agents directly or publish them again through Emma's A2A server layer
+
+---
+
+### Emma Pilot Browser Copilot
+
+**Emma Pilot** is Emma's browser copilot for Chrome and Microsoft Edge. It turns the browser side panel into a browser-aware, agentic workspace that can read the active tab, reason over the page, and propose or execute browser actions.
+
+Emma Pilot is not just a chat widget. It is a **broker/orchestrator** on top of the Emma agent platform.
+
+**Core capabilities:**
+
+- Reads the active browser tab through structured DOM snapshots
+- Adds hybrid visual context with redacted viewport screenshots when the selected model supports vision
+- Uses the selected Emma agent's tools, knowledge, workflows, and sub-agents for deeper reasoning
+- Keeps browser control centralized in the Emma Pilot broker
+- Can continue automatically after safe browser actions until it reaches a user question or an approval boundary
+
+**How it works:**
+
+1. The extension authenticates against the signed-in Emma web session
+2. The side panel captures browser context from the active tab:
+   - forms and fields
+   - standalone editable controls
+   - actionable buttons and links
+   - focused element and selected text
+   - viewport and visual capture metadata
+3. Emma Pilot sends the user turn plus browser context to the broker API
+4. The broker decides whether to explain, analyze, navigate, or fill a form
+5. The broker can delegate reasoning to the selected Emma agent, but only Emma Pilot proposes browser actions
+6. Safe actions can auto-run; protected actions stay guarded
+7. After execution, Emma Pilot refreshes the page context and can continue the task automatically
+
+**Action model:**
+
+- **Safe actions**: highlight, scroll, ordinary field fill, simple selection, and similar non-destructive interactions
+- **Protected actions**: delete, save, update, commit, purchase, submit, or other high-impact mutations unless clearly requested by the user
+- **Sensitive fields**: passwords, secrets, and payment-related inputs require confirmation
+
+**Hybrid DOM + vision flow:**
+
+1. DOM snapshot remains the source of truth for stable `elementId` targeting
+2. An optional redacted screenshot gives the model layout awareness for icon-only controls, custom UIs, canvas-heavy apps, and cross-origin regions
+3. The broker uses the screenshot for spatial understanding and the DOM for precise field values and action grounding
+
+**Why it matters:**
+
+- Lets Emma operate real browser workflows with natural language
+- Keeps the active tab as the primary task context instead of drifting into detached chat answers
+- Reuses the same Emma agent platform primitives users already configure in the main app
+
+---
+
+### ContextX Knowledge System
+
+**ContextX** is Emma's knowledge ingestion and retrieval system. It turns files and URLs into reusable, structured knowledge groups that agents can query during chat.
+
+It is more than simple file upload. ContextX builds a versioned, retrieval-ready knowledge index with document structure, metadata, section graphs, contextual chunk summaries, section embeddings, chunk embeddings, image embeddings, and calibrated retrieval.
+
+**Architecture at a glance:**
+
+- **Storage model**: PostgreSQL is the source of truth for documents, versions, sections, chunks, images, and retrieval settings.
+- **Semantic retrieval**: `pgvector` stores dense embeddings for document metadata, sections, chunks, and image text.
+- **Lexical retrieval**: PostgreSQL full-text search is combined with `pg_trgm` similarity so multilingual and imperfect keyword matches still have a path.
+- **LLM stages**: LLMs are used selectively for parse/repair, metadata extraction, contextual chunk enrichment, and image understanding.
+- **Reliability model**: reingest and cancel operate on a pending version and preserve the last good active version until a new version is successfully finalized.
+
+**What gets indexed:**
+
+- **Document metadata**: title, summary-style metadata, and a metadata embedding used for document shortlisting.
+- **Sections**: heading path, summary, page span, and a section embedding used for hierarchical retrieval.
+- **Chunks**: chunk text plus contextual enrichment, overlap, and the main embedding searched at answer time.
+- **Images**: caption or extracted text, page references, and embeddings so screenshots/figures can be retrieved alongside text.
+
+#### Embedding + Ingestion Flow
+
+```mermaid
+flowchart TD
+  A["Upload / URL / Inline Markdown"] --> B["runIngestPipeline"]
+  B --> C["Extract file into markdown or page text"]
+  C --> D{"LLM parse / repair enabled?"}
+  D -->|Yes| E["Parse model rewrites into cleaner markdown"]
+  D -->|No| F["Use deterministic extracted markdown"]
+  E --> G["Normalize headings, pages, and links"]
+  F --> G
+  G --> H["Extract document metadata"]
+  H --> I["Build section graph"]
+  I --> J["Chunk content with overlap rules"]
+  J --> K["LLM context enrichment per chunk"]
+  I --> L["Prepare section embedding text"]
+  J --> M["Prepare chunk embedding text"]
+  G --> N["Prepare image OCR / caption text"]
+  H --> O["Embed metadata text"]
+  L --> P["Embed sections"]
+  M --> Q["Embed chunks"]
+  N --> R["Embed images"]
+  O --> S["Persist document row"]
+  P --> T["Persist section rows"]
+  Q --> U["Persist chunk rows"]
+  R --> V["Persist image rows"]
+  S --> W["Write version snapshot"]
+  T --> W
+  U --> W
+  V --> W
+  W --> X["Promote pending version to active version"]
+  X --> Y["Document remains ready for retrieval"]
+```
+
+**Ingestion notes:**
+
+- If the document is brand new, failure marks the document as `failed`.
+- If the document already has an active version, reingest failure or cancel only clears the pending processing state and keeps the live document `ready`.
+- Bulk ingest embeddings are computed in batches; only single query-time embeddings use the in-process LRU/TTL cache.
+
+#### Hierarchical Retrieval Flow
+
+```mermaid
+flowchart TD
+  A["User / Agent query"] --> B["Unicode-aware tokenization + conservative query expansion"]
+  B --> C["Embed query variants"]
+  C --> D["Document metadata retrieval"]
+  D --> D1["Lexical: tsvector + pg_trgm"]
+  D --> D2["Vector: pgvector metadata embedding"]
+  D1 --> E["Document shortlist"]
+  D2 --> E
+  E --> F["Section retrieval within shortlisted docs"]
+  F --> F1["Lexical: section heading / summary search"]
+  F --> F2["Vector: section embedding search"]
+  F1 --> G["Section shortlist"]
+  F2 --> G
+  G --> H["Chunk retrieval constrained to shortlisted sections"]
+  H --> H1["Lexical chunk search"]
+  H --> H2["Vector chunk search"]
+  G --> I{"No strong sections?"}
+  I -->|Yes| J["Fallback to doc-scoped chunk retrieval"]
+  I -->|No| K["Keep section-scoped chunk retrieval"]
+  J --> L["Fuse chunk candidates"]
+  K --> L
+  H1 --> L
+  H2 --> L
+  L --> M["Compute calibrated confidence score"]
+  M --> N{"Reranker configured?"}
+  N -->|Yes| O["LLM rerank on shortlisted chunks"]
+  N -->|No| P["Use calibrated score directly"]
+  O --> Q["Final top chunks"]
+  P --> Q
+  Q --> R["Attach inline previous / next neighbor context"]
+  Q --> S["Image retrieval inside matched docs"]
+  S --> S1["Image lexical + vector candidates"]
+  S1 --> S2["Rescore by section heading overlap + page proximity"]
+  R --> T["queryKnowledgeAsDocs / knowledge tool output"]
+  S2 --> T
+  T --> U["Grounded answer generation"]
+```
+
+**How the database participates:**
+
+- **`pgvector`** is used for cosine-similarity search over metadata, sections, chunks, and images.
+- **PostgreSQL full-text search** remains the precision-oriented lexical arm.
+- **`pg_trgm`** adds fuzzy similarity and multilingual fallback when stemming or exact tokenization would miss.
+- The retriever merges these signals into a calibrated confidence score instead of using only relative rank.
+
+**Ranking behavior:**
+
+- Retrieval is hierarchical: **document shortlist -> section shortlist -> chunk retrieval -> optional rerank**.
+- Recall depth adapts to the query size instead of using one fixed candidate count.
+- Neighbor chunks are no longer separate zero-score hits; they are attached as inline context to the winning chunks.
+- Image matches are tied back to the same section/page neighborhood so diagrams and screenshots stay aligned with the textual evidence.
+
+**How it works in the product:**
+
+- Knowledge is grouped into **ContextX groups**
+- Groups define embedding model, reranker, threshold, and linked source scopes
+- Agents can use those groups as private knowledge memory
+- The system can also expose knowledge groups through MCP-style access patterns for broader tool use
+
+**Why it matters:**
+
+- Produces cleaner retrieval than naive chunk-and-embed pipelines
+- Preserves structure from long documents instead of flattening everything into raw text blobs
+- Keeps live knowledge available during reingest instead of taking good documents offline
+- Gives Emma agents a durable knowledge layer for company docs, product docs, SOPs, manuals, and internal research
+
+---
+
 ### Visual Workflows
 
 Build node-based workflows that become callable tools in chat.
@@ -327,9 +579,10 @@ Step-by-step setup guides for specific topics:
 - [x] File Upload & Storage (Vercel Blob)
 - [x] Image Generation
 - [x] Agent-to-Agent (Sub-Agents)
-- [ ] Collaborative Document Editing (user & assistant co-editing, like OpenAI Canvas)
-- [ ] RAG (Retrieval-Augmented Generation)
-- [ ] Web-based Compute (via [WebContainers](https://webcontainers.io))
+- [x] A2A Federation
+- [x] Snowflake Intelligence Agents
+- [x] Emma Pilot Browser Copilot
+- [x] ContextX Knowledge System
 
 ---
 

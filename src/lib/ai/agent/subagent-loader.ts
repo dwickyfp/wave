@@ -1,24 +1,35 @@
 import {
-  ToolLoopAgent,
-  tool,
-  readUIMessageStream,
-  stepCountIs,
-  UIMessageStreamWriter,
-  Tool,
-} from "ai";
-import { z } from "zod";
-import { Agent } from "app-types/agent";
-import { SubAgent } from "app-types/subagent";
-import { ChatModel } from "app-types/chat";
-import { getDbModel } from "lib/ai/provider-factory";
-import {
+  loadAppDefaultTools,
   loadMcpTools,
   loadWorkFlowTools,
-  loadAppDefaultTools,
 } from "@/app/api/chat/shared.chat";
-import globalLogger from "logger";
+import {
+  Tool,
+  ToolLoopAgent,
+  UIMessageStreamWriter,
+  readUIMessageStream,
+  stepCountIs,
+  tool,
+} from "ai";
+import type { AdminDashboardUsageContext } from "app-types/admin-dashboard";
+import { Agent } from "app-types/agent";
+import { ChatModel } from "app-types/chat";
+import type { SkillSummary } from "app-types/skill";
+import { SubAgent } from "app-types/subagent";
 import { colorize } from "consola/utils";
+import {
+  buildActiveSkillUsageEvents,
+  resolveActiveAgentSkills,
+} from "lib/ai/agent/skill-activation";
+import { getDbModel } from "lib/ai/provider-factory";
+import {
+  LOAD_SKILL_TOOL_NAME,
+  createLoadSkillTool,
+} from "lib/ai/tools/skill-tool";
+import { usageEventRepository } from "lib/db/repository";
 import { errorToString, safeJSONParse } from "lib/utils";
+import globalLogger from "logger";
+import { z } from "zod";
 import {
   buildSubAgentToolName,
   extractSubAgentNameFromToolName,
@@ -125,6 +136,13 @@ async function waitForRetryDelay(delayMs: number, signal?: AbortSignal) {
   });
 }
 
+function mergeInstructions(...sections: Array<string | false | undefined>) {
+  return sections
+    .map((section) => (typeof section === "string" ? section.trim() : ""))
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 /**
  * Convert the agent's subagents into Vercel AI SDK tool definitions.
  * Each subagent becomes a streaming tool that the parent agent can delegate to.
@@ -137,6 +155,10 @@ export async function loadSubAgentTools(
   dataStream: UIMessageStreamWriter,
   abortSignal: AbortSignal,
   chatModel: ChatModel,
+  attachedSkills: Array<
+    Pick<SkillSummary, "id" | "title" | "description" | "instructions">
+  > = [],
+  usageContext?: AdminDashboardUsageContext,
 ): Promise<Record<string, Tool>> {
   const subAgents = agent.subAgents ?? [];
   const enabledSubAgents = subAgents.filter((sa) => sa.enabled);
@@ -152,10 +174,15 @@ export async function loadSubAgentTools(
 
         // Load subagent's tools using its configured mentions
         const [mcpTools, workflowTools, appDefaultTools] = await Promise.all([
-          loadMcpTools({ mentions: subagent.tools, userId }),
+          loadMcpTools({
+            mentions: subagent.tools,
+            userId,
+            usageContext,
+          }),
           loadWorkFlowTools({
             mentions: subagent.tools,
             dataStream,
+            usageContext,
           }),
           loadAppDefaultTools({ mentions: subagent.tools }),
         ]);
@@ -164,6 +191,14 @@ export async function loadSubAgentTools(
           ...mcpTools,
           ...workflowTools,
           ...appDefaultTools,
+          ...(attachedSkills.length
+            ? {
+                [LOAD_SKILL_TOOL_NAME]: createLoadSkillTool(
+                  attachedSkills,
+                  usageContext,
+                ),
+              }
+            : {}),
         };
 
         const dbModelResult = await getDbModel(chatModel);
@@ -179,14 +214,6 @@ export async function loadSubAgentTools(
           `You are a specialized assistant called "${subagent.name}". Complete the given task autonomously and thoroughly.
 
 When you have finished, write a clear summary of your findings as your final response. This summary will be returned to the parent agent, so include all relevant information.`;
-
-        const subAgentLoopAgent = new ToolLoopAgent({
-          model: dbModelResult.model,
-          instructions,
-          tools: subAgentTools,
-          stopWhen: stepCountIs(10),
-          maxRetries: 4,
-        });
 
         const description =
           subagent.description ||
@@ -206,6 +233,31 @@ When you have finished, write a clear summary of your findings as your final res
             { abortSignal: toolAbortSignal },
           ) {
             const effectiveAbortSignal = toolAbortSignal ?? abortSignal;
+            const activeSkillResolution = resolveActiveAgentSkills({
+              skills: attachedSkills,
+              taskText: task,
+            });
+            if (activeSkillResolution.activeSkills.length && usageContext) {
+              void usageEventRepository
+                .recordEvents(
+                  buildActiveSkillUsageEvents(
+                    activeSkillResolution.activeSkills,
+                    usageContext,
+                  ),
+                )
+                .catch(() => {});
+            }
+            const subAgentLoopAgent = new ToolLoopAgent({
+              model: dbModelResult.model,
+              instructions: mergeInstructions(
+                instructions,
+                activeSkillResolution.activeSkillPrompt,
+              ),
+              tools: subAgentTools,
+              stopWhen: stepCountIs(10),
+              maxRetries: 4,
+            });
+
             logger.info(
               `Delegating to subagent "${subagent.name}": ${task.slice(0, 100)}...`,
             );

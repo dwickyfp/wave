@@ -5,6 +5,7 @@ import {
 import { Tool } from "ai";
 import { tag } from "lib/tag";
 import { z } from "zod";
+import type { SharedTeamSummary, TeamAccessSource } from "./team";
 
 export const MCPRemoteConfigZodSchema = z.object({
   url: z.string().url().describe("The URL of the SSE endpoint"),
@@ -39,6 +40,9 @@ export type MCPToolInfo = {
   };
 };
 
+export const McpPublishAuthModeZodSchema = z.enum(["none", "bearer"]);
+export type McpPublishAuthMode = z.infer<typeof McpPublishAuthModeZodSchema>;
+
 export type MCPServerInfo = {
   id: string;
   name: string;
@@ -50,11 +54,16 @@ export type MCPServerInfo = {
   status: "connected" | "disconnected" | "loading" | "authorizing";
   lastConnectionStatus?: MCPConnectionStatus | null;
   toolInfo: MCPToolInfo[];
+  publishEnabled?: boolean;
+  publishAuthMode?: McpPublishAuthMode;
+  publishApiKeyPreview?: string | null;
   createdAt?: Date | string;
   updatedAt?: Date | string;
   userName?: string | null;
   userAvatar?: string | null;
   description?: string; // For ShareableCard compatibility
+  accessSource?: TeamAccessSource;
+  sharedTeams?: SharedTeamSummary[];
   icon?: {
     value?: string;
     style?: {
@@ -69,6 +78,10 @@ export type McpServerInsert = {
   id?: string;
   userId: string;
   visibility?: "public" | "private";
+  publishEnabled?: boolean;
+  publishAuthMode?: McpPublishAuthMode;
+  publishApiKeyHash?: string | null;
+  publishApiKeyPreview?: string | null;
 };
 export type MCPConnectionStatus = "connected" | "error";
 
@@ -76,12 +89,42 @@ export type McpServerSelect = {
   name: string;
   config: MCPServerConfig;
   id: string;
+  enabled?: boolean;
   userId: string;
   visibility: "public" | "private";
   toolInfo?: MCPToolInfo[] | null;
   toolInfoUpdatedAt?: Date | null;
   lastConnectionStatus?: MCPConnectionStatus | null;
+  publishEnabled?: boolean;
+  publishAuthMode?: McpPublishAuthMode;
+  publishApiKeyHash?: string | null;
+  publishApiKeyPreview?: string | null;
+  accessSource?: TeamAccessSource;
+  sharedTeams?: SharedTeamSummary[];
 };
+
+export type MCPServerDetail = MCPServerInfo & {
+  canManage: boolean;
+  isOwner: boolean;
+  publishedUrl?: string;
+};
+
+export const McpServerPublishUpdateZodSchema = z.object({
+  enabled: z.boolean(),
+  authMode: McpPublishAuthModeZodSchema,
+});
+
+export type McpServerPublishUpdate = z.infer<
+  typeof McpServerPublishUpdateZodSchema
+>;
+
+export const McpServerPublishKeyActionZodSchema = z.object({
+  action: z.enum(["generate", "revoke"]),
+});
+
+export type McpServerPublishKeyAction = z.infer<
+  typeof McpServerPublishKeyActionZodSchema
+>;
 
 export type VercelAIMcpTool = Tool & {
   _mcpServerName: string;
@@ -104,6 +147,18 @@ export interface MCPRepository {
   updateConnectionStatus(
     id: string,
     status: MCPConnectionStatus,
+  ): Promise<void>;
+  updatePublishState(
+    id: string,
+    input: {
+      enabled: boolean;
+      authMode: McpPublishAuthMode;
+    },
+  ): Promise<void>;
+  setPublishApiKey(
+    id: string,
+    keyHash: string | null,
+    keyPreview: string | null,
   ): Promise<void>;
 }
 

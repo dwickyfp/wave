@@ -31,6 +31,23 @@ export const DeleteUserSchema = z.object({
   userId: z.uuid("Invalid user ID"),
 });
 
+export const DeleteUsersSchema = z.object({
+  userIds: z.preprocess(
+    (value) => {
+      if (typeof value !== "string") {
+        return value;
+      }
+
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    },
+    z.array(z.uuid("Invalid user ID")).min(1, "Select at least one user"),
+  ),
+});
+
 export const UpdateUserPasswordSchema = z
   .object({
     userId: z.string().uuid("Invalid user ID"),
@@ -60,6 +77,11 @@ export type UpdateUserRoleActionState = ActionState & {
 
 export type DeleteUserActionState = ActionState & {
   redirect?: string;
+};
+
+export type DeleteUsersActionState = ActionState & {
+  deletedCount?: number;
+  failedCount?: number;
 };
 
 export type UpdateUserActionState = ActionState & {

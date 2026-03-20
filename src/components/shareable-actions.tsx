@@ -21,6 +21,8 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { WriteIcon } from "ui/write-icon";
 import { useMemo } from "react";
+import type { TeamResourceType } from "app-types/team";
+import { ResourceTeamShareDialog } from "./teams/resource-team-share-dialog";
 
 export type Visibility = "private" | "public" | "readonly";
 
@@ -66,10 +68,27 @@ const VISIBILITY_CONFIG = {
       description: "MCP.featuredDescription",
     },
   },
+  skill: {
+    private: {
+      label: "Private",
+      description: "Only you can access this skill",
+      translate: false,
+    },
+    readonly: {
+      label: "Read-only",
+      description: "Others can use but cannot edit this skill",
+      translate: false,
+    },
+    public: {
+      label: "Public",
+      description: "Others can access and edit this skill",
+      translate: false,
+    },
+  },
 } as const;
 
 interface ShareableActionsProps {
-  type: "agent" | "workflow" | "mcp";
+  type: "agent" | "workflow" | "mcp" | "skill";
   visibility?: Visibility;
   isOwner: boolean;
   canChangeVisibility?: boolean;
@@ -83,6 +102,13 @@ interface ShareableActionsProps {
   isDeleteLoading?: boolean;
   renderActions?: () => React.ReactNode;
   disabled?: boolean;
+  editTestId?: string;
+  deleteTestId?: string;
+  teamShare?: {
+    resourceType: TeamResourceType;
+    resourceId: string;
+    resourceName: string;
+  };
 }
 
 export function ShareableActions({
@@ -100,6 +126,9 @@ export function ShareableActions({
   isBookmarkToggleLoading = false,
   isDeleteLoading = false,
   disabled = false,
+  editTestId,
+  deleteTestId,
+  teamShare,
 }: ShareableActionsProps) {
   const t = useTranslations();
   const router = useRouter();
@@ -171,9 +200,15 @@ export function ShareableActions({
                   >
                     {visibilityItem.icon}
                     <div className="flex flex-col px-4 gap-1">
-                      <p>{t(visibilityItem.label)}</p>
+                      <p>
+                        {visibilityItem.translate === false
+                          ? visibilityItem.label
+                          : t(visibilityItem.label)}
+                      </p>
                       <p className="text-xs text-muted-foreground">
-                        {t(visibilityItem.description)}
+                        {visibilityItem.translate === false
+                          ? visibilityItem.description
+                          : t(visibilityItem.description)}
                       </p>
                     </div>
                   </DropdownMenuItem>
@@ -235,6 +270,7 @@ export function ShareableActions({
               size="icon"
               className="size-8 text-muted-foreground hover:text-foreground"
               disabled={isAnyLoading || disabled}
+              data-testid={editTestId}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -251,6 +287,14 @@ export function ShareableActions({
       {/* Custom Actions */}
       {isOwner && renderActions && renderActions()}
 
+      {isOwner && teamShare ? (
+        <ResourceTeamShareDialog
+          resourceType={teamShare.resourceType}
+          resourceId={teamShare.resourceId}
+          resourceName={teamShare.resourceName}
+        />
+      ) : null}
+
       {/* Delete Action */}
       {isOwner && onDelete && (
         <Tooltip>
@@ -260,6 +304,7 @@ export function ShareableActions({
               size="icon"
               className="size-8 text-muted-foreground hover:text-destructive"
               disabled={isAnyLoading || disabled}
+              data-testid={deleteTestId}
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();

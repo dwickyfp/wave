@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import { ProviderConfigTab } from "./provider-config-tab";
 import { StorageSettingsTab } from "./storage-settings-tab";
 import { OtherConfigsTab } from "./other-configs-tab";
-import { ContextXModelButton } from "./contextx-model-button";
+import { EmmaModelSettingsButton } from "./emma-model-settings-button";
 
 export function SettingsContent() {
   const [importing, setImporting] = useState(false);
@@ -93,8 +93,8 @@ export function SettingsContent() {
           </TabsTrigger>
         </TabsList>
 
-        <div className="flex items-center gap-2">
-          <ContextXModelButton />
+        <div className="flex items-start gap-2">
+          <EmmaModelSettingsButton />
           <Button
             variant="outline"
             size="sm"

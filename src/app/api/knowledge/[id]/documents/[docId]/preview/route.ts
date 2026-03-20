@@ -1,6 +1,12 @@
 import { getSession } from "auth/server";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import { inferCitationPageFromMarkdown } from "lib/knowledge/citation-page-resolution";
+import { withKnowledgeImageAssetUrl } from "lib/knowledge/document-images";
+import {
+  getDocumentVersionContent,
+  listDocumentVersions,
+} from "lib/knowledge/versioning";
 import { NextRequest, NextResponse } from "next/server";
 
 interface Params {
@@ -22,6 +28,65 @@ const FILE_MIME_TYPES: Record<string, string> = {
   webp: "image/webp",
 };
 
+function parseOptionalPage(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function resolveCitationPageBounds(input: {
+  markdown?: string | null;
+  excerpt?: string | null;
+  sectionHeading?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+}): { pageStart: number | null; pageEnd: number | null } {
+  const existingPageStart = input.pageStart ?? null;
+  const existingPageEnd = input.pageEnd ?? null;
+
+  if (!input.markdown?.trim()) {
+    return { pageStart: existingPageStart, pageEnd: existingPageEnd };
+  }
+
+  const inference = inferCitationPageFromMarkdown({
+    markdown: input.markdown,
+    snippets: [input.sectionHeading, input.excerpt].filter(
+      (value): value is string => Boolean(value?.trim()),
+    ),
+  });
+
+  if (!inference) {
+    return { pageStart: existingPageStart, pageEnd: existingPageEnd };
+  }
+
+  if (existingPageStart == null || existingPageEnd == null) {
+    return {
+      pageStart: inference.pageNumber,
+      pageEnd: inference.pageNumber,
+    };
+  }
+
+  if (existingPageStart !== existingPageEnd) {
+    return {
+      pageStart: inference.pageNumber,
+      pageEnd: inference.pageNumber,
+    };
+  }
+
+  if (existingPageStart === inference.pageNumber) {
+    return { pageStart: existingPageStart, pageEnd: existingPageEnd };
+  }
+
+  if (inference.usedLegalReference || inference.score >= 100) {
+    return {
+      pageStart: inference.pageNumber,
+      pageEnd: inference.pageNumber,
+    };
+  }
+
+  return { pageStart: existingPageStart, pageEnd: existingPageEnd };
+}
+
 /**
  * GET /api/knowledge/[id]/documents/[docId]/preview
  *
@@ -34,6 +99,16 @@ export async function GET(_req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id: groupId, docId } = await params;
+  const requestedVersionId = _req.nextUrl.searchParams.get("versionId");
+  const citationExcerpt = _req.nextUrl.searchParams.get("excerpt");
+  const citationSectionHeading =
+    _req.nextUrl.searchParams.get("sectionHeading");
+  const citationPageStart = parseOptionalPage(
+    _req.nextUrl.searchParams.get("pageStart"),
+  );
+  const citationPageEnd = parseOptionalPage(
+    _req.nextUrl.searchParams.get("pageEnd"),
+  );
 
   // Verify group access
   const group = await knowledgeRepository.selectGroupById(
@@ -44,6 +119,33 @@ export async function GET(_req: NextRequest, { params }: Params) {
 
   const doc = await knowledgeRepository.selectDocumentById(docId);
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const versions = await listDocumentVersions(docId);
+  const activeVersion = versions.find((version) => version.isActive) ?? null;
+  const requestedVersion = requestedVersionId
+    ? (versions.find((version) => version.id === requestedVersionId) ?? null)
+    : null;
+  if (requestedVersionId && !requestedVersion) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  const resolvedVersion = requestedVersion ?? activeVersion;
+  const binaryMatchesRequestedVersion =
+    !requestedVersionId ||
+    requestedVersionId === activeVersion?.id ||
+    requestedVersionId === doc.activeVersionId;
+  const fallbackWarning =
+    requestedVersionId && !binaryMatchesRequestedVersion
+      ? "Showing the current document binary because historical file snapshots are not stored separately for this version."
+      : null;
+  const activeImages = resolvedVersion?.id
+    ? await knowledgeRepository.getDocumentImagesByVersion(
+        docId,
+        resolvedVersion.id,
+      )
+    : await knowledgeRepository.getDocumentImages(docId);
+  const versionContent =
+    resolvedVersion?.id && resolvedVersion.id !== activeVersion?.id
+      ? await getDocumentVersionContent(docId, resolvedVersion.id)
+      : null;
 
   let sourceMeta: {
     id: string;
@@ -71,6 +173,15 @@ export async function GET(_req: NextRequest, { params }: Params) {
     doc.fileType === "md" ||
     doc.fileType === "csv" ||
     doc.fileType === "html";
+  const resolvedMarkdownContent =
+    versionContent?.markdownContent ?? doc.markdownContent ?? null;
+  const resolvedCitationPages = resolveCitationPageBounds({
+    markdown: resolvedMarkdownContent,
+    excerpt: citationExcerpt,
+    sectionHeading: citationSectionHeading,
+    pageStart: citationPageStart,
+    pageEnd: citationPageEnd,
+  });
 
   // URL doc (no storage path)
   if (!doc.storagePath) {
@@ -91,12 +202,29 @@ export async function GET(_req: NextRequest, { params }: Params) {
         fileType: doc.fileType,
         fileSize: doc.fileSize,
         mimeType,
+        activeVersionId: doc.activeVersionId ?? null,
+        latestVersionNumber: doc.latestVersionNumber ?? 0,
+        embeddingTokenCount: doc.embeddingTokenCount ?? 0,
+        processingState: doc.processingState ?? null,
       },
+      assetUrl: null,
       sourceUrl: doc.sourceUrl ?? null,
       previewUrl: null,
-      content: null,
-      markdownContent: doc.markdownContent ?? null,
+      content: versionContent?.markdownContent ?? doc.markdownContent ?? null,
+      markdownAvailable:
+        Boolean(activeVersion?.id) || Boolean(doc.markdownContent),
       isUrlOnly: true,
+      requestedVersionId,
+      resolvedVersionId: resolvedVersion?.id ?? doc.activeVersionId ?? null,
+      resolvedCitationPageStart: resolvedCitationPages.pageStart,
+      resolvedCitationPageEnd: resolvedCitationPages.pageEnd,
+      binaryMatchesRequestedVersion,
+      fallbackWarning,
+      activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
+      activeVersionNumber:
+        activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,
+      versions,
+      images: withKnowledgeImageAssetUrl(groupId, activeImages),
     });
   }
 
@@ -141,11 +269,29 @@ export async function GET(_req: NextRequest, { params }: Params) {
         fileType: doc.fileType,
         fileSize: doc.fileSize,
         mimeType,
+        activeVersionId: doc.activeVersionId ?? null,
+        latestVersionNumber: doc.latestVersionNumber ?? 0,
+        embeddingTokenCount: doc.embeddingTokenCount ?? 0,
+        processingState: doc.processingState ?? null,
       },
+      assetUrl: `/api/knowledge/${groupId}/documents/${docId}/asset${resolvedVersion?.id ? `?versionId=${encodeURIComponent(resolvedVersion.id)}` : ""}`,
       previewUrl,
-      content,
-      markdownContent: doc.markdownContent ?? null,
+      sourceUrl: doc.sourceUrl ?? null,
+      content: versionContent?.markdownContent ?? content,
+      markdownAvailable:
+        Boolean(activeVersion?.id) || Boolean(doc.markdownContent),
       isUrlOnly: false,
+      requestedVersionId,
+      resolvedVersionId: resolvedVersion?.id ?? doc.activeVersionId ?? null,
+      resolvedCitationPageStart: resolvedCitationPages.pageStart,
+      resolvedCitationPageEnd: resolvedCitationPages.pageEnd,
+      binaryMatchesRequestedVersion,
+      fallbackWarning,
+      activeVersionId: activeVersion?.id ?? doc.activeVersionId ?? null,
+      activeVersionNumber:
+        activeVersion?.versionNumber ?? doc.latestVersionNumber ?? null,
+      versions,
+      images: withKnowledgeImageAssetUrl(groupId, activeImages),
     });
   } catch {
     return NextResponse.json(

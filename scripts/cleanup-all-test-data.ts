@@ -49,7 +49,7 @@ async function cleanupAllTestData() {
     // Also clean up any remaining legacy test users by exact email match
     const legacyTestEmails = [
       "admin@testuser.com",
-      "editor@testuser.com",
+      "creator@testuser.com",
       "user@testuser.com",
     ];
 

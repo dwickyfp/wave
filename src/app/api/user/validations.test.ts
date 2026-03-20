@@ -3,6 +3,7 @@ import {
   UpdateUserDetailsSchema,
   UpdateUserRoleSchema,
   DeleteUserSchema,
+  DeleteUsersSchema,
   UpdateUserPasswordSchema,
   UpdateUserPasswordError,
 } from "./validations";
@@ -139,7 +140,7 @@ describe("User Validations", () => {
     });
 
     it("should accept all valid user roles", () => {
-      const roles = [USER_ROLES.USER, USER_ROLES.EDITOR, USER_ROLES.ADMIN];
+      const roles = [USER_ROLES.USER, USER_ROLES.CREATOR, USER_ROLES.ADMIN];
 
       for (const role of roles) {
         const validData = {
@@ -206,6 +207,48 @@ describe("User Validations", () => {
 
       const result = DeleteUserSchema.safeParse(invalidData);
       expect(result.success).toBe(false);
+    });
+  });
+
+  describe("DeleteUsersSchema", () => {
+    it("should validate a JSON array of user ids", () => {
+      const validData = {
+        userIds: JSON.stringify([
+          "123e4567-e89b-12d3-a456-426614174000",
+          "550e8400-e29b-41d4-a716-446655440000",
+        ]),
+      };
+
+      const result = DeleteUsersSchema.safeParse(validData);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.userIds).toEqual([
+          "123e4567-e89b-12d3-a456-426614174000",
+          "550e8400-e29b-41d4-a716-446655440000",
+        ]);
+      }
+    });
+
+    it("should reject an empty user id array", () => {
+      const result = DeleteUsersSchema.safeParse({
+        userIds: JSON.stringify([]),
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toBe("Select at least one user");
+      }
+    });
+
+    it("should reject invalid user ids in the JSON array", () => {
+      const result = DeleteUsersSchema.safeParse({
+        userIds: JSON.stringify(["not-a-uuid"]),
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toBe("Invalid user ID");
+      }
     });
   });
 

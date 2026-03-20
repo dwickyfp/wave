@@ -66,7 +66,7 @@ export class RedisCache implements Cache {
 
   async clear(): Promise<void> {
     if (this.keyPrefix) {
-      const keys = await this.redis.keys(this.keyPrefix + "*");
+      const keys = await this.scanKeys(this.keyPrefix + "*");
       if (keys.length > 0) {
         await this.redis.del(...keys);
       }
@@ -78,7 +78,7 @@ export class RedisCache implements Cache {
   async getAll(): Promise<Map<string, unknown>> {
     const result = new Map<string, unknown>();
     const pattern = this.keyPrefix ? this.keyPrefix + "*" : "*";
-    const keys = await this.redis.keys(pattern);
+    const keys = await this.scanKeys(pattern);
 
     if (keys.length === 0) return result;
 
@@ -103,5 +103,30 @@ export class RedisCache implements Cache {
 
   async disconnect(): Promise<void> {
     this.redis.disconnect();
+  }
+
+  async ping(): Promise<string> {
+    return this.redis.ping();
+  }
+
+  private async scanKeys(pattern: string): Promise<string[]> {
+    const keys: string[] = [];
+    let cursor = "0";
+
+    do {
+      const [nextCursor, batch] = await this.redis.scan(
+        cursor,
+        "MATCH",
+        pattern,
+        "COUNT",
+        100,
+      );
+      cursor = nextCursor;
+      if (batch.length > 0) {
+        keys.push(...batch);
+      }
+    } while (cursor !== "0");
+
+    return keys;
   }
 }

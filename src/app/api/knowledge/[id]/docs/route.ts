@@ -13,7 +13,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
-  const { query, tokens } = await req.json();
+  const { query, tokens, issuer, ticker, page, note, strictEntityMatch } =
+    await req.json();
 
   if (!query || typeof query !== "string") {
     return NextResponse.json({ error: "query is required" }, { status: 400 });
@@ -24,6 +25,11 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   const results = await queryKnowledgeAsDocs(group, query, {
     tokens: tokens ?? 10000,
+    issuer,
+    ticker,
+    page,
+    note,
+    strictEntityMatch,
     resultMode: "matched-sections",
     maxDocs: 8,
     userId: session.user.id,

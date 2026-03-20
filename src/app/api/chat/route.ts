@@ -1,8 +1,8 @@
 import {
   ModelMessage,
   Tool,
-  consumeStream,
   UIMessage,
+  consumeStream,
   createUIMessageStream,
   createUIMessageStreamResponse,
   smoothStream,
@@ -14,19 +14,23 @@ import { getDbModel } from "lib/ai/provider-factory";
 
 import {
   ChatContextPressureBreakdown,
+  ChatKnowledgeCitation,
+  ChatKnowledgeSource,
   ChatMention,
   ChatMetadata,
   ChatThreadCompactionCheckpoint,
   ChatUsage,
   chatApiSchemaRequestBodySchema,
 } from "app-types/chat";
+import { McpServerCustomizationsPrompt } from "app-types/mcp";
 import {
-  agentRepository,
   a2aAgentRepository,
+  agentRepository,
   chatRepository,
   knowledgeRepository,
   settingsRepository,
   snowflakeAgentRepository,
+  usageEventRepository,
 } from "lib/db/repository";
 import globalLogger from "logger";
 
@@ -34,44 +38,79 @@ import { safe } from "ts-safe";
 
 import { getSession } from "auth/server";
 import { colorize } from "consola/utils";
+import { streamA2AAgentResponse } from "lib/a2a/client";
+import { resolveAgentPersonalizationPrompt } from "lib/ai/agent/personalization";
 import {
   buildWaveAgentSystemPrompt,
   loadWaveAgentBoundTools,
 } from "lib/ai/agent/runtime";
-import { ImageToolName } from "lib/ai/tools";
-import { createDbImageTool } from "lib/ai/tools/image";
 import {
-  queryKnowledgeAsDocs,
-  formatDocsAsText,
-} from "lib/knowledge/retriever";
+  buildActiveSkillUsageEvents,
+  resolveActiveAgentSkills,
+} from "lib/ai/agent/skill-activation";
+import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
 import {
-  allocateSequentialKnowledgeTokens,
-  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
-  estimateKnowledgePromptTokens,
-} from "lib/knowledge/token-budget";
-import {
-  type SnowflakeCortexMessage,
-  callSnowflakeCortexStream,
-  createSnowflakeThread,
-} from "lib/snowflake/client";
-import { streamA2AAgentResponse } from "lib/a2a/client";
-import { generateUUID } from "lib/utils";
-import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
-import { shouldSendToolDefinitionsToProvider } from "lib/ai/provider-compatibility";
-import {
-  buildCompactionAssembly,
-  buildChatStreamSeedMessages,
-  collectUsedToolNamesFromModelMessages,
   CONTEXT_COMPACTION_HARD_ERROR_MESSAGE,
   CONTEXT_COMPACTION_HARD_RATIO,
   CONTEXT_COMPACTION_TARGET_RATIO,
   CONTEXT_COMPACTION_TRIGGER_RATIO,
+  buildChatStreamSeedMessages,
+  buildCompactionAssembly,
+  collectUsedToolNamesFromModelMessages,
   extractAttachmentPreviewText,
   generateCompactionCheckpoint,
   stripAttachmentPreviewParts,
   stripAttachmentPreviewPartsFromMessages,
 } from "lib/ai/chat-compaction";
 import { updateThreadCompactionState } from "lib/ai/chat-compaction-background";
+import {
+  type ChatConcurrencyLease,
+  acquireChatConcurrencyLease,
+} from "lib/ai/chat-concurrency";
+import { buildKnowledgeToolCitationSystemPrompt } from "lib/ai/prompts";
+import { shouldSendToolDefinitionsToProvider } from "lib/ai/provider-compatibility";
+import { ImageToolName } from "lib/ai/tools";
+import { createDbImageTool } from "lib/ai/tools/image";
+import { buildUsageCostSnapshot } from "lib/ai/usage-cost";
+import {
+  applyChatAttachmentsToMessage,
+  ensureUserChatThread,
+} from "lib/chat/chat-session";
+import {
+  applyFinalizedAssistantText,
+  buildKnowledgeCitationKey,
+  buildKnowledgeCitations,
+  buildKnowledgeSourcesFromCitations,
+  enforceKnowledgeCitationCoverage,
+  formatKnowledgeEvidencePack,
+  normalizeKnowledgeCitationLayout,
+  stripAssistantKnowledgeCitationLinks,
+  validateKnowledgeCitationText,
+} from "lib/chat/knowledge-citations";
+import {
+  buildChatKnowledgeImages,
+  buildChatKnowledgeSources,
+  dedupeChatKnowledgeImages,
+  dedupeChatKnowledgeSources,
+  mergeChatKnowledgeMetadata,
+} from "lib/chat/knowledge-sources";
+import {
+  formatDocsAsText,
+  queryKnowledgeAsDocs,
+} from "lib/knowledge/retriever";
+import type { DocRetrievalResult } from "lib/knowledge/retriever";
+import {
+  CHAT_KNOWLEDGE_CONTEXT_TOKENS,
+  allocateSequentialKnowledgeTokens,
+  estimateKnowledgePromptTokens,
+} from "lib/knowledge/token-budget";
+import { recordSelfLearningSignal } from "lib/self-learning/service";
+import {
+  type SnowflakeCortexMessage,
+  callSnowflakeCortexStream,
+  createSnowflakeThread,
+} from "lib/snowflake/client";
+import { generateUUID } from "lib/utils";
 import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
@@ -84,15 +123,22 @@ import {
   handleError,
   manualToolExecuteByLastMessage,
 } from "./shared.chat";
-import { appendAbortedResponseNotice } from "lib/ai/append-aborted-response-notice";
-import {
-  applyChatAttachmentsToMessage,
-  ensureUserChatThread,
-} from "lib/chat/chat-session";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
 });
+
+function logChatPersistenceError(input: {
+  flow: "snowflake" | "a2a" | "chat";
+  threadId: string;
+  messageId: string;
+  error: unknown;
+}) {
+  logger.error(
+    `Failed to persist ${input.flow} chat message ${input.messageId} for thread ${input.threadId}`,
+    input.error,
+  );
+}
 
 const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
   CHAT_KNOWLEDGE_CONTEXT_TOKENS,
@@ -100,6 +146,40 @@ const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
   1200,
   0,
 ];
+
+type RetrievedKnowledgeGroup = {
+  groupId: string;
+  groupName: string;
+  docs: DocRetrievalResult[];
+};
+
+type FinalizedKnowledgeCitationState = {
+  finalizedText: string;
+  citations: ChatKnowledgeCitation[];
+  repaired: boolean;
+};
+
+function mergeRetrievedKnowledgeGroups(
+  groups: RetrievedKnowledgeGroup[],
+): RetrievedKnowledgeGroup[] {
+  const merged = new Map<string, RetrievedKnowledgeGroup>();
+
+  for (const group of groups) {
+    const existing = merged.get(group.groupId);
+    if (existing) {
+      existing.docs.push(...group.docs);
+      continue;
+    }
+
+    merged.set(group.groupId, {
+      groupId: group.groupId,
+      groupName: group.groupName,
+      docs: [...group.docs],
+    });
+  }
+
+  return Array.from(merged.values());
+}
 
 function buildCompactionFailureMessage(input: {
   failureCode?: string;
@@ -129,6 +209,12 @@ function buildCompactionFailureMessage(input: {
 }
 
 export async function POST(request: Request) {
+  let chatConcurrencyLease: ChatConcurrencyLease | null = null;
+  const releaseChatConcurrencyLease = async () => {
+    await chatConcurrencyLease?.release();
+    chatConcurrencyLease = null;
+  };
+
   try {
     const json = await request.json();
 
@@ -137,6 +223,28 @@ export async function POST(request: Request) {
     if (!session?.user.id) {
       return new Response("Unauthorized", { status: 401 });
     }
+
+    const concurrencyResult = await acquireChatConcurrencyLease({
+      userId: session.user.id,
+    });
+    if (!concurrencyResult.ok) {
+      return Response.json(
+        {
+          message: concurrencyResult.message,
+          code: concurrencyResult.code,
+        },
+        { status: concurrencyResult.status },
+      );
+    }
+    chatConcurrencyLease = concurrencyResult.lease;
+    request.signal.addEventListener(
+      "abort",
+      () => {
+        void chatConcurrencyLease?.release();
+      },
+      { once: true },
+    );
+
     const {
       id,
       message,
@@ -151,6 +259,7 @@ export async function POST(request: Request) {
 
     const dbModelResult = await getDbModel(chatModel!);
     if (!dbModelResult) {
+      await releaseChatConcurrencyLease();
       return Response.json(
         {
           message: `Model "${chatModel?.model}" is not configured. Please set it up in Settings → AI Providers.`,
@@ -172,22 +281,24 @@ export async function POST(request: Request) {
       thread = await ensureUserChatThread({
         threadId: id,
         userId: session.user.id,
+        historyMode: "compacted-tail",
       });
     } catch (error) {
       if ((error as Error).message === "Forbidden") {
+        await releaseChatConcurrencyLease();
         return new Response("Forbidden", { status: 403 });
       }
       throw error;
     }
 
-    const messages: UIMessage[] = (thread?.messages ?? []).map((m) => {
-      return {
+    const messages: UIMessage[] = (thread?.messages ?? []).map((m) =>
+      stripAssistantKnowledgeCitationLinks({
         id: m.id,
         role: m.role,
         parts: m.parts,
         metadata: m.metadata,
-      };
-    });
+      }),
+    );
 
     if (messages.at(-1)?.id == message.id) {
       messages.pop();
@@ -199,6 +310,20 @@ export async function POST(request: Request) {
     });
 
     const persistedMessages = [...messages];
+    const previousAssistantMessage = [...persistedMessages]
+      .reverse()
+      .find((persistedMessage) => persistedMessage.role === "assistant");
+    if (message.role === "user" && previousAssistantMessage) {
+      await recordSelfLearningSignal({
+        userId: session.user.id,
+        threadId: thread?.id ?? null,
+        messageId: previousAssistantMessage.id,
+        signalType: "follow_up_continue",
+        payload: {
+          source: "chat_follow_up",
+        },
+      }).catch(() => {});
+    }
     messages.push(message);
 
     const supportToolCall = dbModelResult.supportsTools;
@@ -216,12 +341,18 @@ export async function POST(request: Request) {
     // When the agent is a Snowflake Cortex agent, bypass the LLM entirely and
     // proxy the conversation directly to the Snowflake Cortex Agent API.
     if ((agent as any)?.agentType === "snowflake_cortex") {
+      if (agent?.knowledgeGroups?.length) {
+        logger.warn(
+          `[Knowledge Citation] attached knowledge citation guarantee is unavailable for Snowflake agent ${agent.id}; standard agents only`,
+        );
+      }
       const sfConfig =
         await snowflakeAgentRepository.selectSnowflakeConfigByAgentId(
           agent!.id,
         );
 
       if (!sfConfig) {
+        await releaseChatConcurrencyLease();
         return Response.json(
           { message: "Snowflake configuration not found for this agent" },
           { status: 404 },
@@ -426,69 +557,81 @@ export async function POST(request: Request) {
           }
         },
         generateId: generateUUID,
-        onFinish: async ({ responseMessage, isAborted }) => {
-          const finalResponseMessage = isAborted
-            ? appendAbortedResponseNotice(responseMessage)
-            : responseMessage;
+        onFinish: ({ responseMessage, isAborted }) => {
+          void (async () => {
+            try {
+              const finalResponseMessage = isAborted
+                ? appendAbortedResponseNotice(responseMessage)
+                : responseMessage;
 
-          // Populate metadata from the captured Snowflake usage/model info
-          if (sfCapture.usage) {
-            sfMetadata.usage = attachUsageCost({
-              inputTokens: sfCapture.usage.input,
-              outputTokens: sfCapture.usage.output,
-              totalTokens: sfCapture.usage.input + sfCapture.usage.output,
-              inputTokenDetails: {
-                noCacheTokens: undefined,
-                cacheReadTokens: undefined,
-                cacheWriteTokens: undefined,
-              },
-              outputTokenDetails: {
-                textTokens: undefined,
-                reasoningTokens: undefined,
-              },
-            });
-            sfMetadata.chatModel = {
-              provider: "snowflake",
-              model: sfCapture.usage.model || "Snowflake Cortex",
-            };
-          }
+              if (sfCapture.usage) {
+                sfMetadata.usage = attachUsageCost({
+                  inputTokens: sfCapture.usage.input,
+                  outputTokens: sfCapture.usage.output,
+                  totalTokens: sfCapture.usage.input + sfCapture.usage.output,
+                  inputTokenDetails: {
+                    noCacheTokens: undefined,
+                    cacheReadTokens: undefined,
+                    cacheWriteTokens: undefined,
+                  },
+                  outputTokenDetails: {
+                    textTokens: undefined,
+                    reasoningTokens: undefined,
+                  },
+                });
+                sfMetadata.chatModel = {
+                  provider: "snowflake",
+                  model: sfCapture.usage.model || "Snowflake Cortex",
+                };
+              }
 
-          // Advance parent_message_id so the next turn continues the thread
-          // from this assistant reply.  If Snowflake didn't emit message IDs
-          // (rare failure case per the docs) we leave the existing value.
-          if (sfCapture.newAssistantMessageId !== null) {
-            await chatRepository.updateThread(thread!.id, {
-              snowflakeParentMessageId: sfCapture.newAssistantMessageId,
-            });
-            logger.info(
-              `Advanced Snowflake thread ${sfThreadId} parent_message_id → ${sfCapture.newAssistantMessageId}`,
-            );
-          }
+              if (sfCapture.newAssistantMessageId !== null) {
+                await chatRepository.updateThread(thread!.id, {
+                  snowflakeParentMessageId: sfCapture.newAssistantMessageId,
+                });
+                logger.info(
+                  `Advanced Snowflake thread ${sfThreadId} parent_message_id → ${sfCapture.newAssistantMessageId}`,
+                );
+              }
 
-          if (finalResponseMessage.id === message.id) {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              ...finalResponseMessage,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: sfMetadata,
-            });
-          } else {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: message.role,
-              parts: message.parts.map(convertToSavePart),
-              id: message.id,
-            });
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: finalResponseMessage.role,
-              id: finalResponseMessage.id,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: sfMetadata,
-            });
-          }
+              if (finalResponseMessage.id === message.id) {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  ...finalResponseMessage,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: sfMetadata,
+                });
+              } else {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: message.role,
+                  parts: message.parts.map(convertToSavePart),
+                  id: message.id,
+                });
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: finalResponseMessage.role,
+                  id: finalResponseMessage.id,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: sfMetadata,
+                });
+              }
+            } catch (error) {
+              logChatPersistenceError({
+                flow: "snowflake",
+                threadId: thread!.id,
+                messageId: responseMessage.id,
+                error,
+              });
+            } finally {
+              await releaseChatConcurrencyLease();
+            }
+          })();
         },
-        onError: handleError,
+        onError: (error) => {
+          void releaseChatConcurrencyLease();
+          return handleError(error);
+        },
         originalMessages: messages,
       });
 
@@ -500,11 +643,17 @@ export async function POST(request: Request) {
     // ── end Snowflake intercept ────────────────────────────────────────────
 
     if ((agent as any)?.agentType === "a2a_remote") {
+      if (agent?.knowledgeGroups?.length) {
+        logger.warn(
+          `[Knowledge Citation] attached knowledge citation guarantee is unavailable for A2A agent ${agent.id}; standard agents only`,
+        );
+      }
       const a2aConfig = await a2aAgentRepository.selectA2AConfigByAgentId(
         agent!.id,
       );
 
       if (!a2aConfig) {
+        await releaseChatConcurrencyLease();
         return Response.json(
           { message: "A2A configuration not found for this agent" },
           { status: 404 },
@@ -518,6 +667,7 @@ export async function POST(request: Request) {
         .trim();
 
       if (!userText) {
+        await releaseChatConcurrencyLease();
         return Response.json(
           {
             message:
@@ -598,43 +748,59 @@ export async function POST(request: Request) {
           });
         },
         generateId: generateUUID,
-        onFinish: async ({ responseMessage, isAborted }) => {
-          const finalResponseMessage = isAborted
-            ? appendAbortedResponseNotice(responseMessage)
-            : responseMessage;
+        onFinish: ({ responseMessage, isAborted }) => {
+          void (async () => {
+            try {
+              const finalResponseMessage = isAborted
+                ? appendAbortedResponseNotice(responseMessage)
+                : responseMessage;
 
-          if (!isAborted) {
-            await chatRepository.updateThread(thread!.id, {
-              a2aAgentId: agent!.id,
-              a2aContextId: a2aCapture.contextId ?? null,
-              a2aTaskId: a2aCapture.taskId ?? null,
-            });
-          }
+              if (!isAborted) {
+                await chatRepository.updateThread(thread!.id, {
+                  a2aAgentId: agent!.id,
+                  a2aContextId: a2aCapture.contextId ?? null,
+                  a2aTaskId: a2aCapture.taskId ?? null,
+                });
+              }
 
-          if (finalResponseMessage.id === message.id) {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              ...finalResponseMessage,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: a2aMetadata,
-            });
-          } else {
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: message.role,
-              parts: message.parts.map(convertToSavePart),
-              id: message.id,
-            });
-            await chatRepository.upsertMessage({
-              threadId: thread!.id,
-              role: finalResponseMessage.role,
-              id: finalResponseMessage.id,
-              parts: finalResponseMessage.parts.map(convertToSavePart),
-              metadata: a2aMetadata,
-            });
-          }
+              if (finalResponseMessage.id === message.id) {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  ...finalResponseMessage,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: a2aMetadata,
+                });
+              } else {
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: message.role,
+                  parts: message.parts.map(convertToSavePart),
+                  id: message.id,
+                });
+                await chatRepository.upsertMessage({
+                  threadId: thread!.id,
+                  role: finalResponseMessage.role,
+                  id: finalResponseMessage.id,
+                  parts: finalResponseMessage.parts.map(convertToSavePart),
+                  metadata: a2aMetadata,
+                });
+              }
+            } catch (error) {
+              logChatPersistenceError({
+                flow: "a2a",
+                threadId: thread!.id,
+                messageId: responseMessage.id,
+                error,
+              });
+            } finally {
+              await releaseChatConcurrencyLease();
+            }
+          })();
         },
-        onError: handleError,
+        onError: (error) => {
+          void releaseChatConcurrencyLease();
+          return handleError(error);
+        },
         originalMessages: messages,
       });
 
@@ -644,20 +810,67 @@ export async function POST(request: Request) {
       });
     }
 
-    if (agent?.instructions?.mentions) {
-      mentions.push(...agent.instructions.mentions);
+    const requestMentions = [...mentions];
+    const agentMentions = [...(agent?.instructions?.mentions ?? [])];
+
+    if (agentMentions.length > 0) {
+      mentions.push(...agentMentions);
     }
 
     // ── Knowledge mention RAG context ────────────────────────────────────────
-    const knowledgeMentionIds = Array.from(
-      new Set(
-        mentions
-          .filter((m) => m.type === "knowledge")
-          .map(
-            (m) =>
-              (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
+    const getKnowledgeMentionIds = (sourceMentions: ChatMention[]) =>
+      Array.from(
+        new Set(
+          sourceMentions
+            .filter((m) => m.type === "knowledge")
+            .map(
+              (m) =>
+                (m as Extract<ChatMention, { type: "knowledge" }>).knowledgeId,
+            ),
+        ),
+      );
+
+    const selectKnowledgeMentionGroups = async (
+      groupIds: string[],
+      userId: string,
+    ) =>
+      (
+        await Promise.all(
+          groupIds.map((groupId) =>
+            knowledgeRepository
+              .selectGroupById(groupId, userId)
+              .catch(() => null),
           ),
+        )
+      ).filter((group) => group !== null) as NonNullable<
+        Awaited<ReturnType<typeof knowledgeRepository.selectGroupById>>
+      >[];
+
+    const [viewerKnowledgeMentionGroups, agentKnowledgeMentionGroups] =
+      await Promise.all([
+        selectKnowledgeMentionGroups(
+          getKnowledgeMentionIds(requestMentions),
+          session.user.id,
+        ),
+        agent && agent.userId !== session.user.id
+          ? selectKnowledgeMentionGroups(
+              getKnowledgeMentionIds(agentMentions),
+              agent.userId,
+            )
+          : Promise.resolve([]),
+      ]);
+
+    const knowledgeMentionGroups = Array.from(
+      new Set(
+        [...viewerKnowledgeMentionGroups, ...agentKnowledgeMentionGroups].map(
+          (group) => group.id,
+        ),
       ),
+    ).map(
+      (groupId) =>
+        [...viewerKnowledgeMentionGroups, ...agentKnowledgeMentionGroups].find(
+          (group) => group.id === groupId,
+        )!,
     );
 
     const userQueryText = message.parts
@@ -665,18 +878,6 @@ export async function POST(request: Request) {
       .map((p: any) => p.text as string)
       .join(" ")
       .trim();
-
-    const knowledgeMentionGroups = (
-      await Promise.all(
-        knowledgeMentionIds.map((groupId) =>
-          knowledgeRepository
-            .selectGroupById(groupId, session.user.id)
-            .catch(() => null),
-        ),
-      )
-    ).filter((group) => group !== null) as NonNullable<
-      Awaited<ReturnType<typeof knowledgeRepository.selectGroupById>>
-    >[];
     // ── end knowledge context ─────────────────────────────────────────────────
 
     const useImageTool = Boolean(imageTool?.provider && imageTool?.model);
@@ -692,20 +893,157 @@ export async function POST(request: Request) {
       toolCount: 0,
       chatModel: chatModel,
     };
+    let latestPromptKnowledgeGroups: RetrievedKnowledgeGroup[] = [];
+    let latestPromptCitationKeys = new Set<string>();
+    let finalizedKnowledgeCitationState: FinalizedKnowledgeCitationState | null =
+      null;
+    const toolRetrievedKnowledgeGroups = new Map<
+      string,
+      {
+        groupName: string;
+        docs: DocRetrievalResult[];
+      }
+    >();
+    const toolRetrievedCitationKeys = new Set<string>();
+    const knowledgeCitationRegistry = new Map<string, ChatKnowledgeCitation>();
+    let nextKnowledgeCitationNumber = 1;
+    const registerKnowledgeCitations = (
+      retrievedGroups: RetrievedKnowledgeGroup[],
+    ) => {
+      const citations = buildKnowledgeCitations({
+        retrievedGroups,
+      })
+        .map((citation) => {
+          const key = buildKnowledgeCitationKey(citation);
+          const existing = knowledgeCitationRegistry.get(key);
+          if (existing) {
+            return existing;
+          }
+
+          const registered = {
+            ...citation,
+            number: nextKnowledgeCitationNumber++,
+          };
+          knowledgeCitationRegistry.set(key, registered);
+          return registered;
+        })
+        .sort((left, right) => left.number - right.number);
+
+      return {
+        citations,
+        citationKeys: citations.map((citation) =>
+          buildKnowledgeCitationKey(citation),
+        ),
+      };
+    };
+    const collectAvailableKnowledgeCitations = () =>
+      Array.from(
+        new Set([...latestPromptCitationKeys, ...toolRetrievedCitationKeys]),
+      )
+        .map((key) => knowledgeCitationRegistry.get(key) ?? null)
+        .filter(
+          (citation): citation is ChatKnowledgeCitation => citation !== null,
+        )
+        .sort((left, right) => left.number - right.number);
+    const recordToolRetrievedKnowledge = (payload: {
+      groupId: string;
+      groupName: string;
+      query: string;
+      docs: DocRetrievalResult[];
+      contextText: string;
+    }) => {
+      if (!payload.docs.length) {
+        return {
+          contextText: payload.contextText,
+          citations: [],
+          evidencePack: null,
+        };
+      }
+
+      const existing = toolRetrievedKnowledgeGroups.get(payload.groupId);
+      if (existing) {
+        existing.docs.push(...payload.docs);
+      } else {
+        toolRetrievedKnowledgeGroups.set(payload.groupId, {
+          groupName: payload.groupName,
+          docs: [...payload.docs],
+        });
+      }
+
+      const { citations, citationKeys } = registerKnowledgeCitations([
+        {
+          groupId: payload.groupId,
+          groupName: payload.groupName,
+          docs: payload.docs,
+        },
+      ]);
+      for (const citationKey of citationKeys) {
+        toolRetrievedCitationKeys.add(citationKey);
+      }
+
+      logger.info(
+        `[Knowledge Citation] captured ${payload.docs.length} docs and ${citations.length} citations from tool group ${payload.groupId} for thread ${thread!.id}`,
+      );
+
+      return {
+        contextText: payload.contextText,
+        citations,
+        evidencePack: citations.length
+          ? formatKnowledgeEvidencePack(citations)
+          : null,
+      };
+    };
+    const syncCapturedKnowledgeMetadata = () => {
+      const availableCitations = collectAvailableKnowledgeCitations();
+      if (
+        !availableCitations.length &&
+        toolRetrievedKnowledgeGroups.size === 0
+      ) {
+        return metadata;
+      }
+
+      const merged = mergeChatKnowledgeMetadata({
+        existingSources: metadata.knowledgeSources,
+        existingImages: metadata.knowledgeImages,
+        retrievedGroups: Array.from(toolRetrievedKnowledgeGroups.entries()).map(
+          ([groupId, value]) => ({
+            groupId,
+            groupName: value.groupName,
+            docs: value.docs,
+          }),
+        ),
+        maxImages: 4,
+      });
+
+      metadata.knowledgeSources = merged.knowledgeSources;
+      metadata.knowledgeImages = merged.knowledgeImages;
+      metadata.knowledgeCitations = availableCitations.length
+        ? availableCitations
+        : metadata.knowledgeCitations;
+      return metadata;
+    };
 
     const stream = createUIMessageStream({
       execute: async ({ writer: dataStream }) => {
+        const usageContext = {
+          source: "chat" as const,
+          actorUserId: session.user.id,
+          threadId: thread?.id ?? null,
+          agentId: agent?.id ?? null,
+        };
         const toolset = await loadWaveAgentBoundTools({
           agent,
           userId: session.user.id,
           mentions,
           allowedMcpServers,
           allowedAppDefaultToolkit,
+          usageContext,
           dataStream,
           abortSignal: request.signal,
           chatModel: chatModel!,
           source: "agent",
           isToolCallAllowed,
+          onKnowledgeDocsRetrieved: recordToolRetrievedKnowledge,
         });
 
         const inProgressToolParts = extractInProgressToolPart(message);
@@ -720,6 +1058,7 @@ export async function POST(request: Request) {
                   ...toolset.appDefaultTools,
                 },
                 request.signal,
+                usageContext,
               );
               part.output = output;
 
@@ -733,17 +1072,66 @@ export async function POST(request: Request) {
         }
 
         const userPreferences = thread?.userPreferences || undefined;
+        const mcpCustomizationUserIds = Array.from(
+          new Set(
+            [session.user.id, agent?.userId].filter(
+              (userId): userId is string => !!userId,
+            ),
+          ),
+        );
 
         const mcpServerCustomizations = await safe()
           .map(() => {
             if (Object.keys(toolset.mcpTools ?? {}).length === 0)
               throw new Error("No tools found");
-            return rememberMcpServerCustomizationsAction(session.user.id);
+            return Promise.all(
+              mcpCustomizationUserIds.map((userId) =>
+                rememberMcpServerCustomizationsAction(userId),
+              ),
+            ).then((customizationSets) =>
+              customizationSets.reduce(
+                (acc, customizationSet) => Object.assign(acc, customizationSet),
+                {} as Record<string, McpServerCustomizationsPrompt>,
+              ),
+            );
           })
           .map((v) => filterMcpServerCustomizations(toolset.mcpTools as any, v))
           .orElse({});
+        const attachmentPreviewText = extractAttachmentPreviewText([
+          ...persistedMessages,
+          message,
+        ]);
+        const activeSkillResolution = resolveActiveAgentSkills({
+          skills: toolset.attachedSkills,
+          taskText: userQueryText,
+          contextText: attachmentPreviewText,
+        });
+        if (activeSkillResolution.activeSkills.length) {
+          void usageEventRepository
+            .recordEvents(
+              buildActiveSkillUsageEvents(
+                activeSkillResolution.activeSkills,
+                usageContext,
+              ),
+            )
+            .catch(() => {});
+        }
+        metadata.activatedSkills = activeSkillResolution.activeSkillTitles
+          .length
+          ? activeSkillResolution.activeSkillTitles
+          : undefined;
         const buildKnowledgeContextsForBudget = (() => {
-          const cache = new Map<number, Promise<string[]>>();
+          const cache = new Map<
+            number,
+            Promise<{
+              contexts: string[];
+              sources: ChatKnowledgeSource[];
+              citations: ChatKnowledgeCitation[];
+              citationKeys: string[];
+              images: NonNullable<ChatMetadata["knowledgeImages"]>;
+              retrievedGroups: RetrievedKnowledgeGroup[];
+            }>
+          >();
 
           return async (totalBudget: number) => {
             if (
@@ -751,7 +1139,14 @@ export async function POST(request: Request) {
               !userQueryText ||
               totalBudget < 1
             ) {
-              return [];
+              return {
+                contexts: [],
+                sources: [],
+                citations: [],
+                citationKeys: [],
+                images: [],
+                retrievedGroups: [],
+              };
             }
 
             if (!cache.has(totalBudget)) {
@@ -759,6 +1154,10 @@ export async function POST(request: Request) {
                 totalBudget,
                 (async () => {
                   const contexts: string[] = [];
+                  const sources: ChatKnowledgeSource[] = [];
+                  const retrievedGroups: RetrievedKnowledgeGroup[] = [];
+                  const images: NonNullable<ChatMetadata["knowledgeImages"]> =
+                    [];
                   let remainingKnowledgeBudget = totalBudget;
 
                   for (const [
@@ -776,7 +1175,7 @@ export async function POST(request: Request) {
                       group,
                       userQueryText,
                       {
-                        userId: session.user.id,
+                        userId: group.userId ?? session.user.id,
                         source: "chat",
                         tokens: allocatedTokens,
                         resultMode: "section-first",
@@ -789,12 +1188,31 @@ export async function POST(request: Request) {
                     });
 
                     if (docs && docs.length > 0) {
+                      retrievedGroups.push({
+                        groupId: group.id,
+                        groupName: group.name,
+                        docs,
+                      });
                       const formatted = formatDocsAsText(
                         group.name,
                         docs,
                         userQueryText,
                       );
                       contexts.push(formatted);
+                      sources.push(
+                        ...buildChatKnowledgeSources({
+                          groupId: group.id,
+                          groupName: group.name,
+                          docs,
+                        }),
+                      );
+                      images.push(
+                        ...buildChatKnowledgeImages({
+                          groupId: group.id,
+                          groupName: group.name,
+                          docs,
+                        }),
+                      );
                       remainingKnowledgeBudget = Math.max(
                         0,
                         remainingKnowledgeBudget -
@@ -803,7 +1221,21 @@ export async function POST(request: Request) {
                     }
                   }
 
-                  return contexts;
+                  const { citations, citationKeys } =
+                    registerKnowledgeCitations(retrievedGroups);
+                  const evidencePack = formatKnowledgeEvidencePack(citations);
+                  if (evidencePack) {
+                    contexts.unshift(evidencePack);
+                  }
+
+                  return {
+                    contexts,
+                    sources: dedupeChatKnowledgeSources(sources),
+                    citations,
+                    citationKeys,
+                    images: dedupeChatKnowledgeImages(images),
+                    retrievedGroups,
+                  };
                 })(),
               );
             }
@@ -811,24 +1243,54 @@ export async function POST(request: Request) {
             return await cache.get(totalBudget)!;
           };
         })();
+        const learnedPersonalizationPrompt: string | false =
+          await resolveAgentPersonalizationPrompt({
+            surface: "platform_chat",
+            platformUserId: session.user.id,
+            agent,
+          }).catch((error) => {
+            logger.warn(
+              `[Chat Route] Failed to load learned personalization for user ${session.user.id}: ${error}`,
+            );
+            return false as const;
+          });
 
         const buildSystemPromptForKnowledgeBudget = async (
           knowledgeBudget: number,
         ) => {
-          const knowledgeContexts =
-            await buildKnowledgeContextsForBudget(knowledgeBudget);
+          const {
+            contexts: knowledgeContexts,
+            sources: knowledgeSources,
+            citations: knowledgeCitations,
+            citationKeys,
+            images: knowledgeImages,
+            retrievedGroups,
+          } = await buildKnowledgeContextsForBudget(knowledgeBudget);
+
+          latestPromptKnowledgeGroups = retrievedGroups;
+          latestPromptCitationKeys = new Set(citationKeys);
 
           return {
             knowledgeContexts,
+            knowledgeSources,
+            knowledgeCitations,
+            knowledgeImages,
             systemPrompt: buildWaveAgentSystemPrompt({
               user: session.user,
               userPreferences,
               agent,
               subAgents: toolset.subAgents,
               attachedSkills: toolset.attachedSkills,
+              activeSkills: activeSkillResolution.activeSkills,
               knowledgeContexts,
               mcpServerCustomizations,
               toolCallUnsupported: !supportToolCall,
+              extraPrompts: [
+                learnedPersonalizationPrompt,
+                buildKnowledgeToolCitationSystemPrompt(
+                  Object.keys(toolset.knowledgeTools ?? {}).length > 0,
+                ),
+              ],
             }),
           };
         };
@@ -931,10 +1393,6 @@ export async function POST(request: Request) {
         const strippedPersistedMessages =
           stripAttachmentPreviewPartsFromMessages(persistedMessages);
         const strippedCurrentMessage = stripAttachmentPreviewParts(message);
-        const attachmentPreviewText = extractAttachmentPreviewText([
-          ...persistedMessages,
-          message,
-        ]);
         const buildToolStages = (currentLoopMessages: ModelMessage[]) => {
           const hasExplicitMcpMentions = mentions.some(
             (mention) =>
@@ -1002,6 +1460,90 @@ export async function POST(request: Request) {
           checkpoint: thread?.compactionCheckpoint ?? null,
           currentLoopMessages: [],
         };
+        let responseMessageId: string | null = null;
+
+        const collectRetrievedKnowledgeGroups = () =>
+          mergeRetrievedKnowledgeGroups([
+            ...latestPromptKnowledgeGroups,
+            ...Array.from(toolRetrievedKnowledgeGroups.entries()).map(
+              ([groupId, value]) => ({
+                groupId,
+                groupName: value.groupName,
+                docs: value.docs,
+              }),
+            ),
+          ]);
+
+        const finalizeKnowledgeCitations = async (draftText: string) => {
+          let citations = collectAvailableKnowledgeCitations();
+          if (!citations.length && toolRetrievedKnowledgeGroups.size > 0) {
+            logger.warn(
+              `[Knowledge Citation] knowledge tool hits were captured without registered citations for thread ${thread!.id}; falling back to raw retrieved groups`,
+            );
+            const fallback = registerKnowledgeCitations(
+              collectRetrievedKnowledgeGroups(),
+            );
+            citations = fallback.citations;
+            latestPromptCitationKeys = new Set([
+              ...latestPromptCitationKeys,
+              ...fallback.citationKeys,
+            ]);
+          }
+
+          if (!citations.length) {
+            if (toolRetrievedKnowledgeGroups.size > 0) {
+              logger.warn(
+                `[Knowledge Citation] standard attached-agent knowledge was used but no final citations were available for thread ${thread!.id}`,
+              );
+            }
+            return null;
+          }
+
+          if (!draftText.trim()) {
+            return null;
+          }
+
+          const finalizedText = draftText.trim();
+          let repaired = false;
+          const preserveCitationAppendix =
+            /\b(reference|references|bibliography|sources?|citations?|rujukan|daftar pustaka)\b/i.test(
+              userQueryText,
+            );
+          const initialValidation = validateKnowledgeCitationText({
+            text: finalizedText,
+            citations,
+          });
+          repaired = !initialValidation.isValid;
+
+          const enforcedText = enforceKnowledgeCitationCoverage({
+            text: finalizedText,
+            citations,
+          }).trim();
+          const normalizedText = normalizeKnowledgeCitationLayout({
+            text: enforcedText,
+            citations,
+            preserveAppendix: preserveCitationAppendix,
+          }).trim();
+          const finalValidation = validateKnowledgeCitationText({
+            text: normalizedText,
+            citations,
+          });
+          if (!finalValidation.isValid) {
+            logger.warn(
+              `[Knowledge Citation] deterministic coverage fallback still left validation issues for thread ${thread!.id}`,
+            );
+          }
+
+          logger.info(
+            `[Knowledge Citation] finalized ${citations.length} citations for thread ${thread!.id}; repaired=${repaired || normalizedText !== draftText.trim()} toolKnowledge=${toolRetrievedKnowledgeGroups.size > 0}`,
+          );
+
+          return {
+            finalizedText: normalizedText,
+            citations,
+            repaired: repaired || normalizedText !== draftText.trim(),
+          } satisfies FinalizedKnowledgeCitationState;
+        };
 
         const result = streamText({
           model,
@@ -1034,6 +1576,16 @@ export async function POST(request: Request) {
               const promptContext = await buildSystemPromptForKnowledgeBudget(
                 activeKnowledgeBudget,
               );
+              metadata.knowledgeSources = promptContext.knowledgeSources.length
+                ? promptContext.knowledgeSources
+                : undefined;
+              metadata.knowledgeCitations = promptContext.knowledgeCitations
+                .length
+                ? promptContext.knowledgeCitations
+                : undefined;
+              metadata.knowledgeImages = promptContext.knowledgeImages.length
+                ? promptContext.knowledgeImages
+                : undefined;
               const assembly = await buildCompactionAssembly({
                 persistedMessages: stripAttachmentPreviews
                   ? strippedPersistedMessages
@@ -1327,55 +1879,137 @@ export async function POST(request: Request) {
             },
           }),
         });
-        result.consumeStream();
+        const consumeResultPromise = result.consumeStream();
         dataStream.merge(
           result.toUIMessageStream({
-            messageMetadata: ({ part }) => {
-              if (part.type == "finish") {
-                metadata.usage = attachUsageCost(part.totalUsage as ChatUsage);
-                return metadata;
-              }
+            originalMessages: messages,
+            generateMessageId: () => {
+              const generatedId = generateUUID();
+              responseMessageId = generatedId;
+              return generatedId;
             },
+            sendFinish: false,
           }),
         );
+
+        await consumeResultPromise;
+        const [draftText, totalUsage, finishReason] = await Promise.all([
+          result.text,
+          result.usage,
+          result.finishReason,
+        ]);
+        syncCapturedKnowledgeMetadata();
+
+        finalizedKnowledgeCitationState =
+          await finalizeKnowledgeCitations(draftText);
+        if (finalizedKnowledgeCitationState?.citations.length) {
+          metadata.knowledgeCitations =
+            finalizedKnowledgeCitationState.citations;
+          metadata.knowledgeSources = buildKnowledgeSourcesFromCitations(
+            finalizedKnowledgeCitationState.citations,
+          );
+        }
+
+        metadata.usage = attachUsageCost(totalUsage as ChatUsage);
+        const finalMetadata = syncCapturedKnowledgeMetadata();
+
+        if (finalizedKnowledgeCitationState && responseMessageId) {
+          dataStream.write({
+            type: "data-citation-finalized",
+            data: {
+              messageId: responseMessageId,
+              finalizedText: finalizedKnowledgeCitationState.finalizedText,
+              citations: finalizedKnowledgeCitationState.citations,
+              repaired: finalizedKnowledgeCitationState.repaired,
+            },
+            transient: true,
+          });
+        }
+
+        dataStream.write({
+          type: "message-metadata",
+          messageMetadata: finalMetadata,
+        });
+        dataStream.write({
+          type: "finish",
+          finishReason,
+          messageMetadata: finalMetadata,
+        });
       },
 
       generateId: generateUUID,
-      onFinish: async ({ responseMessage, isAborted }) => {
-        const finalResponseMessage = isAborted
-          ? appendAbortedResponseNotice(responseMessage)
-          : responseMessage;
+      onFinish: ({ responseMessage, isAborted }) => {
+        void (async () => {
+          try {
+            const streamedResponseMessage = isAborted
+              ? appendAbortedResponseNotice(responseMessage)
+              : responseMessage;
+            syncCapturedKnowledgeMetadata();
+            if (finalizedKnowledgeCitationState?.citations.length) {
+              metadata.knowledgeCitations =
+                finalizedKnowledgeCitationState.citations;
+              metadata.knowledgeSources = buildKnowledgeSourcesFromCitations(
+                finalizedKnowledgeCitationState.citations,
+              );
+            }
 
-        if (finalResponseMessage.id == message.id) {
-          await chatRepository.upsertMessage({
-            threadId: thread!.id,
-            ...finalResponseMessage,
-            parts: finalResponseMessage.parts.map(convertToSavePart),
-            metadata,
-          });
-        } else {
-          await chatRepository.upsertMessage({
-            threadId: thread!.id,
-            role: message.role,
-            parts: message.parts.map(convertToSavePart),
-            id: message.id,
-          });
-          await chatRepository.upsertMessage({
-            threadId: thread!.id,
-            role: finalResponseMessage.role,
-            id: finalResponseMessage.id,
-            parts: finalResponseMessage.parts.map(convertToSavePart),
-            metadata,
-          });
-        }
+            const finalResponseMessage =
+              finalizedKnowledgeCitationState?.finalizedText
+                ? applyFinalizedAssistantText(
+                    streamedResponseMessage,
+                    finalizedKnowledgeCitationState.finalizedText,
+                    {
+                      knowledgeCitations:
+                        finalizedKnowledgeCitationState.citations,
+                      knowledgeSources: metadata.knowledgeSources,
+                    },
+                  )
+                : streamedResponseMessage;
 
-        if (agent) {
-          agentRepository.updateAgent(agent.id, session.user.id, {
-            updatedAt: new Date(),
-          } as any);
-        }
+            if (finalResponseMessage.id == message.id) {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                ...finalResponseMessage,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata,
+              });
+            } else {
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: message.role,
+                parts: message.parts.map(convertToSavePart),
+                id: message.id,
+              });
+              await chatRepository.upsertMessage({
+                threadId: thread!.id,
+                role: finalResponseMessage.role,
+                id: finalResponseMessage.id,
+                parts: finalResponseMessage.parts.map(convertToSavePart),
+                metadata,
+              });
+            }
+
+            if (agent) {
+              agentRepository.updateAgent(agent.id, session.user.id, {
+                updatedAt: new Date(),
+              } as any);
+            }
+          } catch (error) {
+            logChatPersistenceError({
+              flow: "chat",
+              threadId: thread!.id,
+              messageId: responseMessage.id,
+              error,
+            });
+          } finally {
+            await releaseChatConcurrencyLease();
+          }
+        })();
       },
-      onError: handleError,
+      onError: (error) => {
+        void releaseChatConcurrencyLease();
+        return handleError(error);
+      },
       originalMessages: messages,
     });
 
@@ -1384,6 +2018,7 @@ export async function POST(request: Request) {
       consumeSseStream: consumeStream,
     });
   } catch (error: any) {
+    await releaseChatConcurrencyLease();
     logger.error(error);
     return Response.json({ message: error.message }, { status: 500 });
   }

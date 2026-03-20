@@ -9,6 +9,12 @@ import IORedis from "ioredis";
 import { knowledgeRepository } from "lib/db/repository";
 import { runIngestPipeline } from "./ingest-pipeline";
 import { getRedisUrl } from "./redis-url";
+import {
+  reconcileDocumentIngestFailure,
+  markDocumentVersionFailed,
+  runMarkdownEditVersion,
+  runRollbackVersion,
+} from "./versioning";
 import { KnowledgeJob } from "./worker-client";
 
 const QUEUE_NAME = "contextx-ingest";
@@ -25,7 +31,8 @@ async function handleReembedGroup(groupId: string): Promise<void> {
         `[ContextX Worker] Failed to re-embed document ${doc.id}:`,
         err,
       );
-      await knowledgeRepository.updateDocumentStatus(doc.id, "failed", {
+      await reconcileDocumentIngestFailure({
+        documentId: doc.id,
         errorMessage: String(err),
       });
     }
@@ -46,9 +53,19 @@ async function main() {
       const data = job.data;
 
       if (data.type === "ingest-document") {
-        await runIngestPipeline(data.documentId, data.groupId);
+        return runIngestPipeline(data.documentId, data.groupId);
       } else if (data.type === "reembed-group") {
         await handleReembedGroup(data.groupId);
+      } else if (data.type === "materialize-document-version") {
+        await runMarkdownEditVersion({
+          versionId: data.versionId,
+          expectedActiveVersionId: data.expectedActiveVersionId ?? null,
+        });
+      } else if (data.type === "rollback-document-version") {
+        await runRollbackVersion({
+          versionId: data.versionId,
+          expectedActiveVersionId: data.expectedActiveVersionId ?? null,
+        });
       }
     },
     {
@@ -57,18 +74,29 @@ async function main() {
     },
   );
 
-  worker.on("completed", (job) => {
+  worker.on("completed", (job, result) => {
+    if (result === "skipped") {
+      return;
+    }
     console.log(`[ContextX Worker] Job ${job.id} completed`);
   });
 
   worker.on("failed", async (job, err) => {
     console.error(`[ContextX Worker] Job ${job?.id} failed:`, err);
     if (job?.data?.type === "ingest-document") {
-      await knowledgeRepository
-        .updateDocumentStatus((job.data as any).documentId, "failed", {
-          errorMessage: String(err),
-        })
-        .catch(() => {});
+      await reconcileDocumentIngestFailure({
+        documentId: (job.data as any).documentId,
+        errorMessage: String(err),
+      }).catch(() => {});
+    } else if (
+      job?.data?.type === "materialize-document-version" ||
+      job?.data?.type === "rollback-document-version"
+    ) {
+      await markDocumentVersionFailed({
+        versionId: job.data.versionId,
+        errorMessage: String(err),
+        updateDocumentStatus: false,
+      }).catch(() => {});
     }
   });
 

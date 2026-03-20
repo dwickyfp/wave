@@ -2,6 +2,7 @@ import { streamObject } from "ai";
 import { ChatModel } from "app-types/chat";
 import { SkillGenerateSchema } from "app-types/skill";
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { buildSkillGenerationPrompt } from "lib/ai/prompts";
 import { getDbModel } from "lib/ai/provider-factory";
 import { readdir, readFile } from "node:fs/promises";
@@ -42,6 +43,12 @@ export async function POST(request: Request) {
     const session = await getSession();
     if (!session) {
       return new Response("Unauthorized", { status: 401 });
+    }
+    if (!isCreatorRole(session.user.role)) {
+      return Response.json(
+        { error: "Only creators and admins can generate skills" },
+        { status: 403 },
+      );
     }
 
     const json = await request.json();

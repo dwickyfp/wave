@@ -18,13 +18,10 @@ export async function GET(
   }
 
   const { id } = await params;
-
-  const hasAccess = await agentRepository.checkAccess(id, session.user.id);
-  if (!hasAccess) {
+  const agent = await agentRepository.selectAgentById(id, session.user.id);
+  if (!agent) {
     return new Response("Unauthorized", { status: 401 });
   }
-
-  const agent = await agentRepository.selectAgentById(id, session.user.id);
   const subAgents = await subAgentRepository.selectSubAgentsByAgentId(id);
   return Response.json({ ...agent, subAgents });
 }
@@ -43,7 +40,7 @@ export async function PUT(
   const canEdit = await canEditAgent();
   if (!canEdit) {
     return Response.json(
-      { error: "Only editors and admins can edit agents" },
+      { error: "Only creators and admins can edit agents" },
       { status: 403 },
     );
   }
@@ -112,7 +109,7 @@ export async function DELETE(
   const canDelete = await canDeleteAgent();
   if (!canDelete) {
     return Response.json(
-      { error: "Only editors and admins can delete agents" },
+      { error: "Only creators and admins can delete agents" },
       { status: 403 },
     );
   }

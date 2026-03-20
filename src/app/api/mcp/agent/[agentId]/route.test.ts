@@ -12,6 +12,10 @@ vi.mock("lib/db/repository", () => ({
   knowledgeRepository: {
     getGroupsByAgentId: vi.fn(),
   },
+  skillGroupRepository: {
+    getGroupsByAgentId: vi.fn(),
+    getSkillsByAgentGroupId: vi.fn(),
+  },
   settingsRepository: {
     getProviders: vi.fn(),
   },
@@ -68,6 +72,7 @@ vi.mock("lib/ai/tools/skill-tool", () => ({
 }));
 
 vi.mock("lib/ai/prompts", () => ({
+  buildActiveAgentSkillsSystemPrompt: vi.fn(() => ""),
   buildAgentSkillsSystemPrompt: vi.fn(() => ""),
   buildKnowledgeContextSystemPrompt: vi.fn(() => ""),
   buildMcpServerCustomizationsSystemPrompt: vi.fn(() => ""),
@@ -119,6 +124,7 @@ const {
   agentRepository,
   knowledgeRepository,
   settingsRepository,
+  skillGroupRepository,
   skillRepository,
   subAgentRepository,
   workflowRepository,
@@ -193,6 +199,12 @@ describe("agent mcp route", () => {
       supportsFileInput: false,
     });
     vi.mocked(knowledgeRepository.getGroupsByAgentId).mockResolvedValue([]);
+    vi.mocked(skillGroupRepository.getGroupsByAgentId).mockResolvedValue(
+      [] as any,
+    );
+    vi.mocked(skillGroupRepository.getSkillsByAgentGroupId).mockResolvedValue(
+      [] as any,
+    );
     vi.mocked(skillRepository.getSkillsByAgentId).mockResolvedValue([]);
     vi.mocked(subAgentRepository.selectSubAgentsByAgentId).mockResolvedValue(
       [],

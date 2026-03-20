@@ -1,6 +1,8 @@
 import { pgDb as db } from "../db.pg";
 import { McpServerTable, UserTable } from "../schema.pg";
-import { eq, or, desc } from "drizzle-orm";
+import { desc, eq, or } from "drizzle-orm";
+import { buildTeamShareExists } from "./team-resource-access.pg";
+import { attachSharedTeamsToResources } from "./team-resource-metadata.pg";
 import { generateUUID } from "lib/utils";
 import type { MCPRepository } from "app-types/mcp";
 
@@ -25,6 +27,10 @@ export const pgMcpRepository: MCPRepository = {
             name: server.name,
             config: server.config,
             visibility: server.visibility ?? existing.visibility,
+            publishEnabled:
+              server.publishEnabled ?? existing.publishEnabled ?? false,
+            publishAuthMode:
+              server.publishAuthMode ?? existing.publishAuthMode ?? "none",
             updatedAt: now,
           })
           .where(eq(McpServerTable.id, server.id))
@@ -43,6 +49,10 @@ export const pgMcpRepository: MCPRepository = {
         userId: server.userId,
         visibility: server.visibility ?? "private",
         enabled: true,
+        publishEnabled: server.publishEnabled ?? false,
+        publishAuthMode: server.publishAuthMode ?? "none",
+        publishApiKeyHash: server.publishApiKeyHash ?? null,
+        publishApiKeyPreview: server.publishApiKeyPreview ?? null,
         createdAt: now,
         updatedAt: now,
       })
@@ -75,6 +85,9 @@ export const pgMcpRepository: MCPRepository = {
         userId: McpServerTable.userId,
         visibility: McpServerTable.visibility,
         lastConnectionStatus: McpServerTable.lastConnectionStatus,
+        publishEnabled: McpServerTable.publishEnabled,
+        publishAuthMode: McpServerTable.publishAuthMode,
+        publishApiKeyPreview: McpServerTable.publishApiKeyPreview,
         createdAt: McpServerTable.createdAt,
         updatedAt: McpServerTable.updatedAt,
         userName: UserTable.name,
@@ -86,10 +99,11 @@ export const pgMcpRepository: MCPRepository = {
         or(
           eq(McpServerTable.userId, userId),
           eq(McpServerTable.visibility, "public"),
+          buildTeamShareExists("mcp", McpServerTable.id, userId),
         ),
       )
       .orderBy(desc(McpServerTable.createdAt));
-    return results;
+    return await attachSharedTeamsToResources(results, "mcp", userId);
   },
 
   async updateVisibility(id, visibility) {
@@ -126,6 +140,28 @@ export const pgMcpRepository: MCPRepository = {
       .update(McpServerTable)
       .set({
         lastConnectionStatus: status,
+        updatedAt: new Date(),
+      })
+      .where(eq(McpServerTable.id, id));
+  },
+
+  async updatePublishState(id, input) {
+    await db
+      .update(McpServerTable)
+      .set({
+        publishEnabled: input.enabled,
+        publishAuthMode: input.authMode,
+        updatedAt: new Date(),
+      })
+      .where(eq(McpServerTable.id, id));
+  },
+
+  async setPublishApiKey(id, keyHash, keyPreview) {
+    await db
+      .update(McpServerTable)
+      .set({
+        publishApiKeyHash: keyHash,
+        publishApiKeyPreview: keyPreview,
         updatedAt: new Date(),
       })
       .where(eq(McpServerTable.id, id));

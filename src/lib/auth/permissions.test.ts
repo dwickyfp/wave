@@ -5,15 +5,10 @@ vi.mock("./auth-instance", () => ({
   getSession: vi.fn(),
 }));
 
-vi.mock("lib/user/utils", () => ({
-  getIsUserAdmin: vi.fn(),
-}));
-
 // server-only is used inside the module; stub it for tests
 vi.mock("server-only", () => ({}));
 
 const { getSession } = await import("./auth-instance");
-const { getIsUserAdmin } = await import("lib/user/utils");
 
 describe("auth/permissions", () => {
   beforeEach(() => {
@@ -25,7 +20,6 @@ describe("auth/permissions", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "u1", role: "admin" },
     } as any);
-    vi.mocked(getIsUserAdmin).mockReturnValue(true);
 
     await expect(permissions.hasAdminPermission()).resolves.toBe(true);
   });
@@ -42,11 +36,12 @@ describe("auth/permissions", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "u1", role: "user" },
     } as any);
-    vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
     await expect(permissions.canManageUsers()).resolves.toBe(false);
 
-    vi.mocked(getIsUserAdmin).mockReturnValue(true);
+    vi.mocked(getSession).mockResolvedValue({
+      user: { id: "u1", role: "admin" },
+    } as any);
     await expect(permissions.canManageUsers()).resolves.toBe(true);
   });
 
@@ -55,7 +50,6 @@ describe("auth/permissions", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "self", role: "user" },
     } as any);
-    vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
     await expect(permissions.canManageUser("self")).resolves.toBe(true);
   });
@@ -65,7 +59,6 @@ describe("auth/permissions", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "u1", role: "admin" },
     } as any);
-    vi.mocked(getIsUserAdmin).mockReturnValue(true);
 
     await expect(permissions.canManageUser("other")).resolves.toBe(true);
   });
@@ -75,7 +68,6 @@ describe("auth/permissions", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "u1", role: "user" },
     } as any);
-    vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
     await expect(
       permissions.requireAdminPermission("do admin thing"),
@@ -87,7 +79,6 @@ describe("auth/permissions", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "u1", role: "user" },
     } as any);
-    vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
     await expect(
       permissions.requireUserManagePermissionFor("u2", "manage this user"),
@@ -99,10 +90,27 @@ describe("auth/permissions", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "owner-1", role: "user" },
     } as any);
-    vi.mocked(getIsUserAdmin).mockReturnValue(false);
 
     await expect(
       permissions.canManageMCPServer("owner-1", "public"),
     ).resolves.toBe(true);
+  });
+
+  it("canCreateTeam allows creators", async () => {
+    const permissions = await import("./permissions");
+    vi.mocked(getSession).mockResolvedValue({
+      user: { id: "u1", role: "creator" },
+    } as any);
+
+    await expect(permissions.canCreateTeam()).resolves.toBe(true);
+  });
+
+  it("canCreateTeam rejects plain users", async () => {
+    const permissions = await import("./permissions");
+    vi.mocked(getSession).mockResolvedValue({
+      user: { id: "u1", role: "user" },
+    } as any);
+
+    await expect(permissions.canCreateTeam()).resolves.toBe(false);
   });
 });

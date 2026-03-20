@@ -1,24 +1,83 @@
 import "server-only";
 
 import { tool } from "ai";
+import type { ChatKnowledgeCitation } from "app-types/chat";
 import { z } from "zod";
 import { KnowledgeSummary } from "app-types/knowledge";
 import {
+  DocRetrievalResult,
   queryKnowledgeAsDocs,
   formatDocsAsText,
   QueryKnowledgeDocsOptions,
 } from "lib/knowledge/retriever";
+import {
+  buildKnowledgeCitations,
+  formatKnowledgeEvidencePack,
+} from "lib/chat/knowledge-citations";
 
 const DEFAULT_AGENT_KNOWLEDGE_TOKENS = 5000;
 
+export type KnowledgeDocsRetrievedPayload = {
+  groupId: string;
+  groupName: string;
+  query: string;
+  docs: DocRetrievalResult[];
+  contextText: string;
+};
+
+export type KnowledgeDocsPreparedPayload = {
+  contextText?: string;
+  citations?: ChatKnowledgeCitation[];
+  evidencePack?: string | null;
+};
+
+export type KnowledgeDocsToolResult = {
+  source: "attached_agent_knowledge";
+  groupId: string;
+  groupName: string;
+  query: string;
+  hasResults: boolean;
+  contextText: string;
+  citationInstructions: string;
+  evidencePack: string | null;
+  citations: ChatKnowledgeCitation[];
+};
+
 export function createKnowledgeDocsTool(
   group: KnowledgeSummary,
-  options: Pick<QueryKnowledgeDocsOptions, "userId" | "source"> = {},
+  options: Pick<QueryKnowledgeDocsOptions, "userId" | "source"> & {
+    onRetrieved?: (
+      payload: KnowledgeDocsRetrievedPayload,
+    ) =>
+      | KnowledgeDocsPreparedPayload
+      | void
+      | Promise<KnowledgeDocsPreparedPayload | void>;
+  } = {},
 ) {
+  const { onRetrieved, ...queryOptions } = options;
+
   return tool({
     description: `Search the "${group.name}" knowledge base${group.description ? `: ${group.description}` : ""}. By default, return section-first context: the most relevant sections plus their parent or continuation context. Use mode="full-doc" only when the user explicitly needs the whole document or a complete document-wide summary.`,
     inputSchema: z.object({
       query: z.string().describe("The search query to find relevant documents"),
+      issuer: z.string().optional().describe("Optional issuer name filter."),
+      ticker: z.string().optional().describe("Optional ticker filter."),
+      page: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Optional exact page filter."),
+      note: z
+        .string()
+        .optional()
+        .describe("Optional exact note filter, e.g. '14' or '14.a'."),
+      strictEntityMatch: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, only return results from matching issuer/ticker documents.",
+        ),
       tokens: z
         .number()
         .optional()
@@ -32,14 +91,67 @@ export function createKnowledgeDocsTool(
           "Retrieval mode. Use section-first for targeted answers and full-doc only when complete document context is required.",
         ),
     }),
-    execute: async ({ query, tokens, mode }) => {
+    execute: async ({
+      query,
+      issuer,
+      ticker,
+      page,
+      note,
+      strictEntityMatch,
+      tokens,
+      mode,
+    }) => {
       const docs = await queryKnowledgeAsDocs(group, query, {
-        ...options,
-        source: options.source ?? "agent",
+        ...queryOptions,
+        source: queryOptions.source ?? "agent",
+        issuer,
+        ticker,
+        page,
+        note,
+        strictEntityMatch,
         tokens: tokens ?? DEFAULT_AGENT_KNOWLEDGE_TOKENS,
         resultMode: mode ?? "section-first",
       });
-      return formatDocsAsText(group.name, docs, query);
+      const contextText = formatDocsAsText(group.name, docs, query);
+      const prepared = await Promise.resolve(
+        onRetrieved?.({
+          groupId: group.id,
+          groupName: group.name,
+          query,
+          docs,
+          contextText,
+        }),
+      ).catch(() => undefined);
+
+      const fallbackCitations = buildKnowledgeCitations({
+        retrievedGroups: [
+          {
+            groupId: group.id,
+            groupName: group.name,
+            docs,
+          },
+        ],
+      });
+      const citations = [...(prepared?.citations ?? fallbackCitations)].sort(
+        (left, right) => left.number - right.number,
+      );
+      const evidencePack =
+        prepared?.evidencePack ??
+        (citations.length ? formatKnowledgeEvidencePack(citations) : null);
+
+      return {
+        source: "attached_agent_knowledge",
+        groupId: group.id,
+        groupName: group.name,
+        query,
+        hasResults: docs.length > 0,
+        contextText: prepared?.contextText ?? contextText,
+        citationInstructions: citations.length
+          ? 'When you answer from this tool result, cite the matching inline ids exactly as "[n]". Uncited factual claims from this tool result are invalid.'
+          : "No cited knowledge was retrieved from this tool result.",
+        evidencePack,
+        citations,
+      } satisfies KnowledgeDocsToolResult;
     },
   });
 }

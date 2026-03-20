@@ -1,9 +1,9 @@
 // Client-side permission helpers
 // These mirror the server-side permissions but work with the client session
 
-import { admin, editor, user as userRole } from "./roles";
+import { admin, creator, user as userRole } from "./roles";
 import type { BetterAuthRole } from "./types";
-import { parseRoleString, isBetterAuthRole } from "./types";
+import { isCreatorRole, parseRoleString, isBetterAuthRole } from "./types";
 
 /**
  * Get the role permissions based on user's role string
@@ -16,8 +16,8 @@ function getRolePermissions(role: string | undefined | null): BetterAuthRole {
   switch (cleanRole) {
     case "admin":
       return admin as BetterAuthRole;
-    case "editor":
-      return editor as BetterAuthRole;
+    case "creator":
+      return creator as BetterAuthRole;
     case "user":
     default:
       return userRole as BetterAuthRole;
@@ -95,6 +95,20 @@ export function canEditWorkflow(userRoleString?: string | null): boolean {
  */
 export function canDeleteWorkflow(userRoleString?: string | null): boolean {
   return hasPermission(userRoleString, "delete", "workflow");
+}
+
+/**
+ * Check if user is creator or admin (client-side)
+ */
+export function hasCreatorPermission(userRoleString?: string | null): boolean {
+  return isCreatorRole(userRoleString);
+}
+
+/**
+ * Check if user can create teams (client-side)
+ */
+export function canCreateTeam(userRoleString?: string | null): boolean {
+  return hasCreatorPermission(userRoleString);
 }
 
 /**

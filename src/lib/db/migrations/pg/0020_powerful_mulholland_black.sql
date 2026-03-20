@@ -1,1 +1,1 @@
-ALTER TABLE "snowflake_agent_config" ADD COLUMN "private_key_passphrase" text;
+ALTER TABLE "snowflake_agent_config" ADD COLUMN IF NOT EXISTS "private_key_passphrase" text;

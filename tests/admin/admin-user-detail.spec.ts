@@ -203,11 +203,11 @@ test.describe("Admin User Detail Page", () => {
           `[data-testid='role-radio-${currentSelectedValue}']`,
         );
 
-        // Select a different role (cycle through all three: admin, editor, user)
+        // Select a different role (cycle through all three: admin, creator, user)
         let targetRole: string;
         if (currentSelectedValue === "admin") {
-          targetRole = "editor";
-        } else if (currentSelectedValue === "editor") {
+          targetRole = "creator";
+        } else if (currentSelectedValue === "creator") {
           targetRole = "user";
         } else {
           targetRole = "admin";
@@ -244,7 +244,7 @@ test.describe("Admin User Detail Page", () => {
         // Verify the new role text appears in the badge
         const expectedRoleLabels = {
           admin: "Admin",
-          editor: "Editor",
+          creator: "Creator",
           user: "User",
         };
         await expect(updatedRoleBadge).toContainText(

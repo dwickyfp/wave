@@ -98,11 +98,56 @@ export type ChatCompactionMetadata = {
   breakdown?: ChatContextPressureBreakdown;
 };
 
+export type ChatKnowledgeSource = {
+  groupId: string;
+  groupName: string;
+  documentId: string;
+  documentName: string;
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  isInherited?: boolean;
+  matchedSections?: string[];
+};
+
+export type ChatKnowledgeCitation = {
+  number: number;
+  groupId: string;
+  groupName: string;
+  documentId: string;
+  documentName: string;
+  sourceGroupId?: string | null;
+  sourceGroupName?: string | null;
+  isInherited?: boolean;
+  versionId?: string | null;
+  sectionId?: string | null;
+  sectionHeading?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  excerpt: string;
+  relevanceScore: number;
+};
+
+export type ChatKnowledgeImage = {
+  groupId: string;
+  groupName: string;
+  documentId: string;
+  documentName: string;
+  imageId: string;
+  versionId?: string | null;
+  label: string;
+  description: string;
+  headingPath?: string | null;
+  stepHint?: string | null;
+  pageNumber?: number | null;
+  assetUrl: string | null;
+};
+
 export type ChatMetadata = {
   usage?: ChatUsage;
   chatModel?: ChatModel;
   toolChoice?: "auto" | "none" | "manual";
   toolCount?: number;
+  activatedSkills?: string[];
   agentId?: string;
   source?: "chat" | "emma_pilot";
   tabUrl?: string;
@@ -113,6 +158,9 @@ export type ChatMetadata = {
   pilotVisualMode?: PilotVisualContext["mode"];
   pilotVisualCaptureCount?: number;
   compaction?: ChatCompactionMetadata;
+  knowledgeSources?: ChatKnowledgeSource[];
+  knowledgeCitations?: ChatKnowledgeCitation[];
+  knowledgeImages?: ChatKnowledgeImage[];
 };
 
 export type ChatFeedbackType = "like" | "dislike";
@@ -159,6 +207,18 @@ export type ChatThread = {
   a2aContextId?: string | null;
   /** Optional A2A task ID returned by the remote agent. */
   a2aTaskId?: string | null;
+};
+
+export type ChatThreadListItem = ChatThread & {
+  lastMessageAt: number;
+};
+
+export type PaginatedChatThreads = {
+  items: ChatThreadListItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 };
 
 export type ChatThreadDetails = ChatThread & {
@@ -271,9 +331,23 @@ export type ChatRepository = {
 
   deleteChatMessage(id: string): Promise<void>;
 
-  selectThreadDetails(id: string): Promise<ChatThreadDetails | null>;
+  selectThreadDetails(
+    id: string,
+    options?: {
+      messageOffset?: number;
+      messageLimit?: number;
+    },
+  ): Promise<ChatThreadDetails | null>;
 
-  selectMessagesByThreadId(threadId: string): Promise<ChatMessage[]>;
+  selectMessagesByThreadId(
+    threadId: string,
+    options?: {
+      offset?: number;
+      limit?: number;
+    },
+  ): Promise<ChatMessage[]>;
+
+  selectMessageById(messageId: string): Promise<ChatMessage | null>;
 
   selectCompactionCheckpoint(
     threadId: string,
@@ -285,11 +359,14 @@ export type ChatRepository = {
 
   selectLatestThreadChatModel(threadId: string): Promise<ChatModel | null>;
 
-  selectThreadsByUserId(userId: string): Promise<
-    (ChatThread & {
-      lastMessageAt: number;
-    })[]
-  >;
+  selectThreadsByUserId(userId: string): Promise<ChatThreadListItem[]>;
+  selectThreadsPageByUserId(
+    userId: string,
+    input: {
+      limit: number;
+      offset: number;
+    },
+  ): Promise<PaginatedChatThreads>;
 
   updateThread(
     id: string,

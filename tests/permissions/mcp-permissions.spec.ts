@@ -268,6 +268,99 @@ test.describe
   });
 
 test.describe
+  .serial("MCP Detail Page Permissions", () => {
+    let serverName: string;
+    let serverId: string;
+    let adminContext: BrowserContext;
+    let adminPage: Page;
+
+    test.beforeAll(async ({ browser }) => {
+      test.setTimeout(20 * 1000);
+
+      adminContext = await browser.newContext({
+        storageState: TEST_USERS.admin.authFile,
+      });
+      adminPage = await adminContext.newPage();
+
+      serverName = generateServerName("admin-detail");
+      const { id } = await createMcpServer(
+        { page: adminPage },
+        { name: serverName, visibility: "public" },
+      );
+      serverId = id;
+    });
+
+    test("owner can open detail page from the card and manage publishing", async () => {
+      await adminPage.goto("/mcp", { waitUntil: "networkidle" });
+
+      const serverCard = adminPage
+        .getByTestId("mcp-server-card")
+        .filter({ hasText: serverName })
+        .first();
+
+      await expect(serverCard).toBeVisible();
+      await serverCard.click();
+
+      await expect(adminPage).toHaveURL(new RegExp(`/mcp/${serverId}$`));
+      await expect(adminPage.getByTestId("mcp-detail-page")).toBeVisible();
+      await expect(adminPage.getByTestId("mcp-config-panel")).toBeVisible();
+      await expect(adminPage.getByTestId("mcp-publish-panel")).toBeVisible();
+    });
+
+    test("card action buttons do not trigger detail navigation", async () => {
+      await adminPage.goto("/mcp", { waitUntil: "networkidle" });
+
+      const serverCard = adminPage
+        .getByTestId("mcp-server-card")
+        .filter({ hasText: serverName })
+        .first();
+
+      await expect(serverCard).toBeVisible();
+      await serverCard.getByRole("button", { name: /tool test/i }).click();
+
+      await expect(adminPage).toHaveURL(new RegExp(`/mcp/test/${serverId}$`));
+    });
+
+    test("read-only users can open shared details without manage controls", async ({
+      browser,
+    }) => {
+      const userContext = await browser.newContext({
+        storageState: TEST_USERS.regular.authFile,
+      });
+      const userPage = await userContext.newPage();
+
+      await userPage.goto("/mcp", { waitUntil: "networkidle" });
+
+      const serverCard = userPage
+        .getByTestId("mcp-server-card")
+        .filter({ hasText: serverName })
+        .first();
+
+      await expect(serverCard).toBeVisible();
+      await serverCard.click();
+
+      await expect(userPage).toHaveURL(new RegExp(`/mcp/${serverId}$`));
+      await expect(userPage.getByTestId("mcp-detail-page")).toBeVisible();
+      await expect(userPage.getByTestId("mcp-tools-panel")).toBeVisible();
+      await expect(userPage.getByTestId("mcp-config-panel")).not.toBeVisible();
+      await expect(userPage.getByTestId("mcp-publish-panel")).not.toBeVisible();
+      await expect(
+        userPage.getByRole("button", { name: /tool test/i }),
+      ).not.toBeVisible();
+
+      await userContext.close();
+    });
+
+    test.afterAll(async () => {
+      if (serverId) {
+        await deleteMcpServer({ page: adminPage }, serverId);
+      }
+
+      await adminContext.close();
+    });
+  });
+
+test.describe
   .serial("MCP Visibility - State Transitions", () => {
     let transitionServerName: string;
     let transitionServerId: string;

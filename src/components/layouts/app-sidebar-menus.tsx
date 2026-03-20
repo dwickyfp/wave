@@ -16,16 +16,8 @@ import Link from "next/link";
 import { getShortcutKeyList, Shortcuts } from "lib/keyboard-shortcuts";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { MCPIcon } from "ui/mcp-icon";
 import { WriteIcon } from "ui/write-icon";
-import {
-  BrainIcon,
-  FolderOpenIcon,
-  FolderSearchIcon,
-  PlusIcon,
-  SparklesIcon,
-  Waypoints,
-} from "lucide-react";
+import { FolderOpenIcon, FolderSearchIcon, PlusIcon } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Skeleton } from "ui/skeleton";
 import { useArchives } from "@/hooks/queries/use-archives";
@@ -33,6 +25,8 @@ import { ArchiveDialog } from "../archive-dialog";
 import { getIsUserAdmin } from "lib/user/utils";
 import { BasicUser } from "app-types/user";
 import { AppSidebarAdmin } from "./app-sidebar-menu-admin";
+import { AppSidebarCreator } from "./app-sidebar-menu-creator";
+import { hasCreatorPermission } from "lib/auth/client-permissions";
 
 export function AppSidebarMenus({ user }: { user?: BasicUser }) {
   const router = useRouter();
@@ -79,55 +73,8 @@ export function AppSidebarMenus({ user }: { user?: BasicUser }) {
             </SidebarMenuItem>
           </Tooltip>
         </SidebarMenu>
-        <SidebarMenu>
-          <Tooltip>
-            <SidebarMenuItem>
-              <Link href="/mcp">
-                <SidebarMenuButton className="font-semibold">
-                  <MCPIcon className="size-4 fill-accent-foreground" />
-                  {t("Layout.mcpConfiguration")}
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </Tooltip>
-        </SidebarMenu>
-        <SidebarMenu>
-          <Tooltip>
-            <SidebarMenuItem>
-              <Link href="/workflow">
-                <SidebarMenuButton className="font-semibold">
-                  <Waypoints className="size-4" />
-                  {t("Layout.workflow")}
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </Tooltip>
-        </SidebarMenu>
+        {hasCreatorPermission(user?.role) && <AppSidebarCreator />}
         {getIsUserAdmin(user) && <AppSidebarAdmin />}
-        <SidebarMenu>
-          <Tooltip>
-            <SidebarMenuItem>
-              <Link href="/knowledge">
-                <SidebarMenuButton className="font-semibold">
-                  <BrainIcon className="size-4" />
-                  ContextX
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </Tooltip>
-        </SidebarMenu>
-        <SidebarMenu>
-          <Tooltip>
-            <SidebarMenuItem>
-              <Link href="/skills">
-                <SidebarMenuButton className="font-semibold">
-                  <SparklesIcon className="size-4" />
-                  {t("Layout.skills")}
-                </SidebarMenuButton>
-              </Link>
-            </SidebarMenuItem>
-          </Tooltip>
-        </SidebarMenu>
         <SidebarMenu className="group/archive">
           <Tooltip>
             <SidebarMenuItem>

@@ -31,6 +31,7 @@ import JsonView from "ui/json-view";
 import { Textarea } from "ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { Markdown } from "./markdown";
+import { KnowledgeImageGallery } from "./knowledge-image-gallery";
 import { MessageEditor } from "./message-editor";
 
 import {
@@ -70,6 +71,7 @@ import {
   getShortcutKeyList,
   isShortcutEvent,
 } from "lib/keyboard-shortcuts";
+import { stripKnowledgeCitationLinks } from "lib/chat/knowledge-citations";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { TextShimmer } from "ui/text-shimmer";
 
@@ -79,6 +81,8 @@ import { notify } from "lib/notify";
 import dynamic from "next/dynamic";
 import { ModelProviderIcon } from "ui/model-provider-icon";
 import { WorkflowInvocation } from "./tool-invocation/workflow-invocation";
+import { tokenizeUserMessageMentions } from "@/lib/chat/user-message-mentions";
+import { KnowledgeSourcesBadge } from "./knowledge-sources-badge";
 
 type MessagePart = UIMessage["parts"][number];
 type TextMessagePart = Extract<MessagePart, { type: "text" }>;
@@ -124,38 +128,28 @@ interface ToolMessagePartProps {
 
 const MAX_TEXT_LENGTH = 600;
 
-function renderUserTextWithToolMentions(text: string) {
-  const regex = /@tool\(\s*['"]([^'"]+)['"]\s*\)/g;
-  const nodes: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null = null;
+function renderUserTextWithMentions(text: string) {
+  const segments = tokenizeUserMessageMentions(text);
+  const hasMention = segments.some((segment) => segment.type === "mention");
 
-  while ((match = regex.exec(text)) !== null) {
-    const start = match.index;
-    const end = regex.lastIndex;
-    const toolName = match[1];
+  if (!hasMention) {
+    return text;
+  }
 
-    if (start > lastIndex) {
-      nodes.push(text.slice(lastIndex, start));
+  return segments.map((segment, index) => {
+    if (segment.type === "text") {
+      return segment.text;
     }
 
-    nodes.push(
+    return (
       <span
-        key={`tool-mention-${start}-${end}`}
+        key={`${segment.mentionKind}-${segment.value}-${index}`}
         className="inline-flex items-center rounded-xl bg-orange-500/10 px-2.5 py-0.5 font-semibold text-orange-500"
       >
-        {toolName}
-      </span>,
+        {segment.value}
+      </span>
     );
-
-    lastIndex = end;
-  }
-
-  if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
-  }
-
-  return nodes.length > 0 ? nodes : text;
+  });
 }
 
 export const UserMessagePart = memo(
@@ -273,7 +267,7 @@ export const UserMessagePart = memo(
             <div className="absolute pointer-events-none bg-gradient-to-t from-accent to-transparent w-full h-40 bottom-0 left-0" />
           )}
           <p className={cn("whitespace-pre-wrap text-sm break-words")}>
-            {renderUserTextWithToolMentions(displayText)}
+            {renderUserTextWithMentions(displayText)}
           </p>
           {isLongText && (
             <Button
@@ -394,6 +388,8 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   showActions,
   message,
   prevMessage,
+  isLast,
+  isLoading: isResponseLoading,
   isError,
   threadId,
   setMessages,
@@ -401,7 +397,6 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   sendMessage,
 }: AssistMessagePartProps) {
   const { copied, copy } = useCopy();
-  const [isLoading, setIsLoading] = useState(false);
   const agentList = appStore((state) => state.agentList);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isBranching, setIsBranching] = useState(false);
@@ -409,6 +404,10 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   const t = useTranslations();
   const ref = useRef<HTMLDivElement>(null);
   const metadata = message.metadata as ChatMetadata | undefined;
+  const knowledgeSources = metadata?.knowledgeSources ?? [];
+  const knowledgeCitations = metadata?.knowledgeCitations ?? [];
+  const knowledgeImages = metadata?.knowledgeImages ?? [];
+  const isStreaming = Boolean(isLast && isResponseLoading);
 
   const [feedback, setFeedback] = useState<ChatFeedbackType | null>(null);
   const [isCling, setIsCling] = useState(false);
@@ -535,10 +534,10 @@ export const AssistMessagePart = memo(function AssistMessagePart({
 
   const handleModelChange = (model: ChatModel) => {
     if (!setMessages || !sendMessage || !prevMessage) return;
-    safe(() => setIsLoading(true))
+    safe(() => undefined)
       .ifOk(() =>
         threadId
-          ? deleteMessagesByChatIdAfterTimestampAction(message.id)
+          ? deleteMessagesByChatIdAfterTimestampAction(message.id, "regenerate")
           : Promise.resolve(),
       )
       .ifOk(() =>
@@ -558,17 +557,11 @@ export const AssistMessagePart = memo(function AssistMessagePart({
         }),
       )
       .ifFail((error) => toast.error(error.message))
-      .watch(() => setIsLoading(false))
       .unwrap();
   };
 
   return (
-    <div
-      className={cn(
-        isLoading && "animate-pulse",
-        "flex flex-col gap-2 group/message",
-      )}
-    >
+    <div className="flex flex-col gap-2 group/message">
       <div
         data-testid="message-content"
         className={cn("flex flex-col gap-4 px-2", {
@@ -581,13 +574,22 @@ export const AssistMessagePart = memo(function AssistMessagePart({
               ? "snowflake"
               : undefined
           }
+          knowledgeCitations={knowledgeCitations}
+          animate={false}
+          streaming={isStreaming}
         >
           {part.text}
         </Markdown>
       </div>
+      {knowledgeImages.length > 0 && (
+        <div className="px-2">
+          <KnowledgeImageGallery images={knowledgeImages} />
+        </div>
+      )}
       {showActions && (
         <div className="flex flex-col gap-1 w-full">
-          <div className="flex w-full">
+          <div className="flex w-full flex-wrap items-center gap-1">
+            <KnowledgeSourcesBadge sources={knowledgeSources} />
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -595,7 +597,7 @@ export const AssistMessagePart = memo(function AssistMessagePart({
                   variant="ghost"
                   size="icon"
                   className="size-3! p-4!"
-                  onClick={() => copy(part.text)}
+                  onClick={() => copy(stripKnowledgeCitationLinks(part.text))}
                 >
                   {copied ? <Check /> : <Copy />}
                 </Button>
@@ -962,7 +964,7 @@ export const ReasoningPart = memo(function ReasoningPart({
               style={{ overflow: "hidden" }}
               className="pl-6 text-muted-foreground border-l flex flex-col gap-4"
             >
-              <Markdown>
+              <Markdown animate={!isThinking}>
                 {reasoningText || (isThinking ? "" : "Hmm, let's see...🤔")}
               </Markdown>
             </motion.div>

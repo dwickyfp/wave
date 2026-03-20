@@ -115,4 +115,50 @@ describe("chat-compaction-background", () => {
     );
     expect(enqueueChatCompaction).toHaveBeenCalledWith("thread-1");
   });
+
+  it("marks compaction failed when queue submission fails", async () => {
+    vi.mocked(chatRepository.selectThreadDetails).mockResolvedValue({
+      id: "thread-1",
+      title: "Chat",
+      userId: "user-1",
+      createdAt: new Date(),
+      messages: [
+        {
+          id: "m-1",
+          role: "user",
+          parts: [{ type: "text", text: "older turn".repeat(10_000) }],
+          createdAt: new Date(),
+        },
+        {
+          id: "m-2",
+          role: "assistant",
+          parts: [{ type: "text", text: "older answer".repeat(10_000) }],
+          createdAt: new Date(),
+        },
+        {
+          id: "m-3",
+          role: "user",
+          parts: [{ type: "text", text: "recent turn".repeat(8_000) }],
+          createdAt: new Date(),
+        },
+      ],
+      compactionCheckpoint: null,
+      compactionState: null,
+    } as any);
+    vi.mocked(enqueueChatCompaction).mockRejectedValue(
+      new Error("redis unavailable"),
+    );
+
+    await expect(
+      enqueueOrRunBackgroundThreadCompaction("thread-1"),
+    ).rejects.toThrow("redis unavailable");
+
+    expect(chatRepository.upsertCompactionState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: "thread-1",
+        status: "failed",
+        failureCode: "queue_unavailable",
+      }),
+    );
+  });
 });

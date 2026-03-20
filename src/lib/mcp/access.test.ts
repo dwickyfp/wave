@@ -10,6 +10,9 @@ vi.mock("lib/db/repository", () => ({
     selectById: vi.fn(),
     selectByServerName: vi.fn(),
   },
+  teamRepository: {
+    isResourceSharedWithUserTeam: vi.fn(),
+  },
 }));
 
 vi.mock("lib/user/utils", () => ({
@@ -17,7 +20,7 @@ vi.mock("lib/user/utils", () => ({
 }));
 
 const { getCurrentUser } = await import("lib/auth/permissions");
-const { mcpRepository } = await import("lib/db/repository");
+const { mcpRepository, teamRepository } = await import("lib/db/repository");
 const { getIsUserAdmin } = await import("lib/user/utils");
 const { getAccessibleMcpServerByNameOrThrow, getAccessibleMcpServerOrThrow } =
   await import("./access");
@@ -25,6 +28,9 @@ const { getAccessibleMcpServerByNameOrThrow, getAccessibleMcpServerOrThrow } =
 describe("mcp access", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(teamRepository.isResourceSharedWithUserTeam).mockResolvedValue(
+      false,
+    );
   });
 
   it("allows owners to manage their servers", async () => {
@@ -76,6 +82,32 @@ describe("mcp access", () => {
       userId: "user-2",
       visibility: "public",
     } as any);
+
+    await expect(
+      getAccessibleMcpServerOrThrow("server-1", "manage"),
+    ).rejects.toThrow("Unauthorized");
+  });
+
+  it("allows reads through a shared team without manage access", async () => {
+    vi.mocked(getCurrentUser).mockResolvedValue({
+      id: "user-1",
+      role: "user",
+    } as any);
+    vi.mocked(getIsUserAdmin).mockReturnValue(false);
+    vi.mocked(teamRepository.isResourceSharedWithUserTeam).mockResolvedValue(
+      true,
+    );
+    vi.mocked(mcpRepository.selectById).mockResolvedValue({
+      id: "server-1",
+      userId: "user-2",
+      visibility: "private",
+    } as any);
+
+    await expect(
+      getAccessibleMcpServerOrThrow("server-1", "read"),
+    ).resolves.toMatchObject({
+      isOwner: false,
+    });
 
     await expect(
       getAccessibleMcpServerOrThrow("server-1", "manage"),

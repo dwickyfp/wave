@@ -17,16 +17,27 @@ export default async function KnowledgeGroupDetailPage({ params }: Props) {
   const group = await knowledgeRepository.selectGroupById(id, session.user.id);
   if (!group) notFound();
 
-  const [documents, contextxConfig] = await Promise.all([
+  const [documents, sourceGroups, settings] = await Promise.all([
     knowledgeRepository.selectDocumentsByGroupScope(id),
-    settingsRepository.getSetting("contextx-model"),
+    knowledgeRepository.selectGroupSources(id),
+    settingsRepository
+      .getSettings([
+        "knowledge-parse-model",
+        "knowledge-context-model",
+        "knowledge-image-model",
+      ])
+      .catch((error) => {
+        console.warn(
+          `[settings] Failed to load knowledge model settings for group ${id}:`,
+          error,
+        );
+        return {};
+      }),
   ]);
-  const sourceGroups = await knowledgeRepository.selectGroupSources(id);
 
-  const contextxModel = contextxConfig as {
-    provider: string;
-    model: string;
-  } | null;
+  const parseConfig = settings["knowledge-parse-model"] ?? null;
+  const contextConfig = settings["knowledge-context-model"] ?? null;
+  const imageConfig = settings["knowledge-image-model"] ?? null;
 
   return (
     <KnowledgeDetailPage
@@ -34,7 +45,14 @@ export default async function KnowledgeGroupDetailPage({ params }: Props) {
       initialDocuments={documents}
       initialSourceGroups={sourceGroups}
       userId={session.user.id}
-      contextxModel={contextxModel}
+      knowledgeModels={{
+        parse:
+          (parseConfig as { provider: string; model: string } | null) ?? null,
+        context:
+          (contextConfig as { provider: string; model: string } | null) ?? null,
+        image:
+          (imageConfig as { provider: string; model: string } | null) ?? null,
+      }}
     />
   );
 }

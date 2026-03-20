@@ -35,7 +35,7 @@ export async function PUT(
   const canEdit = await canEditWorkflow();
   if (!canEdit) {
     return Response.json(
-      { error: "Only editors and admins can edit workflows" },
+      { error: "Only creators and admins can edit workflows" },
       { status: 403 },
     );
   }
@@ -79,7 +79,7 @@ export async function DELETE(
   const canDelete = await canDeleteWorkflow();
   if (!canDelete) {
     return Response.json(
-      { error: "Only editors and admins can delete workflows" },
+      { error: "Only creators and admins can delete workflows" },
       { status: 403 },
     );
   }

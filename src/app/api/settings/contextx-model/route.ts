@@ -3,7 +3,7 @@ import { settingsRepository } from "lib/db/repository";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-const CONTEXTX_MODEL_KEY = "contextx-model";
+const CONTEXTX_MODEL_KEY = "knowledge-context-model";
 
 const ContextXModelSchema = z.object({
   provider: z.string().min(1, "Provider is required"),
@@ -36,7 +36,7 @@ export async function GET() {
     return NextResponse.json(config ?? null);
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || "Failed to get ContextX model" },
+      { error: error.message || "Failed to get knowledge context model" },
       { status: 500 },
     );
   }
@@ -60,7 +60,7 @@ export async function PUT(request: Request) {
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || "Failed to update ContextX model" },
+      { error: error.message || "Failed to update knowledge context model" },
       { status: 500 },
     );
   }

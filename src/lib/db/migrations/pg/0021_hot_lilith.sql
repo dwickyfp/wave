@@ -1,1 +1,1 @@
-ALTER TABLE "snowflake_agent_config" ADD COLUMN "snowflake_role" text;
+ALTER TABLE "snowflake_agent_config" ADD COLUMN IF NOT EXISTS "snowflake_role" text;

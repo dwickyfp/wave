@@ -15,14 +15,14 @@ export const TEST_USERS = {
     email: "editor@test-seed.local",
     password: "EditorPassword123!",
     name: "Test Editor User",
-    role: "editor",
+    role: "creator",
     authFile: "tests/.auth/editor-user.json",
   },
   editor2: {
     email: "editor2@test-seed.local",
     password: "Editor2Password123!",
     name: "Test Editor User 2",
-    role: "editor",
+    role: "creator",
     authFile: "tests/.auth/editor-user2.json",
   },
   regular: {
@@ -44,7 +44,7 @@ export const TEST_USERS = {
     email: `testuser${i + 4}@test-seed.local`,
     password: `TestPass${i + 4}!`,
     name: `Test User ${i + 4}`,
-    role: i + 4 <= 9 ? "editor" : "user",
+    role: i + 4 <= 9 ? "creator" : "user",
   })),
 } as const;
 

@@ -190,13 +190,16 @@ export async function enqueueOrRunBackgroundThreadCompaction(
 
   try {
     await enqueueChatCompaction(threadId);
-  } catch {
-    runBackgroundThreadCompaction(threadId).catch((error) => {
-      console.error(
-        "[Chat Compaction] Inline background compaction failed:",
-        threadId,
-        error,
-      );
+  } catch (error) {
+    await updateThreadCompactionState({
+      threadId,
+      source: "background",
+      status: "failed",
+      beforeTokens: candidate.totalTokens,
+      afterTokens: candidate.totalTokens,
+      failureCode: "queue_unavailable",
+      finishedAt: new Date(),
     });
+    throw error;
   }
 }

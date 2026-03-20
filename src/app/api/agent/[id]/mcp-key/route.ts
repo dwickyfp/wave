@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "auth/server";
 import { agentRepository, settingsRepository } from "lib/db/repository";
+import { serverCache } from "lib/cache";
+import { CacheKeys } from "lib/cache/cache-keys";
 import { hash } from "bcrypt-ts";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -16,6 +18,7 @@ const actionSchema = z.object({
 const updateSchema = z
   .object({
     enabled: z.boolean().optional(),
+    chatPersonalizationEnabled: z.boolean().optional(),
     codingMode: z.boolean().optional(),
     presentationMode: z.enum(["compatibility", "copilot_native"]).optional(),
     model: z
@@ -36,13 +39,14 @@ const updateSchema = z
   .refine(
     (value) =>
       value.enabled !== undefined ||
+      value.chatPersonalizationEnabled !== undefined ||
       value.codingMode !== undefined ||
       value.model !== undefined ||
       value.autocompleteModel !== undefined ||
       value.presentationMode !== undefined,
     {
       message:
-        "At least one of enabled/codingMode/model/autocompleteModel/presentationMode is required",
+        "At least one of enabled/chatPersonalizationEnabled/codingMode/model/autocompleteModel/presentationMode is required",
     },
   );
 
@@ -179,6 +183,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         agentRepository.setA2aApiKey(id, session.user.id, null, null),
         agentRepository.setA2aEnabled(id, session.user.id, false),
       ]);
+      serverCache.delete(CacheKeys.agentInstructions(id));
       return NextResponse.json({ success: true });
     }
 
@@ -190,6 +195,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       agentRepository.setMcpApiKey(id, session.user.id, keyHash, keyPreview),
       agentRepository.setA2aApiKey(id, session.user.id, keyHash, keyPreview),
     ]);
+    serverCache.delete(CacheKeys.agentInstructions(id));
     return NextResponse.json({ key: rawKey, preview: keyPreview });
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -213,14 +219,28 @@ export async function PUT(req: NextRequest, { params }: Params) {
     }
 
     const { id } = await params;
-    const { enabled, codingMode, model, autocompleteModel, presentationMode } =
-      updateSchema.parse(await req.json());
+    const {
+      enabled,
+      chatPersonalizationEnabled,
+      codingMode,
+      model,
+      autocompleteModel,
+      presentationMode,
+    } = updateSchema.parse(await req.json());
 
     const ownershipCheck = await loadOwnedStandardAgent(id, session.user.id);
     if (!ownershipCheck.ok) return ownershipCheck.response;
 
     if (enabled !== undefined) {
       await agentRepository.setMcpEnabled(id, session.user.id, enabled);
+    }
+
+    if (chatPersonalizationEnabled !== undefined) {
+      await agentRepository.setChatPersonalizationEnabled(
+        id,
+        session.user.id,
+        chatPersonalizationEnabled,
+      );
     }
 
     if (codingMode !== undefined) {
@@ -289,6 +309,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       );
     }
 
+    serverCache.delete(CacheKeys.agentInstructions(id));
     return NextResponse.json({ success: true });
   } catch (error) {
     if (error instanceof z.ZodError) {

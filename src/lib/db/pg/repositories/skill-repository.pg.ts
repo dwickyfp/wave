@@ -9,6 +9,8 @@ import { and, desc, eq, ne, or, sql } from "drizzle-orm";
 import { generateUUID } from "lib/utils";
 import { pgDb as db } from "../db.pg";
 import { SkillAgentTable, SkillTable, UserTable } from "../schema.pg";
+import { buildTeamShareExists } from "./team-resource-access.pg";
+import { attachSharedTeamsToResources } from "./team-resource-metadata.pg";
 
 function mapSkill(row: typeof SkillTable.$inferSelect): Skill {
   return {
@@ -46,15 +48,28 @@ export const pgSkillRepository: SkillRepository = {
             eq(SkillTable.userId, userId),
             eq(SkillTable.visibility, "public"),
             eq(SkillTable.visibility, "readonly"),
+            buildTeamShareExists("skill", SkillTable.id, userId),
           ),
         ),
       );
     if (!row) return null;
-    return mapSkill(row);
+
+    const [skill] = await attachSharedTeamsToResources(
+      [mapSkill(row)],
+      "skill",
+      userId,
+    );
+
+    return skill;
   },
 
   async selectSkills(userId: string, filters = ["mine", "shared"]) {
     let whereCondition: any;
+    const teamSharedAccess = buildTeamShareExists(
+      "skill",
+      SkillTable.id,
+      userId,
+    );
 
     if (filters.includes("mine") && filters.includes("shared")) {
       whereCondition = or(
@@ -64,6 +79,7 @@ export const pgSkillRepository: SkillRepository = {
           or(
             eq(SkillTable.visibility, "public"),
             eq(SkillTable.visibility, "readonly"),
+            teamSharedAccess,
           ),
         ),
       );
@@ -75,6 +91,7 @@ export const pgSkillRepository: SkillRepository = {
         or(
           eq(SkillTable.visibility, "public"),
           eq(SkillTable.visibility, "readonly"),
+          teamSharedAccess,
         ),
       );
     }
@@ -100,12 +117,16 @@ export const pgSkillRepository: SkillRepository = {
         desc(SkillTable.createdAt),
       );
 
-    return rows.map((row) => ({
-      ...row,
-      description: row.description ?? undefined,
-      userName: row.userName ?? undefined,
-      userAvatar: row.userAvatar ?? null,
-    })) as SkillSummary[];
+    return (await attachSharedTeamsToResources(
+      rows.map((row) => ({
+        ...row,
+        description: row.description ?? undefined,
+        userName: row.userName ?? undefined,
+        userAvatar: row.userAvatar ?? null,
+      })),
+      "skill",
+      userId,
+    )) as SkillSummary[];
   },
 
   async updateSkill(id: string, userId: string, data: UpdateSkillInput) {

@@ -1,11 +1,11 @@
 export const USER_ROLES = {
   ADMIN: "admin",
-  EDITOR: "editor",
+  CREATOR: "creator",
   USER: "user",
 } as const;
 export type UserRoleNames = (typeof USER_ROLES)[keyof typeof USER_ROLES];
 
-// Default user role is "editor" which matches the current user capabilities
+// Default user role is "creator" which matches the current user capabilities
 
 export const DEFAULT_USER_ROLE: UserRoleNames =
   process.env.DEFAULT_USER_ROLE &&
@@ -13,7 +13,7 @@ export const DEFAULT_USER_ROLE: UserRoleNames =
     process.env.DEFAULT_USER_ROLE as UserRoleNames,
   )
     ? (process.env.DEFAULT_USER_ROLE as UserRoleNames)
-    : USER_ROLES.EDITOR;
+    : USER_ROLES.CREATOR;
 
 export type UserRolesInfo = Record<
   UserRoleNames,
@@ -28,8 +28,8 @@ export const userRolesInfo: UserRolesInfo = {
     label: "Admin",
     description: "Admin user can manage the app",
   },
-  editor: {
-    label: "Editor",
+  creator: {
+    label: "Creator",
     description:
       "Default role for users who can create agents, workflows and add MCPs",
   },

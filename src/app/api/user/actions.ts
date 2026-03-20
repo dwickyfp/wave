@@ -9,9 +9,11 @@ import { auth } from "auth/server";
 import {
   UpdateUserDetailsSchema,
   DeleteUserSchema,
+  DeleteUsersSchema,
   UpdateUserPasswordSchema,
   UpdateUserActionState,
   DeleteUserActionState,
+  DeleteUsersActionState,
   UpdateUserPasswordActionState,
 } from "./validations";
 import { getUser, getUserAccounts, updateUserDetails } from "lib/user/server";
@@ -158,6 +160,66 @@ export const deleteUserAction = validatedActionWithAdminPermission(
       success: true,
       message: t("userDeletedSuccessfully"),
       redirect: "/admin",
+    };
+  },
+);
+
+export const deleteUsersAction = validatedActionWithAdminPermission(
+  DeleteUsersSchema,
+  async (data, _formData, userSession): Promise<DeleteUsersActionState> => {
+    const t = await getTranslations("Admin.Users");
+    const requestHeaders = await headers();
+    const uniqueUserIds = Array.from(new Set(data.userIds));
+
+    if (uniqueUserIds.includes(userSession.user.id)) {
+      return {
+        success: false,
+        message: t("cannotDeleteYourself"),
+        deletedCount: 0,
+        failedCount: uniqueUserIds.length,
+      };
+    }
+
+    const deleteResults = await Promise.allSettled(
+      uniqueUserIds.map((userId) =>
+        auth.api.removeUser({
+          body: { userId },
+          headers: requestHeaders,
+        }),
+      ),
+    );
+
+    const deletedCount = deleteResults.filter(
+      (result) => result.status === "fulfilled",
+    ).length;
+    const failedCount = deleteResults.length - deletedCount;
+
+    if (deletedCount === 0) {
+      return {
+        success: false,
+        message: t("failedToDeleteSelectedUsers"),
+        deletedCount,
+        failedCount,
+      };
+    }
+
+    if (failedCount > 0) {
+      return {
+        success: false,
+        message: t("partiallyDeletedSelectedUsers", {
+          deletedCount,
+          failedCount,
+        }),
+        deletedCount,
+        failedCount,
+      };
+    }
+
+    return {
+      success: true,
+      message: t("usersDeletedSuccessfully", { count: deletedCount }),
+      deletedCount,
+      failedCount,
     };
   },
 );

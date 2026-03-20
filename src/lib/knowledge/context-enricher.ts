@@ -1,10 +1,12 @@
 /**
  * Contextual enrichment for chunk embeddings.
  *
- * Uses local section context instead of the document opening so late-page
- * chunks stay grounded in the section they came from.
+ * The default path is deterministic and cheap. LLM summaries are only used
+ * when explicitly configured and when the chunk structure is weak enough that
+ * an extra summary is likely to help retrieval.
  */
 import { LanguageModel, generateText } from "ai";
+import type { KnowledgeContextMode } from "app-types/knowledge";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
 import type { TextChunk } from "./chunker";
@@ -19,7 +21,8 @@ const CONTEXT_MODEL_PREFERENCES = [
 ] as const;
 
 const CONTEXT_GEN_CONCURRENCY = 5;
-const CONTEXTX_MODEL_KEY = "contextx-model";
+const CONTEXT_MODEL_KEY = "knowledge-context-model";
+const LEGACY_CONTEXT_MODEL_KEY = "contextx-model";
 
 export interface EnrichedChunk extends TextChunk {
   contextSummary: string;
@@ -34,29 +37,38 @@ export interface ChunkSectionContext {
   parentSectionId?: string | null;
 }
 
-async function getContextModel(): Promise<LanguageModel | null> {
-  try {
-    const config = await settingsRepository.getSetting(CONTEXTX_MODEL_KEY);
-    if (
-      config &&
-      typeof config === "object" &&
-      "provider" in config &&
-      "model" in config
-    ) {
-      const { provider, model: modelName } = config as {
-        provider: string;
-        model: string;
-      };
-      const providerConfig =
-        await settingsRepository.getProviderByName(provider);
+type ContextEnrichmentOptions = {
+  mode?: KnowledgeContextMode;
+  modelConfig?: { provider: string; model: string } | null;
+};
+
+async function getContextModel(
+  overrideConfig?: { provider: string; model: string } | null,
+): Promise<LanguageModel | null> {
+  const config =
+    overrideConfig ??
+    ((await settingsRepository.getSetting(CONTEXT_MODEL_KEY)) as {
+      provider: string;
+      model: string;
+    } | null) ??
+    ((await settingsRepository.getSetting(LEGACY_CONTEXT_MODEL_KEY)) as {
+      provider: string;
+      model: string;
+    } | null);
+
+  if (config?.provider && config?.model) {
+    try {
+      const providerConfig = await settingsRepository.getProviderByName(
+        config.provider,
+      );
       if (providerConfig?.enabled) {
         const modelConfig = await settingsRepository.getModelForChat(
-          provider,
-          modelName,
+          config.provider,
+          config.model,
         );
-        const resolvedModelName = modelConfig?.apiName ?? modelName;
+        const resolvedModelName = modelConfig?.apiName ?? config.model;
         const model = createModelFromConfig(
-          provider,
+          config.provider,
           resolvedModelName,
           providerConfig.apiKey,
           providerConfig.baseUrl,
@@ -64,9 +76,9 @@ async function getContextModel(): Promise<LanguageModel | null> {
         );
         if (model) return model;
       }
+    } catch {
+      // Fall through to hardcoded preferences.
     }
-  } catch {
-    // Fall through to hardcoded preferences.
   }
 
   for (const pref of CONTEXT_MODEL_PREFERENCES) {
@@ -120,6 +132,50 @@ function buildSectionContextMap(sections: ChunkSectionContext[]) {
   };
 }
 
+function formatPageSpan(chunk: TextChunk): string {
+  const start = chunk.metadata.pageStart ?? chunk.metadata.pageNumber;
+  const end = chunk.metadata.pageEnd ?? chunk.metadata.pageNumber;
+  if (!start) return "";
+  if (!end || end === start) return `Pages: ${start}.`;
+  return `Pages: ${start}-${end}.`;
+}
+
+function buildEmbeddingIdentityPrefix(chunk: TextChunk): string {
+  const parts = [
+    chunk.metadata.canonicalTitle
+      ? `Document: ${chunk.metadata.canonicalTitle}.`
+      : "",
+    chunk.metadata.issuerName ? `Issuer: ${chunk.metadata.issuerName}.` : "",
+    chunk.metadata.issuerTicker
+      ? `Ticker: ${chunk.metadata.issuerTicker}.`
+      : "",
+    chunk.metadata.reportType
+      ? `Report type: ${chunk.metadata.reportType}.`
+      : "",
+    chunk.metadata.fiscalYear
+      ? `Fiscal year: ${chunk.metadata.fiscalYear}.`
+      : "",
+    chunk.metadata.noteNumber
+      ? `Note: ${chunk.metadata.noteSubsection ? `${chunk.metadata.noteNumber}.${chunk.metadata.noteSubsection}` : chunk.metadata.noteNumber}.`
+      : "",
+    chunk.metadata.noteTitle ? `Note title: ${chunk.metadata.noteTitle}.` : "",
+    formatPageSpan(chunk),
+  ].filter(Boolean);
+
+  return parts.join(" ").trim();
+}
+
+function isWeaklyStructuredChunk(chunk: TextChunk): boolean {
+  const metadata = chunk.metadata;
+  if (!metadata.headingPath && !metadata.section) return true;
+  if (!metadata.chunkType || metadata.chunkType === "other") return true;
+  if (metadata.chunkType === "table" || metadata.chunkType === "directive") {
+    return true;
+  }
+  if ((metadata.qualityScore ?? 1) < 0.68) return true;
+  return false;
+}
+
 async function generateChunkContext(
   model: LanguageModel,
   chunk: TextChunk,
@@ -135,12 +191,13 @@ async function generateChunkContext(
 ${localContext.sectionPath ? `<section_path>${localContext.sectionPath}</section_path>` : ""}
 ${localContext.parentSummary ? `<parent_section_summary>${localContext.parentSummary}</parent_section_summary>` : ""}
 ${localContext.sectionExcerpt ? `<section_excerpt>\n${localContext.sectionExcerpt}\n</section_excerpt>` : ""}
+${formatPageSpan(chunk) ? `<page_span>${formatPageSpan(chunk)}</page_span>` : ""}
 
 <chunk>
 ${chunk.content}
 </chunk>
 
-Generate a short (1-3 sentences) factual context that explains what this chunk covers and how it fits within the section. Do not repeat the chunk verbatim. Output only the context.`;
+Generate a short factual context that explains what this chunk covers and how it fits within the local section. Do not repeat the chunk verbatim. Output only the context.`;
 
   try {
     const { text } = await generateText({
@@ -178,6 +235,7 @@ async function processInBatches<T, R>(
 }
 
 function generateFallbackContext(
+  chunk: TextChunk,
   documentTitle: string,
   localContext: {
     sectionPath: string;
@@ -190,6 +248,8 @@ function generateFallbackContext(
   if (localContext.sectionPath) {
     parts.push(`Section: ${localContext.sectionPath}.`);
   }
+  const pageSpan = formatPageSpan(chunk);
+  if (pageSpan) parts.push(pageSpan);
   if (localContext.parentSummary) {
     parts.push(localContext.parentSummary);
   }
@@ -201,19 +261,64 @@ export async function enrichChunksWithContext(
   chunks: TextChunk[],
   documentTitle: string,
   sections: ChunkSectionContext[],
+  options: ContextEnrichmentOptions = {},
 ): Promise<EnrichedChunk[]> {
   if (chunks.length === 0) return [];
 
+  const mode = options.mode ?? "deterministic";
   const resolveLocalContext = buildSectionContextMap(sections);
-  const model = await getContextModel();
+  if (mode === "deterministic") {
+    return chunks.map((chunk) => {
+      const localContext = resolveLocalContext(chunk);
+      const context = generateFallbackContext(
+        chunk,
+        documentTitle,
+        localContext,
+      );
+      return {
+        ...chunk,
+        contextSummary: context,
+        embeddingText: [
+          buildEmbeddingIdentityPrefix(chunk),
+          context,
+          chunk.content,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      };
+    });
+  }
 
-  if (model) {
-    console.log(
-      `[ContextX] Generating contextual summaries for ${chunks.length} chunks using section-local context`,
-    );
+  const model = await getContextModel(options.modelConfig);
+  if (!model) {
+    return chunks.map((chunk) => {
+      const localContext = resolveLocalContext(chunk);
+      const context = generateFallbackContext(
+        chunk,
+        documentTitle,
+        localContext,
+      );
+      return {
+        ...chunk,
+        contextSummary: context,
+        embeddingText: [
+          buildEmbeddingIdentityPrefix(chunk),
+          context,
+          chunk.content,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      };
+    });
+  }
 
+  const chunksNeedingLlm =
+    mode === "always-llm" ? chunks : chunks.filter(isWeaklyStructuredChunk);
+  const llmContextByChunkIndex = new Map<number, string>();
+
+  if (chunksNeedingLlm.length > 0) {
     const contexts = await processInBatches(
-      chunks,
+      chunksNeedingLlm,
       CONTEXT_GEN_CONCURRENCY,
       (chunk) =>
         generateChunkContext(
@@ -224,32 +329,27 @@ export async function enrichChunksWithContext(
         ),
     );
 
-    return chunks.map((chunk, index) => {
-      const localContext = resolveLocalContext(chunk);
-      const context =
-        contexts[index] || generateFallbackContext(documentTitle, localContext);
-
-      return {
-        ...chunk,
-        contextSummary: context,
-        embeddingText: context
-          ? `${context}\n\n${chunk.content}`
-          : chunk.content,
-      };
+    chunksNeedingLlm.forEach((chunk, index) => {
+      llmContextByChunkIndex.set(chunk.chunkIndex, contexts[index] ?? "");
     });
   }
 
-  console.log(
-    `[ContextX] No LLM available for context generation - using section-local fallback for ${chunks.length} chunks`,
-  );
-
   return chunks.map((chunk) => {
     const localContext = resolveLocalContext(chunk);
-    const context = generateFallbackContext(documentTitle, localContext);
+    const llmContext = llmContextByChunkIndex.get(chunk.chunkIndex) ?? "";
+    const context =
+      llmContext || generateFallbackContext(chunk, documentTitle, localContext);
+
     return {
       ...chunk,
       contextSummary: context,
-      embeddingText: context ? `${context}\n\n${chunk.content}` : chunk.content,
+      embeddingText: [
+        buildEmbeddingIdentityPrefix(chunk),
+        context,
+        chunk.content,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     };
   });
 }

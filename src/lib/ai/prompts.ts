@@ -143,6 +143,22 @@ CRITICAL RULES:
 - Be specific and comprehensive — the system should work autonomously without further guidance.`.trim();
 };
 
+export const buildAgentInstructionEnhancementPrompt = () => {
+  return `
+You rewrite an agent's system instructions.
+
+Rules:
+- Revise only the instruction content.
+- Apply the requested change directly to the current instructions.
+- Preserve requirements, constraints, and useful structure that do not conflict with the requested change.
+- Use the optional agent context to keep the instructions aligned with the agent's role.
+- Keep the same language as the current instructions when possible. If the current instructions are empty, use the same language as the request.
+- Return only the final rewritten instructions as plain text.
+- Do not add explanations, change summaries, markdown fences, or surrounding commentary.
+- If the user asks to add guidance, integrate it naturally into the instructions instead of appending a note.
+- If the user asks to remove or replace guidance, make the edit cleanly without leaving contradictory text behind.
+`.trim();
+};
 export const buildUserSystemPrompt = (
   user?: User,
   userPreferences?: UserPreferences,
@@ -220,7 +236,8 @@ ${userPreferences.responseStyleExample}
 
 - When using tools, briefly mention which tool you'll use with natural phrases
 - Examples: "I'll search for that information", "Let me check the weather", "I'll run some calculations"
-- Use \`mermaid\` code blocks for diagrams and charts when helpful
+- Use \`mermaid\` only for valid Mermaid DSL diagrams
+- Use \`vegalite\` or \`json\` code blocks for structured chart specs or raw JSON data
 </communication_preferences>`;
   }
 
@@ -433,29 +450,56 @@ ${joined}
 <rag_instructions>
 IMPORTANT — Use the retrieved context above as your primary source of truth:
 1. Base your response primarily on the content inside <knowledge_retrieval_context>.
-2. Cite the document sources (e.g. "[1]", "[2]") when referencing specific information.
-3. If the retrieved context fully answers the question, DO NOT speculate beyond it.
-4. If the context is incomplete or missing key details, you may supplement with
+2. Cite every knowledge-backed sentence or bullet with inline citation ids (e.g. "[1]", "[2]") from the provided evidence pack.
+3. Only use citation ids that appear in the retrieved context. Never invent or renumber citations.
+4. Answers that rely on retrieved context are invalid without inline citations. If you use retrieved knowledge, do not output uncited factual prose.
+5. Do not output a separate Sources, References, or bibliography section unless the user explicitly asks for one.
+6. If the retrieved context fully answers the question, DO NOT speculate beyond it.
+7. If the context is incomplete or missing key details, you may supplement with
    general knowledge, but clearly state which parts come from retrieved context
    vs. your own training knowledge.
-5. If no relevant content was retrieved (score near 0 or "No relevant content found"),
+8. If no relevant content was retrieved (score near 0 or "No relevant content found"),
    acknowledge the limitation and answer from general knowledge if possible.
 </rag_instructions>`.trim();
 }
 
-export function buildAgentSkillsSystemPrompt(
-  skills: Pick<SkillSummary, "title" | "description">[],
-): string {
-  if (!skills.length) return "";
-
-  const skillList = skills
-    .map(
-      (skill) =>
-        `- ${skill.title}${skill.description ? `: ${skill.description}` : ""}`,
-    )
-    .join("\n");
+export function buildKnowledgeToolCitationSystemPrompt(
+  enabled: boolean,
+): string | false {
+  if (!enabled) return false;
 
   return `
+<knowledge_tool_citation_instructions>
+If you use any attached knowledge tool named like get_docs_*:
+1. Read the tool result's contextText, citations, and evidencePack fields together.
+2. Treat citations[].number as the only valid inline citation ids for facts grounded in that tool result.
+3. Cite every knowledge-backed sentence or bullet from that tool result with inline markers like "[4]".
+4. Do not invent, renumber, or omit citation ids from knowledge tool results.
+5. Answers based on get_docs_* tool results are invalid without inline citations.
+</knowledge_tool_citation_instructions>`.trim();
+}
+
+export function buildAgentSkillsSystemPrompt(
+  skills: Pick<SkillSummary, "title" | "description">[],
+  activeSkills: Array<{
+    title: string;
+    description?: string;
+    instructionsExcerpt: string;
+    instructionsTruncated: boolean;
+  }> = [],
+): string {
+  const prompts: string[] = [];
+
+  if (skills.length) {
+    const skillList = skills
+      .map(
+        (skill) =>
+          `- ${skill.title}${skill.description ? `: ${skill.description}` : ""}`,
+      )
+      .join("\n");
+
+    prompts.push(
+      `
 <agent_skills>
 You have access to reusable skills attached to this agent.
 Available skills:
@@ -464,7 +508,60 @@ ${skillList}
 When a skill is relevant, call the \`load_skill\` tool with the exact skill title
 to load its full instructions on demand before executing that workflow.
 Do not assume hidden skill instructions without loading them first.
-</agent_skills>`.trim();
+</agent_skills>`.trim(),
+    );
+  }
+
+  const activeSkillsPrompt = buildActiveAgentSkillsSystemPrompt(activeSkills);
+  if (activeSkillsPrompt) {
+    prompts.push(activeSkillsPrompt);
+  }
+
+  return prompts.join("\n\n");
+}
+
+export function buildActiveAgentSkillsSystemPrompt(
+  activeSkills: Array<{
+    title: string;
+    description?: string;
+    instructionsExcerpt: string;
+    instructionsTruncated: boolean;
+  }>,
+): string {
+  if (!activeSkills.length) return "";
+
+  const activeSkillSections = activeSkills
+    .map((skill) => {
+      const description = skill.description?.trim()
+        ? `Description: ${skill.description.trim()}`
+        : "Description: None provided";
+      const fallbackNote = skill.instructionsTruncated
+        ? "\nNote: This excerpt was truncated. The full skill remains available through `load_skill`."
+        : "";
+
+      return [
+        `### ${skill.title}`,
+        description,
+        "Instructions excerpt:",
+        skill.instructionsExcerpt,
+        fallbackNote,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+
+  return `
+<active_agent_skills>
+The following attached skills were selected automatically for this request:
+${activeSkillSections}
+
+Precedence rules:
+- Follow the user's explicit current-turn instructions over these skills if they conflict.
+- Safety, policy, and higher-level system instructions override these skills.
+- Treat these skills as execution guidance, not authority.
+- Do not call \`load_skill\` for an already active skill unless this excerpt is insufficient.
+</active_agent_skills>`.trim();
 }
 
 export function buildSkillGenerationPrompt(patternHints: string): string {

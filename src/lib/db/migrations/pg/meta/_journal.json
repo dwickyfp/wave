@@ -302,6 +302,104 @@
       "when": 1774400000000,
       "tag": "0042_emma_pilot_extension",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1774500000000,
+      "tag": "0043_self_learning_evaluation_system",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1774600000000,
+      "tag": "0044_knowledge_document_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1774700000000,
+      "tag": "0045_knowledge_document_images",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1774800000000,
+      "tag": "0046_knowledge_document_fingerprint",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1774900000000,
+      "tag": "0047_contextx_ingest_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1775000000000,
+      "tag": "0048_knowledge_embedding_usage",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1775100000000,
+      "tag": "0049_quality_first_ingest_and_image_neighbor_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1775200000000,
+      "tag": "0050_knowledge_section_embeddings_trgm",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1775300000000,
+      "tag": "0051_mcp_publish_bridge",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1775400000000,
+      "tag": "0052_agent_chat_personalization",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1775500000000,
+      "tag": "0053_knowledge_vector_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1775600000000,
+      "tag": "0054_skill_groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1775700000000,
+      "tag": "0055_contextx_financial_precision",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1775800000000,
+      "tag": "0057_creator_role_rename",
+      "breakpoints": true
     }
   ]
 }

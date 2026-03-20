@@ -1,11 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { SkillSummary } from "app-types/skill";
+import { useMemo, useState } from "react";
+import {
+  AgentSkillAttachment,
+  SkillGroupSummary,
+  SkillSummary,
+} from "app-types/skill";
 import { Button } from "ui/button";
 import { Label } from "ui/label";
 import { Switch } from "ui/switch";
-import { PlusIcon, SparklesIcon, Trash2Icon } from "lucide-react";
+import {
+  FolderKanbanIcon,
+  PlusIcon,
+  SparklesIcon,
+  Trash2Icon,
+} from "lucide-react";
 import {
   Command,
   CommandEmpty,
@@ -20,43 +29,83 @@ import { Badge } from "ui/badge";
 
 interface SkillAgentSectionProps {
   skills: SkillSummary[];
+  skillGroups: SkillGroupSummary[];
   enabled: boolean;
-  onChange: (skills: SkillSummary[], enabled: boolean) => void;
+  onChange: (
+    skills: SkillSummary[],
+    skillGroups: SkillGroupSummary[],
+    enabled: boolean,
+  ) => void;
   hasEditAccess?: boolean;
 }
 
 export function SkillAgentSection({
   skills,
+  skillGroups,
   enabled,
   onChange,
   hasEditAccess = true,
 }: SkillAgentSectionProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
-
   const { data: availableSkills } = useSWR<SkillSummary[]>(
     "/api/skill?filters=mine,shared",
     fetcher,
   );
-
-  const selectedIds = new Set(skills.map((skill) => skill.id));
-  const unselected = (availableSkills ?? []).filter(
-    (skill) => !selectedIds.has(skill.id),
+  const { data: availableGroups } = useSWR<SkillGroupSummary[]>(
+    "/api/skill-group?filters=mine,shared",
+    fetcher,
   );
 
+  const selectedSkillIds = useMemo(
+    () => new Set(skills.map((skill) => skill.id)),
+    [skills],
+  );
+  const selectedGroupIds = useMemo(
+    () => new Set(skillGroups.map((group) => group.id)),
+    [skillGroups],
+  );
+  const unselectedSkills = (availableSkills ?? []).filter(
+    (skill) => !selectedSkillIds.has(skill.id),
+  );
+  const unselectedGroups = (availableGroups ?? []).filter(
+    (group) => !selectedGroupIds.has(group.id),
+  );
+  const selectedItems: AgentSkillAttachment[] = [
+    ...skillGroups.map((group) => ({ kind: "group" as const, ...group })),
+    ...skills.map((skill) => ({ kind: "skill" as const, ...skill })),
+  ];
+
   const handleToggle = (checked: boolean) => {
-    onChange(skills, checked);
+    onChange(skills, skillGroups, checked);
   };
 
-  const handleAdd = (skill: SkillSummary) => {
-    if (!selectedIds.has(skill.id)) {
-      onChange([...skills, skill], enabled);
+  const handleAddSkill = (skill: SkillSummary) => {
+    if (!selectedSkillIds.has(skill.id)) {
+      onChange([...skills, skill], skillGroups, enabled);
     }
     setPickerOpen(false);
   };
 
-  const handleRemove = (skillId: string) => {
+  const handleAddGroup = (group: SkillGroupSummary) => {
+    if (!selectedGroupIds.has(group.id)) {
+      onChange(skills, [...skillGroups, group], enabled);
+    }
+    setPickerOpen(false);
+  };
+
+  const handleRemove = (item: AgentSkillAttachment) => {
+    if (item.kind === "group") {
+      onChange(
+        skills,
+        skillGroups.filter((group) => group.id !== item.id),
+        enabled,
+      );
+      return;
+    }
+
     onChange(
-      skills.filter((skill) => skill.id !== skillId),
+      skills.filter((skill) => skill.id !== item.id),
+      skillGroups,
       enabled,
     );
   };
@@ -67,7 +116,7 @@ export function SkillAgentSection({
         <div className="flex flex-col gap-1">
           <Label className="text-base">Skills</Label>
           <p className="text-xs text-muted-foreground">
-            Attach reusable skills to this agent
+            Attach reusable skills or skill groups to this agent
           </p>
         </div>
         <Switch
@@ -79,31 +128,40 @@ export function SkillAgentSection({
 
       {enabled && (
         <div className="flex flex-col gap-2">
-          {skills.map((skill) => (
+          {selectedItems.map((item) => (
             <div
-              key={skill.id}
+              key={`${item.kind}:${item.id}`}
               className="flex items-center gap-3 px-3 py-2.5 rounded-lg bg-secondary/40 border border-transparent hover:border-input transition-colors"
             >
               <div className="flex items-center justify-center size-7 rounded-md bg-primary/10 text-primary shrink-0">
-                <SparklesIcon className="size-3.5" />
+                {item.kind === "group" ? (
+                  <FolderKanbanIcon className="size-3.5" />
+                ) : (
+                  <SparklesIcon className="size-3.5" />
+                )}
               </div>
               <div className="flex flex-col flex-1 min-w-0">
                 <span className="text-sm font-medium truncate">
-                  {skill.title}
+                  {item.kind === "group" ? item.name : item.title}
                 </span>
                 <span className="text-xs text-muted-foreground truncate">
-                  {skill.description || "No description"}
+                  {item.kind === "group"
+                    ? item.description || `${item.skillCount} linked skills`
+                    : item.description || "No description"}
                 </span>
               </div>
+              <Badge variant="outline" className="text-xs capitalize">
+                {item.kind}
+              </Badge>
               <Badge variant="secondary" className="capitalize text-xs">
-                {skill.visibility}
+                {item.visibility}
               </Badge>
               {hasEditAccess && (
                 <Button
                   variant="ghost"
                   size="icon"
                   className="size-7 hover:text-destructive shrink-0"
-                  onClick={() => handleRemove(skill.id)}
+                  onClick={() => handleRemove(item)}
                 >
                   <Trash2Icon className="size-3" />
                 </Button>
@@ -116,19 +174,50 @@ export function SkillAgentSection({
               <PopoverTrigger asChild>
                 <Button variant="outline" className="border-dashed gap-2 mt-1">
                   <PlusIcon className="size-3.5" />
-                  Add Skill
+                  Add Skill or Group
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="p-0 w-80" align="start">
                 <Command>
-                  <CommandInput placeholder="Search skills..." />
-                  <CommandEmpty>No skills found</CommandEmpty>
-                  <CommandGroup className="max-h-60 overflow-y-auto">
-                    {unselected.map((skill) => (
+                  <CommandInput placeholder="Search skills or groups..." />
+                  <CommandEmpty>No skills or groups found</CommandEmpty>
+                  <CommandGroup
+                    heading="Skill Groups"
+                    className="max-h-72 overflow-y-auto"
+                  >
+                    {unselectedGroups.map((group) => (
+                      <CommandItem
+                        key={group.id}
+                        value={`${group.name} ${group.description ?? ""}`}
+                        onSelect={() => handleAddGroup(group)}
+                      >
+                        <div className="flex items-start gap-2 w-full">
+                          <FolderKanbanIcon className="size-3.5 mt-0.5 text-primary shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm truncate">{group.name}</p>
+                            <p className="text-xs text-muted-foreground truncate">
+                              {group.description ||
+                                `${group.skillCount} linked skills`}
+                            </p>
+                          </div>
+                        </div>
+                      </CommandItem>
+                    ))}
+                    {unselectedGroups.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">
+                        All available groups are already added
+                      </div>
+                    )}
+                  </CommandGroup>
+                  <CommandGroup
+                    heading="Skills"
+                    className="max-h-72 overflow-y-auto"
+                  >
+                    {unselectedSkills.map((skill) => (
                       <CommandItem
                         key={skill.id}
                         value={`${skill.title} ${skill.description ?? ""}`}
-                        onSelect={() => handleAdd(skill)}
+                        onSelect={() => handleAddSkill(skill)}
                       >
                         <div className="flex items-start gap-2 w-full">
                           <SparklesIcon className="size-3.5 mt-0.5 text-primary shrink-0" />
@@ -141,8 +230,8 @@ export function SkillAgentSection({
                         </div>
                       </CommandItem>
                     ))}
-                    {unselected.length === 0 && (
-                      <div className="px-3 py-6 text-xs text-center text-muted-foreground">
+                    {unselectedSkills.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-muted-foreground">
                         All available skills are already added
                       </div>
                     )}

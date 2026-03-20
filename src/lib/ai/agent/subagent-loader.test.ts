@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const streamMock = vi.fn();
+const toolLoopAgentConfigs: any[] = [];
+
+vi.mock("server-only", () => ({}));
 
 vi.mock("ai", () => ({
   ToolLoopAgent: class {
     stream = streamMock;
-    constructor(_: unknown) {}
+    constructor(settings: unknown) {
+      toolLoopAgentConfigs.push(settings);
+    }
   },
   tool: (config: unknown) => config,
   readUIMessageStream: ({ stream }: { stream: unknown }) => stream,
@@ -63,6 +68,7 @@ function makeMessageStream() {
 describe("loadSubAgentTools", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    toolLoopAgentConfigs.length = 0;
   });
 
   it("retries transient provider errors before succeeding", async () => {
@@ -104,6 +110,7 @@ describe("loadSubAgentTools", () => {
       { write() {}, merge() {} } as any,
       new AbortController().signal,
       { provider: "openai", model: "gpt-4.1-mini" },
+      [],
     );
 
     const retryPromise = collect(
@@ -148,6 +155,7 @@ describe("loadSubAgentTools", () => {
       { write() {}, merge() {} } as any,
       new AbortController().signal,
       { provider: "openai", model: "gpt-4.1-mini" },
+      [],
     );
 
     await expect(
@@ -160,5 +168,79 @@ describe("loadSubAgentTools", () => {
     ).rejects.toThrow("Invalid prompt");
 
     expect(streamMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("activates only the relevant inherited skills per delegated task", async () => {
+    streamMock.mockResolvedValue({
+      toUIMessageStream: () => makeMessageStream(),
+    });
+
+    const tools = await loadSubAgentTools(
+      {
+        id: "agent-1",
+        name: "Main Agent",
+        userId: "user-1",
+        instructions: {},
+        subAgents: [
+          {
+            id: "sa-1",
+            agentId: "agent-1",
+            name: "Reviewer",
+            instructions: "Review code carefully",
+            tools: [],
+            enabled: true,
+            sortOrder: 0,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+        ],
+      } as any,
+      "user-1",
+      { write() {}, merge() {} } as any,
+      new AbortController().signal,
+      { provider: "openai", model: "gpt-4.1-mini" },
+      [
+        {
+          id: "skill-review",
+          title: "Review Workflow",
+          description: "Review pull requests with a checklist",
+          instructions: "## Review\n- Check regressions\n- Check tests",
+        },
+        {
+          id: "skill-rfc",
+          title: "RFC Writer",
+          description: "Draft technical RFCs",
+          instructions: "## RFC\n- Gather context\n- Draft the document",
+        },
+      ],
+    );
+
+    const execute = (Object.values(tools)[0] as any).execute;
+
+    await collect(
+      execute(
+        { task: "Review this pull request for regressions and tests." },
+        { abortSignal: new AbortController().signal },
+      ),
+    );
+
+    expect(toolLoopAgentConfigs.at(-1)?.instructions).toContain(
+      "Review Workflow",
+    );
+    expect(toolLoopAgentConfigs.at(-1)?.instructions).not.toContain(
+      "RFC Writer",
+    );
+    expect(toolLoopAgentConfigs.at(-1)?.tools.load_skill).toBeDefined();
+
+    await collect(
+      execute(
+        { task: "Summarize the weather forecast." },
+        { abortSignal: new AbortController().signal },
+      ),
+    );
+
+    expect(toolLoopAgentConfigs.at(-1)?.instructions).not.toContain(
+      "Review Workflow",
+    );
   });
 });

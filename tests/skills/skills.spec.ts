@@ -37,4 +37,20 @@ test.describe("Skills Feature", () => {
       page.getByTestId("skill-card-title").filter({ hasText: skillTitle }),
     ).toBeVisible({ timeout: 10000 });
   });
+
+  test("creates a skill group and opens its detail page", async ({ page }) => {
+    const groupName = `Group ${Date.now()}`;
+
+    await page.goto("/skills");
+    await page.waitForLoadState("networkidle");
+
+    await page.getByTestId("skill-groups-new-button").click();
+    await page.getByTestId("skill-group-name-input").fill(groupName);
+    await page.getByTestId("skill-group-create-button").click();
+
+    await page.waitForURL("**/skills/groups/*");
+    await expect(page.getByRole("heading", { name: groupName })).toBeVisible({
+      timeout: 10000,
+    });
+  });
 });

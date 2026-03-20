@@ -12,24 +12,197 @@
  * 7. Embed enriched text
  * 8. Store chunks + update document status
  */
+import { createHash } from "node:crypto";
 import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
-import { chunkKnowledgeSections } from "./chunker";
-import { enrichChunksWithContext } from "./context-enricher";
+import { assessExtractedPageQuality } from "./document-quality";
+import { resolveKnowledgeParseModel } from "./group-config";
 import {
-  buildDocumentMetadataEmbeddingText,
-  extractAutoDocumentMetadata,
-} from "./document-metadata";
-import { embedSingleText, embedTexts } from "./embedder";
+  applyEnforcedKnowledgeIngestPolicy,
+  ENFORCED_CONTEXT_MODE,
+} from "./quality-ingest-policy";
+import {
+  completeSourceDocumentVersion,
+  markDocumentVersionFailed,
+  prepareSourceDocumentVersion,
+  reconcileDocumentIngestFailure,
+} from "./versioning";
+import { materializeDocumentMarkdown } from "./materialize-markdown";
 import { parseDocumentToMarkdown } from "./markdown-parser";
-import { normalizeStructuredMarkdown } from "./markdown-structurer";
 import { processDocument } from "./processor";
 import {
-  buildKnowledgeSectionGraph,
-  SECTION_GRAPH_VERSION,
-} from "./section-graph";
+  applyContextImageBlocks,
+  generateContextImageBlocks,
+  resolveContextImageLocations,
+} from "./processor/image-markdown";
+import type {
+  ProcessedDocument,
+  ProcessedDocumentImage,
+  ProcessedDocumentPage,
+} from "./processor/types";
 
-const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
+export const KNOWLEDGE_INGEST_CANCELED_MESSAGE = "Canceled by user";
+
+class KnowledgeIngestSkippedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KnowledgeIngestSkippedError";
+  }
+}
+
+class KnowledgeIngestCanceledError extends KnowledgeIngestSkippedError {
+  constructor(documentId: string) {
+    super(
+      `[ContextX] Ingestion canceled for document ${documentId}: ${KNOWLEDGE_INGEST_CANCELED_MESSAGE}`,
+    );
+    this.name = "KnowledgeIngestCanceledError";
+  }
+}
+
+function isCanceledDocumentState(input: {
+  status?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  return (input.errorMessage ?? null) === KNOWLEDGE_INGEST_CANCELED_MESSAGE;
+}
+
+async function assertDocumentIngestNotCanceled(
+  documentId: string,
+): Promise<void> {
+  const current = await knowledgeRepository.selectDocumentById(documentId);
+  if (!current) {
+    throw new KnowledgeIngestSkippedError(
+      `[ContextX] Skipping ingest for deleted document ${documentId}`,
+    );
+  }
+  if (isCanceledDocumentState(current)) {
+    throw new KnowledgeIngestCanceledError(documentId);
+  }
+}
+
+function getImageFileExtension(mediaType?: string | null): string {
+  const subtype = mediaType?.split("/")?.[1]?.toLowerCase();
+  switch (subtype) {
+    case "jpeg":
+      return "jpg";
+    case "svg+xml":
+      return "svg";
+    default:
+      return subtype || "png";
+  }
+}
+
+async function persistProcessedImages(input: {
+  documentId: string;
+  versionId: string;
+  images: ProcessedDocumentImage[] | undefined;
+}): Promise<ProcessedDocumentImage[]> {
+  if (!input.images?.length) return [];
+
+  const persisted: ProcessedDocumentImage[] = [];
+
+  for (const image of input.images) {
+    if (!image.buffer) {
+      persisted.push({
+        ...image,
+        isRenderable: Boolean(image.sourceUrl),
+      });
+      continue;
+    }
+
+    try {
+      const ext = getImageFileExtension(image.mediaType);
+      const uploaded = await serverFileStorage.upload(image.buffer, {
+        filename: `knowledge-images/${input.documentId}/${input.versionId}/image-${image.index}.${ext}`,
+        contentType: image.mediaType || "image/png",
+      });
+
+      persisted.push({
+        ...image,
+        storagePath: uploaded.key,
+        sourceUrl: uploaded.sourceUrl ?? image.sourceUrl ?? null,
+        isRenderable: true,
+      });
+    } catch (error) {
+      console.warn(
+        `[ContextX] Failed to persist document image ${image.index} for ${input.documentId}:`,
+        error,
+      );
+      persisted.push({
+        ...image,
+        isRenderable: Boolean(image.sourceUrl),
+      });
+    }
+  }
+
+  return persisted;
+}
+
+function buildFallbackPages(processedDocument: ProcessedDocument) {
+  if (processedDocument.pages?.length) {
+    return processedDocument.pages;
+  }
+
+  const quality = assessExtractedPageQuality(processedDocument.markdown);
+  return [
+    {
+      pageNumber: 1,
+      rawText: processedDocument.markdown,
+      normalizedText: processedDocument.markdown,
+      markdown: processedDocument.markdown,
+      fingerprint: createHash("sha1")
+        .update(processedDocument.markdown)
+        .digest("hex"),
+      qualityScore: quality.score,
+      extractionMode: "normalized" as const,
+      repairReason: quality.reasons.join(", ") || null,
+    } satisfies ProcessedDocumentPage,
+  ];
+}
+
+async function resolveKnowledgeIngestModels(group?: {
+  parsingModel?: string | null;
+  parsingProvider?: string | null;
+}) {
+  const settings = await settingsRepository.getSettings([
+    "knowledge-parse-model",
+    "knowledge-context-model",
+    "knowledge-image-model",
+    "knowledge-image-neighbor-context-enabled",
+  ]);
+  const parseModel = settings["knowledge-parse-model"] as
+    | { provider: string; model: string }
+    | null
+    | undefined;
+  const contextModel = settings["knowledge-context-model"] as
+    | { provider: string; model: string }
+    | null
+    | undefined;
+  const imageModel = settings["knowledge-image-model"] as
+    | { provider: string; model: string }
+    | null
+    | undefined;
+  const imageNeighborContextSetting = settings[
+    "knowledge-image-neighbor-context-enabled"
+  ] as boolean | null | undefined;
+
+  return {
+    parseModel: resolveKnowledgeParseModel({
+      groupParsingModel: group?.parsingModel,
+      groupParsingProvider: group?.parsingProvider,
+      defaultParseModel:
+        (parseModel as { provider: string; model: string } | null) ?? null,
+    }),
+    contextModel:
+      (contextModel as { provider: string; model: string } | null) ?? null,
+    imageModel:
+      (imageModel as { provider: string; model: string } | null) ?? null,
+    imageNeighborContextEnabled:
+      typeof imageNeighborContextSetting === "boolean"
+        ? imageNeighborContextSetting
+        : true,
+  };
+}
 
 /**
  * Run the full ingestion pipeline for a single document.
@@ -45,177 +218,186 @@ export async function runIngestPipeline(
   documentId: string,
   groupId: string,
   fileBuffer?: Buffer,
-): Promise<void> {
-  /** Helper to update progress percentage (0–100) on the document row. */
-  const reportProgress = (pct: number) =>
-    knowledgeRepository.updateDocumentStatus(documentId, "processing", {
-      processingProgress: Math.min(100, Math.max(0, Math.round(pct))),
-    });
-
-  await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
-    processingProgress: 0,
-  });
-
+): Promise<"completed" | "skipped"> {
   const doc = await knowledgeRepository.selectDocumentById(documentId);
-  if (!doc) throw new Error(`Document not found: ${documentId}`);
+  if (!doc) {
+    return "skipped";
+  }
+  if (isCanceledDocumentState(doc)) {
+    return "skipped";
+  }
+
+  /** Helper to update progress percentage (0–100) on the document row. */
+  const reportProgress = async (
+    pct: number,
+    processingState?: {
+      stage:
+        | "extracting"
+        | "parsing"
+        | "materializing"
+        | "embedding"
+        | "finalizing";
+      currentPage?: number | null;
+      totalPages?: number | null;
+      pageNumber?: number | null;
+    } | null,
+  ) => {
+    await assertDocumentIngestNotCanceled(documentId);
+    const progress = Math.min(100, Math.max(0, Math.round(pct)));
+    if (doc.activeVersionId) {
+      await knowledgeRepository.updateDocumentProcessing(documentId, {
+        errorMessage: null,
+        processingProgress: progress,
+        ...(processingState !== undefined ? { processingState } : {}),
+      });
+      return;
+    }
+
+    await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
+      processingProgress: progress,
+      ...(processingState !== undefined ? { processingState } : {}),
+    });
+  };
 
   const group = await knowledgeRepository.selectGroupById(groupId, doc.userId);
-  if (!group) throw new Error(`Knowledge group not found: ${groupId}`);
-
-  // ── 1. Get document content as markdown ──────────────────────────────────
-  await reportProgress(5);
-  let markdown: string;
-
-  if (doc.fileType === "url" && doc.sourceUrl) {
-    markdown = await processDocument("url", doc.sourceUrl);
-  } else if (fileBuffer) {
-    // Inline mode: use the buffer that was already read (no S3 download needed)
-    markdown = await processDocument(doc.fileType, fileBuffer);
-  } else if (doc.storagePath) {
-    const buffer = await serverFileStorage.download(doc.storagePath);
-    markdown = await processDocument(doc.fileType, buffer);
-  } else {
-    throw new Error("Document has no storage path, source URL, or file buffer");
+  if (!group) {
+    return "skipped";
   }
-
-  // ── 2. Optional LLM-based markdown parsing ──────────────────────────────
-  await reportProgress(15);
   const documentTitle = doc.name || doc.originalFilename || "Untitled";
-  const contextxConfig = (await settingsRepository.getSetting(
-    "contextx-model",
-  )) as { provider: string; model: string } | null | undefined;
-  if (contextxConfig?.provider && contextxConfig?.model) {
-    markdown = await parseDocumentToMarkdown(
-      markdown,
+  const { parseModel, contextModel, imageModel, imageNeighborContextEnabled } =
+    await resolveKnowledgeIngestModels(group);
+  const effectiveGroup = applyEnforcedKnowledgeIngestPolicy(group);
+  const eagerImageAnalysisConfig = imageModel;
+  let pendingVersion: Awaited<
+    ReturnType<typeof prepareSourceDocumentVersion>
+  > | null = null;
+  try {
+    await reportProgress(0, { stage: "extracting" });
+    pendingVersion = await prepareSourceDocumentVersion(documentId);
+
+    // ── 1. Get document content as markdown ────────────────────────────────
+    await reportProgress(5, { stage: "extracting" });
+    let processedDocument: ProcessedDocument;
+
+    if (doc.fileType === "url" && doc.sourceUrl) {
+      processedDocument = await processDocument("url", doc.sourceUrl, {
+        documentTitle,
+        imageAnalysis: eagerImageAnalysisConfig,
+        imageAnalysisRequired: true,
+        imageNeighborContextEnabled,
+      });
+    } else if (fileBuffer) {
+      // Inline mode: use the buffer that was already read (no S3 download needed)
+      processedDocument = await processDocument(doc.fileType, fileBuffer, {
+        documentTitle,
+        imageAnalysis: eagerImageAnalysisConfig,
+        imageAnalysisRequired: true,
+        imageNeighborContextEnabled,
+      });
+    } else if (doc.storagePath) {
+      const buffer = await serverFileStorage.download(doc.storagePath);
+      processedDocument = await processDocument(doc.fileType, buffer, {
+        documentTitle,
+        imageAnalysis: eagerImageAnalysisConfig,
+        imageAnalysisRequired: true,
+        imageNeighborContextEnabled,
+      });
+    } else {
+      throw new Error(
+        "Document has no storage path, source URL, or file buffer",
+      );
+    }
+    let processedPages = buildFallbackPages(processedDocument);
+    let markdown = processedDocument.markdown;
+
+    if (!parseModel?.provider || !parseModel?.model) {
+      throw new Error(
+        "Knowledge parse model is required for page-by-page markdown reconstruction",
+      );
+    }
+
+    // ── 2. LLM-based markdown parsing (page-first) ───────────────────────
+    await reportProgress(15, { stage: "parsing" });
+    const totalPages = processedPages.length;
+    const parsedDocument = await parseDocumentToMarkdown({
+      pages: processedPages,
       documentTitle,
-      contextxConfig.provider,
-      contextxConfig.model,
+      parsingProvider: parseModel.provider,
+      parsingModel: parseModel.model,
+      mode: effectiveGroup.parseMode,
+      repairPolicy: effectiveGroup.parseRepairPolicy,
+      failureMode: "fallback",
+      onPageProgress: async ({ currentPage, pageNumber }) => {
+        const parseProgress =
+          totalPages > 0 ? 15 + (currentPage / totalPages) * 20 : 35;
+        await reportProgress(parseProgress, {
+          stage: "parsing",
+          currentPage,
+          totalPages,
+          pageNumber,
+        });
+      },
+    });
+    markdown = parsedDocument.markdown;
+    processedPages = parsedDocument.pages;
+    const resolvedImages = resolveContextImageLocations(
+      markdown,
+      processedDocument.images,
     );
-  }
-
-  // ── 3. Normalize markdown ─────────────────────────────────────────────────
-  await reportProgress(35);
-  markdown = normalizeStructuredMarkdown(markdown);
-
-  // ── 4. Auto metadata extraction ──────────────────────────────────────────
-  await reportProgress(40);
-  const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId);
-  const autoMeta = extractAutoDocumentMetadata(markdown, documentTitle);
-  const effectiveMetaTitle = doc.titleManual ? doc.name : autoMeta.title;
-  const effectiveMetaDescription = doc.descriptionManual
-    ? (doc.description ?? null)
-    : autoMeta.description;
-
-  let metadataEmbedding: number[] | undefined;
-  if (DOC_META_VECTOR_ENABLED) {
-    const metadataText = buildDocumentMetadataEmbeddingText({
-      title: effectiveMetaTitle,
-      description: effectiveMetaDescription,
-      originalFilename: doc.originalFilename,
-      sourceUrl: doc.sourceUrl,
+    const persistedImages = await persistProcessedImages({
+      documentId,
+      versionId: pendingVersion.id,
+      images: resolvedImages,
     });
-    if (metadataText) {
-      try {
-        metadataEmbedding = await embedSingleText(
-          metadataText,
-          group.embeddingProvider,
-          group.embeddingModel,
-        );
-      } catch (err) {
-        console.warn(
-          `[ContextX] Metadata embedding failed for document ${documentId}:`,
-          err,
-        );
-      }
-    }
-  }
+    const imageBlocks = await generateContextImageBlocks(persistedImages);
+    markdown = applyContextImageBlocks(markdown, imageBlocks);
 
-  // Store full markdown (Context7-style: keep full doc for retrieval)
-  await reportProgress(45);
-  await knowledgeRepository.updateDocumentStatus(documentId, "processing", {
-    markdownContent: markdown,
-    processingProgress: 45,
-  });
-  const mergedMetadata = {
-    ...(doc.metadata ?? {}),
-    sectionGraphVersion: SECTION_GRAPH_VERSION,
-  };
-  await knowledgeRepository.updateDocumentAutoMetadata(documentId, {
-    title: autoMeta.title,
-    description: autoMeta.description,
-    ...(metadataEmbedding !== undefined ? { metadataEmbedding } : {}),
-    metadata: mergedMetadata,
-  });
-
-  // ── 5. Chunk ──────────────────────────────────────────────────────────────
-  await reportProgress(50);
-  await knowledgeRepository.deleteChunksByDocumentId(documentId);
-  await knowledgeRepository.deleteSectionsByDocumentId(documentId);
-
-  const chunks = chunkKnowledgeSections(
-    sections,
-    group.chunkSize,
-    group.chunkOverlapPercent,
-  );
-  if (chunks.length === 0) {
-    if (sections.length > 0) {
-      await knowledgeRepository.insertSections(sections);
-    }
-    await knowledgeRepository.updateDocumentStatus(documentId, "ready", {
-      chunkCount: 0,
-      tokenCount: 0,
-    });
-    return;
-  }
-
-  // ── 6. Enrich chunks with contextual summaries ────────────────────────────
-  await reportProgress(60);
-  const enrichedChunks = await enrichChunksWithContext(
-    chunks,
-    autoMeta.title || documentTitle,
-    sections.map((section) => ({
-      id: section.id,
-      headingPath: section.headingPath,
-      content: section.content,
-      summary: section.summary,
-      parentSectionId: section.parentSectionId ?? null,
-    })),
-  );
-
-  // ── 7. Embed chunks ───────────────────────────────────────────────────────
-  await reportProgress(75);
-  const embeddingTexts = enrichedChunks.map((c) => c.embeddingText);
-  const embeddings = await embedTexts(
-    embeddingTexts,
-    group.embeddingProvider,
-    group.embeddingModel,
-  );
-
-  const totalTokens = enrichedChunks.reduce((sum, c) => sum + c.tokenCount, 0);
-
-  // ── 8. Store chunks ───────────────────────────────────────────────────────
-  await reportProgress(90);
-  await knowledgeRepository.insertSections(sections);
-  await knowledgeRepository.insertChunks(
-    enrichedChunks.map((c, i) => ({
+    // ── 3–8. Normalize, structure, enrich, embed, commit ──────────────────
+    await reportProgress(35, { stage: "materializing" });
+    const materialized = await materializeDocumentMarkdown({
       documentId,
       groupId,
-      sectionId: c.sectionId ?? null,
-      content: c.content,
-      contextSummary: c.contextSummary || null,
-      chunkIndex: c.chunkIndex,
-      tokenCount: c.tokenCount,
-      metadata: c.metadata,
-      embedding: embeddings[i],
-    })),
-  );
+      documentTitle,
+      doc,
+      group: effectiveGroup,
+      markdown,
+      images: persistedImages,
+      pages: processedPages,
+      contextMode: ENFORCED_CONTEXT_MODE,
+      contextModel,
+      reportProgress,
+    });
 
-  await knowledgeRepository.updateDocumentStatus(documentId, "ready", {
-    chunkCount: enrichedChunks.length,
-    tokenCount: totalTokens,
-  });
+    await reportProgress(90, { stage: "finalizing" });
+    await assertDocumentIngestNotCanceled(documentId);
+    await completeSourceDocumentVersion({
+      versionId: pendingVersion.id,
+      doc,
+      group: effectiveGroup,
+      materialized,
+    });
 
-  console.log(
-    `[ContextX] Ingested document ${documentId}: ${enrichedChunks.length} chunks, ${totalTokens} tokens`,
-  );
+    console.log(
+      `[ContextX] Ingested document ${documentId}: ${materialized.chunks.length} chunks, ${materialized.totalTokens} tokens`,
+    );
+    return "completed";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (pendingVersion) {
+      await markDocumentVersionFailed({
+        versionId: pendingVersion.id,
+        errorMessage: message,
+        updateDocumentStatus: true,
+      });
+    } else {
+      await reconcileDocumentIngestFailure({
+        documentId,
+        errorMessage: message,
+      });
+    }
+    if (error instanceof KnowledgeIngestSkippedError) {
+      return "skipped";
+    }
+    throw error;
+  }
 }

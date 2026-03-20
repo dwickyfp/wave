@@ -1,49 +1,55 @@
 import "server-only";
 
-import {
-  DefaultRequestHandler,
-  InMemoryTaskStore,
-  JsonRpcTransportHandler,
-  type AgentExecutor,
-  type ExecutionEventBus,
-  type RequestContext,
-  type TaskStore,
-} from "@a2a-js/sdk/server";
 import type {
   AgentCard,
   AgentSkill,
+  JSONRPCResponse,
   Message,
   Task,
   TaskArtifactUpdateEvent,
   TaskStatusUpdateEvent,
-  JSONRPCResponse,
 } from "@a2a-js/sdk";
-import { compare } from "bcrypt-ts";
-import { stepCountIs, streamText, type ModelMessage, type Tool } from "ai";
-import type { Agent } from "app-types/agent";
-import type { A2AAgentConfig, A2AAgentCard } from "app-types/a2a-agent";
 import {
-  createNoopDataStream,
+  type AgentExecutor,
+  DefaultRequestHandler,
+  type ExecutionEventBus,
+  InMemoryTaskStore,
+  JsonRpcTransportHandler,
+  type RequestContext,
+  type TaskStore,
+} from "@a2a-js/sdk/server";
+import { type ModelMessage, type Tool, stepCountIs, streamText } from "ai";
+import type { A2AAgentCard, A2AAgentConfig } from "app-types/a2a-agent";
+import type { Agent } from "app-types/agent";
+import { compare } from "bcrypt-ts";
+import { resolveExternalAgentModelRuntime } from "lib/ai/agent/external-access";
+import {
   buildEmmaAgentSystemPrompt,
+  createNoopDataStream,
   loadEmmaAgentBoundTools,
 } from "lib/ai/agent/runtime";
-import { resolveExternalAgentModelRuntime } from "lib/ai/agent/external-access";
+import {
+  buildActiveSkillUsageEvents,
+  getLatestUserMessageText,
+  resolveActiveAgentSkills,
+} from "lib/ai/agent/skill-activation";
 import {
   sanitizeModelMessagesForProvider,
   shouldSendToolDefinitionsToProvider,
 } from "lib/ai/provider-compatibility";
 import {
-  agentRepository,
   a2aAgentRepository,
+  agentRepository,
   snowflakeAgentRepository,
+  usageEventRepository,
 } from "lib/db/repository";
 import {
+  type SnowflakeCortexMessage,
   callSnowflakeCortexStream,
   createSnowflakeThread,
-  type SnowflakeCortexMessage,
 } from "lib/snowflake/client";
-import logger from "logger";
 import { generateUUID } from "lib/utils";
+import logger from "logger";
 import {
   A2A_PROTOCOL_VERSION,
   extractTextFromA2AParts,
@@ -299,6 +305,10 @@ async function streamStandardAgentRun(input: {
     agent: input.agent,
     userId: input.agent.userId,
     mentions: input.agent.instructions?.mentions ?? [],
+    usageContext: {
+      source: "a2a",
+      agentId: input.agent.id,
+    },
     dataStream,
     abortSignal: input.abortSignal,
     chatModel,
@@ -313,6 +323,20 @@ async function streamStandardAgentRun(input: {
     ...toolset.appDefaultTools,
   };
   const messages = buildStandardAgentMessages(input.requestContext);
+  const activeSkillResolution = resolveActiveAgentSkills({
+    skills: toolset.attachedSkills,
+    taskText: getLatestUserMessageText(messages),
+  });
+  if (activeSkillResolution.activeSkills.length) {
+    void usageEventRepository
+      .recordEvents(
+        buildActiveSkillUsageEvents(activeSkillResolution.activeSkills, {
+          source: "a2a",
+          agentId: input.agent.id,
+        }),
+      )
+      .catch(() => {});
+  }
   const compatibleMessages = sanitizeModelMessagesForProvider({
     provider: chatModel.provider,
     messages,
@@ -328,6 +352,7 @@ async function streamStandardAgentRun(input: {
       agent: input.agent,
       subAgents: toolset.subAgents,
       attachedSkills: toolset.attachedSkills,
+      activeSkills: activeSkillResolution.activeSkills,
     }),
     messages: compatibleMessages.messages,
     stopWhen: stepCountIs(10),

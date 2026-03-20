@@ -25,38 +25,47 @@ export interface BetterAuthRole {
 /**
  * Valid role names in the system
  */
-export type RoleName = "admin" | "editor" | "user";
+export type RoleName = "admin" | "creator" | "user";
+
+function normalizeRoleToken(roleToken: string): string {
+  // Handle OAuth roles that may be prefixed with provider name
+  // (for example "google:creator").
+  const lastColonIndex = roleToken.lastIndexOf(":");
+  const cleanRole =
+    lastColonIndex !== -1 ? roleToken.substring(lastColonIndex + 1) : roleToken;
+
+  return cleanRole.trim().toLowerCase();
+}
 
 /**
  * Validates and cleans a role string, handling OAuth provider prefixes
+ * and comma-separated role lists.
  */
 export function parseRoleString(role: string | undefined | null): RoleName {
   if (!role) return "user";
 
-  // Handle OAuth roles that may be prefixed with provider name (e.g., "google:editor")
-  // Use lastIndexOf to handle cases with multiple colons safely
-  let cleanRole: string;
-  const lastColonIndex = role.lastIndexOf(":");
-
-  if (lastColonIndex !== -1) {
-    // Extract everything after the last colon
-    cleanRole = role.substring(lastColonIndex + 1).trim();
-  } else {
-    cleanRole = role.trim();
-  }
-
   // Validate the role is one of our known roles
-  const validRoles: RoleName[] = ["admin", "editor", "user"];
+  const normalizedRoles = role
+    .split(",")
+    .map(normalizeRoleToken)
+    .filter(Boolean);
 
-  // Normalize to lowercase for comparison, then return proper case
-  const normalizedRole = cleanRole.toLowerCase();
+  if (normalizedRoles.includes("admin")) return "admin";
+  if (normalizedRoles.includes("creator")) return "creator";
+  if (normalizedRoles.includes("user")) return "user";
 
-  if (!normalizedRole || !validRoles.includes(normalizedRole as RoleName)) {
+  if (normalizedRoles.length === 0) {
     console.warn(`Invalid role detected: ${role}, defaulting to user`);
     return "user";
   }
 
-  return normalizedRole as RoleName;
+  console.warn(`Invalid role detected: ${role}, defaulting to user`);
+  return "user";
+}
+
+export function isCreatorRole(role: string | undefined | null): boolean {
+  const cleanRole = parseRoleString(role);
+  return cleanRole === "admin" || cleanRole === "creator";
 }
 
 /**

@@ -1,12 +1,14 @@
+import { createHash } from "node:crypto";
 import { DocumentFileType } from "app-types/knowledge";
 import { getSession } from "auth/server";
+import { isCreatorRole } from "lib/auth/types";
 import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import {
   assertKnowledgeDocumentSize,
   StorageUploadPolicyError,
 } from "lib/file-storage/upload-policy";
-import { runIngestPipeline } from "lib/knowledge/ingest-pipeline";
+import { reconcileDocumentIngestFailure } from "lib/knowledge/versioning";
 import { enqueueIngestDocument } from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -27,7 +29,140 @@ const MIME_TO_TYPE: Record<string, DocumentFileType> = {
   "text/html": "html",
 };
 
-export async function GET(_req: NextRequest, { params }: Params) {
+function buildSha256Fingerprint(
+  input: Buffer | string,
+  prefix: string,
+): string {
+  return createHash("sha256")
+    .update(prefix)
+    .update(":")
+    .update(input)
+    .digest("hex");
+}
+
+function normalizeSourceUrl(sourceUrl: string): string {
+  const url = new URL(sourceUrl);
+  url.hash = "";
+  url.protocol = url.protocol.toLowerCase();
+  url.hostname = url.hostname.toLowerCase();
+
+  const sorted = Array.from(url.searchParams.entries()).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
+  url.search = "";
+  for (const [key, value] of sorted) {
+    url.searchParams.append(key, value);
+  }
+
+  if (url.pathname !== "/" && url.pathname.endsWith("/")) {
+    url.pathname = url.pathname.replace(/\/+$/, "");
+  }
+
+  return url.toString();
+}
+
+function tryNormalizeSourceUrl(sourceUrl: string): string | null {
+  try {
+    return normalizeSourceUrl(sourceUrl);
+  } catch {
+    return null;
+  }
+}
+
+function parsePaginationParams(request: NextRequest): {
+  limit?: number;
+  offset?: number;
+} {
+  const limitParam = request.nextUrl.searchParams.get("limit");
+  const offsetParam = request.nextUrl.searchParams.get("offset");
+
+  const limit =
+    limitParam === null ? undefined : Number.parseInt(limitParam, 10);
+  const offset =
+    offsetParam === null ? undefined : Number.parseInt(offsetParam, 10);
+
+  return {
+    limit:
+      limit !== undefined && Number.isFinite(limit) && limit > 0
+        ? Math.min(limit, 100)
+        : undefined,
+    offset:
+      offset !== undefined && Number.isFinite(offset) && offset >= 0
+        ? offset
+        : undefined,
+  };
+}
+
+async function findExistingDocumentByFingerprint(
+  groupId: string,
+  fingerprint: string,
+) {
+  return knowledgeRepository.selectDocumentByFingerprint(groupId, fingerprint);
+}
+
+async function findExistingUrlDocument(
+  groupId: string,
+  sourceUrl: string,
+  fingerprint: string,
+) {
+  const byFingerprint = await findExistingDocumentByFingerprint(
+    groupId,
+    fingerprint,
+  );
+  if (byFingerprint) {
+    return byFingerprint;
+  }
+
+  const normalizedSourceUrl = normalizeSourceUrl(sourceUrl);
+  return (
+    (await knowledgeRepository.selectUrlDocumentBySourceUrl(
+      groupId,
+      normalizedSourceUrl,
+    )) ??
+    (normalizedSourceUrl !== sourceUrl
+      ? await knowledgeRepository.selectUrlDocumentBySourceUrl(
+          groupId,
+          sourceUrl,
+        )
+      : null)
+  );
+}
+
+async function findExistingFileDocument(input: {
+  groupId: string;
+  fingerprint: string;
+  originalFilename: string;
+  fileType: DocumentFileType;
+  fileSize: number;
+}) {
+  const byFingerprint = await findExistingDocumentByFingerprint(
+    input.groupId,
+    input.fingerprint,
+  );
+  if (byFingerprint) {
+    return byFingerprint;
+  }
+
+  return knowledgeRepository.selectFileDocumentByNameAndSize(input);
+}
+
+async function enqueueDocumentIngestOrFail(
+  documentId: string,
+  groupId: string,
+): Promise<void> {
+  try {
+    await enqueueIngestDocument(documentId, groupId);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await reconcileDocumentIngestFailure({
+      documentId,
+      errorMessage: `Failed to enqueue ingest job: ${errorMessage}`,
+    }).catch(() => {});
+    throw error;
+  }
+}
+
+export async function GET(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -38,40 +173,29 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const group = await knowledgeRepository.selectGroupById(id, session.user.id);
   if (!group) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
+  const { limit, offset } = parsePaginationParams(req);
+  if (limit !== undefined || offset !== undefined) {
+    const docs = await knowledgeRepository.selectDocumentsPageByGroupScope(id, {
+      limit: limit ?? 20,
+      offset: offset ?? 0,
+    });
+    return NextResponse.json(docs);
+  }
+
   const docs = await knowledgeRepository.selectDocumentsByGroupScope(id);
   return NextResponse.json(docs);
-}
-
-/**
- * Try to enqueue a BullMQ job; if Redis is not reachable, fall back to
- * running the pipeline inline (fire-and-forget background task).
- */
-async function enqueueOrProcessInline(
-  docId: string,
-  groupId: string,
-  fileBuffer?: Buffer,
-) {
-  try {
-    await enqueueIngestDocument(docId, groupId);
-  } catch {
-    console.warn(
-      "[ContextX] Redis unavailable – processing document inline:",
-      docId,
-    );
-    // Fire-and-forget: don't block the HTTP response
-    runIngestPipeline(docId, groupId, fileBuffer).catch(async (err) => {
-      console.error("[ContextX] Inline ingest failed for document", docId, err);
-      await knowledgeRepository
-        .updateDocumentStatus(docId, "failed", { errorMessage: String(err) })
-        .catch(() => {});
-    });
-  }
 }
 
 export async function POST(req: NextRequest, { params }: Params) {
   const session = await getSession();
   if (!session?.user)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isCreatorRole(session.user.role)) {
+    return NextResponse.json(
+      { error: "Only creators and admins can manage ContextX" },
+      { status: 403 },
+    );
+  }
 
   const { id: groupId } = await params;
 
@@ -101,15 +225,40 @@ export async function POST(req: NextRequest, { params }: Params) {
         { status: 400 },
       );
     }
+    const normalizedSourceUrl = tryNormalizeSourceUrl(sourceUrl);
+    if (!normalizedSourceUrl) {
+      return NextResponse.json({ error: "Invalid sourceUrl" }, { status: 400 });
+    }
+    const fingerprint = buildSha256Fingerprint(normalizedSourceUrl, "url");
+    const existing = await findExistingUrlDocument(
+      groupId,
+      sourceUrl,
+      fingerprint,
+    );
+    if (existing) {
+      return NextResponse.json({ ...existing, duplicate: true });
+    }
     const doc = await knowledgeRepository.insertDocument({
       groupId,
       userId: session.user.id,
       name: body.name?.trim() || new URL(sourceUrl).hostname,
       originalFilename: sourceUrl,
       fileType: "url",
-      sourceUrl,
+      sourceUrl: normalizedSourceUrl,
+      fingerprint,
     });
-    await enqueueOrProcessInline(doc.id, groupId);
+    try {
+      await enqueueDocumentIngestOrFail(doc.id, groupId);
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            "Knowledge ingest workers are unavailable. Please retry shortly.",
+          documentId: doc.id,
+        },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(doc, { status: 201 });
   }
 
@@ -119,15 +268,40 @@ export async function POST(req: NextRequest, { params }: Params) {
   const sourceUrl = (formData.get("sourceUrl") as string | null)?.trim();
   if (sourceUrl) {
     const name = ((formData.get("name") as string) || "").trim();
+    const normalizedSourceUrl = tryNormalizeSourceUrl(sourceUrl);
+    if (!normalizedSourceUrl) {
+      return NextResponse.json({ error: "Invalid sourceUrl" }, { status: 400 });
+    }
+    const fingerprint = buildSha256Fingerprint(normalizedSourceUrl, "url");
+    const existing = await findExistingUrlDocument(
+      groupId,
+      sourceUrl,
+      fingerprint,
+    );
+    if (existing) {
+      return NextResponse.json({ ...existing, duplicate: true });
+    }
     const doc = await knowledgeRepository.insertDocument({
       groupId,
       userId: session.user.id,
       name: name || new URL(sourceUrl).hostname,
       originalFilename: sourceUrl,
       fileType: "url",
-      sourceUrl,
+      sourceUrl: normalizedSourceUrl,
+      fingerprint,
     });
-    await enqueueOrProcessInline(doc.id, groupId);
+    try {
+      await enqueueDocumentIngestOrFail(doc.id, groupId);
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            "Knowledge ingest workers are unavailable. Please retry shortly.",
+          documentId: doc.id,
+        },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(doc, { status: 201 });
   }
 
@@ -153,21 +327,38 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   const fileType = MIME_TO_TYPE[file.type] ?? "txt";
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const fingerprint = buildSha256Fingerprint(buffer, "file");
+  const existing = await findExistingFileDocument({
+    groupId,
+    fingerprint,
+    originalFilename: file.name,
+    fileType,
+    fileSize: file.size,
+  });
+  if (existing) {
+    return NextResponse.json({ ...existing, duplicate: true });
+  }
 
-  // Try to persist the file to object storage.
-  // If storage is not configured or not reachable, fall back to inline
-  // processing (the file is kept in memory for the pipeline).
-  let storagePath: string | undefined;
+  // Persist the file to object storage so worker processes can ingest it.
+  let storagePath: string;
   try {
-    const uploadResult = await serverFileStorage.upload(file.stream(), {
+    const uploadResult = await serverFileStorage.upload(buffer, {
       filename: `knowledge/${groupId}/${Date.now()}-${file.name}`,
       contentType: file.type || "application/octet-stream",
     });
     storagePath = uploadResult.key;
   } catch (uploadErr) {
-    console.warn(
-      "[ContextX] File storage unavailable – proceeding with inline processing:",
+    console.error(
+      "[ContextX] File storage unavailable for ingest request:",
       uploadErr,
+    );
+    return NextResponse.json(
+      {
+        error:
+          "File storage is unavailable. Document uploads require shared object storage.",
+      },
+      { status: 503 },
     );
   }
 
@@ -179,25 +370,21 @@ export async function POST(req: NextRequest, { params }: Params) {
     fileType,
     fileSize: file.size,
     storagePath,
+    fingerprint,
   });
 
-  if (!storagePath) {
-    const buffer = Buffer.from(await file.arrayBuffer());
-    // Storage upload failed — buffer is the only source. Never enqueue because
-    // the worker process has no access to this in-memory buffer; always process inline.
-    runIngestPipeline(doc.id, groupId, buffer).catch(async (err) => {
-      console.error(
-        "[ContextX] Inline ingest failed for document",
-        doc.id,
-        err,
-      );
-      await knowledgeRepository
-        .updateDocumentStatus(doc.id, "failed", { errorMessage: String(err) })
-        .catch(() => {});
-    });
-  } else {
-    // Storage path is set — the worker can re-download from storage.
-    await enqueueOrProcessInline(doc.id, groupId);
+  try {
+    await enqueueDocumentIngestOrFail(doc.id, groupId);
+  } catch {
+    return NextResponse.json(
+      {
+        error:
+          "Knowledge ingest workers are unavailable. Please retry shortly.",
+        documentId: doc.id,
+      },
+      { status: 503 },
+    );
   }
+
   return NextResponse.json(doc, { status: 201 });
 }

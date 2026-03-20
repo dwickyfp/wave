@@ -3,7 +3,8 @@ import { ChatMentionSchema } from "./chat";
 import { VisibilitySchema } from "./util";
 import type { SubAgent } from "./subagent";
 import type { KnowledgeSummary } from "./knowledge";
-import type { SkillSummary } from "./skill";
+import type { SkillGroupSummary, SkillSummary } from "./skill";
+import type { SharedTeamSummary, TeamAccessSource } from "./team";
 
 export type AgentIcon = {
   type: "emoji";
@@ -38,6 +39,7 @@ export const AgentCreateSchema = z
     instructions: AgentInstructionsSchema,
     visibility: VisibilitySchema.optional().default("private"),
     subAgentsEnabled: z.boolean().optional().default(false),
+    chatPersonalizationEnabled: z.boolean().optional(),
     agentType: AgentTypeSchema.optional().default("standard"),
   })
   .strip();
@@ -55,6 +57,7 @@ export const AgentUpdateSchema = z
     instructions: AgentInstructionsSchema.optional(),
     visibility: VisibilitySchema.optional(),
     subAgentsEnabled: z.boolean().optional(),
+    chatPersonalizationEnabled: z.boolean().optional(),
   })
   .strip();
 
@@ -90,7 +93,10 @@ export type AgentSummary = {
   userName?: string;
   userAvatar?: string;
   isBookmarked?: boolean;
+  accessSource?: TeamAccessSource;
+  sharedTeams?: SharedTeamSummary[];
   subAgentsEnabled?: boolean;
+  chatPersonalizationEnabled?: boolean;
   agentType?: z.infer<typeof AgentTypeSchema>;
 };
 
@@ -99,6 +105,7 @@ export type Agent = AgentSummary & {
   subAgents?: SubAgent[];
   knowledgeGroups?: KnowledgeSummary[];
   skills?: SkillSummary[];
+  skillGroups?: SkillGroupSummary[];
 };
 
 export type AgentRepository = {
@@ -137,6 +144,12 @@ export type AgentRepository = {
   ): Promise<void>;
 
   setMcpEnabled(id: string, userId: string, enabled: boolean): Promise<void>;
+
+  setChatPersonalizationEnabled(
+    id: string,
+    userId: string,
+    enabled: boolean,
+  ): Promise<void>;
 
   setMcpModel(
     id: string,
@@ -216,4 +229,26 @@ export const AgentGenerateSchema = z.object({
     .describe("Generated subagents for this orchestrator agent")
     .optional()
     .default([]),
+});
+
+export const AgentInstructionEnhanceRequestSchema = z.object({
+  changePrompt: z.string().min(1),
+  currentInstructions: z.string().default(""),
+  chatModel: z
+    .object({
+      provider: z.string(),
+      model: z.string(),
+    })
+    .optional(),
+  agentContext: z
+    .object({
+      name: z.string().optional(),
+      description: z.string().optional(),
+      role: z.string().optional(),
+    })
+    .optional(),
+});
+
+export const AgentInstructionEnhanceResponseSchema = z.object({
+  instructions: z.string().describe("Enhanced system instructions"),
 });

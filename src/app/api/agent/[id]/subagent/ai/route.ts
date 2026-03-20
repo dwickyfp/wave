@@ -39,7 +39,7 @@ export async function POST(
     const canEdit = await canEditAgent();
     if (!canEdit) {
       return Response.json(
-        { error: "Only editors and admins can generate subagents" },
+        { error: "Only creators and admins can generate subagents" },
         { status: 403 },
       );
     }

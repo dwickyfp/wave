@@ -1,39 +1,21 @@
-from collections.abc import Iterable
-import unittest
+from pathlib import Path
+from time import perf_counter
 
+from docling.document_converter import DocumentConverter
 
-def algorithma(numbers):
-    """Return the sum of squared numeric values from an iterable.
+# document per local path or URL
+source = "/Users/dwickyferiansyahputra/Public/Research/chat-enterprise/better-chatbot/docs/example/BBCA_Q4_2025.pdf"
+output_path = Path(source).with_suffix(".md")
 
-    Example:
-        algorithma([1, 2, 3]) -> 14
-    """
-    if not isinstance(numbers, Iterable) or isinstance(numbers, (str, bytes)):
-        raise TypeError("numbers must be a non-string iterable")
+converter = DocumentConverter()
+start_time = perf_counter()
+result = converter.convert(source)
+duration_seconds = perf_counter() - start_time
 
-    total = 0
-    for value in numbers:
-        if not isinstance(value, (int, float)):
-            raise TypeError("all items must be numeric")
-        total += value * value
-    return total
+markdown_content = result.document.export_to_markdown()
+markdown_with_duration = (
+    f"> Conversion duration: {duration_seconds:.2f} seconds\n\n"
+    f"{markdown_content}"
+)
 
-
-class TestAlgorithma(unittest.TestCase):
-    def test_returns_sum_of_squares(self):
-        self.assertEqual(algorithma([1, 2, 3]), 14)
-
-    def test_returns_zero_for_empty_iterable(self):
-        self.assertEqual(algorithma([]), 0)
-
-    def test_raises_for_non_iterable_input(self):
-        with self.assertRaises(TypeError):
-            algorithma(123)
-
-    def test_raises_for_non_numeric_item(self):
-        with self.assertRaises(TypeError):
-            algorithma([1, "two", 3])
-
-
-if __name__ == "__main__":
-    unittest.main()
+output_path.write_text(markdown_with_duration, encoding="utf-8")

@@ -6,6 +6,28 @@ export type KnowledgeGroupIcon = {
 };
 
 export type KnowledgeVisibility = "public" | "private" | "readonly";
+export type KnowledgePurpose = "default" | "personalization";
+export type KnowledgeParseMode = "off" | "auto" | "always";
+export type KnowledgeParseRepairPolicy =
+  | "strict"
+  | "section-safe-reorder"
+  | "aggressive";
+export type KnowledgeContextMode = "deterministic" | "auto-llm" | "always-llm";
+export type KnowledgeImageMode = "off" | "auto" | "always";
+export type KnowledgeDocumentVersionStatus = "processing" | "ready" | "failed";
+export type KnowledgeDocumentVersionChangeType =
+  | "initial_ingest"
+  | "edit"
+  | "rollback"
+  | "reingest";
+export type KnowledgeDocumentImageKind = "embedded" | "region";
+export type KnowledgeDocumentHistoryEventType =
+  | "created"
+  | "edited"
+  | "rollback"
+  | "failed"
+  | "bootstrap"
+  | "reingest";
 export type DocumentFileType =
   | "pdf"
   | "docx"
@@ -17,6 +39,57 @@ export type DocumentFileType =
   | "html";
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type UsageSource = "chat" | "agent" | "mcp";
+export type KnowledgeDocumentProcessingStage =
+  | "extracting"
+  | "parsing"
+  | "materializing"
+  | "embedding"
+  | "finalizing";
+
+export interface KnowledgeDocumentProcessingState {
+  stage: KnowledgeDocumentProcessingStage;
+  currentPage?: number | null;
+  totalPages?: number | null;
+  pageNumber?: number | null;
+}
+
+export type KnowledgeChunkMetadata = {
+  section?: string;
+  sectionTitle?: string;
+  headings?: string[];
+  headingPath?: string;
+  canonicalTitle?: string;
+  issuerName?: string;
+  issuerTicker?: string;
+  reportType?: string;
+  fiscalYear?: number;
+  periodEnd?: string;
+  noteNumber?: string;
+  noteTitle?: string;
+  noteSubsection?: string;
+  continued?: boolean;
+  chunkType?:
+    | "code"
+    | "directive"
+    | "api"
+    | "narrative"
+    | "table"
+    | "list"
+    | "other";
+  sourcePath?: string;
+  libraryId?: string;
+  libraryVersion?: string;
+  hasStructuredContent?: boolean;
+  pageNumber?: number;
+  pageStart?: number;
+  pageEnd?: number;
+  extractionMode?: "raw" | "normalized" | "refined";
+  qualityScore?: number;
+  repairReason?: string;
+  sheetName?: string;
+  sourceGroupId?: string;
+  sourceGroupName?: string;
+};
 
 export interface KnowledgeGroup {
   id: string;
@@ -25,12 +98,19 @@ export interface KnowledgeGroup {
   icon?: KnowledgeGroupIcon;
   userId: string;
   visibility: KnowledgeVisibility;
+  purpose: KnowledgePurpose;
+  isSystemManaged: boolean;
   embeddingModel: string;
   embeddingProvider: string;
   rerankingModel?: string | null;
   rerankingProvider?: string | null;
   parsingModel?: string | null;
   parsingProvider?: string | null;
+  parseMode: KnowledgeParseMode;
+  parseRepairPolicy: KnowledgeParseRepairPolicy;
+  contextMode: KnowledgeContextMode;
+  imageMode: KnowledgeImageMode;
+  lazyRefinementEnabled: boolean;
   retrievalThreshold: number;
   mcpEnabled: boolean;
   mcpApiKeyHash?: string | null;
@@ -59,12 +139,19 @@ export interface KnowledgeSummary {
   icon?: KnowledgeGroupIcon;
   userId: string;
   visibility: KnowledgeVisibility;
+  purpose: KnowledgePurpose;
+  isSystemManaged: boolean;
   embeddingModel: string;
   embeddingProvider: string;
   rerankingModel?: string | null;
   rerankingProvider?: string | null;
   parsingModel?: string | null;
   parsingProvider?: string | null;
+  parseMode: KnowledgeParseMode;
+  parseRepairPolicy: KnowledgeParseRepairPolicy;
+  contextMode: KnowledgeContextMode;
+  imageMode: KnowledgeImageMode;
+  lazyRefinementEnabled: boolean;
   retrievalThreshold: number;
   mcpEnabled: boolean;
   documentCount: number;
@@ -88,15 +175,20 @@ export interface KnowledgeDocument {
   fileSize?: number | null;
   storagePath?: string | null;
   sourceUrl?: string | null;
+  fingerprint?: string | null;
   status: DocumentStatus;
   /** Ingestion progress percentage 0–100. Null when not processing. */
   processingProgress?: number | null;
+  processingState?: KnowledgeDocumentProcessingState | null;
   errorMessage?: string | null;
   chunkCount: number;
   tokenCount: number;
+  embeddingTokenCount: number;
   metadata?: Record<string, unknown> | null;
   /** Full markdown content of the processed document */
   markdownContent?: string | null;
+  activeVersionId?: string | null;
+  latestVersionNumber?: number;
   /** True when this doc is inherited from a linked source group */
   isInherited?: boolean;
   /** Source group metadata (set only for inherited docs) */
@@ -123,6 +215,13 @@ export interface KnowledgeSection {
   content: string;
   summary: string;
   tokenCount: number;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  noteNumber?: string | null;
+  noteTitle?: string | null;
+  noteSubsection?: string | null;
+  continued?: boolean | null;
+  embedding?: number[] | null;
   createdAt: Date;
 }
 
@@ -135,29 +234,157 @@ export interface KnowledgeChunk {
   contextSummary?: string | null;
   chunkIndex: number;
   tokenCount: number;
-  metadata?: {
-    section?: string;
-    sectionTitle?: string;
-    headings?: string[];
-    headingPath?: string;
-    chunkType?:
-      | "code"
-      | "directive"
-      | "api"
-      | "narrative"
-      | "table"
-      | "list"
-      | "other";
-    sourcePath?: string;
-    libraryId?: string;
-    libraryVersion?: string;
-    hasStructuredContent?: boolean;
-    pageNumber?: number;
-    sheetName?: string;
-    sourceGroupId?: string;
-    sourceGroupName?: string;
-  } | null;
+  metadata?: KnowledgeChunkMetadata | null;
   createdAt: Date;
+}
+
+export interface KnowledgeChunkSnapshot extends KnowledgeChunk {
+  embedding?: number[] | null;
+}
+
+export interface KnowledgeDocumentImage {
+  id: string;
+  documentId: string;
+  groupId: string;
+  versionId?: string | null;
+  kind: KnowledgeDocumentImageKind;
+  ordinal: number;
+  marker: string;
+  label: string;
+  description: string;
+  headingPath?: string | null;
+  stepHint?: string | null;
+  sourceUrl?: string | null;
+  storagePath?: string | null;
+  mediaType?: string | null;
+  pageNumber?: number | null;
+  width?: number | null;
+  height?: number | null;
+  altText?: string | null;
+  caption?: string | null;
+  surroundingText?: string | null;
+  precedingText?: string | null;
+  followingText?: string | null;
+  isRenderable: boolean;
+  manualLabel: boolean;
+  manualDescription: boolean;
+  embedding?: number[] | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface KnowledgeDocumentImageVersion extends KnowledgeDocumentImage {
+  versionId: string;
+}
+
+export interface KnowledgeDocumentImagePreview extends KnowledgeDocumentImage {
+  assetUrl: string | null;
+}
+
+export interface KnowledgeDocumentVersion {
+  id: string;
+  documentId: string;
+  groupId: string;
+  userId: string;
+  versionNumber: number;
+  status: KnowledgeDocumentVersionStatus;
+  changeType: KnowledgeDocumentVersionChangeType;
+  markdownContent?: string | null;
+  resolvedTitle: string;
+  resolvedDescription?: string | null;
+  metadata?: Record<string, unknown> | null;
+  metadataEmbedding?: number[] | null;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkCount: number;
+  tokenCount: number;
+  embeddingTokenCount: number;
+  sourceVersionId?: string | null;
+  createdByUserId?: string | null;
+  errorMessage?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface KnowledgeDocumentVersionSummary {
+  id: string;
+  versionNumber: number;
+  status: KnowledgeDocumentVersionStatus;
+  changeType: KnowledgeDocumentVersionChangeType;
+  isActive: boolean;
+  resolvedTitle: string;
+  resolvedDescription?: string | null;
+  embeddingProvider: string;
+  embeddingModel: string;
+  chunkCount: number;
+  tokenCount: number;
+  embeddingTokenCount: number;
+  sourceVersionId?: string | null;
+  createdByUserId?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  canRollback: boolean;
+  rollbackBlockedReason?: string | null;
+}
+
+export interface KnowledgeDocumentVersionContent {
+  versionId: string;
+  markdownContent: string | null;
+}
+
+export interface KnowledgeDocumentHistoryEvent {
+  id: string;
+  documentId: string;
+  groupId: string;
+  userId: string;
+  actorUserId?: string | null;
+  actorUserName?: string | null;
+  eventType: KnowledgeDocumentHistoryEventType;
+  fromVersionId?: string | null;
+  fromVersionNumber?: number | null;
+  toVersionId?: string | null;
+  toVersionNumber?: number | null;
+  details?: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+export interface KnowledgeDocumentPreview {
+  doc: {
+    id: string;
+    name: string;
+    description?: string | null;
+    descriptionManual?: boolean;
+    titleManual?: boolean;
+    isInherited?: boolean;
+    sourceGroupId?: string | null;
+    sourceGroupName?: string | null;
+    sourceGroupVisibility?: KnowledgeVisibility | null;
+    sourceGroupUserName?: string | null;
+    originalFilename: string;
+    fileType: string;
+    fileSize?: number | null;
+    mimeType: string;
+    activeVersionId?: string | null;
+    latestVersionNumber?: number;
+    embeddingTokenCount?: number;
+    processingState?: KnowledgeDocumentProcessingState | null;
+  };
+  assetUrl: string | null;
+  previewUrl: string | null;
+  sourceUrl: string | null;
+  content: string | null;
+  markdownAvailable: boolean;
+  isUrlOnly: boolean;
+  requestedVersionId?: string | null;
+  resolvedVersionId?: string | null;
+  resolvedCitationPageStart?: number | null;
+  resolvedCitationPageEnd?: number | null;
+  binaryMatchesRequestedVersion?: boolean;
+  fallbackWarning?: string | null;
+  activeVersionId: string | null;
+  activeVersionNumber: number | null;
+  versions: KnowledgeDocumentVersionSummary[];
+  images: KnowledgeDocumentImagePreview[];
 }
 
 export interface KnowledgeQueryResult {
@@ -165,7 +392,15 @@ export interface KnowledgeQueryResult {
   documentName: string;
   documentId: string;
   score: number;
+  confidenceScore?: number;
+  semanticScore?: number;
+  lexicalScore?: number;
+  docSignal?: number;
   rerankScore?: number;
+  neighborContext?: {
+    previous?: string;
+    next?: string;
+  };
 }
 
 export interface KnowledgeUsageStats {
@@ -173,6 +408,16 @@ export interface KnowledgeUsageStats {
   uniqueUsers: number;
   mcpQueries: number;
   avgLatencyMs: number;
+  storedEmbeddingTokens: number;
+  processedEmbeddingTokens: number;
+  recentEmbeddingTokens: number;
+  documentEmbeddingUsage: Array<{
+    documentId: string;
+    name: string;
+    embeddingTokenCount: number;
+    latestVersionNumber?: number | null;
+    updatedAt: Date;
+  }>;
   recentQueries: Array<{
     id: string;
     query: string;
@@ -186,6 +431,14 @@ export interface KnowledgeUsageStats {
     date: string;
     count: number;
   }>;
+}
+
+export interface PaginatedKnowledgeDocuments {
+  items: KnowledgeDocument[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
 }
 
 // ─── Zod Schemas ──────────────────────────────────────────────────────────────
@@ -207,17 +460,17 @@ export const createKnowledgeGroupSchema = z.object({
   parsingModel: z.string().optional().nullable(),
   parsingProvider: z.string().optional().nullable(),
   retrievalThreshold: z.number().min(0).max(1).default(0.0),
-  chunkSize: z.number().int().min(128).max(2048).default(512),
-  chunkOverlapPercent: z.number().int().min(0).max(50).default(20),
+  chunkSize: z.number().int().min(128).max(2048).default(768),
+  chunkOverlapPercent: z.number().int().min(0).max(50).default(10),
   sourceGroupIds: z.array(z.string().uuid()).max(50).optional(),
 });
 
 export const updateKnowledgeGroupSchema = createKnowledgeGroupSchema.partial();
 
-export type CreateKnowledgeGroupInput = z.infer<
+export type CreateKnowledgeGroupInput = z.input<
   typeof createKnowledgeGroupSchema
 >;
-export type UpdateKnowledgeGroupInput = z.infer<
+export type UpdateKnowledgeGroupInput = z.input<
   typeof updateKnowledgeGroupSchema
 >;
 
@@ -226,7 +479,11 @@ export type UpdateKnowledgeGroupInput = z.infer<
 export interface KnowledgeRepository {
   // Groups
   insertGroup(
-    data: CreateKnowledgeGroupInput & { userId: string },
+    data: CreateKnowledgeGroupInput & {
+      userId: string;
+      purpose?: KnowledgePurpose;
+      isSystemManaged?: boolean;
+    },
   ): Promise<KnowledgeGroup>;
   selectGroupById(id: string, userId: string): Promise<KnowledgeGroup | null>;
   selectGroupByIdForMcp(id: string): Promise<KnowledgeGroup | null>;
@@ -271,13 +528,32 @@ export interface KnowledgeRepository {
       | "updatedAt"
       | "chunkCount"
       | "tokenCount"
+      | "embeddingTokenCount"
       | "status"
       | "errorMessage"
     > & { status?: DocumentStatus },
   ): Promise<KnowledgeDocument>;
   selectDocumentsByGroupId(groupId: string): Promise<KnowledgeDocument[]>;
   selectDocumentsByGroupScope(groupId: string): Promise<KnowledgeDocument[]>;
+  selectDocumentsPageByGroupScope(
+    groupId: string,
+    input: { limit: number; offset: number },
+  ): Promise<PaginatedKnowledgeDocuments>;
   selectDocumentById(id: string): Promise<KnowledgeDocument | null>;
+  selectDocumentByFingerprint(
+    groupId: string,
+    fingerprint: string,
+  ): Promise<KnowledgeDocument | null>;
+  selectUrlDocumentBySourceUrl(
+    groupId: string,
+    sourceUrl: string,
+  ): Promise<KnowledgeDocument | null>;
+  selectFileDocumentByNameAndSize(input: {
+    groupId: string;
+    originalFilename: string;
+    fileType: DocumentFileType;
+    fileSize: number;
+  }): Promise<KnowledgeDocument | null>;
   updateDocumentStatus(
     id: string,
     status: DocumentStatus,
@@ -285,8 +561,19 @@ export interface KnowledgeRepository {
       errorMessage?: string;
       chunkCount?: number;
       tokenCount?: number;
+      embeddingTokenCount?: number;
       markdownContent?: string;
       processingProgress?: number | null;
+      processingState?: KnowledgeDocumentProcessingState | null;
+    },
+  ): Promise<void>;
+  updateDocumentProcessing(
+    id: string,
+    data: {
+      status?: DocumentStatus;
+      errorMessage?: string | null;
+      processingProgress?: number | null;
+      processingState?: KnowledgeDocumentProcessingState | null;
     },
   ): Promise<void>;
   updateDocumentMetadata(
@@ -309,6 +596,21 @@ export interface KnowledgeRepository {
     },
   ): Promise<void>;
   deleteDocument(id: string): Promise<void>;
+  getDocumentImages(documentId: string): Promise<KnowledgeDocumentImage[]>;
+  getDocumentImagesByVersion(
+    documentId: string,
+    versionId: string,
+  ): Promise<KnowledgeDocumentImageVersion[]>;
+  getDocumentImageById(
+    documentId: string,
+    imageId: string,
+  ): Promise<KnowledgeDocumentImage | null>;
+  getDocumentImageByIdFromVersion(
+    documentId: string,
+    versionId: string,
+    imageId: string,
+  ): Promise<KnowledgeDocumentImageVersion | null>;
+  listDocumentImageStoragePaths(documentId: string): Promise<string[]>;
 
   // Document markdown (Context7-style full-doc retrieval)
   getDocumentMarkdown(documentId: string): Promise<{
@@ -338,18 +640,29 @@ export interface KnowledgeRepository {
       name: string;
       description?: string | null;
       metadata?: Record<string, unknown> | null;
+      activeVersionId?: string | null;
       updatedAt: Date;
     }>
   >;
+  findDocumentIdsByRetrievalIdentity(
+    groupId: string,
+    input: {
+      issuer?: string | null;
+      ticker?: string | null;
+      limit?: number;
+    },
+  ): Promise<Array<{ documentId: string; score: number }>>;
   searchDocumentMetadata(
     groupId: string,
     query: string,
     limit: number,
+    documentIds?: string[],
   ): Promise<Array<{ documentId: string; score: number }>>;
   vectorSearchDocumentMetadata(
     groupId: string,
     embedding: number[],
     limit: number,
+    documentIds?: string[],
   ): Promise<Array<{ documentId: string; score: number }>>;
 
   // Sections
@@ -359,6 +672,20 @@ export interface KnowledgeRepository {
   deleteSectionsByDocumentId(documentId: string): Promise<void>;
   getSectionsByIds(ids: string[]): Promise<KnowledgeSection[]>;
   getRelatedSections(sectionIds: string[]): Promise<KnowledgeSection[]>;
+  findSectionsByStructuredFilters(input: {
+    groupId: string;
+    documentIds?: string[];
+    page?: number | null;
+    noteNumber?: string | null;
+    noteSubsection?: string | null;
+    limit?: number;
+  }): Promise<
+    Array<{
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+    }>
+  >;
 
   // Chunks
   insertChunks(
@@ -374,12 +701,58 @@ export interface KnowledgeRepository {
     groupId: string,
     embedding: number[],
     limit: number,
+    filters?: {
+      documentIds?: string[];
+      sectionIds?: string[];
+    },
   ): Promise<Array<KnowledgeQueryResult>>;
   fullTextSearch(
     groupId: string,
     query: string,
     limit: number,
+    filters?: {
+      documentIds?: string[];
+      sectionIds?: string[];
+    },
   ): Promise<Array<KnowledgeQueryResult>>;
+  fullTextSearchSections(
+    groupId: string,
+    query: string,
+    limit: number,
+    documentIds?: string[],
+  ): Promise<
+    Array<{
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+      score: number;
+    }>
+  >;
+  vectorSearchSections(
+    groupId: string,
+    embedding: number[],
+    limit: number,
+    documentIds?: string[],
+  ): Promise<
+    Array<{
+      section: KnowledgeSection;
+      documentId: string;
+      documentName: string;
+      score: number;
+    }>
+  >;
+  fullTextSearchImages(
+    groupId: string,
+    query: string,
+    limit: number,
+    documentIds?: string[],
+  ): Promise<Array<KnowledgeDocumentImage & { score: number }>>;
+  vectorSearchImages(
+    groupId: string,
+    embedding: number[],
+    limit: number,
+    documentIds?: string[],
+  ): Promise<Array<KnowledgeDocumentImage & { score: number }>>;
 
   // Adjacent chunks (for neighbor expansion)
   getAdjacentChunks(

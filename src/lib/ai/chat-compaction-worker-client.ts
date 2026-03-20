@@ -20,7 +20,7 @@ async function createQueue(): Promise<Queue> {
     lazyConnect: true,
   });
 
-  return new Queue(QUEUE_NAME, {
+  const queue = new Queue(QUEUE_NAME, {
     connection: connection as any,
     defaultJobOptions: {
       attempts: 3,
@@ -29,6 +29,8 @@ async function createQueue(): Promise<Queue> {
       removeOnFail: 200,
     },
   });
+  await queue.waitUntilReady();
+  return queue;
 }
 
 function getChatCompactionQueue(): Promise<Queue> {
@@ -45,5 +47,18 @@ export async function enqueueChatCompaction(threadId: string): Promise<void> {
     "compact-thread",
     { type: "compact-thread", threadId } satisfies ChatCompactionJob,
     { jobId: `compact-thread-${threadId}` },
+  );
+}
+
+export async function getChatCompactionQueueCounts() {
+  const queue = await getChatCompactionQueue();
+
+  return queue.getJobCounts(
+    "waiting",
+    "active",
+    "delayed",
+    "paused",
+    "completed",
+    "failed",
   );
 }

@@ -1,4 +1,5 @@
 import { MemoryCache } from "./memory-cache";
+import { SafeRedisCache } from "./safe-redis-cache";
 
 import { Cache } from "./cache.interface";
 import { IS_DEV } from "lib/const";
@@ -18,34 +19,35 @@ const createCache = () => {
   }
 
   if (redisUrl) {
-    // logger.info("Using SafeRedisCache with automatic fallback");
-    // return new SafeRedisCache({
-    //   redisUrl,
-    //   fallbackToMemory: true,
-    //   redisOptions: {
-    //     retryStrategy: (times) => {
-    //       if (times > 3) {
-    //         logger.error("Redis connection failed after 3 retries");
-    //         return null;
-    //       }
-    //       return Math.min(times * 1000, 3000);
-    //     },
-    //     maxRetriesPerRequest: 2,
-    //     enableOfflineQueue: false,
-    //     connectTimeout: 5000,
-    //     commandTimeout: 5000,
-    //   },
-    // });
+    logger.info("Using SafeRedisCache with memory fallback");
+    return new SafeRedisCache({
+      redisUrl,
+      fallbackToMemory: true,
+      keyPrefix: "server-cache:",
+      redisOptions: {
+        retryStrategy: (times) => {
+          if (times > 3) {
+            logger.error("Redis connection failed after 3 retries");
+            return null;
+          }
+          return Math.min(times * 1000, 3000);
+        },
+        maxRetriesPerRequest: 2,
+        enableOfflineQueue: false,
+        connectTimeout: 5000,
+        commandTimeout: 5000,
+        lazyConnect: true,
+      },
+    });
   }
 
-  // logger.warn("No Redis URL found, using MemoryCache");
-  return new MemoryCache();
+  throw new Error(
+    "REDIS_URL is required in production for shared cache and queue-backed features.",
+  );
 };
 
 const serverCache = globalThis.__server__cache__ || createCache();
 
-if (IS_DEV) {
-  globalThis.__server__cache__ = serverCache;
-}
+globalThis.__server__cache__ = serverCache;
 
 export { serverCache };
