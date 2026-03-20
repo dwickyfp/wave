@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  DashboardBreakdownChartCard,
+  DashboardRankingChartCard,
+  DashboardTimelineChartCard,
+} from "@/components/admin/resource-dashboard-charts";
 import type {
   AdminDashboardDetailData,
   AdminDashboardKind,
@@ -10,6 +15,7 @@ import {
   buildAdminDashboardDetailPageUrl,
   buildAdminDashboardPageUrl,
 } from "lib/admin/dashboard";
+import { buildAdminDashboardDetailInsights } from "lib/admin/resource-dashboard-insights";
 import { notify } from "lib/notify";
 import { fetcher } from "lib/utils";
 import { ArrowLeft, LoaderCircle, Trash2 } from "lucide-react";
@@ -22,15 +28,6 @@ import {
   useMemo,
   useState,
 } from "react";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import useSWR from "swr";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { Badge } from "ui/badge";
@@ -212,6 +209,10 @@ export function ResourceDashboardDetailPage(
   }, [id, kind, resolvedData.header.name, router, viewState]);
 
   const isCustomRange = viewState.preset === "custom";
+  const insightMetrics = useMemo(
+    () => buildAdminDashboardDetailInsights(resolvedData),
+    [resolvedData],
+  );
 
   return (
     <div className="flex w-full flex-col gap-6 p-8">
@@ -362,107 +363,68 @@ export function ResourceDashboardDetailPage(
         ))}
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Usage timeline</CardTitle>
-        </CardHeader>
-        <CardContent className="h-[320px]">
-          {error ? (
-            <div className="flex h-full items-center justify-center text-sm text-destructive">
-              Failed to load dashboard detail.
-            </div>
-          ) : resolvedData.usageTimeline.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              No activity recorded for this range.
-            </div>
-          ) : (
-            <ResponsiveContainer height="100%" width="100%">
-              <LineChart data={resolvedData.usageTimeline}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" />
-                <YAxis allowDecimals={false} />
-                <Tooltip />
-                <Line
-                  dataKey="value"
-                  dot={false}
-                  stroke="var(--primary)"
-                  strokeWidth={2}
-                  type="monotone"
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </CardContent>
-      </Card>
+      <div className="space-y-2">
+        <div>
+          <h2 className="text-lg font-semibold">Derived insights</h2>
+          <p className="text-sm text-muted-foreground">
+            Highlight peaks, consistency, and dominant segments for this
+            resource.
+          </p>
+        </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        {resolvedData.breakdowns.map((section) => (
-          <Card key={section.title}>
-            <CardHeader>
-              <CardTitle>{section.title}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {section.items.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No breakdown data available.
-                </p>
-              ) : (
-                section.items.map((item) => (
-                  <div
-                    className="flex items-center justify-between border-b pb-3 last:border-b-0 last:pb-0"
-                    key={`${section.title}-${item.label}`}
-                  >
-                    <div>
-                      <p className="font-medium">{item.label}</p>
-                      {item.secondary ? (
-                        <p className="text-xs text-muted-foreground">
-                          {item.secondary}
-                        </p>
-                      ) : null}
-                    </div>
-                    <p className="font-semibold">
-                      {item.value.toLocaleString()}
-                    </p>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-        ))}
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {insightMetrics.map((metric) => (
+            <MetricCard
+              hint={metric.hint}
+              key={`insight-${metric.label}`}
+              label={metric.label}
+              value={metric.value}
+            />
+          ))}
+        </div>
+      </div>
 
-        {resolvedData.topLists.map((section) => (
-          <Card key={section.title}>
-            <CardHeader>
-              <CardTitle>{section.title}</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {section.items.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No ranked activity available.
-                </p>
-              ) : (
-                section.items.map((item) => (
-                  <div
-                    className="flex items-center justify-between border-b pb-3 last:border-b-0 last:pb-0"
-                    key={`${section.title}-${item.label}`}
-                  >
-                    <div>
-                      <p className="font-medium">{item.label}</p>
-                      {item.secondary ? (
-                        <p className="text-xs text-muted-foreground">
-                          {item.secondary}
-                        </p>
-                      ) : null}
-                    </div>
-                    <p className="font-semibold">
-                      {item.value.toLocaleString()}
-                    </p>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-        ))}
+      {error ? (
+        <Card>
+          <CardContent className="flex h-[180px] items-center justify-center text-sm text-destructive">
+            Failed to load dashboard detail.
+          </CardContent>
+        </Card>
+      ) : (
+        <DashboardTimelineChartCard
+          description="Track how activity changes across the selected range and spot peaks quickly."
+          timeline={resolvedData.usageTimeline}
+          title="Usage timeline"
+        />
+      )}
+
+      <div className="space-y-2">
+        <div>
+          <h2 className="text-lg font-semibold">Breakdowns and rankings</h2>
+          <p className="text-sm text-muted-foreground">
+            Visualize which segments dominate and who contributes the most.
+          </p>
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-2">
+          {resolvedData.breakdowns.map((section) => (
+            <DashboardBreakdownChartCard
+              description="Share and concentration across the leading segments in this range."
+              items={section.items}
+              key={section.title}
+              title={section.title}
+            />
+          ))}
+
+          {resolvedData.topLists.map((section) => (
+            <DashboardRankingChartCard
+              description="Ranked leaders for the current range, with the biggest contributors surfaced first."
+              items={section.items}
+              key={section.title}
+              title={section.title}
+            />
+          ))}
+        </div>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">

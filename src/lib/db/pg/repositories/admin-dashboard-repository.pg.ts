@@ -13,6 +13,7 @@ import type {
 } from "app-types/admin-dashboard";
 import { type SQL, eq, sql } from "drizzle-orm";
 import { ADMIN_DASHBOARD_TITLES } from "lib/admin/dashboard";
+import { buildAdminDashboardListCharts } from "lib/admin/resource-dashboard-insights";
 import { pgDb as db } from "../db.pg";
 import {
   AdminUsageEventTable,
@@ -209,6 +210,8 @@ function buildListMetrics(
 ): AdminDashboardStat[] {
   const totalUsage = items.reduce((sum, item) => sum + item.totalUsage, 0);
   const activeCount = items.filter((item) => item.totalUsage > 0).length;
+  const activePercentage =
+    items.length > 0 ? Math.round((activeCount / items.length) * 100) : 0;
   const topItem = [...items].sort(
     (left, right) => right.totalUsage - left.totalUsage,
   )[0];
@@ -231,10 +234,12 @@ function buildListMetrics(
     {
       label: "Total active",
       value: activeCount,
+      hint: `${activePercentage}% of filtered resources`,
     },
     {
       label: "Total usage",
       value: totalUsage,
+      hint: `Across ${items.length.toLocaleString()} filtered ${labelPrefix}`,
     },
     {
       label: "Top usage",
@@ -392,6 +397,7 @@ async function getAgentList(
     title: ADMIN_DASHBOARD_TITLES.agent,
     usageLabel: "Total usage",
     metrics: buildListMetrics("agent", filteredItems),
+    charts: buildAdminDashboardListCharts("agent", filteredItems),
     items: paginateItems(filteredItems, query.limit, query.offset),
     total: filteredItems.length,
     limit: query.limit ?? filteredItems.length,
@@ -473,6 +479,7 @@ async function getMcpList(
     title: ADMIN_DASHBOARD_TITLES.mcp,
     usageLabel: "Total usage",
     metrics: buildListMetrics("mcp", filteredItems),
+    charts: buildAdminDashboardListCharts("mcp", filteredItems),
     items: paginateItems(filteredItems, query.limit, query.offset),
     total: filteredItems.length,
     limit: query.limit ?? filteredItems.length,
@@ -557,6 +564,7 @@ async function getContextxList(
     title: ADMIN_DASHBOARD_TITLES.contextx,
     usageLabel: "Total usage",
     metrics: buildListMetrics("contextx", filteredItems),
+    charts: buildAdminDashboardListCharts("contextx", filteredItems),
     items: paginateItems(filteredItems, query.limit, query.offset),
     total: filteredItems.length,
     limit: query.limit ?? filteredItems.length,
@@ -639,6 +647,7 @@ async function getSkillList(
     title: ADMIN_DASHBOARD_TITLES.skill,
     usageLabel: "Total usage",
     metrics: buildListMetrics("skill", filteredItems),
+    charts: buildAdminDashboardListCharts("skill", filteredItems),
     items: paginateItems(filteredItems, query.limit, query.offset),
     total: filteredItems.length,
     limit: query.limit ?? filteredItems.length,
@@ -722,6 +731,7 @@ async function getWorkflowList(
     title: ADMIN_DASHBOARD_TITLES.workflow,
     usageLabel: "Total usage",
     metrics: buildListMetrics("workflow", filteredItems),
+    charts: buildAdminDashboardListCharts("workflow", filteredItems),
     items: paginateItems(filteredItems, query.limit, query.offset),
     total: filteredItems.length,
     limit: query.limit ?? filteredItems.length,

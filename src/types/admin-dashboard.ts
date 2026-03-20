@@ -103,11 +103,20 @@ export interface AdminDashboardListItem {
   meta?: string;
 }
 
+export interface AdminDashboardChartCard {
+  title: string;
+  description?: string;
+  type: "bar" | "donut";
+  valueLabel: string;
+  items: AdminDashboardBreakdownItem[];
+}
+
 export interface AdminDashboardListData {
   kind: AdminDashboardKind;
   title: string;
   usageLabel: string;
   metrics: AdminDashboardStat[];
+  charts: AdminDashboardChartCard[];
   items: AdminDashboardListItem[];
   total: number;
   limit: number;

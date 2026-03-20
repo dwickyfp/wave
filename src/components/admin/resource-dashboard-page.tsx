@@ -1,5 +1,6 @@
 "use client";
 
+import { DashboardListChartCard } from "@/components/admin/resource-dashboard-charts";
 import type {
   AdminDashboardKind,
   AdminDashboardListData,
@@ -310,6 +311,25 @@ export function ResourceDashboardPage(props: ResourceDashboardPageProps) {
             hint={metric.hint}
           />
         ))}
+      </div>
+
+      <div className="space-y-2">
+        <div>
+          <h2 className="text-lg font-semibold">Overview charts</h2>
+          <p className="text-sm text-muted-foreground">
+            Compare leaders, ownership distribution, and overall activity
+            coverage for the current filtered set.
+          </p>
+        </div>
+
+        <div className="grid gap-4 xl:grid-cols-3">
+          {resolvedData.charts.map((chart) => (
+            <DashboardListChartCard
+              chart={chart}
+              key={`${resolvedData.kind}-${chart.title}`}
+            />
+          ))}
+        </div>
       </div>
 
       <Card>
