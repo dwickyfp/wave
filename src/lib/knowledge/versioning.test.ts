@@ -3,6 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import {
+  buildChunkSnapshotInsertRow,
+  buildImageSnapshotInsertRow,
+  buildLiveSectionInsertRow,
   getNextReservedVersionNumber,
   resolveDocumentVersionRetention,
   resolveKnowledgeDocumentFailureOutcome,
@@ -77,6 +80,91 @@ describe("getNextReservedVersionNumber", () => {
     ).toEqual({
       retainedVersionIds: ["version-9"],
       deletedVersionIds: [],
+    });
+  });
+
+  it("preserves chunk embeddings in version snapshots", () => {
+    expect(
+      buildChunkSnapshotInsertRow({
+        versionId: "version-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        chunk: {
+          id: "chunk-1",
+          sectionId: "section-1",
+          content: "chunk",
+          contextSummary: "summary",
+          embedding: [0.1, 0.2, 0.3],
+          chunkIndex: 0,
+          tokenCount: 12,
+          metadata: null,
+        },
+      }),
+    ).toMatchObject({
+      embedding: [0.1, 0.2, 0.3],
+    });
+  });
+
+  it("preserves image embeddings in version snapshots", () => {
+    expect(
+      buildImageSnapshotInsertRow({
+        versionId: "version-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        image: {
+          id: "image-1",
+          documentId: "doc-1",
+          groupId: "group-1",
+          versionId: "version-1",
+          kind: "embedded",
+          ordinal: 1,
+          marker: "CTX_IMAGE_1",
+          label: "Chart",
+          description: "Description",
+          headingPath: null,
+          stepHint: null,
+          sourceUrl: null,
+          storagePath: null,
+          mediaType: "image/png",
+          pageNumber: 1,
+          width: null,
+          height: null,
+          altText: null,
+          caption: null,
+          surroundingText: null,
+          precedingText: null,
+          followingText: null,
+          isRenderable: true,
+          manualLabel: false,
+          manualDescription: false,
+          embedding: [0.4, 0.5, 0.6],
+        },
+      }),
+    ).toMatchObject({
+      embedding: [0.4, 0.5, 0.6],
+    });
+  });
+
+  it("preserves section embeddings in live materialization rows", () => {
+    expect(
+      buildLiveSectionInsertRow({
+        documentId: "doc-1",
+        groupId: "group-1",
+        section: {
+          id: "section-1",
+          heading: "Heading",
+          headingPath: "Heading",
+          level: 1,
+          partIndex: 0,
+          partCount: 1,
+          content: "content",
+          summary: "summary",
+          tokenCount: 24,
+          embedding: [0.7, 0.8, 0.9],
+        },
+      }),
+    ).toMatchObject({
+      embedding: [0.7, 0.8, 0.9],
     });
   });
 });

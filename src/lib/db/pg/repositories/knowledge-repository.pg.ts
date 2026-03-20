@@ -24,6 +24,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
+import { buildKnowledgeGroupPersistenceFields } from "lib/knowledge/group-config";
 import { sanitizeImageStepHint } from "lib/knowledge/document-images";
 import { applyEnforcedKnowledgeIngestPolicy } from "lib/knowledge/quality-ingest-policy";
 import { generateUUID } from "lib/utils";
@@ -353,7 +354,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
   // ─── Groups ─────────────────────────────────────────────────────────────────
 
   async insertGroup(data) {
-    const enforcedPolicy = applyEnforcedKnowledgeIngestPolicy({});
+    const persistenceFields = buildKnowledgeGroupPersistenceFields(data);
     const [row] = await db
       .insert(KnowledgeGroupTable)
       .values({
@@ -365,18 +366,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         visibility: data.visibility ?? "private",
         purpose: data.purpose ?? "default",
         isSystemManaged: data.isSystemManaged ?? false,
-        embeddingModel: data.embeddingModel ?? "text-embedding-3-small",
-        embeddingProvider: data.embeddingProvider ?? "openai",
-        rerankingModel: data.rerankingModel ?? null,
-        rerankingProvider: data.rerankingProvider ?? null,
-        parseMode: enforcedPolicy.parseMode,
-        parseRepairPolicy: enforcedPolicy.parseRepairPolicy,
-        contextMode: enforcedPolicy.contextMode,
-        imageMode: enforcedPolicy.imageMode,
-        lazyRefinementEnabled: true,
-        mcpEnabled: false,
-        chunkSize: data.chunkSize ?? 768,
-        chunkOverlapPercent: data.chunkOverlapPercent ?? 10,
+        ...persistenceFields,
         createdAt: new Date(),
         updatedAt: new Date(),
       })

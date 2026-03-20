@@ -63,6 +63,14 @@ function getKnowledgeQueue(): Promise<Queue> {
   return _queuePromise;
 }
 
+export function resetKnowledgeQueueForTests() {
+  _queuePromise = null;
+}
+
+function getIngestDocumentJobId(documentId: string) {
+  return `ingest-${documentId}`;
+}
+
 function isMatchingIngestDocumentJob(
   job: {
     name?: string;
@@ -82,10 +90,27 @@ export async function enqueueIngestDocument(
   groupId: string,
 ): Promise<void> {
   const queue = await getKnowledgeQueue();
+  const jobId = getIngestDocumentJobId(documentId);
+  const existingJob = await queue.getJob(jobId);
+
+  if (existingJob) {
+    const state = await existingJob.getState();
+    if (state === "completed" || state === "failed") {
+      await existingJob.remove().catch((error) => {
+        console.warn(
+          `[ContextX Queue] Failed to clear completed ingest job ${jobId} for document ${documentId}:`,
+          error,
+        );
+      });
+    } else {
+      return;
+    }
+  }
+
   await queue.add(
     "ingest-document",
     { type: "ingest-document", documentId, groupId } satisfies KnowledgeJob,
-    { jobId: `ingest-${documentId}-${Date.now()}` },
+    { jobId },
   );
 }
 

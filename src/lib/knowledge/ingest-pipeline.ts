@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { assessExtractedPageQuality } from "./document-quality";
+import { resolveKnowledgeParseModel } from "./group-config";
 import {
   applyEnforcedKnowledgeIngestPolicy,
   ENFORCED_CONTEXT_MODE,
@@ -159,7 +160,10 @@ function buildFallbackPages(processedDocument: ProcessedDocument) {
   ];
 }
 
-async function resolveKnowledgeIngestModels() {
+async function resolveKnowledgeIngestModels(group?: {
+  parsingModel?: string | null;
+  parsingProvider?: string | null;
+}) {
   const settings = await settingsRepository.getSettings([
     "knowledge-parse-model",
     "knowledge-context-model",
@@ -183,8 +187,12 @@ async function resolveKnowledgeIngestModels() {
   ] as boolean | null | undefined;
 
   return {
-    parseModel:
-      (parseModel as { provider: string; model: string } | null) ?? null,
+    parseModel: resolveKnowledgeParseModel({
+      groupParsingModel: group?.parsingModel,
+      groupParsingProvider: group?.parsingProvider,
+      defaultParseModel:
+        (parseModel as { provider: string; model: string } | null) ?? null,
+    }),
     contextModel:
       (contextModel as { provider: string; model: string } | null) ?? null,
     imageModel:
@@ -257,7 +265,7 @@ export async function runIngestPipeline(
   }
   const documentTitle = doc.name || doc.originalFilename || "Untitled";
   const { parseModel, contextModel, imageModel, imageNeighborContextEnabled } =
-    await resolveKnowledgeIngestModels();
+    await resolveKnowledgeIngestModels(group);
   const effectiveGroup = applyEnforcedKnowledgeIngestPolicy(group);
   const eagerImageAnalysisConfig = imageModel;
   let pendingVersion: Awaited<

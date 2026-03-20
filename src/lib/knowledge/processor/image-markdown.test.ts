@@ -8,12 +8,14 @@ const {
   getModelForChatMock,
   createModelFromConfigMock,
   optimizeKnowledgeImageBufferMock,
+  safeOutboundFetchMock,
 } = vi.hoisted(() => ({
   generateTextMock: vi.fn(),
   getProviderByNameMock: vi.fn(),
   getModelForChatMock: vi.fn(),
   createModelFromConfigMock: vi.fn(),
   optimizeKnowledgeImageBufferMock: vi.fn(),
+  safeOutboundFetchMock: vi.fn(),
 }));
 
 vi.mock("ai", async () => {
@@ -35,8 +37,13 @@ vi.mock("lib/ai/provider-factory", () => ({
   createModelFromConfig: createModelFromConfigMock,
 }));
 
+vi.mock("lib/network/safe-outbound-fetch", () => ({
+  safeOutboundFetch: safeOutboundFetchMock,
+}));
+
 vi.mock("./image-optimization", () => ({
   optimizeKnowledgeImageBuffer: optimizeKnowledgeImageBufferMock,
+  MAX_KNOWLEDGE_IMAGE_BYTES: 5 * 1024 * 1024,
 }));
 
 import {
@@ -64,6 +71,7 @@ describe("image-markdown", () => {
         optimized: false,
       }),
     );
+    safeOutboundFetchMock.mockReset();
   });
 
   it("replaces image markers and appends missing blocks", () => {
@@ -127,6 +135,63 @@ describe("image-markdown", () => {
       "Caption or nearby label: Quarterly revenue by region from Q1 to Q4.",
     );
     expect(markdown).toContain("North America grows fastest");
+  });
+
+  it("fetches remote html images through the safe outbound fetch guard", async () => {
+    safeOutboundFetchMock.mockResolvedValue(
+      new Response(Buffer.from("remote-image"), {
+        status: 200,
+        headers: {
+          "content-type": "image/png",
+        },
+      }),
+    );
+
+    const processed = await convertHtmlFragmentToProcessedDocument(
+      '<article><img src="/chart.png" alt="Revenue chart" /></article>',
+      {
+        documentTitle: "Quarterly report",
+        baseUrl: "https://example.com/reports/q1",
+      },
+    );
+
+    expect(safeOutboundFetchMock).toHaveBeenCalledWith(
+      "https://example.com/chart.png",
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(processed.images?.[0]).toMatchObject({
+      sourceUrl: "https://example.com/chart.png",
+      mediaType: "image/png",
+      isRenderable: true,
+    });
+    expect(processed.images?.[0]?.buffer).toBeInstanceOf(Buffer);
+  });
+
+  it("ignores remote image bodies when the fetched content type is not an image", async () => {
+    safeOutboundFetchMock.mockResolvedValue(
+      new Response("<html>not-an-image</html>", {
+        status: 200,
+        headers: {
+          "content-type": "text/html",
+        },
+      }),
+    );
+
+    const processed = await convertHtmlFragmentToProcessedDocument(
+      '<article><img src="https://example.com/chart.png" alt="Revenue chart" /></article>',
+      {
+        documentTitle: "Quarterly report",
+      },
+    );
+
+    expect(processed.images?.[0]).toMatchObject({
+      sourceUrl: "https://example.com/chart.png",
+      mediaType: null,
+      isRenderable: true,
+    });
+    expect(processed.images?.[0]?.buffer).toBeNull();
   });
 
   it("resolves image markers to heading and nearby step context without reusing marker tokens", () => {

@@ -1139,6 +1139,97 @@ function toProcessedDocumentImages(
   }));
 }
 
+export function buildChunkSnapshotInsertRow(args: {
+  versionId: string;
+  documentId: string;
+  groupId: string;
+  chunk: VersionSnapshotChunk;
+}) {
+  return {
+    id: args.chunk.id,
+    versionId: args.versionId,
+    documentId: args.documentId,
+    groupId: args.groupId,
+    sectionVersionId: args.chunk.sectionId ?? null,
+    content: args.chunk.content,
+    contextSummary: args.chunk.contextSummary ?? null,
+    embedding: args.chunk.embedding ?? null,
+    chunkIndex: args.chunk.chunkIndex,
+    tokenCount: args.chunk.tokenCount,
+    metadata: args.chunk.metadata ?? null,
+    createdAt: new Date(),
+  };
+}
+
+export function buildImageSnapshotInsertRow(args: {
+  versionId: string;
+  documentId: string;
+  groupId: string;
+  image: VersionSnapshotImage;
+}) {
+  return {
+    id: args.image.id,
+    versionId: args.versionId,
+    documentId: args.documentId,
+    groupId: args.groupId,
+    kind: args.image.kind,
+    ordinal: args.image.ordinal,
+    marker: args.image.marker,
+    label: args.image.label,
+    description: args.image.description,
+    headingPath: args.image.headingPath ?? null,
+    stepHint: args.image.stepHint ?? null,
+    storagePath: args.image.storagePath ?? null,
+    sourceUrl: args.image.sourceUrl ?? null,
+    mediaType: args.image.mediaType ?? null,
+    pageNumber: args.image.pageNumber ?? null,
+    width: args.image.width ?? null,
+    height: args.image.height ?? null,
+    altText: args.image.altText ?? null,
+    caption: args.image.caption ?? null,
+    surroundingText: args.image.surroundingText ?? null,
+    precedingText: args.image.precedingText ?? null,
+    followingText: args.image.followingText ?? null,
+    isRenderable: args.image.isRenderable,
+    manualLabel: args.image.manualLabel,
+    manualDescription: args.image.manualDescription,
+    embedding: args.image.embedding ?? null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+export function buildLiveSectionInsertRow(args: {
+  documentId: string;
+  groupId: string;
+  section: VersionSnapshotSection;
+}) {
+  return {
+    id: args.section.id,
+    documentId: args.documentId,
+    groupId: args.groupId,
+    parentSectionId: args.section.parentSectionId ?? null,
+    prevSectionId: args.section.prevSectionId ?? null,
+    nextSectionId: args.section.nextSectionId ?? null,
+    heading: args.section.heading,
+    headingPath: args.section.headingPath,
+    level: args.section.level,
+    partIndex: args.section.partIndex,
+    partCount: args.section.partCount,
+    content: args.section.content,
+    summary: args.section.summary,
+    tokenCount: args.section.tokenCount,
+    pageStart: args.section.pageStart ?? null,
+    pageEnd: args.section.pageEnd ?? null,
+    noteNumber: args.section.noteNumber ?? null,
+    noteTitle: args.section.noteTitle ?? null,
+    noteSubsection: args.section.noteSubsection ?? null,
+    continued: args.section.continued ?? false,
+    embedding: args.section.embedding ?? null,
+    createdAt: new Date(),
+  };
+}
+
 async function insertSectionSnapshots(
   tx: any,
   versionId: string,
@@ -1198,20 +1289,14 @@ async function insertChunkSnapshots(
   for (let index = 0; index < chunks.length; index += VERSION_BATCH_SIZE) {
     const batch = chunks.slice(index, index + VERSION_BATCH_SIZE);
     await tx.insert(KnowledgeChunkVersionTable).values(
-      batch.map((chunk) => ({
-        id: chunk.id,
-        versionId,
-        documentId,
-        groupId,
-        sectionVersionId: chunk.sectionId ?? null,
-        content: chunk.content,
-        contextSummary: chunk.contextSummary ?? null,
-        embedding: null,
-        chunkIndex: chunk.chunkIndex,
-        tokenCount: chunk.tokenCount,
-        metadata: chunk.metadata ?? null,
-        createdAt: new Date(),
-      })),
+      batch.map((chunk) =>
+        buildChunkSnapshotInsertRow({
+          versionId,
+          documentId,
+          groupId,
+          chunk,
+        }),
+      ),
     );
   }
 }
@@ -1228,36 +1313,14 @@ async function insertImageSnapshots(
   for (let index = 0; index < images.length; index += VERSION_BATCH_SIZE) {
     const batch = images.slice(index, index + VERSION_BATCH_SIZE);
     await tx.insert(KnowledgeDocumentImageVersionTable).values(
-      batch.map((image) => ({
-        id: image.id,
-        versionId,
-        documentId,
-        groupId,
-        kind: image.kind,
-        ordinal: image.ordinal,
-        marker: image.marker,
-        label: image.label,
-        description: image.description,
-        headingPath: image.headingPath ?? null,
-        stepHint: image.stepHint ?? null,
-        storagePath: image.storagePath ?? null,
-        sourceUrl: image.sourceUrl ?? null,
-        mediaType: image.mediaType ?? null,
-        pageNumber: image.pageNumber ?? null,
-        width: image.width ?? null,
-        height: image.height ?? null,
-        altText: image.altText ?? null,
-        caption: image.caption ?? null,
-        surroundingText: image.surroundingText ?? null,
-        precedingText: image.precedingText ?? null,
-        followingText: image.followingText ?? null,
-        isRenderable: image.isRenderable,
-        manualLabel: image.manualLabel,
-        manualDescription: image.manualDescription,
-        embedding: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })),
+      batch.map((image) =>
+        buildImageSnapshotInsertRow({
+          versionId,
+          documentId,
+          groupId,
+          image,
+        }),
+      ),
     );
   }
 }
@@ -1284,30 +1347,13 @@ async function replaceLiveMaterialization(
     for (let index = 0; index < sections.length; index += VERSION_BATCH_SIZE) {
       const batch = sections.slice(index, index + VERSION_BATCH_SIZE);
       await tx.insert(KnowledgeSectionTable).values(
-        batch.map((section) => ({
-          id: section.id,
-          documentId,
-          groupId,
-          parentSectionId: section.parentSectionId ?? null,
-          prevSectionId: section.prevSectionId ?? null,
-          nextSectionId: section.nextSectionId ?? null,
-          heading: section.heading,
-          headingPath: section.headingPath,
-          level: section.level,
-          partIndex: section.partIndex,
-          partCount: section.partCount,
-          content: section.content,
-          summary: section.summary,
-          tokenCount: section.tokenCount,
-          pageStart: section.pageStart ?? null,
-          pageEnd: section.pageEnd ?? null,
-          noteNumber: section.noteNumber ?? null,
-          noteTitle: section.noteTitle ?? null,
-          noteSubsection: section.noteSubsection ?? null,
-          continued: section.continued ?? false,
-          embedding: sql`NULL::vector`,
-          createdAt: new Date(),
-        })),
+        batch.map((section) =>
+          buildLiveSectionInsertRow({
+            documentId,
+            groupId,
+            section,
+          }),
+        ),
       );
     }
   }

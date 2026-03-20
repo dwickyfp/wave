@@ -4,7 +4,14 @@ import TurndownService from "turndown";
 import { LanguageModel, generateText } from "ai";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
+import { safeOutboundFetch } from "lib/network/safe-outbound-fetch";
 import { optimizeKnowledgeImageBuffer } from "./image-optimization";
+import { MAX_KNOWLEDGE_IMAGE_BYTES } from "./image-optimization";
+import {
+  isImageContentType,
+  normalizeRemoteContentType,
+  readResponseBufferWithinLimit,
+} from "./remote-fetch";
 import type {
   ContextImageBlock,
   DocumentProcessingOptions,
@@ -247,15 +254,28 @@ async function loadImageSource(
   }
 
   try {
-    const response = await fetch(resolvedUrl, {
+    const response = await safeOutboundFetch(resolvedUrl, {
+      headers: {
+        Accept: "image/*,*/*;q=0.1",
+      },
       signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) {
       throw new Error(`${response.status} ${response.statusText}`);
     }
 
-    const mediaType = response.headers.get("content-type");
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const mediaType = normalizeRemoteContentType(
+      response.headers.get("content-type"),
+    );
+    if (mediaType && !isImageContentType(mediaType)) {
+      throw new Error(`Unsupported remote image content type: ${mediaType}`);
+    }
+
+    const buffer = await readResponseBufferWithinLimit(
+      response,
+      MAX_KNOWLEDGE_IMAGE_BYTES,
+      "Remote image response",
+    );
     return {
       buffer,
       mediaType,

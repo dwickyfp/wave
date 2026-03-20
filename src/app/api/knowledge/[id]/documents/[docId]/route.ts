@@ -3,6 +3,7 @@ import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import { buildDocumentMetadataEmbeddingText } from "lib/knowledge/document-metadata";
 import { embedSingleText } from "lib/knowledge/embedder";
+import { reconcileDocumentIngestFailure } from "lib/knowledge/versioning";
 import {
   cancelIngestDocument,
   enqueueIngestDocument,
@@ -22,6 +23,22 @@ const updateDocumentMetadataSchema = z
 
 interface Params {
   params: Promise<{ id: string; docId: string }>;
+}
+
+async function enqueueDocumentIngestOrFail(
+  documentId: string,
+  groupId: string,
+): Promise<void> {
+  try {
+    await enqueueIngestDocument(documentId, groupId);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    await reconcileDocumentIngestFailure({
+      documentId,
+      errorMessage: `Failed to enqueue ingest job: ${errorMessage}`,
+    }).catch(() => {});
+    throw error;
+  }
 }
 
 export async function GET(_req: NextRequest, { params }: Params) {
@@ -160,7 +177,19 @@ export async function POST(_req: NextRequest, { params }: Params) {
       processingState: null,
     });
   }
-  await enqueueIngestDocument(docId, groupId);
+
+  try {
+    await enqueueDocumentIngestOrFail(docId, groupId);
+  } catch {
+    return NextResponse.json(
+      {
+        error:
+          "Document was saved but ContextX workers are unavailable. Please retry shortly.",
+        documentId: docId,
+      },
+      { status: 503 },
+    );
+  }
 
   return NextResponse.json({ success: true });
 }
