@@ -1,4 +1,8 @@
-import { sanitizeFilename, sanitizeStoragePath } from "./path-utils";
+import {
+  sanitizeFilename,
+  sanitizePathSegment,
+  sanitizeStoragePath,
+} from "./path-utils";
 
 export const USER_UPLOAD_NAMESPACE = "user-content";
 export const MAX_USER_UPLOAD_BYTES = 50 * 1024 * 1024;
@@ -24,7 +28,146 @@ const userUploadAllowedContentTypeSet = new Set(
 const normalizeContentType = (contentType?: string) =>
   contentType?.split(";", 1)[0]?.trim().toLowerCase();
 
-const normalizeUserId = (userId: string) => sanitizeFilename(userId);
+const normalizeUserId = (userId: string) => sanitizePathSegment(userId);
+const normalizeResourceId = (value: string | number) =>
+  sanitizePathSegment(String(value));
+
+export type UserStorageSection = "chat" | "pilot" | "profile" | "knowledge";
+export type UserStorageContextType =
+  | "thread-inputs"
+  | "generated-images"
+  | "context-inputs"
+  | "avatar-uploads"
+  | "generated-avatars"
+  | "documents"
+  | "document-images";
+
+type UserScopedObjectPathOptions = {
+  userId: string;
+  section: UserStorageSection | string;
+  contextType: UserStorageContextType | string;
+  filename: string;
+  resourceIds?: Array<string | number | null | undefined>;
+};
+
+const normalizeResourceIds = (
+  resourceIds: UserScopedObjectPathOptions["resourceIds"] = [],
+) =>
+  resourceIds
+    .filter(
+      (resourceId): resourceId is string | number =>
+        resourceId !== null &&
+        resourceId !== undefined &&
+        String(resourceId).trim().length > 0,
+    )
+    .map(normalizeResourceId);
+
+export function buildUserScopedObjectPath(
+  options: UserScopedObjectPathOptions,
+) {
+  return [
+    USER_UPLOAD_NAMESPACE,
+    normalizeUserId(options.userId),
+    sanitizePathSegment(options.section),
+    sanitizePathSegment(options.contextType),
+    ...normalizeResourceIds(options.resourceIds),
+    sanitizeFilename(options.filename || "file"),
+  ].join("/");
+}
+
+export function buildChatThreadUploadPath(input: {
+  userId: string;
+  threadId: string;
+  filename: string;
+}) {
+  return buildUserScopedObjectPath({
+    userId: input.userId,
+    section: "chat",
+    contextType: "thread-inputs",
+    resourceIds: [input.threadId],
+    filename: input.filename,
+  });
+}
+
+export function buildChatGeneratedImageUploadPath(input: {
+  userId: string;
+  threadId?: string | null;
+  filename: string;
+}) {
+  return buildUserScopedObjectPath({
+    userId: input.userId,
+    section: "chat",
+    contextType: "generated-images",
+    resourceIds: [input.threadId],
+    filename: input.filename,
+  });
+}
+
+export function buildPilotContextUploadPath(input: {
+  userId: string;
+  filename: string;
+}) {
+  return buildUserScopedObjectPath({
+    userId: input.userId,
+    section: "pilot",
+    contextType: "context-inputs",
+    filename: input.filename,
+  });
+}
+
+export function buildUserAvatarUploadPath(input: {
+  userId: string;
+  filename: string;
+}) {
+  return buildUserScopedObjectPath({
+    userId: input.userId,
+    section: "profile",
+    contextType: "avatar-uploads",
+    filename: input.filename,
+  });
+}
+
+export function buildGeneratedAvatarUploadPath(input: {
+  userId: string;
+  filename: string;
+}) {
+  return buildUserScopedObjectPath({
+    userId: input.userId,
+    section: "profile",
+    contextType: "generated-avatars",
+    filename: input.filename,
+  });
+}
+
+export function buildKnowledgeDocumentUploadPath(input: {
+  userId: string;
+  groupId: string;
+  filename: string;
+}) {
+  return buildUserScopedObjectPath({
+    userId: input.userId,
+    section: "knowledge",
+    contextType: "documents",
+    resourceIds: [input.groupId],
+    filename: input.filename,
+  });
+}
+
+export function buildKnowledgeDocumentImageUploadPath(input: {
+  userId: string;
+  groupId: string;
+  documentId: string;
+  versionId: string;
+  filename: string;
+}) {
+  return buildUserScopedObjectPath({
+    userId: input.userId,
+    section: "knowledge",
+    contextType: "document-images",
+    resourceIds: [input.groupId, input.documentId, input.versionId],
+    filename: input.filename,
+  });
+}
 
 export class StorageUploadPolicyError extends Error {
   constructor(

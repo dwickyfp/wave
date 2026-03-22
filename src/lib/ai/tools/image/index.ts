@@ -14,6 +14,7 @@ import {
   generateImageWithXAI,
 } from "lib/ai/image/generate-image";
 import { serverFileStorage } from "lib/file-storage";
+import { buildChatGeneratedImageUploadPath } from "lib/file-storage/upload-policy";
 import z from "zod";
 import { ImageToolName } from "..";
 import { openai, createOpenAI } from "@ai-sdk/openai";
@@ -29,6 +30,29 @@ export type ImageToolResult = {
   model: string;
 };
 
+type ImageStorageContext = {
+  userId: string;
+  threadId?: string | null;
+};
+
+function getImageExtension(mimeType?: string) {
+  const normalized = mimeType?.split(";", 1)[0]?.trim().toLowerCase();
+
+  switch (normalized) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/svg+xml":
+      return "svg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    case "image/png":
+    default:
+      return "png";
+  }
+}
+
 /**
  * Creates a dynamic image generation tool backed by a DB-configured provider/model.
  * Dispatches to the appropriate SDK based on providerName.
@@ -38,30 +62,53 @@ export function createDbImageTool(
   modelApiName: string,
   apiKey: string | null | undefined,
   baseUrl?: string | null,
+  storageContext?: ImageStorageContext,
 ): Tool {
   const DESCRIPTION = `Generate, edit, or composite images based on the conversation context. This tool automatically analyzes recent messages to create images without requiring explicit input parameters. It includes all user-uploaded images from the recent conversation and only the most recent AI-generated image to avoid confusion. Use the 'mode' parameter to specify the operation type: 'create' for new images, 'edit' for modifying existing images, or 'composite' for combining multiple images. Use this when the user requests image creation, modification, or visual content generation.`;
+
+  const uploadGeneratedImage = async (
+    base64: string,
+    mimeType: string,
+    index: number,
+  ) => {
+    const filename = storageContext
+      ? buildChatGeneratedImageUploadPath({
+          userId: storageContext.userId,
+          threadId: storageContext.threadId,
+          filename: `image-${index}.${getImageExtension(mimeType)}`,
+        })
+      : undefined;
+
+    const uploaded = await serverFileStorage
+      .upload(Buffer.from(base64, "base64"), {
+        ...(filename ? { filename } : {}),
+        contentType: mimeType,
+      })
+      .catch(() => {
+        throw new Error(
+          "Image generation was successful, but file upload failed. Please check your file upload configuration and try again.",
+        );
+      });
+
+    const buf = await serverFileStorage.download(uploaded.key);
+
+    return {
+      url: `data:${mimeType};base64,${buf.toString("base64")}`,
+      mimeType,
+    };
+  };
 
   const uploadAndBase64 = async (
     generatedImages: { base64: string; mimeType?: string }[],
   ) =>
     Promise.all(
-      generatedImages.map(async (image) => {
-        const mimeType = image.mimeType ?? "image/png";
-        const uploaded = await serverFileStorage
-          .upload(Buffer.from(image.base64, "base64"), {
-            contentType: mimeType,
-          })
-          .catch(() => {
-            throw new Error(
-              "Image generation was successful, but file upload failed. Please check your file upload configuration and try again.",
-            );
-          });
-        const buf = await serverFileStorage.download(uploaded.key);
-        return {
-          url: `data:${mimeType};base64,${buf.toString("base64")}`,
-          mimeType,
-        };
-      }),
+      generatedImages.map((image, index) =>
+        uploadGeneratedImage(
+          image.base64,
+          image.mimeType ?? "image/png",
+          index + 1,
+        ),
+      ),
     );
 
   const extractPrompt = (messages: ModelMessage[]): string => {
@@ -165,23 +212,8 @@ export function createDbImageTool(
           if (toolResult.toolName === "image_generation") {
             const base64Image = toolResult.output.result;
             const mimeType = "image/webp";
-            const uploaded = await serverFileStorage
-              .upload(Buffer.from(base64Image, "base64"), {
-                contentType: mimeType,
-              })
-              .catch(() => {
-                throw new Error(
-                  "Image generation was successful, but file upload failed. Please check your file upload configuration and try again.",
-                );
-              });
-            const buf = await serverFileStorage.download(uploaded.key);
             return {
-              images: [
-                {
-                  url: `data:${mimeType};base64,${buf.toString("base64")}`,
-                  mimeType,
-                },
-              ],
+              images: [await uploadGeneratedImage(base64Image, mimeType, 1)],
               mode,
               model: modelApiName,
               guide:

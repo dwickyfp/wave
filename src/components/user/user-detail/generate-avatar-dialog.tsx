@@ -97,7 +97,10 @@ export function GenerateAvatarDialog({
       });
 
       // Upload to storage
-      const result = await upload(file);
+      const result = await upload(file, {
+        section: "profile",
+        contextType: "generated-avatars",
+      });
       if (result) {
         onGenerate(result.url);
         toast.success(t("profilePhotoUpdatedSuccessfully"));

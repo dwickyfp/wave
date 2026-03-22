@@ -74,7 +74,10 @@ export function UserAvatarUpload({
     reader.readAsDataURL(file);
 
     // Upload file
-    const result = await upload(file);
+    const result = await upload(file, {
+      section: "profile",
+      contextType: "avatar-uploads",
+    });
     if (result) {
       onImageUpdate(result.url);
       toast.success(t("profilePhotoUpdatedSuccessfully"));

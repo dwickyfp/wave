@@ -8,8 +8,11 @@ import { getStorageInfoAction } from "@/app/api/storage/actions";
 import { authClient } from "auth/client";
 import {
   assertAllowedUserUpload,
+  buildUserScopedObjectPath,
   resolveUserScopedUploadPath,
   StorageUploadPolicyError,
+  type UserStorageContextType,
+  type UserStorageSection,
 } from "@/lib/file-storage/upload-policy";
 
 // Types
@@ -21,6 +24,9 @@ interface StorageInfo {
 interface UploadOptions {
   filename?: string;
   contentType?: string;
+  section?: UserStorageSection | string;
+  contextType?: UserStorageContextType | string;
+  resourceIds?: Array<string | number | null | undefined>;
 }
 
 interface UploadResult {
@@ -116,7 +122,15 @@ export function useFileUpload() {
 
       const scopedPathname = resolveUserScopedUploadPath(
         session.user.id,
-        filename,
+        uploadOptions.section && uploadOptions.contextType
+          ? buildUserScopedObjectPath({
+              userId: session.user.id,
+              section: uploadOptions.section,
+              contextType: uploadOptions.contextType,
+              resourceIds: uploadOptions.resourceIds,
+              filename,
+            })
+          : filename,
       );
 
       // Wait for storage info to load
@@ -193,6 +207,7 @@ export function useFileUpload() {
         // Fallback: Server upload (Local FS)
         const formData = new FormData();
         formData.append("file", file);
+        formData.append("pathname", scopedPathname);
 
         const serverUploadResponse = await fetch("/api/storage/upload", {
           method: "POST",

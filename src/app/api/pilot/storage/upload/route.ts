@@ -3,7 +3,7 @@ import { getStorageDriver, serverFileStorage } from "lib/file-storage";
 import { getContentTypeFromFilename } from "lib/file-storage/storage-utils";
 import {
   assertAllowedUserUpload,
-  resolveUserScopedUploadPath,
+  buildPilotContextUploadPath,
   StorageUploadPolicyError,
 } from "lib/file-storage/upload-policy";
 import { checkStorageAction } from "@/app/api/storage/actions";
@@ -47,7 +47,10 @@ export async function POST(request: Request) {
     });
 
     const result = await serverFileStorage.upload(file.stream(), {
-      filename: resolveUserScopedUploadPath(pilotSession.userId, file.name),
+      filename: buildPilotContextUploadPath({
+        userId: pilotSession.userId,
+        filename: file.name,
+      }),
       contentType,
     });
 

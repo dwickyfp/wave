@@ -1320,6 +1320,10 @@ export async function POST(request: Request) {
                 modelConfig.apiName,
                 providerConfig.apiKey,
                 providerConfig.baseUrl,
+                {
+                  userId: session.user.id,
+                  threadId: thread?.id ?? null,
+                },
               ),
             };
           } catch {

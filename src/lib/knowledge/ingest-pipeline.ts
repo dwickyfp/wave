@@ -15,6 +15,7 @@
 import { createHash } from "node:crypto";
 import { knowledgeRepository, settingsRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
+import { buildKnowledgeDocumentImageUploadPath } from "lib/file-storage/upload-policy";
 import { assessExtractedPageQuality } from "./document-quality";
 import { resolveKnowledgeParseModel } from "./group-config";
 import {
@@ -93,6 +94,8 @@ function getImageFileExtension(mediaType?: string | null): string {
 }
 
 async function persistProcessedImages(input: {
+  userId: string;
+  groupId: string;
   documentId: string;
   versionId: string;
   images: ProcessedDocumentImage[] | undefined;
@@ -113,7 +116,13 @@ async function persistProcessedImages(input: {
     try {
       const ext = getImageFileExtension(image.mediaType);
       const uploaded = await serverFileStorage.upload(image.buffer, {
-        filename: `knowledge-images/${input.documentId}/${input.versionId}/image-${image.index}.${ext}`,
+        filename: buildKnowledgeDocumentImageUploadPath({
+          userId: input.userId,
+          groupId: input.groupId,
+          documentId: input.documentId,
+          versionId: input.versionId,
+          filename: `image-${image.index}.${ext}`,
+        }),
         contentType: image.mediaType || "image/png",
       });
 
@@ -345,6 +354,8 @@ export async function runIngestPipeline(
       processedDocument.images,
     );
     const persistedImages = await persistProcessedImages({
+      userId: doc.userId,
+      groupId,
       documentId,
       versionId: pendingVersion.id,
       images: resolvedImages,
