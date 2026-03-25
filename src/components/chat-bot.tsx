@@ -583,7 +583,7 @@ export default function ChatBot({
             <>
               <div
                 className={
-                  "flex flex-col gap-2 overflow-y-auto py-6 z-10 [scrollbar-gutter:stable_both-edges]"
+                  "flex flex-col gap-2 overflow-y-auto py-6 z-10 chat-minimal-scrollbar"
                 }
                 ref={containerRef}
                 onScroll={handleScroll}
