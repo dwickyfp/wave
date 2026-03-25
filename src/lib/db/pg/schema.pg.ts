@@ -276,6 +276,7 @@ export const AgentTable = pgTable("agent", {
   mcpApiKeyHash: text("mcp_api_key_hash"),
   mcpApiKeyPreview: text("mcp_api_key_preview"),
   a2aEnabled: boolean("a2a_enabled").notNull().default(false),
+  a2aRequireAuth: boolean("a2a_require_auth").notNull().default(true),
   a2aApiKeyHash: text("a2a_api_key_hash"),
   a2aApiKeyPreview: text("a2a_api_key_preview"),
   mcpModelProvider: text("mcp_model_provider"),

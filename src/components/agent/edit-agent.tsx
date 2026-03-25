@@ -1850,6 +1850,9 @@ export default function EditAgent({
                         <A2APublishPanel
                           agentId={initialAgent.id}
                           initialEnabled={initialAgent.a2aEnabled ?? false}
+                          initialRequireAuth={
+                            initialAgent.a2aRequireAuth ?? true
+                          }
                           initialPreview={agentMcpKeyPreview}
                           isOwner={isOwner}
                           embedded

@@ -16,6 +16,7 @@ import { Switch } from "ui/switch";
 interface A2APublishPanelProps {
   agentId?: string;
   initialEnabled?: boolean;
+  initialRequireAuth?: boolean;
   initialPreview?: string | null;
   isOwner?: boolean;
   embedded?: boolean;
@@ -24,12 +25,14 @@ interface A2APublishPanelProps {
 export function A2APublishPanel({
   agentId,
   initialEnabled = false,
+  initialRequireAuth = true,
   initialPreview = null,
   isOwner = true,
   embedded = false,
 }: A2APublishPanelProps) {
   const [browserOrigin, setBrowserOrigin] = useState("");
   const [enabled, setEnabled] = useState(initialEnabled);
+  const [requireAuth, setRequireAuth] = useState(initialRequireAuth);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [keyPreview, setKeyPreview] = useState(initialPreview);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -53,19 +56,18 @@ export function A2APublishPanel({
     return `${rpcUrl}/.well-known/agent-card.json`;
   }, [rpcUrl]);
   const configSnippet = useMemo(() => {
-    return JSON.stringify(
-      {
-        agentCardUrl:
-          cardUrl ||
-          "https://your-domain/api/a2a/agent/{agentId}/.well-known/agent-card.json",
-        headers: {
-          Authorization: `Bearer ${apiKey ?? "YOUR_AGENT_API_KEY"}`,
-        },
-      },
-      null,
-      2,
-    );
-  }, [apiKey, cardUrl]);
+    const config: Record<string, unknown> = {
+      agentCardUrl:
+        cardUrl ||
+        "https://your-domain/api/a2a/agent/{agentId}/.well-known/agent-card.json",
+    };
+    if (requireAuth) {
+      config.headers = {
+        Authorization: `Bearer ${apiKey ?? "YOUR_AGENT_API_KEY"}`,
+      };
+    }
+    return JSON.stringify(config, null, 2);
+  }, [apiKey, cardUrl, requireAuth]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -76,6 +78,10 @@ export function A2APublishPanel({
   useEffect(() => {
     setEnabled(initialEnabled);
   }, [initialEnabled]);
+
+  useEffect(() => {
+    setRequireAuth(initialRequireAuth);
+  }, [initialRequireAuth]);
 
   useEffect(() => {
     setKeyPreview(initialPreview);
@@ -218,6 +224,44 @@ export function A2APublishPanel({
     [agentId],
   );
 
+  const handleToggleRequireAuth = useCallback(
+    async (nextRequireAuth: boolean) => {
+      if (!agentId) return;
+
+      setIsToggling(true);
+      try {
+        const response = await fetch(`/api/agent/${agentId}/a2a-key`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requireAuth: nextRequireAuth }),
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => null);
+          throw new Error(
+            data?.error || "Failed to update authentication setting",
+          );
+        }
+
+        setRequireAuth(nextRequireAuth);
+        toast.success(
+          nextRequireAuth
+            ? "Authentication enabled"
+            : "Authentication disabled",
+        );
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Failed to update authentication setting",
+        );
+      } finally {
+        setIsToggling(false);
+      }
+    },
+    [agentId],
+  );
+
   if (!agentId) {
     return (
       <div
@@ -297,72 +341,112 @@ export function A2APublishPanel({
       )}
 
       {embedded ? (
-        <div className="rounded-lg border bg-secondary/30 p-3 space-y-1">
-          <p className="text-xs font-medium">Authentication</p>
-          <p className="text-xs text-muted-foreground">
-            Uses the External Agent Access API key from this page as the A2A
-            bearer token.
-          </p>
+        <div className="rounded-lg border bg-secondary/30 p-3 space-y-3">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-1">
+              <p className="text-xs font-medium">Authentication</p>
+              <p className="text-xs text-muted-foreground">
+                Uses the External Agent Access API key from this page as the A2A
+                bearer token.
+              </p>
+            </div>
+            <Switch
+              checked={requireAuth}
+              onCheckedChange={handleToggleRequireAuth}
+              disabled={isBusy}
+            />
+          </div>
+          {!requireAuth && (
+            <p className="text-xs text-amber-500">
+              Authentication is disabled. Anyone with the endpoint URL can call
+              this agent without a key.
+            </p>
+          )}
         </div>
       ) : (
-        <div className="space-y-2">
-          <Label className="text-sm">External Access API Key</Label>
-          <p className="text-xs text-muted-foreground">
-            Shared across A2A publishing and other external agent transports.
-          </p>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono break-all">
-              {apiKey ? (
-                <span>{apiKey}</span>
-              ) : keyPreview ? (
-                <span className="text-muted-foreground">
-                  ••••••••••••{keyPreview}
-                </span>
-              ) : (
-                <span className="text-muted-foreground italic">
-                  No API key generated
-                </span>
-              )}
+        <div className="space-y-4">
+          <div className="border rounded-lg p-3 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Authentication</p>
+                <p className="text-xs text-muted-foreground">
+                  Require callers to present the External Agent Access API key
+                  as a bearer token.
+                </p>
+              </div>
+              <Switch
+                checked={requireAuth}
+                onCheckedChange={handleToggleRequireAuth}
+                disabled={isBusy}
+              />
             </div>
-            {apiKey && (
+            {!requireAuth && (
+              <p className="text-xs text-amber-500">
+                Authentication is disabled. Anyone with the endpoint URL can
+                call this agent without a key.
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label className="text-sm">External Access API Key</Label>
+            <p className="text-xs text-muted-foreground">
+              Shared across A2A publishing and other external agent transports.
+            </p>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 px-3 py-2 rounded-lg border bg-secondary/40 text-xs font-mono break-all">
+                {apiKey ? (
+                  <span>{apiKey}</span>
+                ) : keyPreview ? (
+                  <span className="text-muted-foreground">
+                    ••••••••••••{keyPreview}
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground italic">
+                    No API key generated
+                  </span>
+                )}
+              </div>
+              {apiKey && (
+                <Button
+                  size="icon"
+                  variant="outline"
+                  className="size-9 shrink-0"
+                  onClick={() => copyToClipboard(apiKey)}
+                >
+                  <CopyIcon className="size-3.5" />
+                </Button>
+              )}
               <Button
-                size="icon"
+                size="sm"
                 variant="outline"
-                className="size-9 shrink-0"
-                onClick={() => copyToClipboard(apiKey)}
+                className="gap-1.5 shrink-0"
+                onClick={handleGenerateKey}
+                disabled={isBusy}
               >
-                <CopyIcon className="size-3.5" />
+                {isGenerating ? (
+                  <RefreshCwIcon className="size-3.5 animate-spin" />
+                ) : (
+                  <KeyRound className="size-3.5" />
+                )}
+                {keyPreview ? "Regenerate" : "Generate"}
+              </Button>
+            </div>
+            {keyPreview && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="px-0 text-xs text-muted-foreground hover:text-destructive w-fit"
+                onClick={handleRevokeKey}
+                disabled={isBusy}
+              >
+                {isRevoking && (
+                  <RefreshCwIcon className="size-3.5 animate-spin mr-1" />
+                )}
+                Revoke API key
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5 shrink-0"
-              onClick={handleGenerateKey}
-              disabled={isBusy}
-            >
-              {isGenerating ? (
-                <RefreshCwIcon className="size-3.5 animate-spin" />
-              ) : (
-                <KeyRound className="size-3.5" />
-              )}
-              {keyPreview ? "Regenerate" : "Generate"}
-            </Button>
           </div>
-          {keyPreview && (
-            <Button
-              size="sm"
-              variant="ghost"
-              className="px-0 text-xs text-muted-foreground hover:text-destructive w-fit"
-              onClick={handleRevokeKey}
-              disabled={isBusy}
-            >
-              {isRevoking && (
-                <RefreshCwIcon className="size-3.5 animate-spin mr-1" />
-              )}
-              Revoke API key
-            </Button>
-          )}
         </div>
       )}
 
