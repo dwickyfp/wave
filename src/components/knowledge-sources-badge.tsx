@@ -60,7 +60,11 @@ export function KnowledgeSourcesBadge({
           <span className="font-medium">{label}</span>
         </button>
       </HoverCardTrigger>
-      <HoverCardContent side="top" align="start" className="w-80 p-0">
+      <HoverCardContent
+        side="top"
+        align="start"
+        className="w-[min(28rem,calc(100vw-2rem))] p-0"
+      >
         <div className="border-b px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <LibraryBigIcon className="size-4 text-primary" />
@@ -69,7 +73,7 @@ export function KnowledgeSourcesBadge({
         </div>
 
         <ScrollArea className={sources.length > 6 ? "h-72" : "max-h-72"}>
-          <div className="p-2">
+          <div className="p-3">
             {sources.map((source) => (
               <button
                 key={`${source.groupId}-${source.documentId}`}
@@ -84,18 +88,20 @@ export function KnowledgeSourcesBadge({
                   });
                   setOpen(false);
                 }}
-                className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-muted/70"
+                className="group flex w-full items-center overflow-hidden rounded-xl border border-transparent px-3 py-3 text-left transition-colors hover:border-border/60 hover:bg-muted/50"
               >
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
+                <span className="mr-3 flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[11px] font-semibold text-primary">
                   {getSourceInitials(source.documentName)}
                 </span>
                 <span
-                  className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
+                  className="mr-3 truncate text-sm font-medium text-foreground"
                   title={source.documentName}
                 >
-                  {source.documentName}
+                  {source.documentName.length > 50
+                    ? source.documentName.slice(0, 40) + "…"
+                    : source.documentName}
                 </span>
-                <ArrowUpRightIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                <ArrowUpRightIcon className="ml-auto size-3.5 shrink-0 text-muted-foreground" />
               </button>
             ))}
           </div>

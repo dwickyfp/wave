@@ -52,6 +52,7 @@ export function parseRoleString(role: string | undefined | null): RoleName {
 
   if (normalizedRoles.includes("admin")) return "admin";
   if (normalizedRoles.includes("creator")) return "creator";
+  if (normalizedRoles.includes("editor")) return "creator";
   if (normalizedRoles.includes("user")) return "user";
 
   if (normalizedRoles.length === 0) {

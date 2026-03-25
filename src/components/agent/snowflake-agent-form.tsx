@@ -619,6 +619,7 @@ export default function SnowflakeAgentForm({
         <A2APublishPanel
           agentId={initialAgent?.id}
           initialEnabled={initialAgent?.a2aEnabled ?? false}
+          initialRequireAuth={initialAgent?.a2aRequireAuth ?? true}
           initialPreview={
             initialAgent?.mcpApiKeyPreview ??
             initialAgent?.a2aApiKeyPreview ??

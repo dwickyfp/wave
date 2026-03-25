@@ -686,15 +686,24 @@ export async function authenticatePublishedA2ARequest(
   headers: Headers,
   agentId: string,
 ) {
+  const agentInfo = await agentRepository.getAgentByA2aKey(agentId);
+  if (!agentInfo?.a2aEnabled) {
+    return false;
+  }
+
+  // If authentication is disabled for this agent, allow all requests
+  if (agentInfo.a2aRequireAuth === false) {
+    return true;
+  }
+
   const authHeader = headers.get("authorization");
   if (!authHeader?.trim()) return false;
 
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) return false;
 
-  const agentInfo = await agentRepository.getAgentByA2aKey(agentId);
-  const keyHash = agentInfo?.mcpApiKeyHash ?? agentInfo?.a2aApiKeyHash;
-  if (!agentInfo?.a2aEnabled || !keyHash) {
+  const keyHash = agentInfo.mcpApiKeyHash ?? agentInfo.a2aApiKeyHash;
+  if (!keyHash) {
     return false;
   }
 

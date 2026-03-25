@@ -58,6 +58,9 @@ export type UserRepository = {
   getPreferences: (userId: string) => Promise<UserPreferences | null>;
   getUserById: (userId: string) => Promise<BasicUserWithLastLogin | null>;
   getUserByEmail: (email: string) => Promise<BasicUser | null>;
+  listUsers: (
+    search?: string,
+  ) => Promise<Pick<BasicUser, "id" | "name" | "email">[]>;
   getUserCount: () => Promise<number>;
   getUserStats: (userId: string) => Promise<{
     threadCount: number;

@@ -19,6 +19,7 @@ import {
 import { Badge } from "ui/badge";
 import { Loader2, Users } from "lucide-react";
 import { toast } from "sonner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 
 interface ResourceTeamShareDialogProps {
   resourceType: TeamResourceType;
@@ -96,23 +97,28 @@ export function ResourceTeamShareDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="size-8 text-muted-foreground hover:text-foreground"
-        onPointerDown={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen(true);
-        }}
-      >
-        <Users className="size-4" />
-      </Button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 text-muted-foreground hover:text-foreground"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setOpen(true);
+            }}
+          >
+            <Users className="size-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>Share to teams</TooltipContent>
+      </Tooltip>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Share to teams</DialogTitle>

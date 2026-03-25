@@ -15,7 +15,8 @@ const actionSchema = z.object({
 });
 
 const updateSchema = z.object({
-  enabled: z.boolean(),
+  enabled: z.boolean().optional(),
+  requireAuth: z.boolean().optional(),
 });
 
 async function loadOwnedAgent(
@@ -119,9 +120,26 @@ export async function PUT(req: NextRequest, { params }: Params) {
     }
 
     const { id } = await params;
-    const { enabled } = updateSchema.parse(await req.json());
+    const body = updateSchema.parse(await req.json());
     const ownershipCheck = await loadOwnedAgent(id, session.user.id);
     if (!ownershipCheck.ok) return ownershipCheck.response;
+
+    if (body.requireAuth !== undefined) {
+      await agentRepository.setA2aRequireAuth(
+        id,
+        session.user.id,
+        body.requireAuth,
+      );
+      return NextResponse.json({ success: true });
+    }
+
+    const enabled = body.enabled;
+    if (enabled === undefined) {
+      return NextResponse.json(
+        { error: "Must provide either 'enabled' or 'requireAuth'" },
+        { status: 400 },
+      );
+    }
 
     const sharedKeyHash =
       ownershipCheck.agent?.mcpApiKeyHash ??
