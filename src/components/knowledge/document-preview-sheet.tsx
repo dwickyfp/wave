@@ -261,6 +261,7 @@ export function DocumentPreviewSheet({
   const [imagesLoading, setImagesLoading] = useState(false);
   const markdownEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const markdownPreviewViewportRef = useRef<HTMLDivElement | null>(null);
+  const historyRequestKeyRef = useRef<string | null>(null);
   const pendingMarkdownScrollTopRef = useRef<number | null>(null);
   const pendingMarkdownSelectionRef = useRef<{
     start: number;
@@ -331,6 +332,11 @@ export function DocumentPreviewSheet({
       documentId: string,
       { silent = false }: { silent?: boolean } = {},
     ) => {
+      const requestKey = documentId;
+      if (historyRequestKeyRef.current === requestKey) {
+        return;
+      }
+      historyRequestKeyRef.current = requestKey;
       if (!silent) {
         setHistoryLoading(true);
       }
@@ -358,6 +364,9 @@ export function DocumentPreviewSheet({
           );
         }
       } finally {
+        if (historyRequestKeyRef.current === requestKey) {
+          historyRequestKeyRef.current = null;
+        }
         if (!silent) {
           setHistoryLoading(false);
         }
@@ -554,13 +563,7 @@ export function DocumentPreviewSheet({
     if (mainTab === "markdown" && previewData?.doc?.id && selectedVersionId) {
       void loadVersionMarkdown(previewData.doc.id, selectedVersionId);
     }
-  }, [
-    mainTab,
-    previewData?.doc?.id,
-    groupId,
-    selectedVersionId,
-    loadVersionMarkdown,
-  ]);
+  }, [mainTab, previewData?.doc?.id, groupId, selectedVersionId]);
 
   useEffect(() => {
     if (
@@ -582,7 +585,6 @@ export function DocumentPreviewSheet({
     selectedVersionId,
     previewData?.resolvedVersionId,
     previewData?.activeVersionId,
-    loadPreview,
   ]);
 
   const hasPendingVersionJob =
@@ -590,17 +592,18 @@ export function DocumentPreviewSheet({
     false;
 
   useEffect(() => {
-    if (!open || !doc || !previewData || !hasPendingVersionJob) {
+    if (!open || !doc || !previewData?.doc?.id || !hasPendingVersionJob) {
       return;
     }
 
+    const documentId = previewData.doc.id;
     const pollId = window.setInterval(() => {
       void loadPreview({
         showLoader: false,
         versionId: selectedVersionId ?? null,
       });
-      if (mainTab === "history" && previewData.doc.id) {
-        void loadHistory(previewData.doc.id, { silent: true });
+      if (mainTab === "history") {
+        void loadHistory(documentId, { silent: true });
       }
     }, 2000);
 
@@ -608,12 +611,10 @@ export function DocumentPreviewSheet({
   }, [
     open,
     doc,
-    previewData,
+    previewData?.doc?.id,
     hasPendingVersionJob,
     mainTab,
     selectedVersionId,
-    loadPreview,
-    loadHistory,
   ]);
 
   useEffect(() => {

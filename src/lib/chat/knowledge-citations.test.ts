@@ -809,6 +809,31 @@ describe("knowledge citations", () => {
     });
   });
 
+  it("can hydrate saved assistant history from persisted knowledge tool outputs", () => {
+    const hydrated = linkifyAssistantKnowledgeCitations({
+      id: "assistant-6",
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-get_docs_group_1",
+          toolCallId: "call-knowledge-1",
+          state: "output-available",
+          input: { query: "passkeys" },
+          output: {
+            source: "attached_agent_knowledge",
+            hasResults: true,
+            citations,
+          },
+        },
+        { type: "text", text: "Final answer [1].", state: "done" },
+      ],
+    } as any);
+
+    expect((hydrated.parts[1] as any).text).toContain(
+      "knowledge://group-1/doc-1?",
+    );
+  });
+
   it("updates the trailing assistant answer when linkifying hydrated history", () => {
     const hydrated = linkifyAssistantKnowledgeCitations({
       id: "assistant-5",

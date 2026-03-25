@@ -209,6 +209,7 @@ export type SelfLearningMemory = {
   sourceEvaluationId?: string | null;
   supersededByMemoryId?: string | null;
   lastAppliedAt?: Date | null;
+  embedding?: number[] | null;
   createdAt: Date;
   updatedAt: Date;
 };

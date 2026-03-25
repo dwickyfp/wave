@@ -1,7 +1,10 @@
 import {
   buildIssuerLookupTerms,
+  extractIssuerConstraintFromQuery,
+  extractTickerConstraintFromQuery,
   type RetrievalIdentity,
 } from "./financial-statement";
+import { extractEntityTermsFromQuery, normalizeEntityName } from "./entities";
 
 export type KnowledgeQueryConstraints = {
   issuer?: string | null;
@@ -11,6 +14,7 @@ export type KnowledgeQueryConstraints = {
   noteNumber?: string | null;
   noteSubsection?: string | null;
   strictEntityMatch?: boolean;
+  entityTerms?: string[];
 };
 
 export function extractKnowledgeQueryConstraints(
@@ -34,33 +38,20 @@ export function extractKnowledgeQueryConstraints(
       : constraints.noteNumber;
   }
 
-  const tickerMatch = query.match(/\b(BBCA|BMRI|BBRI)\b/i);
-  if (tickerMatch) {
-    constraints.ticker = tickerMatch[1].toUpperCase();
+  const ticker = extractTickerConstraintFromQuery(query);
+  if (ticker) {
+    constraints.ticker = ticker;
   }
 
-  const issuerPatterns = [
-    { term: "bank central asia", canonical: "PT Bank Central Asia Tbk" },
-    { term: " bca ", canonical: "PT Bank Central Asia Tbk" },
-    { term: "bank mandiri", canonical: "PT Bank Mandiri (Persero) Tbk" },
-    { term: " mandiri ", canonical: "PT Bank Mandiri (Persero) Tbk" },
-    {
-      term: "bank rakyat indonesia",
-      canonical: "PT Bank Rakyat Indonesia (Persero) Tbk",
-    },
-    { term: " bri ", canonical: "PT Bank Rakyat Indonesia (Persero) Tbk" },
-  ];
-  const paddedQuery = ` ${query.toLowerCase()} `;
-  const issuerPattern = issuerPatterns.find((entry) =>
-    paddedQuery.includes(entry.term),
+  const issuer = extractIssuerConstraintFromQuery(query);
+  if (issuer) {
+    constraints.issuer = issuer;
+  }
+
+  constraints.entityTerms = extractEntityTermsFromQuery(query);
+  constraints.strictEntityMatch = Boolean(
+    constraints.ticker || constraints.issuer,
   );
-  if (issuerPattern) {
-    constraints.issuer = issuerPattern.canonical;
-  }
-
-  if (constraints.ticker || constraints.issuer) {
-    constraints.strictEntityMatch = true;
-  }
 
   return constraints;
 }
@@ -87,6 +78,12 @@ export function mergeKnowledgeQueryConstraints(
   if (merged.strictEntityMatch === undefined) {
     merged.strictEntityMatch = Boolean(merged.issuer || merged.ticker);
   }
+  merged.entityTerms = Array.from(
+    new Set([
+      ...(extracted.entityTerms ?? []),
+      ...(overrides?.entityTerms ?? []),
+    ]),
+  );
   return merged;
 }
 
@@ -114,6 +111,21 @@ export function matchesRetrievalIdentityConstraints(
     !lookup.includes(constraints.issuer.toUpperCase())
   ) {
     return false;
+  }
+
+  if ((constraints.entityTerms?.length ?? 0) > 0) {
+    const normalizedIdentity = buildIssuerLookupTerms(identity)
+      .map(normalizeEntityName)
+      .filter(Boolean)
+      .join(" ");
+    if (
+      constraints.entityTerms?.some((term) => {
+        const normalizedTerm = normalizeEntityName(term);
+        return normalizedTerm && normalizedIdentity.includes(normalizedTerm);
+      })
+    ) {
+      return true;
+    }
   }
 
   return true;

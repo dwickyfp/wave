@@ -7,6 +7,7 @@ import {
   buildImageSnapshotInsertRow,
   buildLiveSectionInsertRow,
   getNextReservedVersionNumber,
+  resolveMissingHistorySeedEventType,
   resolveDocumentVersionRetention,
   resolveKnowledgeDocumentFailureOutcome,
 } from "./versioning";
@@ -83,6 +84,24 @@ describe("getNextReservedVersionNumber", () => {
     });
   });
 
+  it("seeds missing history as created for first-ingest versions", () => {
+    expect(
+      resolveMissingHistorySeedEventType({
+        activeVersionNumber: 1,
+        activeVersionChangeType: "initial_ingest",
+      }),
+    ).toBe("created");
+  });
+
+  it("seeds missing history as bootstrap for later versioned documents", () => {
+    expect(
+      resolveMissingHistorySeedEventType({
+        activeVersionNumber: 3,
+        activeVersionChangeType: "edit",
+      }),
+    ).toBe("bootstrap");
+  });
+
   it("preserves chunk embeddings in version snapshots", () => {
     expect(
       buildChunkSnapshotInsertRow({
@@ -134,6 +153,17 @@ describe("getNextReservedVersionNumber", () => {
           surroundingText: null,
           precedingText: null,
           followingText: null,
+          imageType: "chart",
+          ocrText: "Q1 12.4\nQ2 13.8",
+          ocrConfidence: 0.88,
+          exactValueSnippets: ["Q2 revenue: 13.8T"],
+          structuredData: {
+            chartData: {
+              chartType: "bar chart",
+              xAxisLabel: "Quarter",
+              yAxisLabel: "Revenue",
+            },
+          },
           isRenderable: true,
           manualLabel: false,
           manualDescription: false,
@@ -142,6 +172,9 @@ describe("getNextReservedVersionNumber", () => {
       }),
     ).toMatchObject({
       embedding: [0.4, 0.5, 0.6],
+      imageType: "chart",
+      ocrText: "Q1 12.4\nQ2 13.8",
+      exactValueSnippets: ["Q2 revenue: 13.8T"],
     });
   });
 

@@ -93,6 +93,93 @@ export function buildKnowledgeCitationKey(
   ].join("::");
 }
 
+function isChatKnowledgeCitation(
+  value: unknown,
+): value is ChatKnowledgeCitation {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const citation = value as Partial<ChatKnowledgeCitation>;
+  return (
+    typeof citation.number === "number" &&
+    Number.isFinite(citation.number) &&
+    typeof citation.groupId === "string" &&
+    typeof citation.groupName === "string" &&
+    typeof citation.documentId === "string" &&
+    typeof citation.documentName === "string" &&
+    typeof citation.excerpt === "string" &&
+    typeof citation.relevanceScore === "number" &&
+    Number.isFinite(citation.relevanceScore)
+  );
+}
+
+function dedupeKnowledgeCitations(
+  citations: ChatKnowledgeCitation[],
+): ChatKnowledgeCitation[] {
+  const deduped = new Map<string, ChatKnowledgeCitation>();
+
+  for (const citation of citations) {
+    const key = buildKnowledgeCitationKey(citation);
+    if (!deduped.has(key)) {
+      deduped.set(key, citation);
+    }
+  }
+
+  return Array.from(deduped.values()).sort((left, right) => {
+    if (left.number !== right.number) {
+      return left.number - right.number;
+    }
+
+    return buildKnowledgeCitationKey(left).localeCompare(
+      buildKnowledgeCitationKey(right),
+    );
+  });
+}
+
+function extractToolOutputKnowledgeCitations(
+  parts: UIMessage["parts"],
+): ChatKnowledgeCitation[] {
+  return dedupeKnowledgeCitations(
+    parts.flatMap((part) => {
+      if (!("output" in part)) {
+        return [];
+      }
+
+      const citations = (part.output as { citations?: unknown } | undefined)
+        ?.citations;
+      if (!Array.isArray(citations)) {
+        return [];
+      }
+
+      return citations.filter(isChatKnowledgeCitation);
+    }),
+  );
+}
+
+export function getMessageKnowledgeCitations(message: UIMessage) {
+  const metadata = message.metadata as ChatMetadata | undefined;
+  const metadataCitations = Array.isArray(metadata?.knowledgeCitations)
+    ? metadata.knowledgeCitations.filter(isChatKnowledgeCitation)
+    : [];
+  const toolOutputCitations = extractToolOutputKnowledgeCitations(
+    message.parts,
+  );
+
+  if (!metadataCitations.length) {
+    return toolOutputCitations;
+  }
+
+  if (!toolOutputCitations.length) {
+    return metadataCitations;
+  }
+
+  return dedupeKnowledgeCitations([
+    ...metadataCitations,
+    ...toolOutputCitations,
+  ]);
+}
+
 export function buildKnowledgeCitations(input: {
   retrievedGroups: RetrievedKnowledgeGroup[];
 }): ChatKnowledgeCitation[] {
@@ -1231,10 +1318,7 @@ function updateAssistantTextPart(
     return message;
   }
 
-  const metadata = message.metadata as ChatMetadata | undefined;
-  const knowledgeCitations = Array.isArray(metadata?.knowledgeCitations)
-    ? metadata.knowledgeCitations
-    : [];
+  const knowledgeCitations = getMessageKnowledgeCitations(message);
   if (!knowledgeCitations.length) {
     return message;
   }
@@ -1349,14 +1433,13 @@ export function applyFinalizedAssistantText(
   }
 
   const nextParts = [...message.parts];
-  const knowledgeCitations = Array.isArray(metadataPatch?.knowledgeCitations)
-    ? metadataPatch.knowledgeCitations
-    : Array.isArray(
-          (message.metadata as ChatMetadata | undefined)?.knowledgeCitations,
-        )
-      ? ((message.metadata as ChatMetadata | undefined)
-          ?.knowledgeCitations as ChatKnowledgeCitation[])
-      : [];
+  const nextMetadata = metadataPatch
+    ? { ...(message.metadata ?? {}), ...metadataPatch }
+    : message.metadata;
+  const knowledgeCitations = getMessageKnowledgeCitations({
+    ...message,
+    metadata: nextMetadata,
+  });
   const nextText =
     (options?.linkifyCitations ?? true) && knowledgeCitations.length
       ? linkifyKnowledgeCitationMarkers({

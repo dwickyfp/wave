@@ -417,4 +417,99 @@ describe("knowledge-tool", () => {
       "Uncited factual claims",
     );
   });
+
+  it("includes a compact related image payload for persisted tool outputs", async () => {
+    const docs = [
+      {
+        documentId: "doc-1",
+        documentName: "Sign-in Guide",
+        versionId: "version-1",
+        relevanceScore: 0.92,
+        chunkHits: 2,
+        markdown: "## Authentication\n\nUse the sign-in form.",
+        matchedSections: [{ heading: "Authentication", score: 0.92 }],
+        matchedImages: [
+          {
+            id: "image-1",
+            documentId: "doc-1",
+            groupId: "group-1",
+            versionId: "version-1",
+            ordinal: 1,
+            label: "Sign-in screen",
+            description: "Screenshot of the sign-in form.",
+            headingPath: "Guide > Authentication",
+            stepHint: "Open the sign-in screen.",
+            pageNumber: 2,
+            mediaType: "image/png",
+            sourceUrl: "https://example.com/image-1.png",
+            storagePath: "knowledge-images/doc-1/version-1/image-1.png",
+            isRenderable: true,
+            relevanceScore: 0.88,
+          },
+        ],
+        citationCandidates: [
+          {
+            versionId: "version-1",
+            sectionId: "section-1",
+            sectionHeading: "Authentication",
+            pageStart: 2,
+            pageEnd: 2,
+            excerpt: "Use the sign-in form.",
+            relevanceScore: 0.92,
+          },
+        ],
+      },
+    ];
+    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+
+    const tool = createKnowledgeDocsTool({
+      id: "group-1",
+      name: "Product Docs",
+      userId: "user-1",
+      visibility: "private",
+      purpose: "default",
+      isSystemManaged: false,
+      embeddingModel: "embed",
+      embeddingProvider: "openai",
+      rerankingModel: null,
+      rerankingProvider: null,
+      parsingModel: null,
+      parsingProvider: null,
+      parseMode: "auto",
+      parseRepairPolicy: "section-safe-reorder",
+      contextMode: "deterministic",
+      imageMode: "auto",
+      lazyRefinementEnabled: true,
+      retrievalThreshold: 0,
+      mcpEnabled: false,
+      documentCount: 1,
+      chunkCount: 10,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const result = await tool.execute?.({ query: "show me the sign-in UI" }, {
+      toolCallId: "call-6",
+      messages: [],
+    } as any);
+    const typedResult = expectKnowledgeToolResult(result);
+
+    expect(typedResult.images).toEqual([
+      {
+        groupId: "group-1",
+        groupName: "Product Docs",
+        documentId: "doc-1",
+        documentName: "Sign-in Guide",
+        imageId: "image-1",
+        versionId: "version-1",
+        label: "Sign-in screen",
+        description: "Screenshot of the sign-in form.",
+        headingPath: "Guide > Authentication",
+        stepHint: "Open the sign-in screen.",
+        pageNumber: 2,
+        assetUrl:
+          "/api/knowledge/group-1/documents/doc-1/images/image-1/asset?versionId=version-1",
+      },
+    ]);
+  });
 });

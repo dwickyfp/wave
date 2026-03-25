@@ -40,6 +40,24 @@ export interface TextChunk {
     extractionMode?: "raw" | "normalized" | "refined";
     qualityScore?: number;
     repairReason?: string;
+    contentKind?:
+      | "document"
+      | "web"
+      | "markdown"
+      | "code"
+      | "json"
+      | "email"
+      | "presentation"
+      | "spreadsheet"
+      | "other";
+    language?: string;
+    entityIds?: string[];
+    entityTerms?: string[];
+    temporalHints?: {
+      effectiveAt?: string | null;
+      expiresAt?: string | null;
+      freshnessLabel?: string | null;
+    } | null;
   };
 }
 
@@ -69,6 +87,24 @@ export interface ChunkableKnowledgeSection {
   extractionMode?: "raw" | "normalized" | "refined";
   qualityScore?: number;
   repairReason?: string;
+  contentKind?:
+    | "document"
+    | "web"
+    | "markdown"
+    | "code"
+    | "json"
+    | "email"
+    | "presentation"
+    | "spreadsheet"
+    | "other";
+  language?: string;
+  entityIds?: string[];
+  entityTerms?: string[];
+  temporalHints?: {
+    effectiveAt?: string | null;
+    expiresAt?: string | null;
+    freshnessLabel?: string | null;
+  } | null;
 }
 
 // ─── Token Estimation ──────────────────────────────────────────────────────────
@@ -990,6 +1026,11 @@ export function chunkKnowledgeSections(
         extractionMode: section.extractionMode,
         qualityScore: section.qualityScore,
         repairReason: section.repairReason,
+        contentKind: section.contentKind,
+        language: section.language,
+        entityIds: section.entityIds,
+        entityTerms: section.entityTerms,
+        temporalHints: section.temporalHints,
       },
       allChunks.length,
     ).map((chunk) => {

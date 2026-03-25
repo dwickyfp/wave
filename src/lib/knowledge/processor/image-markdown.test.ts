@@ -510,4 +510,132 @@ describe("image-markdown", () => {
       height: 180,
     });
   });
+
+  it("extracts OCR and chart structure for value-dense images in auto mode", async () => {
+    getProviderByNameMock.mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: null,
+    });
+    getModelForChatMock.mockResolvedValue({
+      apiName: "vision-model",
+      supportsImageInput: true,
+    });
+    generateTextMock.mockResolvedValue({
+      output: {
+        imageType: "chart",
+        label: "Revenue by quarter",
+        description: "A bar chart comparing quarterly revenue.",
+        ocrText: "Q1 12.4\nQ2 13.8\nQ3 15.1\nQ4 16.2",
+        exactValueSnippets: ["Q4 revenue: 16.2T", "YoY growth: 14%"],
+        chartData: {
+          chartType: "bar chart",
+          xAxisLabel: "Quarter",
+          yAxisLabel: "Revenue (Rp trillion)",
+          legend: ["Revenue"],
+          series: [
+            { name: "Revenue", values: ["12.4", "13.8", "15.1", "16.2"] },
+          ],
+          summary: "Revenue rises each quarter.",
+        },
+        tableData: null,
+        ocrConfidence: 0.92,
+      },
+    });
+
+    const images = await generateContextImageArtifacts(
+      [
+        {
+          index: 1,
+          marker: "CTX_IMAGE_1",
+          buffer: Buffer.from("chart-image"),
+          mediaType: "image/png",
+          caption: "Figure 1. Quarterly revenue by segment",
+          surroundingText: "Revenue chart for 2025 performance.",
+          pageNumber: 6,
+          width: 960,
+          height: 540,
+        },
+      ],
+      {
+        documentTitle: "Quarterly report",
+        imageAnalysis: {
+          provider: "openai",
+          model: "vision-model",
+        },
+        imageMode: "auto",
+      },
+    );
+
+    expect(images[0]).toMatchObject({
+      imageType: "chart",
+      ocrText: "Q1 12.4\nQ2 13.8\nQ3 15.1\nQ4 16.2",
+      exactValueSnippets: ["Q4 revenue: 16.2T", "YoY growth: 14%"],
+      ocrConfidence: 0.92,
+      structuredData: {
+        chartData: expect.objectContaining({
+          chartType: "bar chart",
+          xAxisLabel: "Quarter",
+          yAxisLabel: "Revenue (Rp trillion)",
+        }),
+      },
+    });
+
+    const promptText =
+      generateTextMock.mock.calls[0]?.[0]?.messages?.[0]?.content?.[0]?.text;
+    expect(promptText).toContain("Prioritize exact OCR text");
+  });
+
+  it("keeps simple visuals on the lighter caption path in auto mode", async () => {
+    getProviderByNameMock.mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: null,
+    });
+    getModelForChatMock.mockResolvedValue({
+      apiName: "vision-model",
+      supportsImageInput: true,
+    });
+    generateTextMock.mockResolvedValue({
+      text: "Label: Billing settings screen\nDescription: UI screenshot showing the billing settings page.",
+    });
+
+    const images = await generateContextImageArtifacts(
+      [
+        {
+          index: 1,
+          marker: "CTX_IMAGE_1",
+          buffer: Buffer.from("ui-image"),
+          mediaType: "image/png",
+          surroundingText: "Open the billing settings screen.",
+          pageNumber: 3,
+          width: 480,
+          height: 300,
+        },
+      ],
+      {
+        documentTitle: "Billing guide",
+        imageAnalysis: {
+          provider: "openai",
+          model: "vision-model",
+        },
+        imageMode: "auto",
+      },
+    );
+
+    expect(images[0]).toMatchObject({
+      label: "Billing settings screen",
+      ocrText: null,
+      exactValueSnippets: null,
+      structuredData: null,
+    });
+
+    const promptText =
+      generateTextMock.mock.calls[0]?.[0]?.messages?.[0]?.content?.[0]?.text;
+    expect(promptText).toContain(
+      "This image does not look strongly value-dense.",
+    );
+  });
 });

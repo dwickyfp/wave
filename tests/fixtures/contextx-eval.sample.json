@@ -1,0 +1,12 @@
+{
+  "groupId": "00000000-0000-0000-0000-000000000000",
+  "source": "chat",
+  "fixtures": [
+    {
+      "query": "replace this with a real query",
+      "expectedDocumentIds": ["00000000-0000-0000-0000-000000000000"],
+      "expectedDocumentNames": ["replace with a real document name"],
+      "expectedPages": [1]
+    }
+  ]
+}
