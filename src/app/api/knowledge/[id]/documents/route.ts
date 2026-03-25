@@ -6,6 +6,7 @@ import { knowledgeRepository } from "lib/db/repository";
 import { serverFileStorage } from "lib/file-storage";
 import {
   assertKnowledgeDocumentSize,
+  buildKnowledgeDocumentUploadPath,
   StorageUploadPolicyError,
 } from "lib/file-storage/upload-policy";
 import { reconcileDocumentIngestFailure } from "lib/knowledge/versioning";
@@ -344,7 +345,11 @@ export async function POST(req: NextRequest, { params }: Params) {
   let storagePath: string;
   try {
     const uploadResult = await serverFileStorage.upload(buffer, {
-      filename: `knowledge/${groupId}/${Date.now()}-${file.name}`,
+      filename: buildKnowledgeDocumentUploadPath({
+        userId: session.user.id,
+        groupId,
+        filename: file.name,
+      }),
       contentType: file.type || "application/octet-stream",
     });
     storagePath = uploadResult.key;

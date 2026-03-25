@@ -96,7 +96,7 @@
     "@tiptap/suggestion": "^2.27.1",
     "@vercel/blob": "^2.0.0",
     "@xyflow/react": "^12.10.0",
-    "ai": "^6.0.126",
+    "ai": "^6.0.132",
     "bcrypt-ts": "^7.1.0",
     "better-auth": "^1.4.9",
     "bullmq": "^5.70.1",

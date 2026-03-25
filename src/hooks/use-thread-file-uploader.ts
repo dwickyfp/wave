@@ -57,7 +57,11 @@ export function useThreadFileUploader(threadId?: string) {
 
         try {
           const [uploaded, dataUrl] = await Promise.all([
-            upload(file),
+            upload(file, {
+              section: "chat",
+              contextType: "thread-inputs",
+              resourceIds: [threadId],
+            }),
             readFileAsDataUrl(file),
           ]);
           if (uploaded) {

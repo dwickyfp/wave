@@ -77,14 +77,7 @@ export function EmmaBrand({
           )}
         >
           <span className="text-sidebar-foreground">Emma </span>
-          <span
-            className={cn(
-              "bg-linear-to-r from-sky-300 via-cyan-200 to-emerald-200 bg-clip-text font-bold text-transparent",
-              aiClassName,
-            )}
-          >
-            AI
-          </span>
+          <span className={cn("font-bold text-primary", aiClassName)}>AI</span>
         </div>
       </div>
     </div>

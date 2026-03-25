@@ -1,4 +1,4 @@
-const sanitizePathSegment = (segment: string) => {
+export const sanitizePathSegment = (segment: string) => {
   return segment.replace(/[^a-zA-Z0-9._-]/g, "_") || "file";
 };
 

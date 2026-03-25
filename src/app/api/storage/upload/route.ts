@@ -4,6 +4,7 @@ import { serverFileStorage, getStorageDriver } from "lib/file-storage";
 import { getContentTypeFromFilename } from "lib/file-storage/storage-utils";
 import {
   assertAllowedUserUpload,
+  assertUserScopedUploadPath,
   resolveUserScopedUploadPath,
   StorageUploadPolicyError,
 } from "lib/file-storage/upload-policy";
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
   try {
     const formData = await request.formData();
     const file = formData.get("file") as File;
+    const pathname = formData.get("pathname");
 
     if (!file) {
       return NextResponse.json(
@@ -51,9 +53,14 @@ export async function POST(request: Request) {
       size: file.size,
     });
 
+    const resolvedPath =
+      typeof pathname === "string" && pathname.trim().length > 0
+        ? assertUserScopedUploadPath(session.user.id, pathname)
+        : resolveUserScopedUploadPath(session.user.id, file.name);
+
     // Upload to storage (works with any storage backend)
     const result = await serverFileStorage.upload(file.stream(), {
-      filename: resolveUserScopedUploadPath(session.user.id, file.name),
+      filename: resolvedPath,
       contentType,
     });
 
