@@ -129,11 +129,6 @@ function CitationPanelBody({
                 </span>
               ) : null}
             </div>
-            {citationPreview.sectionHeading ? (
-              <p className="mt-3 text-xs font-medium text-foreground/80">
-                {citationPreview.sectionHeading}
-              </p>
-            ) : null}
             {fallbackWarning ? (
               <p className="mt-3 text-[11px] leading-relaxed text-amber-700">
                 {fallbackWarning}
