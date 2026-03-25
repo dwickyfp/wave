@@ -106,6 +106,38 @@ export const pgUserRepository: UserRepository = {
     return result || null;
   },
 
+  listUsers: async (
+    search?: string,
+  ): Promise<Pick<BasicUser, "id" | "name" | "email">[]> => {
+    const query = pgDb
+      .select({
+        id: UserTable.id,
+        name: UserTable.name,
+        email: UserTable.email,
+      })
+      .from(UserTable)
+      .orderBy(UserTable.name)
+      .limit(100);
+
+    if (search) {
+      const term = `%${search.toLowerCase()}%`;
+      return await pgDb
+        .select({
+          id: UserTable.id,
+          name: UserTable.name,
+          email: UserTable.email,
+        })
+        .from(UserTable)
+        .where(
+          sql`LOWER(${UserTable.name}) LIKE ${term} OR LOWER(${UserTable.email}) LIKE ${term}`,
+        )
+        .orderBy(UserTable.name)
+        .limit(100);
+    }
+
+    return await query;
+  },
+
   getUserCount: async () => {
     const [result] = await db.select({ count: count() }).from(UserTable);
     return result?.count ?? 0;

@@ -1373,6 +1373,15 @@ export default function EditAgent({
                   disabled={isLoading}
                   onBookmarkToggle={handleBookmarkToggle}
                   isBookmarkToggleLoading={isBookmarkToggleLoading}
+                  teamShare={
+                    isOwner && initialAgent.id
+                      ? {
+                          resourceType: "agent",
+                          resourceId: initialAgent.id,
+                          resourceName: initialAgent.name || "",
+                        }
+                      : undefined
+                  }
                 />
               </div>
             )}
