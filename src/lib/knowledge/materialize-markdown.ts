@@ -8,6 +8,11 @@ import type {
 import { generateUUID } from "lib/utils";
 import { chunkKnowledgeSections } from "./chunker";
 import { enrichChunksWithContext } from "./context-enricher";
+import {
+  buildTemporalHints,
+  detectChunkLanguage,
+  resolveContentKind,
+} from "./content-routing";
 import { buildDocumentImageEmbeddingText } from "./document-images";
 import {
   buildDocumentMetadataEmbeddingText,
@@ -15,6 +20,7 @@ import {
   extractAutoDocumentMetadata,
   generateDocumentMetadata,
 } from "./document-metadata";
+import { buildEntityEmbeddingText, extractKnowledgeEntities } from "./entities";
 import { embedSingleTextWithUsage, embedTextsWithUsage } from "./embedder";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
 import { classifyFinancialStatementDocument } from "./financial-statement";
@@ -48,6 +54,10 @@ export type MaterializedKnowledgeChunk = {
   tokenCount: number;
   metadata?: KnowledgeChunkMetadata | null;
   embedding: number[];
+  contentEmbedding?: number[] | null;
+  contextEmbedding?: number[] | null;
+  identityEmbedding?: number[] | null;
+  entityEmbedding?: number[] | null;
 };
 
 export type MaterializedKnowledgeImage = Omit<
@@ -132,6 +142,37 @@ function buildSectionEmbeddingText(section: SectionGraphSection): string {
     .join("\n");
 }
 
+function buildChunkIdentityText(chunk: {
+  content: string;
+  contextSummary?: string | null;
+  metadata?: KnowledgeChunkMetadata | null;
+}): string {
+  const metadata = chunk.metadata ?? null;
+  return [
+    metadata?.canonicalTitle ? `Document: ${metadata.canonicalTitle}` : "",
+    metadata?.headingPath ? `Section path: ${metadata.headingPath}` : "",
+    metadata?.sectionTitle ? `Section title: ${metadata.sectionTitle}` : "",
+    metadata?.issuerName ? `Issuer: ${metadata.issuerName}` : "",
+    metadata?.issuerTicker ? `Ticker: ${metadata.issuerTicker}` : "",
+    metadata?.libraryId ? `Library: ${metadata.libraryId}` : "",
+    metadata?.libraryVersion
+      ? `Library version: ${metadata.libraryVersion}`
+      : "",
+    metadata?.contentKind ? `Content kind: ${metadata.contentKind}` : "",
+    metadata?.language ? `Language: ${metadata.language}` : "",
+    metadata?.noteNumber
+      ? `Note: ${metadata.noteSubsection ? `${metadata.noteNumber}.${metadata.noteSubsection}` : metadata.noteNumber}`
+      : "",
+    metadata?.noteTitle ? `Note title: ${metadata.noteTitle}` : "",
+    metadata?.temporalHints?.effectiveAt
+      ? `Effective at: ${metadata.temporalHints.effectiveAt}`
+      : "",
+    chunk.contextSummary ? `Context: ${chunk.contextSummary}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export async function materializeDocumentMarkdown({
   documentId,
   groupId,
@@ -177,6 +218,7 @@ export async function materializeDocumentMarkdown({
   const resolvedDescription = doc.descriptionManual
     ? (doc.description ?? null)
     : (generatedMeta.description ?? autoMeta.description);
+  const contentKind = resolveContentKind(doc.fileType);
   const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId, {
     retrievalIdentity,
     classification,
@@ -279,8 +321,44 @@ export async function materializeDocumentMarkdown({
   }
 
   await reportProgress?.(50, { stage: "materializing" });
+  const chunkableSections = sections.map((section) => {
+    const language = detectChunkLanguage({
+      fileType: doc.fileType,
+      originalFilename: doc.originalFilename,
+      content: section.content,
+    });
+    const entityTerms = extractKnowledgeEntities({
+      headingPath: section.headingPath,
+      content: section.content,
+      metadata: {
+        canonicalTitle: section.canonicalTitle,
+        issuerName: section.issuerName,
+        issuerTicker: section.issuerTicker,
+        section: section.heading,
+        sectionTitle: section.heading,
+        headingPath: section.headingPath,
+        libraryId: section.libraryId,
+        libraryVersion: section.libraryVersion,
+        noteTitle: section.noteTitle ?? undefined,
+        noteNumber: section.noteNumber ?? undefined,
+        noteSubsection: section.noteSubsection ?? undefined,
+      },
+    }).map((entity) => entity.canonicalName);
+
+    return {
+      ...section,
+      contentKind,
+      ...(language ? { language } : {}),
+      entityTerms,
+      temporalHints: buildTemporalHints({
+        periodEnd: section.periodEnd ?? null,
+        freshnessLabel:
+          section.fiscalYear != null ? `FY ${section.fiscalYear}` : null,
+      }),
+    };
+  });
   const chunks = chunkKnowledgeSections(
-    sections,
+    chunkableSections,
     group.chunkSize,
     group.chunkOverlapPercent,
     {
@@ -328,6 +406,11 @@ export async function materializeDocumentMarkdown({
         surroundingText: image.surroundingText ?? null,
         precedingText: image.precedingText ?? null,
         followingText: image.followingText ?? null,
+        imageType: image.imageType ?? null,
+        ocrText: image.ocrText ?? null,
+        ocrConfidence: image.ocrConfidence ?? null,
+        exactValueSnippets: image.exactValueSnippets ?? null,
+        structuredData: image.structuredData ?? null,
         isRenderable: image.isRenderable ?? false,
         manualLabel: image.manualLabel ?? false,
         manualDescription: image.manualDescription ?? false,
@@ -367,13 +450,65 @@ export async function materializeDocumentMarkdown({
   );
 
   await reportProgress?.(75, { stage: "embedding" });
-  const chunkEmbeddingResult = await embedTextsWithUsage(
-    enrichedChunks.map((chunk) => chunk.embeddingText),
-    group.embeddingProvider,
-    group.embeddingModel,
+  const contentTexts = enrichedChunks.map((chunk) => chunk.content);
+  const contextTexts = enrichedChunks.map(
+    (chunk) => chunk.contextSummary || chunk.embeddingText,
   );
-  const embeddings = chunkEmbeddingResult.embeddings;
-  chunkTokens = chunkEmbeddingResult.usageTokens;
+  const identityTexts = enrichedChunks.map(
+    (chunk) => buildChunkIdentityText(chunk) || chunk.embeddingText,
+  );
+  const entityTexts = enrichedChunks.map((chunk) => {
+    const entityText = buildEntityEmbeddingText({
+      metadata: chunk.metadata,
+      content: chunk.content,
+    });
+    return entityText || chunk.embeddingText;
+  });
+
+  const [
+    legacyEmbeddingResult,
+    contentEmbeddingResult,
+    contextEmbeddingResult,
+    identityEmbeddingResult,
+    entityEmbeddingResult,
+  ] = await Promise.all([
+    embedTextsWithUsage(
+      enrichedChunks.map((chunk) => chunk.embeddingText),
+      group.embeddingProvider,
+      group.embeddingModel,
+    ),
+    embedTextsWithUsage(
+      contentTexts,
+      group.embeddingProvider,
+      group.embeddingModel,
+    ),
+    embedTextsWithUsage(
+      contextTexts,
+      group.embeddingProvider,
+      group.embeddingModel,
+    ),
+    embedTextsWithUsage(
+      identityTexts,
+      group.embeddingProvider,
+      group.embeddingModel,
+    ),
+    embedTextsWithUsage(
+      entityTexts,
+      group.embeddingProvider,
+      group.embeddingModel,
+    ),
+  ]);
+  const embeddings = legacyEmbeddingResult.embeddings;
+  const contentEmbeddings = contentEmbeddingResult.embeddings;
+  const contextEmbeddings = contextEmbeddingResult.embeddings;
+  const identityEmbeddings = identityEmbeddingResult.embeddings;
+  const entityEmbeddings = entityEmbeddingResult.embeddings;
+  chunkTokens =
+    legacyEmbeddingResult.usageTokens +
+    contentEmbeddingResult.usageTokens +
+    contextEmbeddingResult.usageTokens +
+    identityEmbeddingResult.usageTokens +
+    entityEmbeddingResult.usageTokens;
 
   const totalTokens = enrichedChunks.reduce((sum, chunk) => {
     return sum + chunk.tokenCount;
@@ -405,6 +540,10 @@ export async function materializeDocumentMarkdown({
       tokenCount: chunk.tokenCount,
       metadata: chunk.metadata,
       embedding: embeddings[index] ?? [],
+      contentEmbedding: contentEmbeddings[index] ?? null,
+      contextEmbedding: contextEmbeddings[index] ?? null,
+      identityEmbedding: identityEmbeddings[index] ?? null,
+      entityEmbedding: entityEmbeddings[index] ?? null,
     })),
     images: (inputImages ?? []).map((image, index) => ({
       id: generateUUID(),
@@ -429,6 +568,11 @@ export async function materializeDocumentMarkdown({
       surroundingText: image.surroundingText ?? null,
       precedingText: image.precedingText ?? null,
       followingText: image.followingText ?? null,
+      imageType: image.imageType ?? null,
+      ocrText: image.ocrText ?? null,
+      ocrConfidence: image.ocrConfidence ?? null,
+      exactValueSnippets: image.exactValueSnippets ?? null,
+      structuredData: image.structuredData ?? null,
       isRenderable: image.isRenderable ?? false,
       manualLabel: image.manualLabel ?? false,
       manualDescription: image.manualDescription ?? false,

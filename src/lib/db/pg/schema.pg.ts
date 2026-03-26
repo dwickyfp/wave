@@ -276,6 +276,7 @@ export const AgentTable = pgTable("agent", {
   mcpApiKeyHash: text("mcp_api_key_hash"),
   mcpApiKeyPreview: text("mcp_api_key_preview"),
   a2aEnabled: boolean("a2a_enabled").notNull().default(false),
+  a2aRequireAuth: boolean("a2a_require_auth").notNull().default(true),
   a2aApiKeyHash: text("a2a_api_key_hash"),
   a2aApiKeyPreview: text("a2a_api_key_preview"),
   mcpModelProvider: text("mcp_model_provider"),
@@ -1001,7 +1002,7 @@ export const KnowledgeGroupTable = pgTable("knowledge_group", {
     enum: ["off", "auto", "always"],
   })
     .notNull()
-    .default("always"),
+    .default("auto"),
   lazyRefinementEnabled: boolean("lazy_refinement_enabled")
     .notNull()
     .default(true),
@@ -1058,7 +1059,20 @@ export const KnowledgeDocumentTable = pgTable(
     titleManual: boolean("title_manual").notNull().default(false),
     originalFilename: text("original_filename").notNull(),
     fileType: varchar("file_type", {
-      enum: ["pdf", "docx", "xlsx", "csv", "txt", "md", "url", "html"],
+      enum: [
+        "pdf",
+        "docx",
+        "pptx",
+        "xlsx",
+        "csv",
+        "txt",
+        "md",
+        "url",
+        "html",
+        "json",
+        "eml",
+        "code",
+      ],
     }).notNull(),
     fileSize: bigint("file_size", { mode: "number" }),
     storagePath: text("storage_path"),
@@ -1215,6 +1229,10 @@ export const KnowledgeChunkTable = pgTable(
     content: text("content").notNull(),
     contextSummary: text("context_summary"),
     embedding: vector("embedding"),
+    contentEmbedding: vector("content_embedding"),
+    contextEmbedding: vector("context_embedding"),
+    identityEmbedding: vector("identity_embedding"),
+    entityEmbedding: vector("entity_embedding"),
     chunkIndex: integer("chunk_index").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata").$type<{
@@ -1250,6 +1268,24 @@ export const KnowledgeChunkTable = pgTable(
       qualityScore?: number;
       repairReason?: string;
       sheetName?: string;
+      contentKind?:
+        | "document"
+        | "web"
+        | "markdown"
+        | "code"
+        | "json"
+        | "email"
+        | "presentation"
+        | "spreadsheet"
+        | "other";
+      language?: string;
+      entityIds?: string[];
+      entityTerms?: string[];
+      temporalHints?: {
+        effectiveAt?: string | null;
+        expiresAt?: string | null;
+        freshnessLabel?: string | null;
+      } | null;
     }>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -1300,6 +1336,40 @@ export const KnowledgeDocumentImageTable = pgTable(
     surroundingText: text("surrounding_text"),
     precedingText: text("preceding_text"),
     followingText: text("following_text"),
+    imageType: varchar("image_type", {
+      enum: [
+        "ui",
+        "chart",
+        "table",
+        "document_scan",
+        "diagram",
+        "photo",
+        "other",
+      ],
+    }),
+    ocrText: text("ocr_text"),
+    ocrConfidence: real("ocr_confidence"),
+    exactValueSnippets: json("exact_value_snippets").$type<string[]>(),
+    structuredData: json("structured_data").$type<{
+      chartData?: {
+        chartType?: string | null;
+        title?: string | null;
+        xAxisLabel?: string | null;
+        yAxisLabel?: string | null;
+        legend?: string[] | null;
+        units?: string[] | null;
+        series?: Array<{
+          name: string;
+          values: string[];
+        }> | null;
+        summary?: string | null;
+      } | null;
+      tableData?: {
+        headers?: string[] | null;
+        rows?: string[][] | null;
+        summary?: string | null;
+      } | null;
+    }>(),
     isRenderable: boolean("is_renderable").notNull().default(false),
     manualLabel: boolean("manual_label").notNull().default(false),
     manualDescription: boolean("manual_description").notNull().default(false),
@@ -1396,6 +1466,10 @@ export const KnowledgeChunkVersionTable = pgTable(
     content: text("content").notNull(),
     contextSummary: text("context_summary"),
     embedding: vector("embedding"),
+    contentEmbedding: vector("content_embedding"),
+    contextEmbedding: vector("context_embedding"),
+    identityEmbedding: vector("identity_embedding"),
+    entityEmbedding: vector("entity_embedding"),
     chunkIndex: integer("chunk_index").notNull(),
     tokenCount: integer("token_count").notNull().default(0),
     metadata: json("metadata").$type<{
@@ -1431,6 +1505,24 @@ export const KnowledgeChunkVersionTable = pgTable(
       qualityScore?: number;
       repairReason?: string;
       sheetName?: string;
+      contentKind?:
+        | "document"
+        | "web"
+        | "markdown"
+        | "code"
+        | "json"
+        | "email"
+        | "presentation"
+        | "spreadsheet"
+        | "other";
+      language?: string;
+      entityIds?: string[];
+      entityTerms?: string[];
+      temporalHints?: {
+        effectiveAt?: string | null;
+        expiresAt?: string | null;
+        freshnessLabel?: string | null;
+      } | null;
     }>(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -1482,6 +1574,40 @@ export const KnowledgeDocumentImageVersionTable = pgTable(
     surroundingText: text("surrounding_text"),
     precedingText: text("preceding_text"),
     followingText: text("following_text"),
+    imageType: varchar("image_type", {
+      enum: [
+        "ui",
+        "chart",
+        "table",
+        "document_scan",
+        "diagram",
+        "photo",
+        "other",
+      ],
+    }),
+    ocrText: text("ocr_text"),
+    ocrConfidence: real("ocr_confidence"),
+    exactValueSnippets: json("exact_value_snippets").$type<string[]>(),
+    structuredData: json("structured_data").$type<{
+      chartData?: {
+        chartType?: string | null;
+        title?: string | null;
+        xAxisLabel?: string | null;
+        yAxisLabel?: string | null;
+        legend?: string[] | null;
+        units?: string[] | null;
+        series?: Array<{
+          name: string;
+          values: string[];
+        }> | null;
+        summary?: string | null;
+      } | null;
+      tableData?: {
+        headers?: string[] | null;
+        rows?: string[][] | null;
+        summary?: string | null;
+      } | null;
+    }>(),
     isRenderable: boolean("is_renderable").notNull().default(false),
     manualLabel: boolean("manual_label").notNull().default(false),
     manualDescription: boolean("manual_description").notNull().default(false),
@@ -1500,6 +1626,117 @@ export const KnowledgeDocumentImageVersionTable = pgTable(
       t.documentId,
       t.ordinal,
     ),
+  ],
+);
+
+export const KnowledgeEntityTable = pgTable(
+  "knowledge_entity",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id").references(
+      () => KnowledgeDocumentTable.id,
+      {
+        onDelete: "set null",
+      },
+    ),
+    canonicalName: text("canonical_name").notNull(),
+    normalizedName: text("normalized_name").notNull(),
+    entityType: text("entity_type").notNull(),
+    aliases: json("aliases").$type<string[]>(),
+    embedding: vector("embedding"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("knowledge_entity_group_id_idx").on(table.groupId),
+    index("knowledge_entity_document_id_idx").on(table.documentId),
+    unique("knowledge_entity_group_normalized_unique").on(
+      table.groupId,
+      table.normalizedName,
+    ),
+  ],
+);
+
+export const KnowledgeEntityMentionTable = pgTable(
+  "knowledge_entity_mention",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    documentId: uuid("document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    entityId: uuid("entity_id")
+      .notNull()
+      .references(() => KnowledgeEntityTable.id, { onDelete: "cascade" }),
+    sectionId: uuid("section_id").references(() => KnowledgeSectionTable.id, {
+      onDelete: "set null",
+    }),
+    chunkId: uuid("chunk_id").references(() => KnowledgeChunkTable.id, {
+      onDelete: "set null",
+    }),
+    matchedText: text("matched_text").notNull(),
+    weight: real("weight").notNull().default(1),
+    pageStart: integer("page_start"),
+    pageEnd: integer("page_end"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("knowledge_entity_mention_group_id_idx").on(table.groupId),
+    index("knowledge_entity_mention_entity_id_idx").on(table.entityId),
+    index("knowledge_entity_mention_document_id_idx").on(table.documentId),
+    index("knowledge_entity_mention_section_id_idx").on(table.sectionId),
+    index("knowledge_entity_mention_chunk_id_idx").on(table.chunkId),
+  ],
+);
+
+export const KnowledgeRelationTable = pgTable(
+  "knowledge_relation",
+  {
+    id: uuid("id").primaryKey().notNull().defaultRandom(),
+    groupId: uuid("group_id")
+      .notNull()
+      .references(() => KnowledgeGroupTable.id, { onDelete: "cascade" }),
+    sourceDocumentId: uuid("source_document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    sourceSectionId: uuid("source_section_id")
+      .notNull()
+      .references(() => KnowledgeSectionTable.id, { onDelete: "cascade" }),
+    targetDocumentId: uuid("target_document_id")
+      .notNull()
+      .references(() => KnowledgeDocumentTable.id, { onDelete: "cascade" }),
+    targetSectionId: uuid("target_section_id")
+      .notNull()
+      .references(() => KnowledgeSectionTable.id, { onDelete: "cascade" }),
+    relationType: varchar("relation_type", {
+      enum: ["updates", "extends", "derives", "contradicts", "related"],
+    }).notNull(),
+    weight: real("weight").notNull().default(1),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("knowledge_relation_group_id_idx").on(table.groupId),
+    index("knowledge_relation_source_section_id_idx").on(table.sourceSectionId),
+    index("knowledge_relation_target_section_id_idx").on(table.targetSectionId),
+    index("knowledge_relation_type_idx").on(table.relationType),
   ],
 );
 
@@ -1834,6 +2071,7 @@ export const SelfLearningMemoryTable = pgTable(
     contradictionFingerprint: text("contradiction_fingerprint"),
     title: text("title").notNull(),
     content: text("content").notNull(),
+    embedding: vector("embedding"),
     supportCount: integer("support_count").notNull().default(0),
     distinctThreadCount: integer("distinct_thread_count").notNull().default(0),
     sourceEvaluationId: uuid("source_evaluation_id"),

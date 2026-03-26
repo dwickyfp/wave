@@ -24,13 +24,13 @@ import {
 } from "lib/db/pg/schema.pg";
 import { materializeDocumentMarkdown } from "lib/knowledge/materialize-markdown";
 import { sanitizeImageStepHint } from "lib/knowledge/document-images";
+import { replaceDocumentKnowledgeGraph } from "lib/knowledge/graph-store";
 import type { ProcessedDocumentImage } from "lib/knowledge/processor/types";
 import { generateUUID } from "lib/utils";
 
 const VERSION_BATCH_SIZE = 100;
 const ROLLBACK_MODEL_MISMATCH_REASON =
   "This version uses a different embedding model than the current knowledge group.";
-const KNOWLEDGE_DOCUMENT_HISTORY_ENABLED = false;
 
 type DocumentVersionChangeType =
   | "initial_ingest"
@@ -84,6 +84,10 @@ type VersionSnapshotChunk = {
   content: string;
   contextSummary?: string | null;
   embedding?: number[] | null;
+  contentEmbedding?: number[] | null;
+  contextEmbedding?: number[] | null;
+  identityEmbedding?: number[] | null;
+  entityEmbedding?: number[] | null;
   chunkIndex: number;
   tokenCount: number;
   metadata?: KnowledgeChunkMetadata | null;
@@ -333,6 +337,20 @@ export function resolveDocumentVersionRetention(input: {
       .map((version) => version.id)
       .filter((id) => !retainedVersionIds.has(id)),
   };
+}
+
+export function resolveMissingHistorySeedEventType(input: {
+  activeVersionNumber?: number | null;
+  activeVersionChangeType?: DocumentVersionChangeType | null;
+}): HistoryEventType {
+  if (
+    input.activeVersionChangeType === "initial_ingest" ||
+    (input.activeVersionNumber ?? 0) <= 1
+  ) {
+    return "created";
+  }
+
+  return "bootstrap";
 }
 
 function clearDocumentProcessingMetadata() {
@@ -726,6 +744,10 @@ async function selectLiveChunks(
     content: string;
     context_summary: string | null;
     embedding_text: string | null;
+    content_embedding_text: string | null;
+    context_embedding_text: string | null;
+    identity_embedding_text: string | null;
+    entity_embedding_text: string | null;
     chunk_index: number;
     token_count: number;
     metadata: KnowledgeChunkMetadata | null;
@@ -784,6 +806,19 @@ async function selectLiveImages(
     surrounding_text: string | null;
     preceding_text: string | null;
     following_text: string | null;
+    image_type:
+      | "ui"
+      | "chart"
+      | "table"
+      | "document_scan"
+      | "diagram"
+      | "photo"
+      | "other"
+      | null;
+    ocr_text: string | null;
+    ocr_confidence: number | null;
+    exact_value_snippets: string[] | null;
+    structured_data: KnowledgeDocumentImage["structuredData"] | null;
     is_renderable: boolean;
     manual_label: boolean;
     manual_description: boolean;
@@ -813,6 +848,11 @@ async function selectLiveImages(
         surrounding_text,
         preceding_text,
         following_text,
+        image_type,
+        ocr_text,
+        ocr_confidence,
+        exact_value_snippets,
+        structured_data,
         is_renderable,
         manual_label,
         manual_description,
@@ -846,6 +886,11 @@ async function selectLiveImages(
     surroundingText: row.surrounding_text ?? null,
     precedingText: row.preceding_text ?? null,
     followingText: row.following_text ?? null,
+    imageType: row.image_type ?? null,
+    ocrText: row.ocr_text ?? null,
+    ocrConfidence: row.ocr_confidence ?? null,
+    exactValueSnippets: row.exact_value_snippets ?? null,
+    structuredData: row.structured_data ?? null,
     isRenderable: row.is_renderable,
     manualLabel: row.manual_label,
     manualDescription: row.manual_description,
@@ -948,6 +993,10 @@ async function selectVersionChunks(
     content: string;
     context_summary: string | null;
     embedding_text: string | null;
+    content_embedding_text: string | null;
+    context_embedding_text: string | null;
+    identity_embedding_text: string | null;
+    entity_embedding_text: string | null;
     chunk_index: number;
     token_count: number;
     metadata: KnowledgeChunkMetadata | null;
@@ -959,6 +1008,10 @@ async function selectVersionChunks(
         content,
         context_summary,
         embedding::text AS embedding_text,
+        content_embedding::text AS content_embedding_text,
+        context_embedding::text AS context_embedding_text,
+        identity_embedding::text AS identity_embedding_text,
+        entity_embedding::text AS entity_embedding_text,
         chunk_index,
         token_count,
         metadata
@@ -974,6 +1027,10 @@ async function selectVersionChunks(
     content: row.content,
     contextSummary: row.context_summary ?? null,
     embedding: parsePgVectorLiteral(row.embedding_text),
+    contentEmbedding: parsePgVectorLiteral(row.content_embedding_text),
+    contextEmbedding: parsePgVectorLiteral(row.context_embedding_text),
+    identityEmbedding: parsePgVectorLiteral(row.identity_embedding_text),
+    entityEmbedding: parsePgVectorLiteral(row.entity_embedding_text),
     chunkIndex: row.chunk_index,
     tokenCount: row.token_count,
     metadata: row.metadata ?? null,
@@ -1006,6 +1063,19 @@ async function selectVersionImages(
     surrounding_text: string | null;
     preceding_text: string | null;
     following_text: string | null;
+    image_type:
+      | "ui"
+      | "chart"
+      | "table"
+      | "document_scan"
+      | "diagram"
+      | "photo"
+      | "other"
+      | null;
+    ocr_text: string | null;
+    ocr_confidence: number | null;
+    exact_value_snippets: string[] | null;
+    structured_data: KnowledgeDocumentImage["structuredData"] | null;
     is_renderable: boolean;
     manual_label: boolean;
     manual_description: boolean;
@@ -1035,6 +1105,11 @@ async function selectVersionImages(
         surrounding_text,
         preceding_text,
         following_text,
+        image_type,
+        ocr_text,
+        ocr_confidence,
+        exact_value_snippets,
+        structured_data,
         is_renderable,
         manual_label,
         manual_description,
@@ -1068,6 +1143,11 @@ async function selectVersionImages(
     surroundingText: row.surrounding_text ?? null,
     precedingText: row.preceding_text ?? null,
     followingText: row.following_text ?? null,
+    imageType: row.image_type ?? null,
+    ocrText: row.ocr_text ?? null,
+    ocrConfidence: row.ocr_confidence ?? null,
+    exactValueSnippets: row.exact_value_snippets ?? null,
+    structuredData: row.structured_data ?? null,
     isRenderable: row.is_renderable,
     manualLabel: row.manual_label,
     manualDescription: row.manual_description,
@@ -1128,6 +1208,11 @@ function toProcessedDocumentImages(
     surroundingText: image.surroundingText ?? null,
     precedingText: image.precedingText ?? null,
     followingText: image.followingText ?? null,
+    imageType: image.imageType ?? null,
+    ocrText: image.ocrText ?? null,
+    ocrConfidence: image.ocrConfidence ?? null,
+    exactValueSnippets: image.exactValueSnippets ?? null,
+    structuredData: image.structuredData ?? null,
     headingPath: image.headingPath ?? null,
     stepHint: image.stepHint ?? null,
     label: image.label,
@@ -1154,6 +1239,10 @@ export function buildChunkSnapshotInsertRow(args: {
     content: args.chunk.content,
     contextSummary: args.chunk.contextSummary ?? null,
     embedding: args.chunk.embedding ?? null,
+    contentEmbedding: args.chunk.contentEmbedding ?? null,
+    contextEmbedding: args.chunk.contextEmbedding ?? null,
+    identityEmbedding: args.chunk.identityEmbedding ?? null,
+    entityEmbedding: args.chunk.entityEmbedding ?? null,
     chunkIndex: args.chunk.chunkIndex,
     tokenCount: args.chunk.tokenCount,
     metadata: args.chunk.metadata ?? null,
@@ -1190,6 +1279,11 @@ export function buildImageSnapshotInsertRow(args: {
     surroundingText: args.image.surroundingText ?? null,
     precedingText: args.image.precedingText ?? null,
     followingText: args.image.followingText ?? null,
+    imageType: args.image.imageType ?? null,
+    ocrText: args.image.ocrText ?? null,
+    ocrConfidence: args.image.ocrConfidence ?? null,
+    exactValueSnippets: args.image.exactValueSnippets ?? null,
+    structuredData: args.image.structuredData ?? null,
     isRenderable: args.image.isRenderable,
     manualLabel: args.image.manualLabel,
     manualDescription: args.image.manualDescription,
@@ -1370,6 +1464,10 @@ async function replaceLiveMaterialization(
           content: chunk.content,
           contextSummary: chunk.contextSummary ?? null,
           embedding: chunk.embedding ?? null,
+          contentEmbedding: chunk.contentEmbedding ?? null,
+          contextEmbedding: chunk.contextEmbedding ?? null,
+          identityEmbedding: chunk.identityEmbedding ?? null,
+          entityEmbedding: chunk.entityEmbedding ?? null,
           chunkIndex: chunk.chunkIndex,
           tokenCount: chunk.tokenCount,
           metadata: chunk.metadata ?? null,
@@ -1406,6 +1504,11 @@ async function replaceLiveMaterialization(
           surroundingText: image.surroundingText ?? null,
           precedingText: image.precedingText ?? null,
           followingText: image.followingText ?? null,
+          imageType: image.imageType ?? null,
+          ocrText: image.ocrText ?? null,
+          ocrConfidence: image.ocrConfidence ?? null,
+          exactValueSnippets: image.exactValueSnippets ?? null,
+          structuredData: image.structuredData ?? null,
           isRenderable: image.isRenderable,
           manualLabel: image.manualLabel,
           manualDescription: image.manualDescription,
@@ -1449,10 +1552,6 @@ async function pruneDocumentVersionHistory(
   tx: any,
   args: { documentId: string; activeVersionId: string },
 ) {
-  await tx
-    .delete(KnowledgeDocumentHistoryEventTable)
-    .where(eq(KnowledgeDocumentHistoryEventTable.documentId, args.documentId));
-
   const versions = (await tx
     .select({
       id: KnowledgeDocumentVersionTable.id,
@@ -1609,41 +1708,45 @@ async function finalizeMaterializedVersion({
       } as any)
       .where(eq(KnowledgeDocumentTable.id, doc.id));
 
-    if (KNOWLEDGE_DOCUMENT_HISTORY_ENABLED) {
-      await insertHistoryEvent(tx, {
-        documentId: doc.id,
-        groupId: group.id,
-        userId: doc.userId,
-        actorUserId: actorUserId ?? doc.userId,
-        eventType,
-        fromVersionId: sourceVersionId ?? null,
-        toVersionId: versionId,
-        details: {
-          chunkCount: chunks.length,
-          tokenCount: totalTokens,
-          embeddingTokenCount:
-            eventType === "rollback" ? 0 : embeddingTokenCount,
-          imageCount: images.length,
-        },
-      });
-    }
+    await insertHistoryEvent(tx, {
+      documentId: doc.id,
+      groupId: group.id,
+      userId: doc.userId,
+      actorUserId: actorUserId ?? doc.userId,
+      eventType,
+      fromVersionId: sourceVersionId ?? null,
+      toVersionId: versionId,
+      details: {
+        chunkCount: chunks.length,
+        tokenCount: totalTokens,
+        embeddingTokenCount: eventType === "rollback" ? 0 : embeddingTokenCount,
+        imageCount: images.length,
+      },
+    });
 
     await pruneDocumentVersionHistory(tx, {
       documentId: doc.id,
       activeVersionId: versionId,
     });
   });
+
+  await replaceDocumentKnowledgeGraph({
+    documentId: doc.id,
+    groupId: group.id,
+    sections,
+    chunks,
+    documentUpdatedAt: new Date(),
+  }).catch((error) => {
+    console.warn(
+      `[ContextX] Failed to refresh knowledge graph for document ${doc.id}:`,
+      error,
+    );
+  });
 }
 
 export async function ensureDocumentVersionBootstrap(documentId: string) {
   const selectedDoc = await selectDocumentRow(documentId);
   if (!selectedDoc) return;
-  if (
-    (selectedDoc.activeVersionId ?? null) !== null &&
-    (selectedDoc.latestVersionNumber ?? 0) > 0
-  ) {
-    return;
-  }
   if (selectedDoc.status !== "ready" || !selectedDoc.markdownContent) {
     return;
   }
@@ -1651,12 +1754,79 @@ export async function ensureDocumentVersionBootstrap(documentId: string) {
   await db.transaction(async (tx) => {
     const currentDoc = await selectDocumentRowForUpdate(tx, documentId);
 
+    if (!currentDoc || !currentDoc.markdownContent) {
+      return;
+    }
+
+    const [existingHistoryEvent] = await tx
+      .select({
+        id: KnowledgeDocumentHistoryEventTable.id,
+      })
+      .from(KnowledgeDocumentHistoryEventTable)
+      .where(eq(KnowledgeDocumentHistoryEventTable.documentId, documentId))
+      .limit(1);
+
+    if (existingHistoryEvent) {
+      return;
+    }
+
     if (
-      !currentDoc ||
-      currentDoc.activeVersionId ||
-      (currentDoc.latestVersionNumber ?? 0) > 0 ||
-      !currentDoc.markdownContent
+      (currentDoc.activeVersionId ?? null) !== null &&
+      (currentDoc.latestVersionNumber ?? 0) > 0
     ) {
+      const activeVersionId = currentDoc.activeVersionId;
+      if (!activeVersionId) {
+        return;
+      }
+
+      const [activeVersion] = await tx
+        .select({
+          id: KnowledgeDocumentVersionTable.id,
+          versionNumber: KnowledgeDocumentVersionTable.versionNumber,
+          changeType: KnowledgeDocumentVersionTable.changeType,
+          createdByUserId: KnowledgeDocumentVersionTable.createdByUserId,
+          chunkCount: KnowledgeDocumentVersionTable.chunkCount,
+          tokenCount: KnowledgeDocumentVersionTable.tokenCount,
+          embeddingTokenCount:
+            KnowledgeDocumentVersionTable.embeddingTokenCount,
+        })
+        .from(KnowledgeDocumentVersionTable)
+        .where(eq(KnowledgeDocumentVersionTable.id, activeVersionId))
+        .limit(1);
+
+      if (!activeVersion) {
+        return;
+      }
+
+      const [imageCountRow] = await tx
+        .select({
+          count: sql<number>`count(*)::integer`,
+        })
+        .from(KnowledgeDocumentImageVersionTable)
+        .where(
+          eq(KnowledgeDocumentImageVersionTable.versionId, activeVersion.id),
+        );
+
+      await insertHistoryEvent(tx, {
+        documentId,
+        groupId: currentDoc.groupId,
+        userId: currentDoc.userId,
+        actorUserId: activeVersion.createdByUserId ?? currentDoc.userId,
+        eventType: resolveMissingHistorySeedEventType({
+          activeVersionNumber: activeVersion.versionNumber,
+          activeVersionChangeType: activeVersion.changeType,
+        }),
+        toVersionId: activeVersion.id,
+        details: {
+          chunkCount: activeVersion.chunkCount ?? currentDoc.chunkCount ?? 0,
+          tokenCount: activeVersion.tokenCount ?? currentDoc.tokenCount ?? 0,
+          embeddingTokenCount:
+            activeVersion.embeddingTokenCount ??
+            currentDoc.embeddingTokenCount ??
+            0,
+          imageCount: imageCountRow?.count ?? 0,
+        },
+      });
       return;
     }
 

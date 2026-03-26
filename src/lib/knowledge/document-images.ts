@@ -1,6 +1,9 @@
 import type {
   KnowledgeDocumentImage,
+  KnowledgeImageChartData,
   KnowledgeDocumentImagePreview,
+  KnowledgeImageStructuredData,
+  KnowledgeImageTableData,
 } from "app-types/knowledge";
 
 function cleanInlineText(value: string | null | undefined): string {
@@ -9,6 +12,14 @@ function cleanInlineText(value: string | null | undefined): string {
     .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function clipText(value: string | null | undefined, maxChars: number): string {
+  const cleaned = cleanInlineText(value);
+  if (cleaned.length <= maxChars) {
+    return cleaned;
+  }
+  return `${cleaned.slice(0, maxChars).trim()}...`;
 }
 
 export function sanitizeImageStepHint(
@@ -35,6 +46,100 @@ function normalizeGeneratedLabel(label: string): string {
     .replace(/^label\s*:\s*/i, "")
     .replace(/\s*\n\s*/g, " ")
     .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function formatChartData(chartData?: KnowledgeImageChartData | null): string {
+  if (!chartData) return "";
+
+  const series = (chartData.series ?? [])
+    .slice(0, 4)
+    .map((entry) => {
+      const values = (entry.values ?? []).slice(0, 6).join(", ");
+      return values
+        ? `${cleanInlineText(entry.name)}: ${cleanInlineText(values)}`
+        : cleanInlineText(entry.name);
+    })
+    .filter(Boolean)
+    .join(" | ");
+
+  return [
+    chartData.chartType
+      ? `Chart type: ${cleanInlineText(chartData.chartType)}`
+      : "",
+    chartData.title ? `Chart title: ${cleanInlineText(chartData.title)}` : "",
+    chartData.xAxisLabel
+      ? `X axis: ${cleanInlineText(chartData.xAxisLabel)}`
+      : "",
+    chartData.yAxisLabel
+      ? `Y axis: ${cleanInlineText(chartData.yAxisLabel)}`
+      : "",
+    chartData.legend?.length
+      ? `Legend: ${chartData.legend.map((entry) => cleanInlineText(entry)).join(", ")}`
+      : "",
+    chartData.units?.length
+      ? `Units: ${chartData.units.map((entry) => cleanInlineText(entry)).join(", ")}`
+      : "",
+    series ? `Series: ${series}` : "",
+    chartData.summary
+      ? `Chart summary: ${cleanInlineText(chartData.summary)}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function formatTableData(tableData?: KnowledgeImageTableData | null): string {
+  if (!tableData) return "";
+
+  const compactRows = (tableData.rows ?? [])
+    .slice(0, 4)
+    .map((row) =>
+      row
+        .map((cell) => cleanInlineText(cell))
+        .filter(Boolean)
+        .join(" | "),
+    )
+    .filter(Boolean)
+    .join(" ; ");
+
+  return [
+    tableData.headers?.length
+      ? `Table headers: ${tableData.headers.map((entry) => cleanInlineText(entry)).join(", ")}`
+      : "",
+    compactRows ? `Table rows: ${compactRows}` : "",
+    tableData.summary
+      ? `Table summary: ${cleanInlineText(tableData.summary)}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function buildKnowledgeImageStructuredSummary(input: {
+  imageType?: KnowledgeDocumentImage["imageType"];
+  exactValueSnippets?: KnowledgeDocumentImage["exactValueSnippets"];
+  ocrText?: KnowledgeDocumentImage["ocrText"];
+  ocrConfidence?: KnowledgeDocumentImage["ocrConfidence"];
+  structuredData?: KnowledgeImageStructuredData | null;
+}): string {
+  const exactValues = (input.exactValueSnippets ?? [])
+    .map((entry) => cleanInlineText(entry))
+    .filter(Boolean)
+    .slice(0, 8);
+
+  return [
+    input.imageType ? `Image type: ${input.imageType}` : "",
+    exactValues.length ? `Exact values: ${exactValues.join(" | ")}` : "",
+    input.ocrText ? `OCR: ${clipText(input.ocrText, 1800)}` : "",
+    input.ocrConfidence != null
+      ? `OCR confidence: ${Math.max(0, Math.min(1, input.ocrConfidence)).toFixed(2)}`
+      : "",
+    formatChartData(input.structuredData?.chartData ?? null),
+    formatTableData(input.structuredData?.tableData ?? null),
+  ]
+    .filter(Boolean)
+    .join("\n")
     .trim();
 }
 
@@ -73,10 +178,22 @@ export function buildDocumentImageEmbeddingText(input: {
     | "surroundingText"
     | "precedingText"
     | "followingText"
+    | "imageType"
+    | "ocrText"
+    | "ocrConfidence"
+    | "exactValueSnippets"
+    | "structuredData"
     | "pageNumber"
   >;
 }): string {
   const sanitizedStepHint = sanitizeImageStepHint(input.image.stepHint);
+  const structuredSummary = buildKnowledgeImageStructuredSummary({
+    imageType: input.image.imageType ?? null,
+    ocrText: input.image.ocrText ?? null,
+    ocrConfidence: input.image.ocrConfidence ?? null,
+    exactValueSnippets: input.image.exactValueSnippets ?? null,
+    structuredData: input.image.structuredData ?? null,
+  });
 
   return [
     `document: ${cleanInlineText(input.documentTitle)}`,
@@ -99,6 +216,7 @@ export function buildDocumentImageEmbeddingText(input: {
     input.image.followingText
       ? `after: ${cleanInlineText(input.image.followingText)}`
       : "",
+    structuredSummary ? structuredSummary : "",
     input.image.pageNumber != null ? `page: ${input.image.pageNumber}` : "",
   ]
     .filter(Boolean)

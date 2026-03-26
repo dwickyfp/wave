@@ -11,7 +11,24 @@ import { Button } from "ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "ui/card";
 import { Input } from "ui/input";
 import { Textarea } from "ui/textarea";
-import { Users } from "lucide-react";
+import { Users, ChevronsUpDown, Check } from "lucide-react";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "ui/select";
+import { cn } from "lib/utils";
 
 interface TeamDetailPageProps {
   initialTeam: TeamDetail;
@@ -29,7 +46,12 @@ export function TeamDetailPage({
     { fallbackData: initialTeam },
   );
 
-  const [memberEmail, setMemberEmail] = useState("");
+  const [selectedUser, setSelectedUser] = useState<{
+    id: string;
+    name: string;
+    email: string;
+  } | null>(null);
+  const [userSearchOpen, setUserSearchOpen] = useState(false);
   const [memberRole, setMemberRole] = useState<"admin" | "member">("member");
   const [submittingMember, setSubmittingMember] = useState(false);
   const [savingTeam, setSavingTeam] = useState(false);
@@ -39,25 +61,35 @@ export function TeamDetailPage({
   const isOwner = team.role === "owner";
   const canManageMembers = team.role === "owner" || team.role === "admin";
 
+  const { data: allUsers = [] } = useSWR<
+    { id: string; name: string; email: string }[]
+  >(canManageMembers ? "/api/users" : null, fetcher);
+
+  const availableUsers = useMemo(
+    () => allUsers.filter((u) => !team.members.some((m) => m.userId === u.id)),
+    [allUsers, team.members],
+  );
+
   const currentMember = useMemo(
     () => team.members.find((member) => member.userId === currentUserId),
     [team.members, currentUserId],
   );
 
   const addMember = async () => {
+    if (!selectedUser) return;
     setSubmittingMember(true);
     try {
       const response = await fetch(`/api/teams/${team.id}/members`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: memberEmail, role: memberRole }),
+        body: JSON.stringify({ email: selectedUser.email, role: memberRole }),
       });
       const payload = await response.json();
       if (!response.ok) {
         throw new Error(payload.error || "Failed to add member");
       }
 
-      setMemberEmail("");
+      setSelectedUser(null);
       setMemberRole("member");
       await mutate();
       toast.success("Member added");
@@ -234,22 +266,72 @@ export function TeamDetailPage({
           <CardContent className="space-y-4">
             {canManageMembers ? (
               <div className="grid gap-3 md:grid-cols-[1fr_140px_auto]">
-                <Input
-                  placeholder="Existing user email"
-                  value={memberEmail}
-                  onChange={(event) => setMemberEmail(event.target.value)}
-                />
-                <select
-                  className="h-9 rounded-md border bg-background px-3 text-sm"
+                <Popover open={userSearchOpen} onOpenChange={setUserSearchOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={userSearchOpen}
+                      className="justify-between font-normal"
+                    >
+                      {selectedUser ? selectedUser.name : "Select user..."}
+                      <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[300px] p-0" align="start">
+                    <Command>
+                      <CommandInput placeholder="Search by name..." />
+                      <CommandList>
+                        <CommandEmpty>No users found.</CommandEmpty>
+                        <CommandGroup>
+                          {availableUsers.map((user) => (
+                            <CommandItem
+                              key={user.id}
+                              value={user.name}
+                              onSelect={() => {
+                                setSelectedUser(user);
+                                setUserSearchOpen(false);
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 size-4",
+                                  selectedUser?.id === user.id
+                                    ? "opacity-100"
+                                    : "opacity-0",
+                                )}
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate">{user.name}</p>
+                                <p className="text-xs text-muted-foreground truncate">
+                                  {user.email}
+                                </p>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                <Select
                   value={memberRole}
-                  onChange={(event) =>
-                    setMemberRole(event.target.value as "admin" | "member")
+                  onValueChange={(value) =>
+                    setMemberRole(value as "admin" | "member")
                   }
                 >
-                  <option value="member">Member</option>
-                  <option value="admin">Admin</option>
-                </select>
-                <Button onClick={addMember} disabled={submittingMember}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="member">Member</SelectItem>
+                    <SelectItem value="admin">Admin</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  onClick={addMember}
+                  disabled={submittingMember || !selectedUser}
+                >
                   {submittingMember ? "Adding..." : "Add user"}
                 </Button>
               </div>

@@ -14,6 +14,14 @@ export type KnowledgeParseRepairPolicy =
   | "aggressive";
 export type KnowledgeContextMode = "deterministic" | "auto-llm" | "always-llm";
 export type KnowledgeImageMode = "off" | "auto" | "always";
+export type KnowledgeImageType =
+  | "ui"
+  | "chart"
+  | "table"
+  | "document_scan"
+  | "diagram"
+  | "photo"
+  | "other";
 export type KnowledgeDocumentVersionStatus = "processing" | "ready" | "failed";
 export type KnowledgeDocumentVersionChangeType =
   | "initial_ingest"
@@ -31,14 +39,40 @@ export type KnowledgeDocumentHistoryEventType =
 export type DocumentFileType =
   | "pdf"
   | "docx"
+  | "pptx"
   | "xlsx"
   | "csv"
   | "txt"
   | "md"
   | "url"
-  | "html";
+  | "html"
+  | "json"
+  | "eml"
+  | "code";
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type UsageSource = "chat" | "agent" | "mcp";
+export type KnowledgeChunkEmbeddingKind =
+  | "legacy"
+  | "content"
+  | "context"
+  | "identity"
+  | "entity";
+export type KnowledgeChunkContentKind =
+  | "document"
+  | "web"
+  | "markdown"
+  | "code"
+  | "json"
+  | "email"
+  | "presentation"
+  | "spreadsheet"
+  | "other";
+export type KnowledgeRelationType =
+  | "updates"
+  | "extends"
+  | "derives"
+  | "contradicts"
+  | "related";
 export type KnowledgeDocumentProcessingStage =
   | "extracting"
   | "parsing"
@@ -89,6 +123,40 @@ export type KnowledgeChunkMetadata = {
   sheetName?: string;
   sourceGroupId?: string;
   sourceGroupName?: string;
+  contentKind?: KnowledgeChunkContentKind;
+  language?: string;
+  entityIds?: string[];
+  entityTerms?: string[];
+  temporalHints?: {
+    effectiveAt?: string | null;
+    expiresAt?: string | null;
+    freshnessLabel?: string | null;
+  } | null;
+};
+
+export type KnowledgeImageChartData = {
+  chartType?: string | null;
+  title?: string | null;
+  xAxisLabel?: string | null;
+  yAxisLabel?: string | null;
+  legend?: string[] | null;
+  units?: string[] | null;
+  series?: Array<{
+    name: string;
+    values: string[];
+  }> | null;
+  summary?: string | null;
+};
+
+export type KnowledgeImageTableData = {
+  headers?: string[] | null;
+  rows?: string[][] | null;
+  summary?: string | null;
+};
+
+export type KnowledgeImageStructuredData = {
+  chartData?: KnowledgeImageChartData | null;
+  tableData?: KnowledgeImageTableData | null;
 };
 
 export interface KnowledgeGroup {
@@ -235,11 +303,62 @@ export interface KnowledgeChunk {
   chunkIndex: number;
   tokenCount: number;
   metadata?: KnowledgeChunkMetadata | null;
+  embedding?: number[] | null;
+  contentEmbedding?: number[] | null;
+  contextEmbedding?: number[] | null;
+  identityEmbedding?: number[] | null;
+  entityEmbedding?: number[] | null;
   createdAt: Date;
 }
 
 export interface KnowledgeChunkSnapshot extends KnowledgeChunk {
   embedding?: number[] | null;
+  contentEmbedding?: number[] | null;
+  contextEmbedding?: number[] | null;
+  identityEmbedding?: number[] | null;
+  entityEmbedding?: number[] | null;
+}
+
+export interface KnowledgeEntity {
+  id: string;
+  groupId: string;
+  documentId?: string | null;
+  canonicalName: string;
+  normalizedName: string;
+  entityType: string;
+  aliases?: string[] | null;
+  embedding?: number[] | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface KnowledgeEntityMention {
+  id: string;
+  groupId: string;
+  documentId: string;
+  entityId: string;
+  sectionId?: string | null;
+  chunkId?: string | null;
+  matchedText: string;
+  weight: number;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  createdAt: Date;
+}
+
+export interface KnowledgeRelation {
+  id: string;
+  groupId: string;
+  sourceDocumentId: string;
+  sourceSectionId: string;
+  targetDocumentId: string;
+  targetSectionId: string;
+  relationType: KnowledgeRelationType;
+  weight: number;
+  effectiveAt?: Date | null;
+  expiresAt?: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface KnowledgeDocumentImage {
@@ -265,6 +384,11 @@ export interface KnowledgeDocumentImage {
   surroundingText?: string | null;
   precedingText?: string | null;
   followingText?: string | null;
+  imageType?: KnowledgeImageType | null;
+  ocrText?: string | null;
+  ocrConfidence?: number | null;
+  exactValueSnippets?: string[] | null;
+  structuredData?: KnowledgeImageStructuredData | null;
   isRenderable: boolean;
   manualLabel: boolean;
   manualDescription: boolean;
@@ -689,9 +813,7 @@ export interface KnowledgeRepository {
 
   // Chunks
   insertChunks(
-    chunks: Array<
-      Omit<KnowledgeChunk, "id" | "createdAt"> & { embedding?: number[] }
-    >,
+    chunks: Array<Omit<KnowledgeChunk, "id" | "createdAt">>,
   ): Promise<void>;
   deleteChunksByDocumentId(documentId: string): Promise<void>;
   deleteChunksByGroupId(groupId: string): Promise<void>;
@@ -701,6 +823,16 @@ export interface KnowledgeRepository {
     groupId: string,
     embedding: number[],
     limit: number,
+    filters?: {
+      documentIds?: string[];
+      sectionIds?: string[];
+    },
+  ): Promise<Array<KnowledgeQueryResult>>;
+  vectorSearchByEmbeddingKind(
+    groupId: string,
+    embedding: number[],
+    limit: number,
+    kind: Exclude<KnowledgeChunkEmbeddingKind, "legacy">,
     filters?: {
       documentIds?: string[];
       sectionIds?: string[];

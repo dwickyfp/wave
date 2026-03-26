@@ -1373,6 +1373,15 @@ export default function EditAgent({
                   disabled={isLoading}
                   onBookmarkToggle={handleBookmarkToggle}
                   isBookmarkToggleLoading={isBookmarkToggleLoading}
+                  teamShare={
+                    isOwner && initialAgent.id
+                      ? {
+                          resourceType: "agent",
+                          resourceId: initialAgent.id,
+                          resourceName: initialAgent.name || "",
+                        }
+                      : undefined
+                  }
                 />
               </div>
             )}
@@ -1841,6 +1850,9 @@ export default function EditAgent({
                         <A2APublishPanel
                           agentId={initialAgent.id}
                           initialEnabled={initialAgent.a2aEnabled ?? false}
+                          initialRequireAuth={
+                            initialAgent.a2aRequireAuth ?? true
+                          }
                           initialPreview={agentMcpKeyPreview}
                           isOwner={isOwner}
                           embedded

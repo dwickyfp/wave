@@ -2,14 +2,31 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+const mockRerank = vi.fn();
+const mockGenerateText = vi.fn();
+
 vi.mock("ai", () => ({
-  rerank: vi.fn(),
+  rerank: mockRerank,
+  generateText: mockGenerateText,
+  Output: {
+    object: vi.fn((input) => input),
+  },
+}));
+
+const mockRewriteKnowledgeQuery = vi.fn(async () => ({
+  rewrites: [],
+  entityTerms: [],
+}));
+
+vi.mock("./query-rewrite", () => ({
+  rewriteKnowledgeQuery: mockRewriteKnowledgeQuery,
 }));
 
 vi.mock("lib/db/repository", () => ({
   knowledgeRepository: {
     selectRetrievalScopes: vi.fn(),
     vectorSearch: vi.fn(),
+    vectorSearchByEmbeddingKind: vi.fn(),
     fullTextSearch: vi.fn(),
     vectorSearchSections: vi.fn(),
     fullTextSearchSections: vi.fn(),
@@ -28,7 +45,12 @@ vi.mock("lib/db/repository", () => ({
     insertUsageLog: vi.fn(),
   },
   settingsRepository: {
+    getSetting: vi.fn(),
     getProviderByName: vi.fn(),
+    getModelForChat: vi.fn(),
+  },
+  selfLearningRepository: {
+    searchActiveMemoriesForUser: vi.fn(),
   },
 }));
 
@@ -38,7 +60,8 @@ vi.mock("./embedder", () => ({
 
 const { queryKnowledge, queryKnowledgeAsDocs, scoreRetrievedImageCandidate } =
   await import("./retriever");
-const { knowledgeRepository } = await import("lib/db/repository");
+const { knowledgeRepository, settingsRepository, selfLearningRepository } =
+  await import("lib/db/repository");
 
 const group = {
   id: "group-1",
@@ -73,10 +96,50 @@ function makeChunkHit(overrides: Partial<any> = {}) {
   };
 }
 
+function mockRollout(
+  partial: Partial<{
+    coreRetrieval: boolean;
+    multiVectorRead: boolean;
+    graphRead: boolean;
+    memoryFusion: boolean;
+    llmRerankFallback: boolean;
+    contentRouting: boolean;
+    imageEvidenceRead: boolean;
+    imageEvidenceContext: boolean;
+  }> = {},
+) {
+  vi.mocked(settingsRepository.getSetting).mockImplementation(async (key) => {
+    if (key !== "contextx-rollout") {
+      return null;
+    }
+
+    return {
+      coreRetrieval: true,
+      multiVectorRead: false,
+      graphRead: false,
+      memoryFusion: false,
+      llmRerankFallback: true,
+      contentRouting: true,
+      imageEvidenceRead: false,
+      imageEvidenceContext: false,
+      ...partial,
+    };
+  });
+}
+
 describe("queryKnowledgeAsDocs", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRerank.mockReset();
+    mockGenerateText.mockReset();
+    mockRewriteKnowledgeQuery.mockResolvedValue({
+      rewrites: [],
+      entityTerms: [],
+    });
     vi.mocked(knowledgeRepository.selectRetrievalScopes).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.vectorSearchByEmbeddingKind,
+    ).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.fullTextSearch).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.fullTextSearchSections).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.vectorSearchSections).mockResolvedValue([]);
@@ -100,6 +163,12 @@ describe("queryKnowledgeAsDocs", () => {
     ).mockResolvedValue([]);
     vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue(null);
     vi.mocked(knowledgeRepository.insertUsageLog).mockResolvedValue(undefined);
+    vi.mocked(settingsRepository.getSetting).mockResolvedValue(null);
+    vi.mocked(settingsRepository.getProviderByName).mockResolvedValue(null);
+    vi.mocked(settingsRepository.getModelForChat).mockResolvedValue(null);
+    vi.mocked(
+      selfLearningRepository.searchActiveMemoriesForUser,
+    ).mockResolvedValue([]);
   });
 
   it("rejects a weak top-ranked hit when calibrated confidence stays below the threshold", async () => {
@@ -210,6 +279,185 @@ describe("queryKnowledgeAsDocs", () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]?.documentId).toBe("doc-1");
+  });
+
+  it("still retrieves chunk matches when document metadata returns no candidates", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.vectorSearchDocumentMetadata,
+    ).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({ score: 0.74 }),
+    ]);
+
+    const results = await queryKnowledge(group, "authentication", { topN: 3 });
+
+    expect(results).toHaveLength(1);
+    expect(knowledgeRepository.vectorSearch).toHaveBeenCalledWith(
+      "group-1",
+      [0.1, 0.2, 0.3],
+      expect.any(Number),
+      undefined,
+    );
+  });
+
+  it("uses multi-vector chunk search arms when the rollout enables them", async () => {
+    mockRollout({ multiVectorRead: true });
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.vectorSearchDocumentMetadata,
+    ).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.vectorSearchByEmbeddingKind,
+    ).mockImplementation(async (_groupId, _embedding, _limit, kind) =>
+      kind === "identity" ? [makeChunkHit({ score: 0.68 })] : [],
+    );
+
+    const results = await queryKnowledge(group, "authentication", { topN: 3 });
+
+    expect(results).toHaveLength(1);
+    expect(
+      knowledgeRepository.vectorSearchByEmbeddingKind,
+    ).toHaveBeenCalledTimes(4);
+    expect(results[0]?.documentId).toBe("doc-1");
+  });
+
+  it("falls back to LLM listwise reranking when no native reranker is configured", async () => {
+    vi.mocked(settingsRepository.getSetting).mockImplementation(async (key) => {
+      if (key === "contextx-rollout") {
+        return {
+          coreRetrieval: true,
+          multiVectorRead: false,
+          graphRead: false,
+          memoryFusion: false,
+          llmRerankFallback: true,
+          contentRouting: true,
+          imageEvidenceRead: false,
+          imageEvidenceContext: false,
+        };
+      }
+      if (key === "knowledge-context-model") {
+        return {
+          provider: "openai",
+          model: "gpt-4.1-mini",
+        };
+      }
+      return null;
+    });
+    vi.mocked(settingsRepository.getProviderByName).mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: {},
+    } as any);
+    vi.mocked(settingsRepository.getModelForChat).mockResolvedValue({
+      apiName: "gpt-4.1-mini",
+    } as any);
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.vectorSearchDocumentMetadata,
+    ).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({
+        chunk: { id: "chunk-1", content: "Generic onboarding instructions." },
+        score: 0.88,
+      }),
+      makeChunkHit({
+        chunk: {
+          id: "chunk-2",
+          content: "Configure SSO with the SAML identity provider.",
+        },
+        score: 0.84,
+      }),
+    ]);
+    mockGenerateText.mockResolvedValue({
+      output: {
+        ranking: [
+          { index: 2, score: 0.97 },
+          { index: 1, score: 0.31 },
+        ],
+      },
+    });
+
+    const results = await queryKnowledge(group, "configure sso", { topN: 2 });
+
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    expect(results[0]?.chunk.id).toBe("chunk-2");
+  });
+
+  it("uses user memory variants only for chat and agent retrieval", async () => {
+    mockRollout({ memoryFusion: true });
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.vectorSearchDocumentMetadata,
+    ).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([]);
+    vi.mocked(
+      selfLearningRepository.searchActiveMemoriesForUser,
+    ).mockResolvedValue([
+      {
+        id: "mem-1",
+        userId: "user-1",
+        category: "workflow",
+        status: "active",
+        isAutoSafe: true,
+        fingerprint: "fp-1",
+        title: "Enterprise login",
+        content: "Use the SAML identity provider setup for SSO.",
+        supportCount: 1,
+        distinctThreadCount: 1,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ] as any);
+    vi.mocked(knowledgeRepository.fullTextSearch).mockImplementation(
+      async (_groupId, queryVariant) =>
+        queryVariant.includes("SAML identity provider")
+          ? [
+              makeChunkHit({
+                score: 1.7,
+                chunk: {
+                  content: "Use the SAML identity provider setup for SSO.",
+                },
+              }),
+            ]
+          : [],
+    );
+
+    const results = await queryKnowledge(
+      group,
+      "how do I configure enterprise login",
+      {
+        topN: 3,
+        userId: "user-1",
+        source: "chat",
+      },
+    );
+
+    expect(
+      selfLearningRepository.searchActiveMemoriesForUser,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-1",
+        query: "how do I configure enterprise login",
+      }),
+    );
+    expect(results).toHaveLength(1);
+  });
+
+  it("never uses user memory variants for MCP retrieval", async () => {
+    mockRollout({ memoryFusion: true });
+
+    await queryKnowledge(group, "enterprise login", {
+      topN: 3,
+      userId: "user-1",
+      source: "mcp",
+    });
+
+    expect(
+      selfLearningRepository.searchActiveMemoriesForUser,
+    ).not.toHaveBeenCalled();
   });
 
   it("hard-filters explicit issuer queries to matching documents", async () => {
@@ -1068,6 +1316,107 @@ describe("queryKnowledgeAsDocs", () => {
         }),
       ]),
     );
+  });
+
+  it("recalls a document from image OCR evidence and injects compact image context", async () => {
+    mockRollout({ imageEvidenceRead: true, imageEvidenceContext: true });
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.vectorSearchDocumentMetadata,
+    ).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([]);
+    vi.mocked(knowledgeRepository.fullTextSearch).mockResolvedValue([]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      {
+        documentId: "doc-1",
+        groupId: "group-1",
+        name: "Quarterly Report",
+        description: null,
+        metadata: { sectionGraphVersion: 1 },
+        activeVersionId: "version-1",
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+      },
+    ]);
+    vi.mocked(knowledgeRepository.getDocumentMarkdown).mockResolvedValue({
+      name: "Quarterly Report",
+      description: null,
+      markdown: "# Quarterly Report\n\nRevenue trends and commentary.",
+    });
+    vi.mocked(knowledgeRepository.fullTextSearchImages).mockResolvedValue([
+      {
+        id: "image-ocr-1",
+        documentId: "doc-1",
+        groupId: "group-1",
+        versionId: "version-1",
+        kind: "embedded",
+        ordinal: 1,
+        marker: "CTX_IMAGE_1",
+        label: "Quarterly revenue chart",
+        description: "Bar chart of quarterly revenue.",
+        headingPath: "Quarterly Report > Revenue",
+        stepHint: null,
+        sourceUrl: "https://example.com/chart.png",
+        storagePath: "knowledge-images/doc-1/version-1/chart.png",
+        mediaType: "image/png",
+        pageNumber: 5,
+        width: 1024,
+        height: 768,
+        altText: null,
+        caption: "Figure 1. Revenue by quarter",
+        surroundingText: "Revenue continues to rise through Q4.",
+        precedingText: null,
+        followingText: null,
+        imageType: "chart",
+        ocrText: "Q1 12.4\nQ2 13.8\nQ3 15.1\nQ4 16.2",
+        ocrConfidence: 0.91,
+        exactValueSnippets: ["Q4 revenue: 16.2T", "YoY growth: 14%"],
+        structuredData: {
+          chartData: {
+            chartType: "bar chart",
+            xAxisLabel: "Quarter",
+            yAxisLabel: "Revenue (Rp trillion)",
+            summary: "Revenue rises each quarter.",
+          },
+        },
+        isRenderable: true,
+        manualLabel: false,
+        manualDescription: false,
+        embedding: null,
+        createdAt: new Date("2026-02-01T00:00:00Z"),
+        updatedAt: new Date("2026-02-01T00:00:00Z"),
+        score: 1.7,
+      },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearchImages).mockResolvedValue([]);
+
+    const docs = await queryKnowledgeAsDocs(group, "what is q4 revenue 16.2", {
+      tokens: 5000,
+      resultMode: "full-doc",
+    });
+
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.documentId).toBe("doc-1");
+    expect(docs[0]?.markdown).toContain("### Image Evidence");
+    expect(docs[0]?.markdown).toContain("Q4 revenue: 16.2T");
+    expect(docs[0]?.citationCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          pageStart: 5,
+          excerpt: "Q4 revenue: 16.2T",
+        }),
+      ]),
+    );
+    expect(docs[0]?.matchedImages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "image-ocr-1",
+          label: "Quarterly revenue chart",
+        }),
+      ]),
+    );
+    expect((docs[0]?.matchedImages?.[0] as any)?.ocrText).toBeUndefined();
   });
 
   it("falls back to renderable doc images when hybrid image search misses", async () => {

@@ -88,6 +88,7 @@ export type AgentSummary = {
   mcpAutocompleteModelName?: string | null;
   mcpPresentationMode?: "compatibility" | "copilot_native";
   a2aEnabled?: boolean;
+  a2aRequireAuth?: boolean;
   a2aApiKeyHash?: string | null;
   a2aApiKeyPreview?: string | null;
   userName?: string;
@@ -182,6 +183,12 @@ export type AgentRepository = {
 
   setA2aEnabled(id: string, userId: string, enabled: boolean): Promise<void>;
 
+  setA2aRequireAuth(
+    id: string,
+    userId: string,
+    requireAuth: boolean,
+  ): Promise<void>;
+
   getAgentByMcpKey(
     agentId: string,
   ): Promise<Pick<
@@ -199,6 +206,7 @@ export type AgentRepository = {
     | "mcpApiKeyHash"
     | "a2aApiKeyHash"
     | "a2aEnabled"
+    | "a2aRequireAuth"
   > | null>;
 };
 

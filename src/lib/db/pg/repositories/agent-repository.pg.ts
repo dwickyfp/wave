@@ -25,6 +25,7 @@ function toAgentRecord(result: any): Agent {
     a2aApiKeyHash: result.a2aApiKeyHash ?? null,
     a2aApiKeyPreview: result.a2aApiKeyPreview ?? null,
     a2aEnabled: result.a2aEnabled ?? false,
+    a2aRequireAuth: result.a2aRequireAuth ?? true,
     isBookmarked: result.isBookmarked ?? false,
     userName: result.userName ?? undefined,
     userAvatar: result.userAvatar ?? undefined,
@@ -39,6 +40,7 @@ function toAgentSummaryRecord(result: any): AgentSummary {
     a2aApiKeyHash: result.a2aApiKeyHash ?? null,
     a2aApiKeyPreview: result.a2aApiKeyPreview ?? null,
     a2aEnabled: result.a2aEnabled ?? false,
+    a2aRequireAuth: result.a2aRequireAuth ?? true,
     userName: result.userName ?? undefined,
     userAvatar: result.userAvatar ?? undefined,
     isBookmarked: result.isBookmarked ?? false,
@@ -491,6 +493,7 @@ export const pgAgentRepository: AgentRepository = {
         mcpApiKeyHash: AgentTable.mcpApiKeyHash,
         a2aApiKeyHash: AgentTable.a2aApiKeyHash,
         a2aEnabled: AgentTable.a2aEnabled,
+        a2aRequireAuth: AgentTable.a2aRequireAuth,
       })
       .from(AgentTable)
       .where(eq(AgentTable.id, agentId));
@@ -504,6 +507,17 @@ export const pgAgentRepository: AgentRepository = {
       mcpApiKeyHash: row.mcpApiKeyHash ?? null,
       a2aApiKeyHash: row.a2aApiKeyHash ?? null,
       a2aEnabled: row.a2aEnabled,
+      a2aRequireAuth: row.a2aRequireAuth ?? true,
     };
+  },
+
+  async setA2aRequireAuth(id, userId, requireAuth) {
+    await db
+      .update(AgentTable)
+      .set({
+        a2aRequireAuth: requireAuth,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(AgentTable.id, id), eq(AgentTable.userId, userId)));
   },
 };

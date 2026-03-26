@@ -1,7 +1,8 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
-import { rerank } from "ai";
+import { generateText, Output, rerank } from "ai";
+import { z } from "zod";
 import {
   KnowledgeDocumentImage,
   KnowledgeQueryResult,
@@ -9,20 +10,34 @@ import {
 } from "app-types/knowledge";
 import { CacheKeys } from "lib/cache/cache-keys";
 import { serverCache } from "lib/cache";
-import { createRerankingModelFromConfig } from "lib/ai/provider-factory";
-import { knowledgeRepository } from "lib/db/repository";
-import { settingsRepository } from "lib/db/repository";
+import {
+  createModelFromConfig,
+  createRerankingModelFromConfig,
+} from "lib/ai/provider-factory";
+import {
+  knowledgeRepository,
+  selfLearningRepository,
+  settingsRepository,
+} from "lib/db/repository";
 import {
   inferCitationPageFromMarkdown,
   normalizeCitationLookupText,
 } from "./citation-page-resolution";
+import { buildKnowledgeImageStructuredSummary } from "./document-images";
 import { embedSingleText } from "./embedder";
+import {
+  getRelatedGraphSections,
+  getSectionSeedsForEntities,
+  searchKnowledgeEntities,
+} from "./graph-store";
 import { extractPrimaryLegalReferenceKey } from "./legal-references";
+import { rewriteKnowledgeQuery } from "./query-rewrite";
 import {
   mergeKnowledgeQueryConstraints,
   matchesRetrievalIdentityConstraints,
   type KnowledgeQueryConstraints,
 } from "./query-constraints";
+import { getContextXRollout } from "./rollout";
 
 // Minimal group interface — satisfied by both KnowledgeGroup and KnowledgeSummary
 type GroupForRetrieval = {
@@ -39,6 +54,7 @@ type GroupForRetrieval = {
 type RetrievalScope = GroupForRetrieval & {
   isInherited: boolean;
 };
+type MemoryPolicy = "off" | "user";
 
 // ─── Tuning Constants ──────────────────────────────────────────────────────────
 const RRF_K = 60;
@@ -60,6 +76,15 @@ const MAX_MATCHED_IMAGES_PER_DOC = 2;
 const DOC_META_BOOST_MAX = 0.35;
 /** Whether doc-level metadata vector scoring is enabled. */
 const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
+const LISTWISE_RERANK_MODEL_KEY = "knowledge-context-model";
+const LEGACY_LISTWISE_RERANK_MODEL_KEY = "contextx-model";
+const LISTWISE_RERANK_LIMIT = 24;
+const MULTI_VECTOR_SCORE_FLOORS = {
+  content: 0.24,
+  context: 0.22,
+  identity: 0.2,
+  entity: 0.18,
+} as const;
 const IMAGE_FALLBACK_STOP_WORDS = new Set([
   "the",
   "and",
@@ -95,6 +120,17 @@ const IMAGE_FALLBACK_STOP_WORDS = new Set([
 const KNOWLEDGE_DOCS_CACHE_TTL_MS = 60 * 1000;
 const SHOULD_USE_KNOWLEDGE_DOCS_CACHE = process.env.NODE_ENV !== "test";
 
+const LISTWISE_RERANK_SCHEMA = z.object({
+  ranking: z
+    .array(
+      z.object({
+        index: z.number().int().min(1),
+        score: z.number().min(0).max(1),
+      }),
+    )
+    .default([]),
+});
+
 async function resolveRetrievalScopes(
   group: GroupForRetrieval,
 ): Promise<RetrievalScope[]> {
@@ -112,6 +148,151 @@ async function resolveRetrievalScopes(
     .filter((scope) => scope.id !== group.id)
     .map((scope) => ({ ...scope, isInherited: true }));
   return [primary, ...inherited];
+}
+
+async function getListwiseRerankModel() {
+  const getSetting = settingsRepository.getSetting?.bind(settingsRepository);
+  const getProviderByName =
+    settingsRepository.getProviderByName?.bind(settingsRepository);
+  const getModelForChat =
+    settingsRepository.getModelForChat?.bind(settingsRepository);
+  if (!getSetting || !getProviderByName || !getModelForChat) {
+    return null;
+  }
+
+  const config =
+    ((await getSetting(LISTWISE_RERANK_MODEL_KEY)) as {
+      provider: string;
+      model: string;
+    } | null) ??
+    ((await getSetting(LEGACY_LISTWISE_RERANK_MODEL_KEY)) as {
+      provider: string;
+      model: string;
+    } | null);
+  if (!config?.provider || !config.model) {
+    return null;
+  }
+
+  const providerConfig = await getProviderByName(config.provider);
+  if (!providerConfig?.enabled) {
+    return null;
+  }
+
+  const modelConfig = await getModelForChat(config.provider, config.model);
+  return createModelFromConfig(
+    config.provider,
+    modelConfig?.apiName ?? config.model,
+    providerConfig.apiKey,
+    providerConfig.baseUrl,
+    providerConfig.settings,
+  );
+}
+
+async function rerankDocumentsWithLlm(
+  query: string,
+  documents: string[],
+): Promise<Map<number, number>> {
+  if (documents.length <= 1) {
+    return new Map();
+  }
+
+  const model = await getListwiseRerankModel();
+  if (!model) {
+    return new Map();
+  }
+
+  try {
+    const renderedDocuments = documents
+      .map(
+        (document, index) =>
+          `[${index + 1}] ${trimTextToTokenBudget(document, 220)}`,
+      )
+      .join("\n\n");
+    const { output } = await generateText({
+      model,
+      temperature: 0,
+      output: Output.object({
+        schema: LISTWISE_RERANK_SCHEMA,
+        name: "knowledge_listwise_rerank",
+        description: "Rank retrieval candidates for knowledge search.",
+      }),
+      prompt: [
+        "Rank the retrieval candidates for the user query.",
+        "Return only candidates that are materially relevant.",
+        "Scores must be between 0 and 1, where 1 is the strongest answer candidate.",
+        "Prefer candidates that directly answer the query with specific evidence.",
+        `Query: ${query}`,
+        "",
+        renderedDocuments,
+      ].join("\n"),
+    });
+
+    const rerankScores = new Map<number, number>();
+    for (const entry of output.ranking) {
+      const index = entry.index - 1;
+      if (!Number.isInteger(index) || index < 0 || index >= documents.length) {
+        continue;
+      }
+      const normalizedScore = Math.max(0, Math.min(1, entry.score));
+      const existing = rerankScores.get(index) ?? -Infinity;
+      if (normalizedScore > existing) {
+        rerankScores.set(index, normalizedScore);
+      }
+    }
+    return rerankScores;
+  } catch {
+    return new Map();
+  }
+}
+
+async function rerankCandidateTexts(input: {
+  query: string;
+  documents: string[];
+  rerankingProvider?: string | null;
+  rerankingModel?: string | null;
+  allowLlmFallback: boolean;
+}): Promise<Map<number, number>> {
+  if (input.documents.length <= 1) {
+    return new Map();
+  }
+
+  const scopedDocuments = input.documents.slice(0, LISTWISE_RERANK_LIMIT);
+
+  if (input.rerankingProvider && input.rerankingModel) {
+    try {
+      const providerConfig = await settingsRepository.getProviderByName(
+        input.rerankingProvider,
+      );
+      const rerankModel = providerConfig
+        ? createRerankingModelFromConfig(
+            input.rerankingProvider,
+            input.rerankingModel,
+            providerConfig.apiKey,
+          )
+        : null;
+
+      if (rerankModel) {
+        const { ranking } = await rerank({
+          model: rerankModel,
+          query: input.query,
+          documents: scopedDocuments,
+          topN: scopedDocuments.length,
+        });
+
+        return new Map(
+          ranking.map((entry) => [entry.originalIndex, entry.score]),
+        );
+      }
+    } catch (err) {
+      console.warn("[ContextX] Native reranking failed, falling back:", err);
+    }
+  }
+
+  if (!input.allowLlmFallback) {
+    return new Map();
+  }
+
+  return rerankDocumentsWithLlm(input.query, scopedDocuments);
 }
 
 // ─── Shared Scoring Helpers ───────────────────────────────────────────────────
@@ -177,6 +358,98 @@ async function getDocumentMetadataSignals(
   ]);
 
   return buildDocumentSignalMap(lexicalRows, semanticRows);
+}
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+}
+
+function mergeScoreMaps(maps: Array<Map<string, number>>): Map<string, number> {
+  const merged = new Map<string, number>();
+  for (const map of maps) {
+    for (const [key, value] of map.entries()) {
+      const existing = merged.get(key) ?? 0;
+      if (value > existing) {
+        merged.set(key, value);
+      }
+    }
+  }
+  return merged;
+}
+
+function mergeKnowledgeResultsByChunkId(
+  results: KnowledgeQueryResult[],
+): KnowledgeQueryResult[] {
+  const merged = new Map<string, KnowledgeQueryResult>();
+  for (const result of results) {
+    const existing = merged.get(result.chunk.id);
+    if (!existing || result.score > existing.score) {
+      merged.set(result.chunk.id, result);
+    }
+  }
+  return Array.from(merged.values());
+}
+
+function mergeSectionRowsById<
+  T extends { section: { id: string }; score: number },
+>(rows: T[]): T[] {
+  const merged = new Map<string, T>();
+  for (const row of rows) {
+    const existing = merged.get(row.section.id);
+    if (!existing || row.score > existing.score) {
+      merged.set(row.section.id, row);
+    }
+  }
+  return Array.from(merged.values());
+}
+
+async function getMemoryQueryVariants(input: {
+  userId?: string | null;
+  query: string;
+  source: "chat" | "agent" | "mcp";
+  memoryPolicy: MemoryPolicy;
+  embeddingProvider: string;
+  embeddingModel: string;
+}): Promise<string[]> {
+  if (
+    input.memoryPolicy !== "user" ||
+    !input.userId ||
+    input.source === "mcp"
+  ) {
+    return [];
+  }
+
+  try {
+    if (!selfLearningRepository.searchActiveMemoriesForUser) {
+      return [];
+    }
+    const queryEmbedding = await embedSingleText(
+      input.query,
+      input.embeddingProvider,
+      input.embeddingModel,
+    ).catch(() => null);
+    const memories = await selfLearningRepository.searchActiveMemoriesForUser({
+      userId: input.userId,
+      query: input.query,
+      embedding: queryEmbedding,
+      limit: 3,
+    });
+    return uniqueStrings(
+      memories.flatMap((memory) => [
+        memory.title,
+        memory.content,
+        `${memory.title}: ${memory.content}`,
+      ]),
+    ).slice(0, 6);
+  } catch {
+    return [];
+  }
 }
 
 async function backfillChunkMatchesForDocument(input: {
@@ -475,7 +748,32 @@ type RankedSectionCandidate = {
   lexicalConfidence: number;
   docSignal: number;
   confidenceScore: number;
+  rerankScore?: number;
 };
+
+function buildChunkRerankText(candidate: RankedChunkCandidate): string {
+  const parts: string[] = [];
+  if (candidate.result.chunk.contextSummary) {
+    parts.push(candidate.result.chunk.contextSummary);
+  }
+  parts.push(candidate.result.chunk.content);
+  return parts.join("\n\n");
+}
+
+function buildSectionRerankText(candidate: RankedSectionCandidate): string {
+  const parts = [
+    candidate.documentName ? `document: ${candidate.documentName}` : "",
+    candidate.section.headingPath
+      ? `heading: ${candidate.section.headingPath}`
+      : candidate.section.heading
+        ? `heading: ${candidate.section.heading}`
+        : "",
+    candidate.section.summary ? `summary: ${candidate.section.summary}` : "",
+    candidate.section.content,
+  ];
+
+  return parts.filter(Boolean).join("\n");
+}
 
 function toLexicalConfidence(rawScore: number): number {
   if (rawScore <= 0) return 0;
@@ -532,6 +830,20 @@ function compareRankedChunkCandidates(
     right.result.chunk.createdAt.getTime() -
     left.result.chunk.createdAt.getTime()
   );
+}
+
+function compareRankedSectionCandidates(
+  left: RankedSectionCandidate,
+  right: RankedSectionCandidate,
+) {
+  const leftScore = left.rerankScore ?? left.confidenceScore;
+  const rightScore = right.rerankScore ?? right.confidenceScore;
+  const delta = rightScore - leftScore;
+  if (Math.abs(delta) >= 0.03) {
+    return delta;
+  }
+
+  return right.section.createdAt.getTime() - left.section.createdAt.getTime();
 }
 
 function mergeChunkCandidates(input: {
@@ -771,7 +1083,13 @@ export interface QueryKnowledgeOptions {
   source?: "chat" | "agent" | "mcp";
   skipLogging?: boolean;
   constraints?: KnowledgeQueryConstraints;
+  memoryPolicy?: MemoryPolicy;
 }
+
+type QueryRuntime = {
+  queryVariants: string[];
+  rollout: Awaited<ReturnType<typeof getContextXRollout>>;
+};
 
 async function queryKnowledgeSingleScope(
   scope: RetrievalScope,
@@ -779,9 +1097,9 @@ async function queryKnowledgeSingleScope(
   topN: number,
   resultMode: RetrievalResultMode,
   constraints: KnowledgeQueryConstraints,
+  runtime: QueryRuntime,
 ): Promise<KnowledgeQueryResult[]> {
-  const queryVariants = expandQuery(query);
-  const allQueries = [query, ...queryVariants];
+  const allQueries = [query, ...runtime.queryVariants];
   const recallProfile = getRecallProfile(query, resultMode);
   const entityMatches =
     constraints.strictEntityMatch && (constraints.issuer || constraints.ticker)
@@ -815,14 +1133,21 @@ async function queryKnowledgeSingleScope(
     );
   }
 
-  const docSignalPromise = getDocumentMetadataSignals(
-    scope.id,
-    query,
-    embeddings[0],
-    recallProfile.docCandidates,
-    entityMatchedDocumentIds.length > 0 ? entityMatchedDocumentIds : undefined,
+  const docSignalMap = mergeScoreMaps(
+    await Promise.all(
+      allQueries.map((queryVariant, index) =>
+        getDocumentMetadataSignals(
+          scope.id,
+          queryVariant,
+          embeddings[index],
+          recallProfile.docCandidates,
+          entityMatchedDocumentIds.length > 0
+            ? entityMatchedDocumentIds
+            : undefined,
+        ),
+      ),
+    ),
   );
-  const docSignalMap = await docSignalPromise;
   for (const match of entityMatches) {
     const existing = docSignalMap.get(match.documentId) ?? 0;
     docSignalMap.set(
@@ -831,20 +1156,21 @@ async function queryKnowledgeSingleScope(
     );
   }
 
-  const shortlistedDocIds = Array.from(docSignalMap.entries())
+  let candidateDocIds = Array.from(docSignalMap.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, recallProfile.docCandidates)
     .map(([documentId]) => documentId);
-
-  if (shortlistedDocIds.length === 0) {
-    return [];
+  if (entityMatchedDocumentIds.length > 0) {
+    candidateDocIds = Array.from(
+      new Set([...entityMatchedDocumentIds, ...candidateDocIds]),
+    ).slice(0, recallProfile.docCandidates);
   }
 
   const structuredSectionMatches =
     constraints.page || constraints.noteNumber
       ? await knowledgeRepository.findSectionsByStructuredFilters({
           groupId: scope.id,
-          documentIds: shortlistedDocIds,
+          documentIds: candidateDocIds.length > 0 ? candidateDocIds : undefined,
           page: constraints.page ?? null,
           noteNumber: constraints.noteNumber ?? null,
           noteSubsection: constraints.noteSubsection ?? null,
@@ -859,39 +1185,127 @@ async function queryKnowledgeSingleScope(
     return [];
   }
 
-  const shortlistedSectionIds =
-    structuredSectionMatches.length > 0
-      ? structuredSectionMatches.map((match) => match.section.id)
-      : mergeSectionCandidates({
-          vectorLists: (
-            await Promise.all(
-              embeddings.map((embedding) =>
-                knowledgeRepository.vectorSearchSections(
-                  scope.id,
-                  embedding,
-                  recallProfile.sectionCandidates,
-                  shortlistedDocIds,
-                ),
-              ),
-            )
-          ).map((results) =>
-            results.filter((result) => result.score >= MIN_VECTOR_SCORE),
-          ),
-          textResults: await knowledgeRepository.fullTextSearchSections(
+  const entitySectionSeeds =
+    runtime.rollout.graphRead && (constraints.entityTerms?.length ?? 0) > 0
+      ? await searchKnowledgeEntities(
+          scope.id,
+          constraints.entityTerms ?? [],
+          recallProfile.sectionCandidates,
+        ).then(async (entities) => {
+          const sectionSeeds = await getSectionSeedsForEntities(
             scope.id,
-            query,
+            entities.map((entity) => entity.entityId),
             recallProfile.sectionCandidates,
-            shortlistedDocIds,
-          ),
-          docSignalMap,
+          );
+          for (const seed of sectionSeeds) {
+            const existing = docSignalMap.get(seed.documentId) ?? 0;
+            docSignalMap.set(seed.documentId, Math.max(existing, 0.55));
+          }
+          return sectionSeeds;
         })
-          .slice(0, recallProfile.sectionCandidates)
-          .map((candidate) => candidate.section.id);
+      : [];
+
+  candidateDocIds = Array.from(docSignalMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, recallProfile.docCandidates)
+    .map(([documentId]) => documentId);
+
+  const sectionTextResults = mergeSectionRowsById(
+    (
+      await Promise.all(
+        allQueries.map((queryVariant) =>
+          knowledgeRepository.fullTextSearchSections(
+            scope.id,
+            queryVariant,
+            recallProfile.sectionCandidates,
+            candidateDocIds.length > 0 ? candidateDocIds : undefined,
+          ),
+        ),
+      )
+    ).flat(),
+  );
+  const sectionVectorLists = (
+    await Promise.all(
+      embeddings.map((embedding) =>
+        knowledgeRepository.vectorSearchSections(
+          scope.id,
+          embedding,
+          recallProfile.sectionCandidates,
+          candidateDocIds.length > 0 ? candidateDocIds : undefined,
+        ),
+      ),
+    )
+  ).map((results) =>
+    results.filter((result) => result.score >= MIN_VECTOR_SCORE),
+  );
+
+  let sectionCandidates = mergeSectionCandidates({
+    vectorLists: sectionVectorLists,
+    textResults: sectionTextResults,
+    docSignalMap,
+  }).slice(0, recallProfile.sectionCandidates);
+
+  const sectionRerankByIndex =
+    sectionCandidates.length > 1
+      ? await rerankCandidateTexts({
+          query,
+          documents: sectionCandidates.map((candidate) =>
+            buildSectionRerankText(candidate),
+          ),
+          rerankingProvider: scope.rerankingProvider,
+          rerankingModel: scope.rerankingModel,
+          allowLlmFallback: runtime.rollout.llmRerankFallback,
+        })
+      : new Map<number, number>();
+  if (sectionRerankByIndex.size > 0) {
+    sectionCandidates = sectionCandidates
+      .map((candidate, index) => {
+        const rerankScore = sectionRerankByIndex.get(index);
+        if (rerankScore === undefined) {
+          return candidate;
+        }
+
+        const { lexicalConfidence, confidenceScore } = computeConfidenceScore({
+          semanticScore: candidate.semanticScore,
+          lexicalScore: candidate.lexicalScore,
+          docSignal: candidate.docSignal,
+          rerankScore,
+        });
+
+        return {
+          ...candidate,
+          rerankScore,
+          lexicalConfidence,
+          confidenceScore,
+        };
+      })
+      .sort(compareRankedSectionCandidates);
+  }
+
+  let shortlistedSectionIds = uniqueStrings([
+    ...structuredSectionMatches.map((match) => match.section.id),
+    ...entitySectionSeeds.map((seed) => seed.sectionId),
+    ...sectionCandidates.map((candidate) => candidate.section.id),
+  ]);
+
+  if (runtime.rollout.graphRead && shortlistedSectionIds.length > 0) {
+    const relatedGraphSections = await getRelatedGraphSections(
+      scope.id,
+      shortlistedSectionIds.slice(0, 12),
+      2,
+    ).catch(() => []);
+    shortlistedSectionIds = uniqueStrings([
+      ...shortlistedSectionIds,
+      ...relatedGraphSections.map((row) => row.sectionId),
+    ]);
+  }
 
   const searchFilters =
     shortlistedSectionIds.length > 0
       ? { sectionIds: shortlistedSectionIds }
-      : { documentIds: shortlistedDocIds };
+      : candidateDocIds.length > 0
+        ? { documentIds: candidateDocIds }
+        : undefined;
 
   const [vectorResults, textResults] = await Promise.all([
     Promise.all(
@@ -904,19 +1318,51 @@ async function queryKnowledgeSingleScope(
         ),
       ),
     ),
-    knowledgeRepository.fullTextSearch(
-      scope.id,
-      query,
-      recallProfile.chunkCandidates,
-      searchFilters,
+    Promise.all(
+      allQueries.map((queryVariant) =>
+        knowledgeRepository.fullTextSearch(
+          scope.id,
+          queryVariant,
+          recallProfile.chunkCandidates,
+          searchFilters,
+        ),
+      ),
     ),
   ]);
+  const multiVectorLists =
+    runtime.rollout.multiVectorRead && embeddings.length > 0
+      ? await Promise.all(
+          embeddings.slice(0, 3).flatMap((embedding) =>
+            (["content", "context", "identity", "entity"] as const).map(
+              async (kind) => ({
+                kind,
+                results: await knowledgeRepository
+                  .vectorSearchByEmbeddingKind(
+                    scope.id,
+                    embedding,
+                    recallProfile.chunkCandidates,
+                    kind,
+                    searchFilters,
+                  )
+                  .catch(() => []),
+              }),
+            ),
+          ),
+        )
+      : [];
 
   let chunkCandidates = mergeChunkCandidates({
-    vectorLists: vectorResults.map((results) =>
-      results.filter((result) => result.score >= MIN_VECTOR_SCORE),
-    ),
-    textResults,
+    vectorLists: [
+      ...vectorResults.map((results) =>
+        results.filter((result) => result.score >= MIN_VECTOR_SCORE),
+      ),
+      ...multiVectorLists.map(({ kind, results }) =>
+        results.filter(
+          (result) => result.score >= MULTI_VECTOR_SCORE_FLOORS[kind],
+        ),
+      ),
+    ],
+    textResults: mergeKnowledgeResultsByChunkId(textResults.flat()),
     docSignalMap,
   }).slice(0, recallProfile.chunkCandidates);
 
@@ -924,69 +1370,35 @@ async function queryKnowledgeSingleScope(
     return [];
   }
 
-  if (
-    scope.rerankingProvider &&
-    scope.rerankingModel &&
+  const chunkRerankByIndex =
     chunkCandidates.length > 1
-  ) {
-    try {
-      const providerConfig = await settingsRepository.getProviderByName(
-        scope.rerankingProvider,
-      );
-      const rerankModel = providerConfig
-        ? createRerankingModelFromConfig(
-            scope.rerankingProvider,
-            scope.rerankingModel,
-            providerConfig.apiKey,
-          )
-        : null;
-
-      if (rerankModel) {
-        const documents = chunkCandidates.map((candidate) => {
-          const parts: string[] = [];
-          if (candidate.result.chunk.contextSummary) {
-            parts.push(candidate.result.chunk.contextSummary);
-          }
-          parts.push(candidate.result.chunk.content);
-          return parts.join("\n\n");
-        });
-
-        const { ranking } = await rerank({
-          model: rerankModel,
+      ? await rerankCandidateTexts({
           query,
-          documents,
-          topN: documents.length,
-        });
+          documents: chunkCandidates.map((candidate) =>
+            buildChunkRerankText(candidate),
+          ),
+          rerankingProvider: scope.rerankingProvider,
+          rerankingModel: scope.rerankingModel,
+          allowLlmFallback: runtime.rollout.llmRerankFallback,
+        })
+      : new Map<number, number>();
+  if (chunkRerankByIndex.size > 0) {
+    chunkCandidates = chunkCandidates.map((candidate, index) => {
+      const rerankScore = chunkRerankByIndex.get(index);
+      const { lexicalConfidence, confidenceScore } = computeConfidenceScore({
+        semanticScore: candidate.semanticScore,
+        lexicalScore: candidate.lexicalScore,
+        docSignal: candidate.docSignal,
+        rerankScore,
+      });
 
-        const rerankByIndex = new Map(
-          ranking.map((entry) => [entry.originalIndex, entry.score]),
-        );
-
-        chunkCandidates = chunkCandidates.map((candidate, index) => {
-          const rerankScore = rerankByIndex.get(index);
-          const { lexicalConfidence, confidenceScore } = computeConfidenceScore(
-            {
-              semanticScore: candidate.semanticScore,
-              lexicalScore: candidate.lexicalScore,
-              docSignal: candidate.docSignal,
-              rerankScore,
-            },
-          );
-
-          return {
-            ...candidate,
-            rerankScore,
-            lexicalConfidence,
-            confidenceScore,
-          };
-        });
-      }
-    } catch (err) {
-      console.warn(
-        "[ContextX] Reranking failed, using calibrated scores:",
-        err,
-      );
-    }
+      return {
+        ...candidate,
+        rerankScore,
+        lexicalConfidence,
+        confidenceScore,
+      };
+    });
   }
 
   const threshold = scope.retrievalThreshold ?? 0;
@@ -1054,9 +1466,40 @@ export async function queryKnowledge(
     source = "chat",
     skipLogging = false,
     constraints: rawConstraints,
+    memoryPolicy: rawMemoryPolicy,
   } = options;
   const start = Date.now();
-  const constraints = mergeKnowledgeQueryConstraints(query, rawConstraints);
+  const rollout = await getContextXRollout();
+  const memoryPolicy =
+    rawMemoryPolicy ?? (userId && source !== "mcp" ? "user" : "off");
+  const rewrite = rollout.coreRetrieval
+    ? await rewriteKnowledgeQuery(query)
+    : { rewrites: [], entityTerms: [] };
+  const memoryVariants = rollout.memoryFusion
+    ? await getMemoryQueryVariants({
+        userId,
+        query,
+        source,
+        memoryPolicy,
+        embeddingProvider: group.embeddingProvider,
+        embeddingModel: group.embeddingModel,
+      })
+    : [];
+  const constraints = mergeKnowledgeQueryConstraints(query, {
+    ...rawConstraints,
+    entityTerms: uniqueStrings([
+      ...(rawConstraints?.entityTerms ?? []),
+      ...rewrite.entityTerms,
+    ]),
+  });
+  const runtime: QueryRuntime = {
+    rollout,
+    queryVariants: uniqueStrings([
+      ...expandQuery(query),
+      ...rewrite.rewrites,
+      ...memoryVariants,
+    ]).filter((item) => item.toLowerCase() !== query.trim().toLowerCase()),
+  };
 
   const scopes = await resolveRetrievalScopes(group);
   const scopedResults = await Promise.all(
@@ -1067,6 +1510,7 @@ export async function queryKnowledge(
         Math.max(topN, FINAL_AFTER_RERANK),
         resultMode,
         constraints,
+        runtime,
       ).catch(() => []),
     ),
   );
@@ -1373,16 +1817,24 @@ function buildKnowledgeDocsCacheKey(input: {
   libraryId?: string;
   libraryVersion?: string;
   constraints?: KnowledgeQueryConstraints;
+  userId?: string | null;
+  source?: "chat" | "agent" | "mcp";
+  memoryPolicy?: MemoryPolicy;
+  rolloutFingerprint?: unknown;
 }) {
   const hash = createHash("sha256")
     .update(
       JSON.stringify({
-        cacheVersion: 3,
+        cacheVersion: 5,
         query: input.query,
         retrievalThreshold: input.retrievalThreshold ?? null,
         libraryId: input.libraryId ?? null,
         libraryVersion: input.libraryVersion ?? null,
         constraints: input.constraints ?? null,
+        userId: input.userId ?? null,
+        source: input.source ?? "chat",
+        memoryPolicy: input.memoryPolicy ?? "off",
+        rollout: input.rolloutFingerprint ?? null,
       }),
     )
     .digest("hex");
@@ -1415,7 +1867,10 @@ type RankedDocCandidate = Omit<
   "markdown" | "matchedSections" | "citationCandidates" | "matchedImages"
 > & {
   sectionGraphVersion: number | null;
+  imageHits?: number;
+  imageEvidenceScore?: number;
   freshnessScore?: number;
+  rerankScore?: number;
 };
 
 type SectionBundleCandidate = {
@@ -1425,6 +1880,27 @@ type SectionBundleCandidate = {
   score: number;
   hitCount: number;
 };
+
+function buildDocRerankText(input: {
+  doc: RankedDocCandidate;
+  matches: KnowledgeQueryResult[];
+}): string {
+  const evidence = input.matches
+    .slice(0, 3)
+    .map((match) =>
+      [match.chunk.contextSummary, match.chunk.content]
+        .filter(Boolean)
+        .join("\n"),
+    )
+    .join("\n\n");
+
+  return [
+    `document: ${input.doc.documentName}`,
+    evidence ? `evidence:\n${evidence}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
 
 function formatSectionHeading(section: KnowledgeSection): string {
   const baseLabel = getSectionCitationHeading(section);
@@ -1960,6 +2436,7 @@ export interface QueryKnowledgeDocsOptions {
   strictEntityMatch?: boolean;
   userId?: string | null;
   source?: "chat" | "agent" | "mcp";
+  memoryPolicy?: MemoryPolicy;
 }
 
 /**
@@ -2018,6 +2495,28 @@ export interface RetrievedKnowledgeImage
   relevanceScore: number;
 }
 
+type RetrievedKnowledgeImageMatch = RetrievedKnowledgeImage &
+  Pick<
+    KnowledgeDocumentImage,
+    | "caption"
+    | "altText"
+    | "surroundingText"
+    | "precedingText"
+    | "followingText"
+    | "imageType"
+    | "ocrText"
+    | "ocrConfidence"
+    | "exactValueSnippets"
+    | "structuredData"
+  >;
+
+type ImageEvidenceStats = {
+  hitCount: number;
+  maxScore: number;
+  meanScore: number;
+  images: RetrievedKnowledgeImageMatch[];
+};
+
 function extractImageMatchTerms(value: string): string[] {
   return Array.from(
     new Set(
@@ -2027,7 +2526,9 @@ function extractImageMatchTerms(value: string): string[] {
         .split(/\s+/)
         .map((term) => term.trim())
         .filter(
-          (term) => term.length >= 3 && !IMAGE_FALLBACK_STOP_WORDS.has(term),
+          (term) =>
+            (term.length >= 3 || (/\d/.test(term) && term.length >= 2)) &&
+            !IMAGE_FALLBACK_STOP_WORDS.has(term),
         ),
     ),
   );
@@ -2039,6 +2540,25 @@ function computeImageTextOverlap(terms: string[], text: string): number {
   const haystack = text.toLowerCase();
   const matched = terms.filter((term) => haystack.includes(term)).length;
   return matched / terms.length;
+}
+
+function buildCompactImageEvidenceText(
+  image: Pick<
+    KnowledgeDocumentImage,
+    | "imageType"
+    | "ocrText"
+    | "ocrConfidence"
+    | "exactValueSnippets"
+    | "structuredData"
+  >,
+): string {
+  return buildKnowledgeImageStructuredSummary({
+    imageType: image.imageType ?? null,
+    ocrText: image.ocrText ?? null,
+    ocrConfidence: image.ocrConfidence ?? null,
+    exactValueSnippets: image.exactValueSnippets ?? null,
+    structuredData: image.structuredData ?? null,
+  });
 }
 
 function buildImageContextText(
@@ -2053,6 +2573,11 @@ function buildImageContextText(
     | "surroundingText"
     | "precedingText"
     | "followingText"
+    | "imageType"
+    | "ocrText"
+    | "ocrConfidence"
+    | "exactValueSnippets"
+    | "structuredData"
   >,
 ): string {
   return [
@@ -2065,6 +2590,7 @@ function buildImageContextText(
     image.surroundingText,
     image.precedingText,
     image.followingText,
+    buildCompactImageEvidenceText(image),
   ]
     .filter(Boolean)
     .join(" ")
@@ -2083,12 +2609,19 @@ function buildWeightedImageFieldText(
     | "surroundingText"
     | "precedingText"
     | "followingText"
+    | "imageType"
+    | "ocrText"
+    | "ocrConfidence"
+    | "exactValueSnippets"
+    | "structuredData"
   >,
 ): {
   visual: string;
   structure: string;
   neighbor: string;
+  evidence: string;
 } {
+  const evidence = buildCompactImageEvidenceText(image);
   return {
     visual: [
       image.label,
@@ -2109,7 +2642,262 @@ function buildWeightedImageFieldText(
       .filter(Boolean)
       .join(" ")
       .trim(),
+    evidence,
   };
+}
+
+function toRetrievedKnowledgeImageMatch(
+  image: KnowledgeDocumentImage & { score: number },
+): RetrievedKnowledgeImageMatch {
+  return {
+    id: image.id,
+    documentId: image.documentId,
+    groupId: image.groupId,
+    versionId: image.versionId ?? null,
+    ordinal: image.ordinal,
+    label: image.label,
+    description: image.description,
+    headingPath: image.headingPath ?? null,
+    stepHint: image.stepHint ?? null,
+    pageNumber: image.pageNumber ?? null,
+    mediaType: image.mediaType ?? null,
+    sourceUrl: image.sourceUrl ?? null,
+    storagePath: image.storagePath ?? null,
+    isRenderable: image.isRenderable,
+    relevanceScore: image.score,
+    caption: image.caption ?? null,
+    altText: image.altText ?? null,
+    surroundingText: image.surroundingText ?? null,
+    precedingText: image.precedingText ?? null,
+    followingText: image.followingText ?? null,
+    imageType: image.imageType ?? null,
+    ocrText: image.ocrText ?? null,
+    ocrConfidence: image.ocrConfidence ?? null,
+    exactValueSnippets: image.exactValueSnippets ?? null,
+    structuredData: image.structuredData ?? null,
+  };
+}
+
+function toPublicRetrievedKnowledgeImage(
+  image: RetrievedKnowledgeImageMatch,
+): RetrievedKnowledgeImage {
+  return {
+    id: image.id,
+    documentId: image.documentId,
+    groupId: image.groupId,
+    versionId: image.versionId ?? null,
+    ordinal: image.ordinal,
+    label: image.label,
+    description: image.description,
+    headingPath: image.headingPath ?? null,
+    stepHint: image.stepHint ?? null,
+    pageNumber: image.pageNumber ?? null,
+    mediaType: image.mediaType ?? null,
+    sourceUrl: image.sourceUrl ?? null,
+    storagePath: image.storagePath ?? null,
+    isRenderable: image.isRenderable,
+    relevanceScore: image.relevanceScore,
+  };
+}
+
+async function searchImagesAcrossScopes(input: {
+  query: string;
+  scopes: RetrievalScope[];
+  documentIdsByScope?: Map<string, string[]>;
+  limit: number;
+}): Promise<Array<KnowledgeDocumentImage & { score: number }>> {
+  const rankedLists: Array<{
+    results: Array<KnowledgeDocumentImage & { score: number }>;
+    weight: number;
+  }> = [];
+
+  await Promise.all(
+    input.scopes.map(async (scope) => {
+      const documentIds = input.documentIdsByScope?.get(scope.id);
+      if (
+        input.documentIdsByScope &&
+        (!documentIds || documentIds.length === 0)
+      ) {
+        return;
+      }
+
+      let queryEmbedding: number[] | undefined;
+      try {
+        queryEmbedding = await embedSingleText(
+          input.query,
+          scope.embeddingProvider,
+          scope.embeddingModel,
+        );
+      } catch {
+        queryEmbedding = undefined;
+      }
+
+      const [textResults, vectorResults] = await Promise.all([
+        knowledgeRepository
+          .fullTextSearchImages(scope.id, input.query, input.limit, documentIds)
+          .catch(() => []),
+        queryEmbedding
+          ? knowledgeRepository
+              .vectorSearchImages(
+                scope.id,
+                queryEmbedding,
+                input.limit,
+                documentIds,
+              )
+              .then((results) =>
+                results.filter(
+                  (result) => result.score >= IMAGE_MIN_VECTOR_SCORE,
+                ),
+              )
+              .catch(() => [])
+          : Promise.resolve([]),
+      ]);
+
+      if (vectorResults.length > 0) {
+        rankedLists.push({
+          results: vectorResults,
+          weight: IMAGE_VECTOR_RRF_WEIGHT,
+        });
+      }
+      if (textResults.length > 0) {
+        rankedLists.push({ results: textResults, weight: 1 });
+      }
+    }),
+  );
+
+  return rankedLists.length > 0 ? weightedImageRrfMerge(rankedLists) : [];
+}
+
+function buildImageEvidenceStats(
+  images: Array<KnowledgeDocumentImage & { score: number }>,
+): Map<string, ImageEvidenceStats> {
+  const grouped = new Map<
+    string,
+    Array<KnowledgeDocumentImage & { score: number }>
+  >();
+
+  for (const image of images) {
+    const list = grouped.get(image.documentId) ?? [];
+    list.push(image);
+    grouped.set(image.documentId, list);
+  }
+
+  const stats = new Map<string, ImageEvidenceStats>();
+  for (const [documentId, docImages] of grouped.entries()) {
+    const topImages = docImages
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map(toRetrievedKnowledgeImageMatch);
+    const maxScore = topImages[0]?.relevanceScore ?? 0;
+    const meanScore =
+      topImages.length > 0
+        ? topImages.reduce((sum, image) => sum + image.relevanceScore, 0) /
+          topImages.length
+        : 0;
+    stats.set(documentId, {
+      hitCount: topImages.length,
+      maxScore,
+      meanScore,
+      images: topImages,
+    });
+  }
+
+  return stats;
+}
+
+function selectRelevantImageEvidenceLines(
+  query: string,
+  image: RetrievedKnowledgeImageMatch,
+): string[] {
+  const queryTerms = extractImageMatchTerms(query);
+  const exactValues = (image.exactValueSnippets ?? [])
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((line) => ({ line, priority: 3 }));
+  const ocrLines = (image.ocrText ?? "")
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 3)
+    .map((line) => ({ line, priority: 2 }));
+  const structuredLines = buildCompactImageEvidenceText(image)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => ({ line, priority: 1 }));
+
+  const ranked = [...exactValues, ...ocrLines, ...structuredLines]
+    .map((line) => ({
+      line: line.line,
+      priority: line.priority,
+      overlap: computeImageTextOverlap(queryTerms, line.line),
+    }))
+    .sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      if (b.overlap !== a.overlap) return b.overlap - a.overlap;
+      return b.line.length - a.line.length;
+    })
+    .map((entry) => entry.line);
+
+  return Array.from(new Set(ranked)).slice(0, 3);
+}
+
+function buildImageEvidenceBlock(
+  query: string,
+  images: RetrievedKnowledgeImageMatch[],
+): string | null {
+  if (images.length === 0) return null;
+
+  const blocks = images.slice(0, 2).map((image) => {
+    const lines = selectRelevantImageEvidenceLines(query, image);
+    const pageLabel =
+      image.pageNumber != null ? `page ${image.pageNumber}` : "page unknown";
+    const typeLabel = image.imageType ?? "image";
+    const summary = buildCompactImageEvidenceText(image)
+      .split("\n")
+      .find((line) =>
+        /^(Chart summary|Table summary|OCR confidence)/.test(line),
+      )
+      ?.trim();
+
+    return [
+      `Image: ${image.label} (${pageLabel}, ${typeLabel})`,
+      lines[0] ? `Evidence: ${lines[0]}` : "",
+      lines[1] ? `Evidence: ${lines[1]}` : "",
+      lines[2] ? `Evidence: ${lines[2]}` : "",
+      summary ? summary : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+
+  return blocks.length > 0
+    ? `### Image Evidence\n\n${blocks.join("\n\n")}`
+    : null;
+}
+
+function buildImageCitationCandidates(
+  query: string,
+  images: RetrievedKnowledgeImageMatch[],
+): RetrievedKnowledgeCitation[] {
+  return images.slice(0, 2).map((image) => {
+    const evidenceLines = selectRelevantImageEvidenceLines(query, image);
+    const excerpt =
+      image.exactValueSnippets?.[0] ??
+      evidenceLines[0] ??
+      image.description ??
+      buildCompactImageEvidenceText(image) ??
+      image.label;
+
+    return {
+      versionId: image.versionId ?? null,
+      sectionId: null,
+      sectionHeading: null,
+      pageStart: image.pageNumber ?? null,
+      pageEnd: image.pageNumber ?? null,
+      excerpt,
+      relevanceScore: image.relevanceScore,
+    };
+  });
 }
 
 type ImageMatchContext = {
@@ -2192,6 +2980,10 @@ export function scoreRetrievedImageCandidate(input: {
       weightedText.visual,
     ) *
       0.35;
+  const evidenceOverlap = computeImageTextOverlap(
+    input.matchContext.matchedSectionTerms,
+    weightedText.evidence,
+  );
   const pageProximity = computeImagePageProximity(
     input.matchContext.matchedPages,
     input.image.pageNumber,
@@ -2203,7 +2995,8 @@ export function scoreRetrievedImageCandidate(input: {
       1,
       input.image.score * 0.55 +
         input.docScore * 0.15 +
-        headingOverlap * 0.2 +
+        headingOverlap * 0.18 +
+        evidenceOverlap * 0.12 +
         pageProximity * 0.1,
     ),
   );
@@ -2220,7 +3013,8 @@ function scoreFallbackImageCandidate(input: {
   const queryOverlap =
     computeImageTextOverlap(input.queryTerms, weightedText.visual) * 0.6 +
     computeImageTextOverlap(input.queryTerms, weightedText.structure) * 0.25 +
-    computeImageTextOverlap(input.queryTerms, weightedText.neighbor) * 0.15;
+    computeImageTextOverlap(input.queryTerms, weightedText.neighbor) * 0.1 +
+    computeImageTextOverlap(input.queryTerms, weightedText.evidence) * 0.35;
   const headingOverlap =
     computeImageTextOverlap(
       input.matchContext.matchedSectionTerms,
@@ -2236,7 +3030,12 @@ function scoreFallbackImageCandidate(input: {
       input.matchContext.matchedSectionTerms,
       weightedText.neighbor,
     ) *
-      0.2;
+      0.1 +
+    computeImageTextOverlap(
+      input.matchContext.matchedSectionTerms,
+      weightedText.evidence,
+    ) *
+      0.1;
   const neighborOverlap = Math.max(
     computeImageTextOverlap(
       input.queryTerms,
@@ -2295,7 +3094,7 @@ async function findMatchedImagesForDocs(input: {
       matches: KnowledgeQueryResult[];
     }
   >;
-}): Promise<Map<string, RetrievedKnowledgeImage[]>> {
+}): Promise<Map<string, RetrievedKnowledgeImageMatch[]>> {
   if (input.docs.length === 0) return new Map();
 
   const docIdsByScope = new Map<string, string[]>();
@@ -2307,64 +3106,12 @@ async function findMatchedImagesForDocs(input: {
     docIdsByScope.set(scopeId, list);
   }
 
-  const rankedLists: Array<{
-    results: Array<KnowledgeDocumentImage & { score: number }>;
-    weight: number;
-  }> = [];
-
-  await Promise.all(
-    Array.from(docIdsByScope.entries()).map(async ([scopeId, documentIds]) => {
-      const scope = input.scopeById.get(scopeId);
-      if (!scope) return;
-
-      let queryEmbedding: number[] | undefined;
-      try {
-        queryEmbedding = await embedSingleText(
-          input.query,
-          scope.embeddingProvider,
-          scope.embeddingModel,
-        );
-      } catch {
-        queryEmbedding = undefined;
-      }
-
-      const [textResults, vectorResults] = await Promise.all([
-        knowledgeRepository
-          .fullTextSearchImages(
-            scopeId,
-            input.query,
-            CANDIDATE_LIMIT,
-            documentIds,
-          )
-          .catch(() => []),
-        queryEmbedding
-          ? knowledgeRepository
-              .vectorSearchImages(
-                scopeId,
-                queryEmbedding,
-                CANDIDATE_LIMIT,
-                documentIds,
-              )
-              .then((results) =>
-                results.filter(
-                  (result) => result.score >= IMAGE_MIN_VECTOR_SCORE,
-                ),
-              )
-              .catch(() => [])
-          : Promise.resolve([]),
-      ]);
-
-      if (vectorResults.length > 0) {
-        rankedLists.push({
-          results: vectorResults,
-          weight: IMAGE_VECTOR_RRF_WEIGHT,
-        });
-      }
-      if (textResults.length > 0) {
-        rankedLists.push({ results: textResults, weight: 1 });
-      }
-    }),
-  );
+  const scopedResults = await searchImagesAcrossScopes({
+    query: input.query,
+    scopes: Array.from(input.scopeById.values()),
+    documentIdsByScope: docIdsByScope,
+    limit: CANDIDATE_LIMIT,
+  });
 
   const docScoreMap = new Map(
     input.docs.map((doc) => [doc.documentId, doc.relevanceScore]),
@@ -2379,26 +3126,23 @@ async function findMatchedImagesForDocs(input: {
     ]),
   );
 
-  const merged =
-    rankedLists.length > 0
-      ? weightedImageRrfMerge(rankedLists)
-          .map((image) => {
-            const docScore = docScoreMap.get(image.documentId) ?? 0;
-            const matchContext = matchContextByDoc.get(image.documentId) ?? {
-              matchedSectionHeadings: [],
-              matchedSectionTerms: [],
-              matchedPages: [],
-              hasAnchors: false,
-            };
-            const score = scoreRetrievedImageCandidate({
-              image,
-              docScore,
-              matchContext,
-            });
-            return { ...image, score };
-          })
-          .sort((a, b) => b.score - a.score)
-      : [];
+  const merged = scopedResults
+    .map((image) => {
+      const docScore = docScoreMap.get(image.documentId) ?? 0;
+      const matchContext = matchContextByDoc.get(image.documentId) ?? {
+        matchedSectionHeadings: [],
+        matchedSectionTerms: [],
+        matchedPages: [],
+        hasAnchors: false,
+      };
+      const score = scoreRetrievedImageCandidate({
+        image,
+        docScore,
+        matchContext,
+      });
+      return { ...image, score };
+    })
+    .sort((a, b) => b.score - a.score);
 
   const topScore = merged[0]?.score ?? 0;
   const normalized =
@@ -2409,7 +3153,7 @@ async function findMatchedImagesForDocs(input: {
         }))
       : merged;
 
-  const selected: RetrievedKnowledgeImage[] = [];
+  const selected: RetrievedKnowledgeImageMatch[] = [];
   const perDocCounts = new Map<string, number>();
   const selectedImageKeys = new Set<string>();
 
@@ -2435,23 +3179,7 @@ async function findMatchedImagesForDocs(input: {
     }
 
     const imageKey = `${image.documentId}:${image.id}:${image.versionId ?? "live"}`;
-    selected.push({
-      id: image.id,
-      documentId: image.documentId,
-      groupId: image.groupId,
-      versionId: image.versionId ?? null,
-      ordinal: image.ordinal,
-      label: image.label,
-      description: image.description,
-      headingPath: image.headingPath ?? null,
-      stepHint: image.stepHint ?? null,
-      pageNumber: image.pageNumber ?? null,
-      mediaType: image.mediaType ?? null,
-      sourceUrl: image.sourceUrl ?? null,
-      storagePath: image.storagePath ?? null,
-      isRenderable: image.isRenderable,
-      relevanceScore: image.score,
-    });
+    selected.push(toRetrievedKnowledgeImageMatch(image));
     perDocCounts.set(image.documentId, currentDocCount + 1);
     selectedImageKeys.add(imageKey);
   }
@@ -2527,29 +3255,18 @@ async function findMatchedImagesForDocs(input: {
       const imageKey = `${candidate.image.documentId}:${candidate.image.id}:${candidate.image.versionId ?? "live"}`;
       if (selectedImageKeys.has(imageKey)) continue;
 
-      selected.push({
-        id: candidate.image.id,
-        documentId: candidate.image.documentId,
-        groupId: candidate.image.groupId,
-        versionId: candidate.image.versionId ?? null,
-        ordinal: candidate.image.ordinal,
-        label: candidate.image.label,
-        description: candidate.image.description,
-        headingPath: candidate.image.headingPath ?? null,
-        stepHint: candidate.image.stepHint ?? null,
-        pageNumber: candidate.image.pageNumber ?? null,
-        mediaType: candidate.image.mediaType ?? null,
-        sourceUrl: candidate.image.sourceUrl ?? null,
-        storagePath: candidate.image.storagePath ?? null,
-        isRenderable: candidate.image.isRenderable,
-        relevanceScore: candidate.score,
-      });
+      selected.push(
+        toRetrievedKnowledgeImageMatch({
+          ...candidate.image,
+          score: candidate.score,
+        }),
+      );
       perDocCounts.set(candidate.image.documentId, currentDocCount + 1);
       selectedImageKeys.add(imageKey);
     }
   }
 
-  const imagesByDocId = new Map<string, RetrievedKnowledgeImage[]>();
+  const imagesByDocId = new Map<string, RetrievedKnowledgeImageMatch[]>();
   for (const image of selected) {
     const list = imagesByDocId.get(image.documentId) ?? [];
     list.push(image);
@@ -2952,6 +3669,7 @@ export async function queryKnowledgeAsDocs(
     Math.max(options.maxDocs ?? (resultMode === "section-first" ? 8 : 50), 1),
     50,
   );
+  const rollout = await getContextXRollout();
   const cacheKey = buildKnowledgeDocsCacheKey({
     groupId: group.id,
     query,
@@ -2962,6 +3680,12 @@ export async function queryKnowledgeAsDocs(
     libraryId: options.libraryId,
     libraryVersion: options.libraryVersion,
     constraints,
+    userId: options.userId ?? null,
+    source: options.source ?? "chat",
+    memoryPolicy:
+      options.memoryPolicy ??
+      (options.userId && (options.source ?? "chat") !== "mcp" ? "user" : "off"),
+    rolloutFingerprint: rollout,
   });
   if (SHOULD_USE_KNOWLEDGE_DOCS_CACHE) {
     const cached = await serverCache.get<DocRetrievalResult[]>(cacheKey);
@@ -2980,6 +3704,11 @@ export async function queryKnowledgeAsDocs(
     resultMode,
     skipLogging: true,
     constraints,
+    userId: options.userId ?? null,
+    source: options.source ?? "chat",
+    memoryPolicy:
+      options.memoryPolicy ??
+      (options.userId && (options.source ?? "chat") !== "mcp" ? "user" : "off"),
   });
 
   const docSignalMaps = await Promise.all(
@@ -3010,6 +3739,19 @@ export async function queryKnowledgeAsDocs(
       if (score > existing) docSignalMap.set(docId, score);
     }
   }
+  const imageEvidenceByDoc =
+    rollout.imageEvidenceRead && !options.libraryId && !options.libraryVersion
+      ? buildImageEvidenceStats(
+          await searchImagesAcrossScopes({
+            query,
+            scopes,
+            limit: Math.min(
+              recallProfile.docCandidates * 4,
+              Math.max(CANDIDATE_LIMIT, maxDocs * 6),
+            ),
+          }),
+        )
+      : new Map<string, ImageEvidenceStats>();
 
   const scopedChunkResults = chunkResults.filter((hit) =>
     chunkMatchesLibraryScope({
@@ -3019,7 +3761,13 @@ export async function queryKnowledgeAsDocs(
     }),
   );
   if (options.libraryId && scopedChunkResults.length === 0) return [];
-  if (scopedChunkResults.length === 0 && docSignalMap.size === 0) return [];
+  if (
+    scopedChunkResults.length === 0 &&
+    docSignalMap.size === 0 &&
+    imageEvidenceByDoc.size === 0
+  ) {
+    return [];
+  }
 
   // ── Step 2: Build candidate document set + aggregate chunk signals ──────
   const chunkStats = new Map<
@@ -3060,9 +3808,16 @@ export async function queryKnowledgeAsDocs(
           .sort((a, b) => b[1] - a[1])
           .slice(0, recallProfile.docCandidates)
           .map(([docId]) => docId);
+  const topImageSignalIds =
+    options.libraryId || options.libraryVersion
+      ? []
+      : Array.from(imageEvidenceByDoc.entries())
+          .sort((a, b) => b[1].maxScore - a[1].maxScore)
+          .slice(0, recallProfile.docCandidates)
+          .map(([docId]) => docId);
 
   const candidateDocIds = Array.from(
-    new Set([...chunkStats.keys(), ...topDocSignalIds]),
+    new Set([...chunkStats.keys(), ...topDocSignalIds, ...topImageSignalIds]),
   );
   if (candidateDocIds.length === 0) return [];
 
@@ -3085,19 +3840,27 @@ export async function queryKnowledgeAsDocs(
   if (candidateDocMetaInScope.length === 0) return [];
 
   const now = Date.now();
-  const rankedDocs = candidateDocMetaInScope
+  let rankedDocs: RankedDocCandidate[] = candidateDocMetaInScope
     .map((doc) => {
       const stats = chunkStats.get(doc.documentId);
       const metadataSignal = docSignalMap.get(doc.documentId) ?? 0;
+      const imageStats = imageEvidenceByDoc.get(doc.documentId);
+      const imageEvidenceScore = imageStats
+        ? imageStats.maxScore * 0.72 + imageStats.meanScore * 0.28
+        : 0;
       const avgChunkScore =
         stats && stats.chunkHits > 0 ? stats.sumScore / stats.chunkHits : 0;
       const maxChunkScore = stats?.maxScore ?? 0;
       const hitScore = Math.min(1, (stats?.chunkHits ?? 0) / 5);
-      const relevanceScore =
-        maxChunkScore * 0.65 +
-        avgChunkScore * 0.2 +
-        hitScore * 0.05 +
-        metadataSignal * 0.1;
+      const imageHitScore = Math.min(1, (imageStats?.hitCount ?? 0) / 3);
+      const relevanceScoreRaw =
+        maxChunkScore * 0.5 +
+        avgChunkScore * 0.18 +
+        hitScore * 0.04 +
+        metadataSignal * 0.1 +
+        imageEvidenceScore * 0.22 +
+        imageHitScore * 0.06;
+      const relevanceScore = Math.max(0, Math.min(1, relevanceScoreRaw));
 
       const ageDays = Math.max(
         0,
@@ -3114,9 +3877,12 @@ export async function queryKnowledgeAsDocs(
         isInherited: doc.groupId !== group.id,
         versionId: doc.activeVersionId ?? null,
         chunkHits: stats?.chunkHits ?? 0,
+        imageHits: imageStats?.hitCount ?? 0,
+        imageEvidenceScore,
         relevanceScore,
         freshnessScore,
         sectionGraphVersion: getSectionGraphVersion(doc.metadata),
+        rerankScore: undefined,
       };
     })
     .sort((a, b) => {
@@ -3124,6 +3890,49 @@ export async function queryKnowledgeAsDocs(
       if (Math.abs(delta) >= 0.03) return delta;
       return b.freshnessScore - a.freshnessScore;
     });
+
+  const docRerankByIndex =
+    rankedDocs.length > 1
+      ? await rerankCandidateTexts({
+          query,
+          documents: rankedDocs.map((doc) =>
+            buildDocRerankText({
+              doc,
+              matches: chunkStats.get(doc.documentId)?.matches ?? [],
+            }),
+          ),
+          rerankingProvider: group.rerankingProvider,
+          rerankingModel: group.rerankingModel,
+          allowLlmFallback: rollout.llmRerankFallback,
+        })
+      : new Map<number, number>();
+  if (docRerankByIndex.size > 0) {
+    rankedDocs = rankedDocs
+      .map((doc, index) => {
+        const rerankScore = docRerankByIndex.get(index);
+        if (rerankScore === undefined) {
+          return doc;
+        }
+
+        return {
+          ...doc,
+          rerankScore,
+          relevanceScore: Math.max(
+            0,
+            Math.min(1, 0.65 * rerankScore + 0.35 * doc.relevanceScore),
+          ),
+        };
+      })
+      .sort((a, b) => {
+        const leftScore = a.rerankScore ?? a.relevanceScore;
+        const rightScore = b.rerankScore ?? b.relevanceScore;
+        const delta = rightScore - leftScore;
+        if (Math.abs(delta) >= 0.03) {
+          return delta;
+        }
+        return (b.freshnessScore ?? 0) - (a.freshnessScore ?? 0);
+      });
+  }
 
   // Thresholds were already enforced per scope in queryKnowledge().
   const threshold = scopes.length > 1 ? 0 : (group.retrievalThreshold ?? 0);
@@ -3176,6 +3985,28 @@ export async function queryKnowledgeAsDocs(
       results = fallback.results;
       tokensUsed = fallback.tokensUsed;
     }
+    if (results.length > 0 && tokensUsed < tokenBudget) {
+      const imageOnlyDocs = filteredDocs.filter(
+        (doc) =>
+          doc.chunkHits === 0 &&
+          (doc.imageHits ?? 0) > 0 &&
+          !results.some((result) => result.documentId === doc.documentId),
+      );
+      if (imageOnlyDocs.length > 0) {
+        const supplemental = await assembleFullDocResults({
+          docsToAssemble: imageOnlyDocs.slice(
+            0,
+            Math.max(1, maxDocs - results.length),
+          ),
+          chunkStats,
+          query,
+          tokenBudget: tokenBudget - tokensUsed,
+          scopeById,
+        });
+        results = [...results, ...supplemental.results];
+        tokensUsed += supplemental.tokensUsed;
+      }
+    }
   } else {
     const assembled = await assembleFullDocResults({
       docsToAssemble,
@@ -3194,10 +4025,40 @@ export async function queryKnowledgeAsDocs(
     scopeById,
     chunkStats,
   });
-  results = results.map((result) => ({
-    ...result,
-    matchedImages: matchedImagesByDocId.get(result.documentId) ?? [],
-  }));
+  results = results.map((result) => {
+    const matchedImageMatches =
+      matchedImagesByDocId.get(result.documentId) ?? [];
+    const imageEvidenceBlock = rollout.imageEvidenceContext
+      ? buildImageEvidenceBlock(query, matchedImageMatches)
+      : null;
+    const imageCitationCandidates = rollout.imageEvidenceContext
+      ? buildImageCitationCandidates(query, matchedImageMatches)
+      : [];
+    const citationCandidates = Array.from(
+      new Map(
+        [...(result.citationCandidates ?? []), ...imageCitationCandidates].map(
+          (candidate) => {
+            const key = [
+              candidate.sectionId ?? "",
+              candidate.pageStart ?? "",
+              candidate.pageEnd ?? "",
+              candidate.excerpt,
+            ].join("::");
+            return [key, candidate] as const;
+          },
+        ),
+      ).values(),
+    );
+
+    return {
+      ...result,
+      markdown: imageEvidenceBlock
+        ? `${result.markdown}\n\n${imageEvidenceBlock}`
+        : result.markdown,
+      citationCandidates,
+      matchedImages: matchedImageMatches.map(toPublicRetrievedKnowledgeImage),
+    };
+  });
 
   const docVersions = new Map(
     filteredDocs.map((doc) => [doc.documentId, doc.sectionGraphVersion]),

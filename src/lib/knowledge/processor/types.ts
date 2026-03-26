@@ -1,3 +1,9 @@
+import type {
+  KnowledgeImageMode,
+  KnowledgeImageStructuredData,
+  KnowledgeImageType,
+} from "app-types/knowledge";
+
 export type ImageAnalysisConfig =
   | {
       provider: string;
@@ -52,6 +58,11 @@ export type ProcessedDocumentImage = {
   surroundingText?: string | null;
   precedingText?: string | null;
   followingText?: string | null;
+  imageType?: KnowledgeImageType | null;
+  ocrText?: string | null;
+  ocrConfidence?: number | null;
+  exactValueSnippets?: string[] | null;
+  structuredData?: KnowledgeImageStructuredData | null;
   headingPath?: string | null;
   stepHint?: string | null;
   label: string;
@@ -65,9 +76,11 @@ export type ProcessedDocumentImage = {
 
 export type DocumentProcessingOptions = {
   documentTitle?: string;
+  originalFilename?: string | null;
   imageAnalysis?: ImageAnalysisConfig;
   imageAnalysisRequired?: boolean;
   imageNeighborContextEnabled?: boolean;
+  imageMode?: KnowledgeImageMode | null;
 };
 
 export type ProcessedDocument = {

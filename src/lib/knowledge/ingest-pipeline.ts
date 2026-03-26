@@ -291,25 +291,31 @@ export async function runIngestPipeline(
     if (doc.fileType === "url" && doc.sourceUrl) {
       processedDocument = await processDocument("url", doc.sourceUrl, {
         documentTitle,
+        originalFilename: doc.originalFilename,
         imageAnalysis: eagerImageAnalysisConfig,
         imageAnalysisRequired: true,
         imageNeighborContextEnabled,
+        imageMode: effectiveGroup.imageMode,
       });
     } else if (fileBuffer) {
       // Inline mode: use the buffer that was already read (no S3 download needed)
       processedDocument = await processDocument(doc.fileType, fileBuffer, {
         documentTitle,
+        originalFilename: doc.originalFilename,
         imageAnalysis: eagerImageAnalysisConfig,
         imageAnalysisRequired: true,
         imageNeighborContextEnabled,
+        imageMode: effectiveGroup.imageMode,
       });
     } else if (doc.storagePath) {
       const buffer = await serverFileStorage.download(doc.storagePath);
       processedDocument = await processDocument(doc.fileType, buffer, {
         documentTitle,
+        originalFilename: doc.originalFilename,
         imageAnalysis: eagerImageAnalysisConfig,
         imageAnalysisRequired: true,
         imageNeighborContextEnabled,
+        imageMode: effectiveGroup.imageMode,
       });
     } else {
       throw new Error(

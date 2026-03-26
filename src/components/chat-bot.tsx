@@ -101,6 +101,10 @@ export default function ChatBot({
   const containerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const setIsAtBottomTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const scrollRafRef = useRef<number | null>(null);
   const { uploadFiles } = useThreadFileUploader(threadId);
   const handleFileDrop = useCallback(
     async (files: File[]) => {
@@ -470,8 +474,19 @@ export default function ChatBot({
     const { scrollTop, scrollHeight, clientHeight } = container;
     const isScrollAtBottom = scrollHeight - scrollTop - clientHeight < 50;
 
+    // Update the ref immediately so auto-scroll logic stays accurate
     isAtBottomRef.current = isScrollAtBottom;
-    setIsAtBottom(isScrollAtBottom);
+
+    // Debounce the React state update to prevent re-renders mid-scroll,
+    // which cause layout recalculations that manifest as jank.
+    if (setIsAtBottomTimerRef.current !== null) {
+      clearTimeout(setIsAtBottomTimerRef.current);
+    }
+    setIsAtBottomTimerRef.current = setTimeout(() => {
+      setIsAtBottomTimerRef.current = null;
+      setIsAtBottom(isScrollAtBottom);
+    }, 80);
+
     handleFocus();
   }, [handleFocus]);
 
@@ -504,9 +519,17 @@ export default function ChatBot({
 
   useEffect(() => {
     if (isAtBottomRef.current) {
-      containerRef.current?.scrollTo({
-        top: containerRef.current.scrollHeight,
-        behavior: "instant",
+      // Cancel any pending frame before scheduling a new one so rapid
+      // streaming updates are coalesced into a single scroll per frame.
+      if (scrollRafRef.current !== null) {
+        cancelAnimationFrame(scrollRafRef.current);
+      }
+      scrollRafRef.current = requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        containerRef.current?.scrollTo({
+          top: containerRef.current.scrollHeight,
+          behavior: "instant",
+        });
       });
     }
   }, [messages]);
@@ -583,7 +606,7 @@ export default function ChatBot({
             <>
               <div
                 className={
-                  "flex flex-col gap-2 overflow-y-auto py-6 z-10 [scrollbar-gutter:stable_both-edges]"
+                  "flex flex-col gap-2 overflow-y-auto py-6 z-10 chat-minimal-scrollbar"
                 }
                 ref={containerRef}
                 onScroll={handleScroll}
