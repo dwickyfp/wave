@@ -1,7 +1,7 @@
 import "server-only";
 
 import { tool } from "ai";
-import type { ChatKnowledgeCitation } from "app-types/chat";
+import type { ChatKnowledgeCitation, ChatKnowledgeImage } from "app-types/chat";
 import { z } from "zod";
 import { KnowledgeSummary } from "app-types/knowledge";
 import {
@@ -14,8 +14,13 @@ import {
   buildKnowledgeCitations,
   formatKnowledgeEvidencePack,
 } from "lib/chat/knowledge-citations";
+import {
+  buildChatKnowledgeImages,
+  dedupeChatKnowledgeImages,
+} from "lib/chat/knowledge-sources";
 
 const DEFAULT_AGENT_KNOWLEDGE_TOKENS = 5000;
+const MAX_TOOL_RESULT_IMAGES = 4;
 
 export type KnowledgeDocsRetrievedPayload = {
   groupId: string;
@@ -28,6 +33,7 @@ export type KnowledgeDocsRetrievedPayload = {
 export type KnowledgeDocsPreparedPayload = {
   contextText?: string;
   citations?: ChatKnowledgeCitation[];
+  images?: ChatKnowledgeImage[];
   evidencePack?: string | null;
 };
 
@@ -41,6 +47,7 @@ export type KnowledgeDocsToolResult = {
   citationInstructions: string;
   evidencePack: string | null;
   citations: ChatKnowledgeCitation[];
+  images: ChatKnowledgeImage[];
 };
 
 export function createKnowledgeDocsTool(
@@ -135,6 +142,14 @@ export function createKnowledgeDocsTool(
       const citations = [...(prepared?.citations ?? fallbackCitations)].sort(
         (left, right) => left.number - right.number,
       );
+      const fallbackImages = buildChatKnowledgeImages({
+        groupId: group.id,
+        groupName: group.name,
+        docs,
+      });
+      const images = dedupeChatKnowledgeImages(
+        prepared?.images ?? fallbackImages,
+      ).slice(0, MAX_TOOL_RESULT_IMAGES);
       const evidencePack =
         prepared?.evidencePack ??
         (citations.length ? formatKnowledgeEvidencePack(citations) : null);
@@ -151,6 +166,7 @@ export function createKnowledgeDocsTool(
           : "No cited knowledge was retrieved from this tool result.",
         evidencePack,
         citations,
+        images,
       } satisfies KnowledgeDocsToolResult;
     },
   });

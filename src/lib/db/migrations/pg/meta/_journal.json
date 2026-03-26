@@ -400,6 +400,20 @@
       "when": 1775800000000,
       "tag": "0057_creator_role_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1775900000000,
+      "tag": "0058_contextx_accuracy_upgrade",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1776000000000,
+      "tag": "0059_contextx_rich_image_ocr",
+      "breakpoints": true
     }
   ]
 }

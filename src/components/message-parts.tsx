@@ -49,6 +49,7 @@ import { SelectModel } from "./select-model";
 
 import {
   ChatFeedbackType,
+  ChatKnowledgeImage,
   ChatMetadata,
   ChatModel,
   ManualToolConfirmTag,
@@ -71,7 +72,11 @@ import {
   getShortcutKeyList,
   isShortcutEvent,
 } from "lib/keyboard-shortcuts";
-import { stripKnowledgeCitationLinks } from "lib/chat/knowledge-citations";
+import {
+  buildKnowledgeSourcesFromCitations,
+  getMessageKnowledgeCitations,
+  stripKnowledgeCitationLinks,
+} from "lib/chat/knowledge-citations";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { TextShimmer } from "ui/text-shimmer";
 
@@ -112,6 +117,10 @@ interface AssistMessagePartProps {
   sendMessage?: UseChatHelpers<UIMessage>["sendMessage"];
   isError?: boolean;
   readonly?: boolean;
+}
+
+interface KnowledgeImageMessagePartProps {
+  images: ChatKnowledgeImage[];
 }
 
 interface ToolMessagePartProps {
@@ -404,9 +413,16 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   const t = useTranslations();
   const ref = useRef<HTMLDivElement>(null);
   const metadata = message.metadata as ChatMetadata | undefined;
-  const knowledgeSources = metadata?.knowledgeSources ?? [];
-  const knowledgeCitations = metadata?.knowledgeCitations ?? [];
-  const knowledgeImages = metadata?.knowledgeImages ?? [];
+  const knowledgeCitations = useMemo(
+    () => getMessageKnowledgeCitations(message),
+    [message],
+  );
+  const knowledgeSources = useMemo(() => {
+    const metadataSources = metadata?.knowledgeSources ?? [];
+    return metadataSources.length
+      ? metadataSources
+      : buildKnowledgeSourcesFromCitations(knowledgeCitations);
+  }, [metadata?.knowledgeSources, knowledgeCitations]);
   const isStreaming = Boolean(isLast && isResponseLoading);
 
   const [feedback, setFeedback] = useState<ChatFeedbackType | null>(null);
@@ -581,11 +597,6 @@ export const AssistMessagePart = memo(function AssistMessagePart({
           {part.text}
         </Markdown>
       </div>
-      {knowledgeImages.length > 0 && (
-        <div className="px-2">
-          <KnowledgeImageGallery images={knowledgeImages} />
-        </div>
-      )}
       {showActions && (
         <div className="flex flex-col gap-1 w-full">
           <div className="flex w-full flex-wrap items-center gap-1">
@@ -897,6 +908,22 @@ export const AssistMessagePart = memo(function AssistMessagePart({
   );
 });
 AssistMessagePart.displayName = "AssistMessagePart";
+
+export const KnowledgeImageMessagePart = memo(
+  function KnowledgeImageMessagePart({
+    images,
+  }: KnowledgeImageMessagePartProps) {
+    if (!images.length) return null;
+
+    return (
+      <div className="px-2 fade-in animate-in duration-300">
+        <KnowledgeImageGallery images={images} />
+      </div>
+    );
+  },
+);
+KnowledgeImageMessagePart.displayName = "KnowledgeImageMessagePart";
+
 const variants = {
   collapsed: {
     height: 0,

@@ -78,6 +78,12 @@ function mapMemory(
   return row as SelfLearningMemory;
 }
 
+function toPgVectorLiteral(embedding: number[] | null | undefined) {
+  if (!embedding || embedding.length === 0) return null;
+  const safe = embedding.map((value) => (Number.isFinite(value) ? value : 0));
+  return `[${safe.join(",")}]`;
+}
+
 function mapAudit(
   row: typeof SelfLearningAuditLogTable.$inferSelect,
 ): SelfLearningAuditLog {
@@ -798,6 +804,7 @@ export const pgSelfLearningRepository = {
     sourceEvaluationId?: string | null;
     supersededByMemoryId?: string | null;
     lastAppliedAt?: Date | null;
+    embedding?: number[] | null;
   }): Promise<SelfLearningMemory> {
     const [row] = await db
       .insert(SelfLearningMemoryTable)
@@ -810,6 +817,7 @@ export const pgSelfLearningRepository = {
         contradictionFingerprint: data.contradictionFingerprint ?? null,
         title: data.title,
         content: data.content,
+        embedding: data.embedding ?? null,
         supportCount: data.supportCount,
         distinctThreadCount: data.distinctThreadCount,
         sourceEvaluationId: data.sourceEvaluationId ?? null,
@@ -829,6 +837,7 @@ export const pgSelfLearningRepository = {
           contradictionFingerprint: data.contradictionFingerprint ?? null,
           title: data.title,
           content: data.content,
+          embedding: data.embedding ?? null,
           supportCount: data.supportCount,
           distinctThreadCount: data.distinctThreadCount,
           sourceEvaluationId: data.sourceEvaluationId ?? null,
@@ -861,6 +870,7 @@ export const pgSelfLearningRepository = {
           : {}),
         ...(data.title !== undefined ? { title: data.title } : {}),
         ...(data.content !== undefined ? { content: data.content } : {}),
+        ...(data.embedding !== undefined ? { embedding: data.embedding } : {}),
         ...(data.supportCount !== undefined
           ? { supportCount: data.supportCount }
           : {}),
@@ -930,6 +940,106 @@ export const pgSelfLearningRepository = {
       .limit(limit);
 
     return rows.map(mapMemory);
+  },
+
+  async searchActiveMemoriesForUser(input: {
+    userId: string;
+    query: string;
+    embedding?: number[] | null;
+    limit?: number;
+  }): Promise<Array<SelfLearningMemory & { score: number }>> {
+    const limit = Math.max(1, input.limit ?? 5);
+    const lexicalRows = await db.execute<{
+      id: string;
+      score: number;
+    }>(sql`
+      WITH q AS (
+        SELECT
+          websearch_to_tsquery('simple', ${input.query}) AS simple_q,
+          phraseto_tsquery('simple', ${input.query}) AS phrase_q
+      )
+      SELECT
+        ${SelfLearningMemoryTable.id} AS id,
+        (
+          ts_rank_cd(
+            to_tsvector(
+              'simple',
+              coalesce(${SelfLearningMemoryTable.title}, '') || ' ' ||
+              coalesce(${SelfLearningMemoryTable.content}, '')
+            ),
+            (SELECT simple_q FROM q)
+          )
+          + 0.25 * ts_rank_cd(
+            to_tsvector(
+              'simple',
+              coalesce(${SelfLearningMemoryTable.title}, '') || ' ' ||
+              coalesce(${SelfLearningMemoryTable.content}, '')
+            ),
+            (SELECT phrase_q FROM q)
+          )
+        ) AS score
+      FROM self_learning_memory
+      WHERE ${SelfLearningMemoryTable.userId} = ${input.userId}
+        AND ${SelfLearningMemoryTable.status} = 'active'
+        AND to_tsvector(
+          'simple',
+          coalesce(${SelfLearningMemoryTable.title}, '') || ' ' ||
+          coalesce(${SelfLearningMemoryTable.content}, '')
+        ) @@ (SELECT simple_q FROM q)
+      ORDER BY score DESC, ${SelfLearningMemoryTable.updatedAt} DESC
+      LIMIT ${limit}
+    `);
+
+    const lexicalScoreById = new Map(
+      lexicalRows.rows.map((row) => [row.id, Number(row.score)]),
+    );
+    const embeddingLiteral = toPgVectorLiteral(input.embedding ?? null);
+    const semanticRows =
+      embeddingLiteral == null
+        ? []
+        : (
+            await db.execute<{ id: string; score: number }>(sql`
+              SELECT
+                ${SelfLearningMemoryTable.id} AS id,
+                1 - (${SelfLearningMemoryTable.embedding} <=> ${embeddingLiteral}::vector) AS score
+              FROM self_learning_memory
+              WHERE ${SelfLearningMemoryTable.userId} = ${input.userId}
+                AND ${SelfLearningMemoryTable.status} = 'active'
+                AND ${SelfLearningMemoryTable.embedding} IS NOT NULL
+              ORDER BY ${SelfLearningMemoryTable.embedding} <=> ${embeddingLiteral}::vector
+              LIMIT ${limit}
+            `)
+          ).rows;
+    const semanticScoreById = new Map(
+      semanticRows.map((row) => [row.id, Number(row.score)]),
+    );
+    const ids = Array.from(
+      new Set([...lexicalScoreById.keys(), ...semanticScoreById.keys()]),
+    ).slice(0, limit * 2);
+    if (ids.length === 0) return [];
+
+    const rows = await db
+      .select()
+      .from(SelfLearningMemoryTable)
+      .where(
+        and(
+          eq(SelfLearningMemoryTable.userId, input.userId),
+          eq(SelfLearningMemoryTable.status, "active"),
+          inArray(SelfLearningMemoryTable.id, ids),
+        ),
+      );
+
+    return rows
+      .map((row) => {
+        const lexicalScore = lexicalScoreById.get(row.id) ?? 0;
+        const semanticScore = semanticScoreById.get(row.id) ?? 0;
+        return {
+          ...mapMemory(row),
+          score: lexicalScore * 0.55 + semanticScore * 0.45,
+        };
+      })
+      .sort((left, right) => right.score - left.score)
+      .slice(0, limit);
   },
 
   async listContradictingActiveMemories(

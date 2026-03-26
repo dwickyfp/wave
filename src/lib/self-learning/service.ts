@@ -32,6 +32,7 @@ import {
   settingsRepository,
 } from "lib/db/repository";
 import { runIngestPipeline } from "lib/knowledge/ingest-pipeline";
+import { embedSingleText } from "lib/knowledge/embedder";
 import { pgDb as db } from "lib/db/pg/db.pg";
 import { KnowledgeGroupTable } from "lib/db/pg/schema.pg";
 import { and, eq } from "drizzle-orm";
@@ -422,6 +423,10 @@ async function applyMemoryFromEvaluation(input: {
     hint: input.judge.contradictionFingerprint ?? input.judge.memoryTitle,
     title: input.judge.memoryTitle,
   });
+  const memoryEmbedding = await embedSelfLearningMemory({
+    title: input.judge.memoryTitle.trim(),
+    content: input.judge.memoryContent.trim(),
+  });
 
   const memory = await selfLearningRepository.upsertMemory({
     userId: input.userId,
@@ -436,6 +441,7 @@ async function applyMemoryFromEvaluation(input: {
     distinctThreadCount: supportStats.distinctThreadCount,
     sourceEvaluationId: input.evaluation.id,
     lastAppliedAt: shouldActivate ? new Date() : null,
+    embedding: memoryEmbedding,
   });
 
   const supersededIds: string[] = [];
@@ -525,6 +531,25 @@ export async function setSelfLearningEmbeddingModelConfig(
     SELF_LEARNING_EMBEDDING_MODEL_KEY,
     config,
   );
+}
+
+async function embedSelfLearningMemory(input: {
+  title: string;
+  content: string;
+}): Promise<number[] | null> {
+  const config = await getSelfLearningEmbeddingModelConfig();
+  if (!config?.provider || !config.model) return null;
+
+  try {
+    return await embedSingleText(
+      [input.title, input.content].filter(Boolean).join("\n\n"),
+      config.provider,
+      config.model,
+      { cache: false },
+    );
+  } catch {
+    return null;
+  }
 }
 
 export async function listSelfLearningUsers(input?: {

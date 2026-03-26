@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
+import type {
+  KnowledgeImageMode,
+  KnowledgeImageStructuredData,
+  KnowledgeImageType,
+} from "app-types/knowledge";
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
-import { LanguageModel, generateText } from "ai";
+import { LanguageModel, Output, generateText } from "ai";
+import { z } from "zod";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
 import { safeOutboundFetch } from "lib/network/safe-outbound-fetch";
@@ -42,11 +48,61 @@ Requirements:
 - Do not replace the visual description with a summary of surrounding text
 - If the exact visual contents are unclear, say that directly instead of guessing
 - If the image is a chart, diagram, or table-like visual, identify the chart type, axes, labels, legend, series, units, and the main relationship or trend
-- If the image is a photo or object image, identify the main subjects, actions, environment, notable text, and distinctive details
+- If the image is a table, capture the visible headers and the most salient rows or cells
+- If the image is a scan or text-heavy figure, capture exact visible OCR text when legible
 - If the image is a UI screenshot, identify the product/page, visible sections, controls, labels, statuses, and any important numbers or messages
-- Return exactly two lines in plain text:
-Label: <short specific label, 4-12 words>
-Description: <1-3 sentences about this exact image>`;
+- Only put exact text or numeric values in OCR/value fields when they are clearly visible
+- Leave chartData, tableData, OCR text, or value snippets empty when they are not applicable`;
+
+const IMAGE_ANALYSIS_OUTPUT_SCHEMA = z.object({
+  imageType: z
+    .enum([
+      "ui",
+      "chart",
+      "table",
+      "document_scan",
+      "diagram",
+      "photo",
+      "other",
+    ])
+    .default("other"),
+  label: z.string().default(""),
+  description: z.string().default(""),
+  ocrText: z.string().default(""),
+  exactValueSnippets: z.array(z.string()).default([]),
+  chartData: z
+    .object({
+      chartType: z.string().nullish(),
+      title: z.string().nullish(),
+      xAxisLabel: z.string().nullish(),
+      yAxisLabel: z.string().nullish(),
+      legend: z.array(z.string()).nullish(),
+      units: z.array(z.string()).nullish(),
+      series: z
+        .array(
+          z.object({
+            name: z.string(),
+            values: z.array(z.string()).default([]),
+          }),
+        )
+        .nullish(),
+      summary: z.string().nullish(),
+    })
+    .nullish(),
+  tableData: z
+    .object({
+      headers: z.array(z.string()).nullish(),
+      rows: z.array(z.array(z.string())).nullish(),
+      summary: z.string().nullish(),
+    })
+    .nullish(),
+  ocrConfidence: z.number().min(0).max(1).nullish(),
+});
+
+const VALUE_DENSE_IMAGE_HINT_PATTERN =
+  /\b(chart|graph|plot|figure|fig\.?|table|exhibit|diagram|legend|axis|series|histogram|heatmap|matrix|trend|scan|statement|invoice|receipt|schedule|appendix|balance|revenue|liabilities|assets|cash flow)\b/i;
+const VALUE_DENSE_NUMERIC_PATTERN =
+  /(?:[$€£¥₹]|rp\b|idr\b|usd\b|eur\b|%|\b\d[\d.,]{1,}\b)/i;
 
 type ImageCandidate = {
   index: number;
@@ -65,9 +121,19 @@ type ImageCandidate = {
   anchor?: ProcessedImageAnchor | null;
 };
 
+type StructuredImageAnalysisOutput = z.infer<
+  typeof IMAGE_ANALYSIS_OUTPUT_SCHEMA
+>;
+type ImageAnalysisDetail = "simple" | "rich";
+
 type ImageAnalysis = {
+  imageType: KnowledgeImageType;
   label: string;
   description: string;
+  ocrText?: string | null;
+  exactValueSnippets?: string[] | null;
+  structuredData?: KnowledgeImageStructuredData | null;
+  ocrConfidence?: number | null;
 };
 
 type ResolvedImageContext = Pick<
@@ -113,6 +179,25 @@ function cleanInlineText(value: string | null | undefined): string {
     .trim();
 }
 
+function normalizeImageMode(
+  value: KnowledgeImageMode | null | undefined,
+): KnowledgeImageMode {
+  if (value === "off" || value === "always") {
+    return value;
+  }
+  return "auto";
+}
+
+function cleanMultilineText(value: string | null | undefined): string {
+  return (value ?? "")
+    .normalize("NFC")
+    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "")
+    .split(/\r?\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
 function clipText(value: string | null | undefined, maxChars: number): string {
   const cleaned = cleanInlineText(value);
   if (cleaned.length <= maxChars) return cleaned;
@@ -129,6 +214,87 @@ function escapeRegExp(value: string): string {
 
 function ensureSentenceEnding(value: string): string {
   return /[.!?]$/.test(value) ? value : `${value}.`;
+}
+
+function guessImageTypeFromCandidate(
+  candidate: ImageCandidate,
+): KnowledgeImageType {
+  const context = [
+    candidate.altText,
+    candidate.caption,
+    candidate.surroundingText,
+    candidate.precedingText,
+    candidate.followingText,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    /\b(chart|graph|plot|histogram|trend|series|axis|legend)\b/.test(context)
+  ) {
+    return "chart";
+  }
+  if (/\b(table|rows?|columns?|tabular)\b/.test(context)) {
+    return "table";
+  }
+  if (/\b(scan|statement|invoice|receipt|form|document)\b/.test(context)) {
+    return "document_scan";
+  }
+  if (
+    /\b(ui|screen|dialog|modal|page|settings|dashboard|button|form field)\b/.test(
+      context,
+    )
+  ) {
+    return "ui";
+  }
+  if (/\b(diagram|architecture|workflow|flowchart|schema)\b/.test(context)) {
+    return "diagram";
+  }
+  if (/\b(photo|portrait|person|camera)\b/.test(context)) {
+    return "photo";
+  }
+  return "other";
+}
+
+function resolveImageAnalysisDetail(
+  candidate: ImageCandidate,
+  imageMode: KnowledgeImageMode,
+): ImageAnalysisDetail {
+  if (imageMode === "always") {
+    return "rich";
+  }
+
+  const context = [
+    candidate.altText,
+    candidate.caption,
+    candidate.surroundingText,
+    candidate.precedingText,
+    candidate.followingText,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const area =
+    Math.max(0, candidate.width ?? 0) * Math.max(0, candidate.height ?? 0);
+  const hasValueDenseHint = VALUE_DENSE_IMAGE_HINT_PATTERN.test(context);
+  const hasNumericHint = VALUE_DENSE_NUMERIC_PATTERN.test(context);
+  const hasPdfCaptionAnchor =
+    candidate.anchor?.source === "caption" ||
+    candidate.anchor?.source === "pdf-layout";
+
+  if (hasValueDenseHint) {
+    return "rich";
+  }
+  if (
+    (hasNumericHint && hasPdfCaptionAnchor) ||
+    (hasNumericHint && area >= 90_000)
+  ) {
+    return "rich";
+  }
+  if (candidate.pageNumber != null && hasPdfCaptionAnchor && area >= 120_000) {
+    return "rich";
+  }
+  return "simple";
 }
 
 function isProbablyDecorativeHtmlImage(
@@ -401,6 +567,94 @@ function buildImageFallbackLabel(candidate: ImageCandidate): string {
   return `Embedded image ${candidate.index}`;
 }
 
+function normalizeExactValueSnippets(
+  values: string[] | null | undefined,
+): string[] | null {
+  const normalized = Array.from(
+    new Set(
+      (values ?? []).map((value) => cleanInlineText(value)).filter(Boolean),
+    ),
+  ).slice(0, 8);
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeStructuredData(
+  output: StructuredImageAnalysisOutput,
+): KnowledgeImageStructuredData | null {
+  const chartSeries = (output.chartData?.series ?? [])
+    .map((entry) => ({
+      name: cleanInlineText(entry.name),
+      values: entry.values
+        .map((value) => cleanInlineText(value))
+        .filter(Boolean),
+    }))
+    .filter((entry) => entry.name || entry.values.length > 0);
+  const chartData =
+    output.chartData &&
+    [
+      output.chartData.chartType,
+      output.chartData.title,
+      output.chartData.xAxisLabel,
+      output.chartData.yAxisLabel,
+      output.chartData.summary,
+      ...(output.chartData.legend ?? []),
+      ...(output.chartData.units ?? []),
+      ...chartSeries.map((entry) => entry.name),
+      ...chartSeries.flatMap((entry) => entry.values),
+    ]
+      .map((value) => cleanInlineText(value))
+      .some(Boolean)
+      ? {
+          chartType: cleanInlineText(output.chartData.chartType) || null,
+          title: cleanInlineText(output.chartData.title) || null,
+          xAxisLabel: cleanInlineText(output.chartData.xAxisLabel) || null,
+          yAxisLabel: cleanInlineText(output.chartData.yAxisLabel) || null,
+          legend:
+            output.chartData.legend
+              ?.map((entry) => cleanInlineText(entry))
+              .filter(Boolean) ?? null,
+          units:
+            output.chartData.units
+              ?.map((entry) => cleanInlineText(entry))
+              .filter(Boolean) ?? null,
+          series: chartSeries.length > 0 ? chartSeries : null,
+          summary: cleanInlineText(output.chartData.summary) || null,
+        }
+      : null;
+
+  const tableRows = (output.tableData?.rows ?? [])
+    .map((row) => row.map((cell) => cleanInlineText(cell)).filter(Boolean))
+    .filter((row) => row.length > 0)
+    .slice(0, 6);
+  const tableData =
+    output.tableData &&
+    [
+      ...(output.tableData.headers ?? []),
+      ...(output.tableData.rows ?? []).flat(),
+      output.tableData.summary,
+    ]
+      .map((value) => cleanInlineText(value))
+      .some(Boolean)
+      ? {
+          headers:
+            output.tableData.headers
+              ?.map((entry) => cleanInlineText(entry))
+              .filter(Boolean) ?? null,
+          rows: tableRows.length > 0 ? tableRows : null,
+          summary: cleanInlineText(output.tableData.summary) || null,
+        }
+      : null;
+
+  if (!chartData && !tableData) {
+    return null;
+  }
+
+  return {
+    chartData,
+    tableData,
+  };
+}
+
 function buildImageFallbackAnalysis(
   candidate: ImageCandidate,
   options: { includeIdentity?: boolean } = {},
@@ -411,17 +665,26 @@ function buildImageFallbackAnalysis(
   }
 
   return {
+    imageType: guessImageTypeFromCandidate(candidate),
     label: buildImageFallbackLabel(candidate),
     description,
+    ocrText: null,
+    exactValueSnippets: null,
+    structuredData: null,
+    ocrConfidence: null,
   };
 }
 
 function buildImageAnalysisPrompt(
   candidate: ImageCandidate,
   documentTitle?: string,
-  options: { neighborContextEnabled?: boolean } = {},
+  options: {
+    neighborContextEnabled?: boolean;
+    detail?: ImageAnalysisDetail;
+  } = {},
 ): string {
   const neighborContextEnabled = options.neighborContextEnabled !== false;
+  const detail = options.detail ?? "simple";
   const parts = [
     documentTitle ? `Document title: ${documentTitle}` : null,
     `Image index in document: ${candidate.index}`,
@@ -445,13 +708,14 @@ function buildImageAnalysisPrompt(
       : null,
     "",
     "Analyze this exact image for later retrieval.",
+    detail === "rich"
+      ? "This image looks value-dense. Prioritize exact OCR text, chart axes and series, table headers and rows, and exact numeric snippets when they are legible."
+      : "This image does not look strongly value-dense. Focus on a precise label and description, and only fill OCR or structured fields if the visible text is clear and materially useful.",
     neighborContextEnabled
       ? "If the before/after text materially disambiguates the image, add at most one short context sentence to the description."
       : "Do not add context sentences from nearby document text unless they are directly visible in the image.",
     "Keep the label image-focused and keep the description primarily about what is visible.",
-    "Return exactly two lines:",
-    "Label: ...",
-    "Description: ...",
+    "Populate the structured fields for image type, label, description, OCR text, exact values, and chart/table data.",
   ];
 
   return parts.filter(Boolean).join("\n");
@@ -500,7 +764,32 @@ function deriveImageLabel(
   );
 }
 
-function parseImageAnalysisResponse(
+function buildStructuredImageAnalysis(
+  output: StructuredImageAnalysisOutput,
+  candidate: ImageCandidate,
+): ImageAnalysis {
+  const fallback = buildImageFallbackAnalysis(candidate);
+  const label = normalizeGeneratedLabel(output.label) || fallback.label;
+  const description =
+    normalizeGeneratedDescription(output.description) || fallback.description;
+  const ocrText = cleanMultilineText(output.ocrText);
+
+  return {
+    imageType: output.imageType ?? fallback.imageType,
+    label: shortenLabel(label),
+    description,
+    ocrText: ocrText || null,
+    exactValueSnippets: normalizeExactValueSnippets(output.exactValueSnippets),
+    structuredData: normalizeStructuredData(output),
+    ocrConfidence:
+      typeof output.ocrConfidence === "number" &&
+      Number.isFinite(output.ocrConfidence)
+        ? Math.max(0, Math.min(1, output.ocrConfidence))
+        : null,
+  };
+}
+
+function parseLegacyImageAnalysisText(
   text: string,
   candidate: ImageCandidate,
 ): ImageAnalysis {
@@ -518,8 +807,13 @@ function parseImageAnalysisResponse(
 
   if (label && description) {
     return {
+      imageType: guessImageTypeFromCandidate(candidate),
       label: shortenLabel(label),
       description,
+      ocrText: null,
+      exactValueSnippets: null,
+      structuredData: null,
+      ocrConfidence: null,
     };
   }
 
@@ -534,19 +828,57 @@ function parseImageAnalysisResponse(
 
   if (inferredLabel && inferredDescription) {
     return {
+      imageType: guessImageTypeFromCandidate(candidate),
       label: shortenLabel(inferredLabel),
       description: inferredDescription,
+      ocrText: null,
+      exactValueSnippets: null,
+      structuredData: null,
+      ocrConfidence: null,
     };
   }
 
   if (inferredDescription) {
     return {
+      imageType: guessImageTypeFromCandidate(candidate),
       label: deriveImageLabel(candidate, inferredDescription),
       description: inferredDescription,
+      ocrText: null,
+      exactValueSnippets: null,
+      structuredData: null,
+      ocrConfidence: null,
     };
   }
 
   return buildImageFallbackAnalysis(candidate);
+}
+
+function parseImageAnalysisResponse(
+  result: { output?: unknown; text?: string },
+  candidate: ImageCandidate,
+): ImageAnalysis {
+  const structured = IMAGE_ANALYSIS_OUTPUT_SCHEMA.safeParse(result.output);
+  if (structured.success) {
+    return buildStructuredImageAnalysis(structured.data, candidate);
+  }
+
+  const text = typeof result.text === "string" ? result.text.trim() : "";
+  if (!text) {
+    return buildImageFallbackAnalysis(candidate);
+  }
+
+  try {
+    const parsedJson = JSON.parse(text);
+    const structuredFromJson =
+      IMAGE_ANALYSIS_OUTPUT_SCHEMA.safeParse(parsedJson);
+    if (structuredFromJson.success) {
+      return buildStructuredImageAnalysis(structuredFromJson.data, candidate);
+    }
+  } catch {
+    // fall through to legacy plain-text parsing
+  }
+
+  return parseLegacyImageAnalysisText(text, candidate);
 }
 
 function buildImageCandidateFingerprint(candidate: ImageCandidate): string {
@@ -563,9 +895,14 @@ function buildImageCandidateFingerprint(candidate: ImageCandidate): string {
 }
 
 function normalizeImageAnalysisSignature(analysis: ImageAnalysis): string {
-  return `${cleanInlineText(analysis.label).toLowerCase()}|${cleanInlineText(
-    analysis.description,
-  ).toLowerCase()}`;
+  return [
+    cleanInlineText(analysis.label).toLowerCase(),
+    cleanInlineText(analysis.description).toLowerCase(),
+    cleanInlineText(analysis.ocrText).toLowerCase(),
+    ...(analysis.exactValueSnippets ?? []).map((entry) =>
+      cleanInlineText(entry).toLowerCase(),
+    ),
+  ].join("|");
 }
 
 function ensureDistinctImageAnalyses(
@@ -687,6 +1024,12 @@ async function analyzeImageCandidate(
   resolvedModel: ResolvedImageAnalysisModel | null,
 ): Promise<ImageAnalysis> {
   const imageAnalysisRequired = options.imageAnalysisRequired === true;
+  const imageMode = normalizeImageMode(options.imageMode);
+  if (imageMode === "off") {
+    return buildImageFallbackAnalysis(candidate);
+  }
+
+  const analysisDetail = resolveImageAnalysisDetail(candidate, imageMode);
   const hasImagePayload =
     Boolean(candidate.buffer) &&
     (candidate.mediaType?.startsWith("image/") ?? true);
@@ -722,6 +1065,7 @@ async function analyzeImageCandidate(
         type: "text",
         text: buildImageAnalysisPrompt(candidate, options.documentTitle, {
           neighborContextEnabled: options.imageNeighborContextEnabled,
+          detail: analysisDetail,
         }),
       },
     ];
@@ -732,14 +1076,23 @@ async function analyzeImageCandidate(
       ...(candidate.mediaType ? { mediaType: candidate.mediaType } : {}),
     });
 
-    const { text } = await generateText({
+    const result = await generateText({
       model: resolvedModel.model,
       system: IMAGE_ANALYSIS_SYSTEM_PROMPT,
+      output: Output.object({
+        schema: IMAGE_ANALYSIS_OUTPUT_SCHEMA,
+        name: "knowledge_image_analysis",
+        description:
+          "Structured OCR and caption analysis for a single knowledge image.",
+      }),
       messages: [{ role: "user", content }],
       temperature: 0,
     });
 
-    return parseImageAnalysisResponse(text, candidate);
+    return parseImageAnalysisResponse(
+      result as { output?: unknown; text?: string },
+      candidate,
+    );
   } catch (error) {
     if (imageAnalysisRequired) {
       throw error instanceof Error
@@ -856,8 +1209,12 @@ export async function generateContextImageArtifacts(
     candidates.map((candidate) => normalizeImageCandidate(candidate)),
   );
 
-  const resolvedModel = await resolveImageAnalysisModel(options.imageAnalysis);
-  if (options.imageAnalysisRequired && !resolvedModel) {
+  const imageMode = normalizeImageMode(options.imageMode);
+  const resolvedModel =
+    imageMode === "off"
+      ? null
+      : await resolveImageAnalysisModel(options.imageAnalysis);
+  if (options.imageAnalysisRequired && imageMode !== "off" && !resolvedModel) {
     throw new Error(
       "Knowledge image model is required for image analysis but is not configured or enabled",
     );
@@ -887,6 +1244,11 @@ export async function generateContextImageArtifacts(
     surroundingText: normalizedCandidates[index].surroundingText ?? null,
     precedingText: normalizedCandidates[index].precedingText ?? null,
     followingText: normalizedCandidates[index].followingText ?? null,
+    imageType: analysis.imageType ?? null,
+    ocrText: analysis.ocrText ?? null,
+    ocrConfidence: analysis.ocrConfidence ?? null,
+    exactValueSnippets: analysis.exactValueSnippets ?? null,
+    structuredData: analysis.structuredData ?? null,
     label: analysis.label,
     description: analysis.description,
     anchor: normalizedCandidates[index].anchor ?? null,

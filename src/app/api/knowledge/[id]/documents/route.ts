@@ -9,6 +9,7 @@ import {
   buildKnowledgeDocumentUploadPath,
   StorageUploadPolicyError,
 } from "lib/file-storage/upload-policy";
+import { resolveDocumentFileType } from "lib/knowledge/content-routing";
 import { reconcileDocumentIngestFailure } from "lib/knowledge/versioning";
 import { enqueueIngestDocument } from "lib/knowledge/worker-client";
 import { NextRequest, NextResponse } from "next/server";
@@ -16,19 +17,6 @@ import { NextRequest, NextResponse } from "next/server";
 interface Params {
   params: Promise<{ id: string }>;
 }
-
-const MIME_TO_TYPE: Record<string, DocumentFileType> = {
-  "application/pdf": "pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-    "docx",
-  "application/msword": "docx",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-  "application/vnd.ms-excel": "xlsx",
-  "text/csv": "csv",
-  "text/plain": "txt",
-  "text/markdown": "md",
-  "text/html": "html",
-};
 
 function buildSha256Fingerprint(
   input: Buffer | string,
@@ -327,7 +315,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     throw error;
   }
 
-  const fileType = MIME_TO_TYPE[file.type] ?? "txt";
+  const fileType = resolveDocumentFileType({
+    filename: file.name,
+    mimeType: file.type,
+  });
   const buffer = Buffer.from(await file.arrayBuffer());
   const fingerprint = buildSha256Fingerprint(buffer, "file");
   const existing = await findExistingFileDocument({

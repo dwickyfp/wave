@@ -1,4 +1,9 @@
-import type { ChatKnowledgeImage, ChatKnowledgeSource } from "app-types/chat";
+import type {
+  ChatKnowledgeImage,
+  ChatKnowledgeSource,
+  ChatMetadata,
+} from "app-types/chat";
+import type { UIMessage } from "ai";
 import type { RetrievedKnowledgeImage } from "lib/knowledge/retriever";
 import { buildKnowledgeImageAssetUrl } from "lib/knowledge/document-images";
 
@@ -87,6 +92,62 @@ export function dedupeChatKnowledgeImages(
     }
   }
   return Array.from(deduped.values());
+}
+
+function isChatKnowledgeImage(value: unknown): value is ChatKnowledgeImage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const image = value as Partial<ChatKnowledgeImage>;
+  return (
+    typeof image.groupId === "string" &&
+    typeof image.groupName === "string" &&
+    typeof image.documentId === "string" &&
+    typeof image.documentName === "string" &&
+    typeof image.imageId === "string" &&
+    typeof image.label === "string" &&
+    typeof image.description === "string"
+  );
+}
+
+function extractToolOutputKnowledgeImages(
+  parts: UIMessage["parts"],
+): ChatKnowledgeImage[] {
+  return dedupeChatKnowledgeImages(
+    parts.flatMap((part) => {
+      if (!("output" in part)) {
+        return [];
+      }
+
+      const images = (part.output as { images?: unknown } | undefined)?.images;
+      if (!Array.isArray(images)) {
+        return [];
+      }
+
+      return images.filter(isChatKnowledgeImage);
+    }),
+  );
+}
+
+export function getMessageKnowledgeImages(message: UIMessage) {
+  const metadata = message.metadata as ChatMetadata | undefined;
+  const metadataImages = Array.isArray(metadata?.knowledgeImages)
+    ? dedupeChatKnowledgeImages(
+        metadata.knowledgeImages.filter(isChatKnowledgeImage),
+      )
+    : [];
+  const toolOutputImages = extractToolOutputKnowledgeImages(message.parts);
+
+  if (!metadataImages.length) {
+    return toolOutputImages;
+  }
+
+  if (!toolOutputImages.length) {
+    return metadataImages;
+  }
+
+  return dedupeChatKnowledgeImages([...metadataImages, ...toolOutputImages]);
 }
 
 export function buildChatKnowledgeImages(input: {

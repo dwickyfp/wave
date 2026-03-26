@@ -53,8 +53,8 @@ function mapGroup(
     rerankingProvider: row.rerankingProvider ?? null,
     parseMode: row.parseMode ?? "always",
     parseRepairPolicy: row.parseRepairPolicy ?? "section-safe-reorder",
-    contextMode: row.contextMode ?? "always-llm",
-    imageMode: row.imageMode ?? "always",
+    contextMode: row.contextMode ?? "auto-llm",
+    imageMode: row.imageMode ?? "auto",
     lazyRefinementEnabled: row.lazyRefinementEnabled ?? true,
     parsingModel: row.parsingModel ?? null,
     parsingProvider: row.parsingProvider ?? null,
@@ -165,6 +165,11 @@ type DocumentImageRow = Pick<
   | "surroundingText"
   | "precedingText"
   | "followingText"
+  | "imageType"
+  | "ocrText"
+  | "ocrConfidence"
+  | "exactValueSnippets"
+  | "structuredData"
   | "isRenderable"
   | "manualLabel"
   | "manualDescription"
@@ -195,6 +200,11 @@ const knowledgeDocumentImageSelection = {
   surroundingText: KnowledgeDocumentImageTable.surroundingText,
   precedingText: KnowledgeDocumentImageTable.precedingText,
   followingText: KnowledgeDocumentImageTable.followingText,
+  imageType: KnowledgeDocumentImageTable.imageType,
+  ocrText: KnowledgeDocumentImageTable.ocrText,
+  ocrConfidence: KnowledgeDocumentImageTable.ocrConfidence,
+  exactValueSnippets: KnowledgeDocumentImageTable.exactValueSnippets,
+  structuredData: KnowledgeDocumentImageTable.structuredData,
   isRenderable: KnowledgeDocumentImageTable.isRenderable,
   manualLabel: KnowledgeDocumentImageTable.manualLabel,
   manualDescription: KnowledgeDocumentImageTable.manualDescription,
@@ -225,6 +235,11 @@ const knowledgeDocumentImageVersionSelection = {
   surroundingText: KnowledgeDocumentImageVersionTable.surroundingText,
   precedingText: KnowledgeDocumentImageVersionTable.precedingText,
   followingText: KnowledgeDocumentImageVersionTable.followingText,
+  imageType: KnowledgeDocumentImageVersionTable.imageType,
+  ocrText: KnowledgeDocumentImageVersionTable.ocrText,
+  ocrConfidence: KnowledgeDocumentImageVersionTable.ocrConfidence,
+  exactValueSnippets: KnowledgeDocumentImageVersionTable.exactValueSnippets,
+  structuredData: KnowledgeDocumentImageVersionTable.structuredData,
   isRenderable: KnowledgeDocumentImageVersionTable.isRenderable,
   manualLabel: KnowledgeDocumentImageVersionTable.manualLabel,
   manualDescription: KnowledgeDocumentImageVersionTable.manualDescription,
@@ -256,6 +271,11 @@ function mapDocumentImage(row: DocumentImageRow): KnowledgeDocumentImage {
     surroundingText: row.surroundingText ?? null,
     precedingText: row.precedingText ?? null,
     followingText: row.followingText ?? null,
+    imageType: row.imageType ?? null,
+    ocrText: row.ocrText ?? null,
+    ocrConfidence: row.ocrConfidence ?? null,
+    exactValueSnippets: row.exactValueSnippets ?? null,
+    structuredData: row.structuredData ?? null,
     isRenderable: row.isRenderable ?? false,
     manualLabel: row.manualLabel ?? false,
     manualDescription: row.manualDescription ?? false,
@@ -506,8 +526,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         rerankingProvider: r.rerankingProvider ?? null,
         parseMode: r.parseMode ?? "always",
         parseRepairPolicy: r.parseRepairPolicy ?? "section-safe-reorder",
-        contextMode: r.contextMode ?? "always-llm",
-        imageMode: r.imageMode ?? "always",
+        contextMode: r.contextMode ?? "auto-llm",
+        imageMode: r.imageMode ?? "auto",
         lazyRefinementEnabled: r.lazyRefinementEnabled ?? true,
         parsingModel: r.parsingModel ?? null,
         parsingProvider: r.parsingProvider ?? null,
@@ -2117,6 +2137,10 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           content: c.content,
           contextSummary: c.contextSummary ?? null,
           embedding: (c as any).embedding ?? null,
+          contentEmbedding: (c as any).contentEmbedding ?? null,
+          contextEmbedding: (c as any).contextEmbedding ?? null,
+          identityEmbedding: (c as any).identityEmbedding ?? null,
+          entityEmbedding: (c as any).entityEmbedding ?? null,
           chunkIndex: c.chunkIndex,
           tokenCount: c.tokenCount,
           metadata: c.metadata ?? null,
@@ -2178,6 +2202,77 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           ${documentFilter}
           ${sectionFilter}
         ORDER BY kc.embedding <=> ${embeddingStr}::vector
+        LIMIT ${limit}
+      `,
+    );
+
+    return rows.rows.map((r) => ({
+      chunk: {
+        id: r.id,
+        documentId: r.document_id,
+        groupId: r.group_id,
+        sectionId: r.section_id,
+        content: r.content,
+        contextSummary: r.context_summary,
+        chunkIndex: r.chunk_index,
+        tokenCount: r.token_count,
+        metadata: r.metadata,
+        createdAt: r.created_at,
+      } as KnowledgeChunk,
+      documentName: r.document_name,
+      documentId: r.document_id,
+      score: Number(r.score),
+    }));
+  },
+
+  async vectorSearchByEmbeddingKind(groupId, embedding, limit, kind, filters) {
+    const columnByKind = {
+      content: "kc.content_embedding",
+      context: "kc.context_embedding",
+      identity: "kc.identity_embedding",
+      entity: "kc.entity_embedding",
+    } as const;
+    const selectedColumn = columnByKind[kind];
+    const { typedColumn, typedEmbedding, dimensionFilter } =
+      buildTypedVectorComparison(selectedColumn, embedding);
+    const documentFilter = buildUuidFilterSql(
+      "kc.document_id",
+      filters?.documentIds,
+    );
+    const sectionFilter = buildUuidFilterSql(
+      "kc.section_id",
+      filters?.sectionIds,
+    );
+
+    const rows = await db.execute<{
+      id: string;
+      document_id: string;
+      group_id: string;
+      section_id: string | null;
+      content: string;
+      context_summary: string | null;
+      chunk_index: number;
+      token_count: number;
+      metadata: any;
+      created_at: Date;
+      document_name: string;
+      score: number;
+    }>(
+      sql`
+        SELECT
+          kc.id, kc.document_id, kc.group_id, kc.section_id, kc.content, kc.context_summary,
+          kc.chunk_index, kc.token_count, kc.metadata, kc.created_at,
+          kd.name AS document_name,
+          1 - (${typedColumn} <=> ${typedEmbedding}) AS score
+        FROM knowledge_chunk kc
+        JOIN knowledge_document kd ON kd.id = kc.document_id
+        WHERE kc.group_id = ${groupId}
+          AND ${sql.raw(selectedColumn)} IS NOT NULL
+          AND ${dimensionFilter}
+          AND kd.status = 'ready'
+          ${documentFilter}
+          ${sectionFilter}
+        ORDER BY ${typedColumn} <=> ${typedEmbedding}
         LIMIT ${limit}
       `,
     );
@@ -2497,6 +2592,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       surrounding_text: string | null;
       preceding_text: string | null;
       following_text: string | null;
+      image_type:
+        | "ui"
+        | "chart"
+        | "table"
+        | "document_scan"
+        | "diagram"
+        | "photo"
+        | "other"
+        | null;
+      ocr_text: string | null;
+      ocr_confidence: number | null;
+      exact_value_snippets: string[] | null;
+      structured_data: KnowledgeDocumentImage["structuredData"] | null;
       is_renderable: boolean;
       manual_label: boolean;
       manual_description: boolean;
@@ -2535,6 +2643,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           kdi.surrounding_text,
           kdi.preceding_text,
           kdi.following_text,
+          kdi.image_type,
+          kdi.ocr_text,
+          kdi.ocr_confidence,
+          kdi.exact_value_snippets,
+          kdi.structured_data,
           kdi.is_renderable,
           kdi.manual_label,
           kdi.manual_description,
@@ -2553,7 +2666,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   coalesce(kdi.alt_text, '') || ' ' ||
                   coalesce(kdi.preceding_text, '') || ' ' ||
                   coalesce(kdi.following_text, '') || ' ' ||
-                  coalesce(kdi.surrounding_text, '')
+                  coalesce(kdi.surrounding_text, '') || ' ' ||
+                  coalesce(kdi.image_type, '') || ' ' ||
+                  coalesce(kdi.ocr_text, '') || ' ' ||
+                  coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+                  coalesce(kdi.structured_data::text, '')
                 ),
                 (SELECT english_q FROM q)
               ),
@@ -2568,7 +2685,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   coalesce(kdi.alt_text, '') || ' ' ||
                   coalesce(kdi.preceding_text, '') || ' ' ||
                   coalesce(kdi.following_text, '') || ' ' ||
-                  coalesce(kdi.surrounding_text, '')
+                  coalesce(kdi.surrounding_text, '') || ' ' ||
+                  coalesce(kdi.image_type, '') || ' ' ||
+                  coalesce(kdi.ocr_text, '') || ' ' ||
+                  coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+                  coalesce(kdi.structured_data::text, '')
                 ),
                 (SELECT simple_q FROM q)
               )
@@ -2583,7 +2704,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   coalesce(kdi.alt_text, '') || ' ' ||
                   coalesce(kdi.preceding_text, '') || ' ' ||
                   coalesce(kdi.following_text, '') || ' ' ||
-                  coalesce(kdi.surrounding_text, '')
+                  coalesce(kdi.surrounding_text, '') || ' ' ||
+                  coalesce(kdi.image_type, '') || ' ' ||
+                  coalesce(kdi.ocr_text, '') || ' ' ||
+                  coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+                  coalesce(kdi.structured_data::text, '')
                 ) ILIKE (SELECT ilike_q FROM q) THEN 0.15
                 ELSE 0
               END
@@ -2598,7 +2723,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                     coalesce(kdi.alt_text, '') || ' ' ||
                     coalesce(kdi.preceding_text, '') || ' ' ||
                     coalesce(kdi.following_text, '') || ' ' ||
-                    coalesce(kdi.surrounding_text, ''),
+                    coalesce(kdi.surrounding_text, '') || ' ' ||
+                    coalesce(kdi.image_type, '') || ' ' ||
+                    coalesce(kdi.ocr_text, '') || ' ' ||
+                    coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+                    coalesce(kdi.structured_data::text, ''),
                     '\s+',
                     ' ',
                     'g'
@@ -2622,7 +2751,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kdi.alt_text, '') || ' ' ||
               coalesce(kdi.preceding_text, '') || ' ' ||
               coalesce(kdi.following_text, '') || ' ' ||
-              coalesce(kdi.surrounding_text, '')
+              coalesce(kdi.surrounding_text, '') || ' ' ||
+              coalesce(kdi.image_type, '') || ' ' ||
+              coalesce(kdi.ocr_text, '') || ' ' ||
+              coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+              coalesce(kdi.structured_data::text, '')
             ) @@ (SELECT english_q FROM q)
             OR to_tsvector(
               'simple',
@@ -2634,7 +2767,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kdi.alt_text, '') || ' ' ||
               coalesce(kdi.preceding_text, '') || ' ' ||
               coalesce(kdi.following_text, '') || ' ' ||
-              coalesce(kdi.surrounding_text, '')
+              coalesce(kdi.surrounding_text, '') || ' ' ||
+              coalesce(kdi.image_type, '') || ' ' ||
+              coalesce(kdi.ocr_text, '') || ' ' ||
+              coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+              coalesce(kdi.structured_data::text, '')
             ) @@ (SELECT simple_q FROM q)
             OR (
               coalesce(kdi.label, '') || ' ' ||
@@ -2645,7 +2782,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               coalesce(kdi.alt_text, '') || ' ' ||
               coalesce(kdi.preceding_text, '') || ' ' ||
               coalesce(kdi.following_text, '') || ' ' ||
-              coalesce(kdi.surrounding_text, '')
+              coalesce(kdi.surrounding_text, '') || ' ' ||
+              coalesce(kdi.image_type, '') || ' ' ||
+              coalesce(kdi.ocr_text, '') || ' ' ||
+              coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+              coalesce(kdi.structured_data::text, '')
             ) ILIKE (SELECT ilike_q FROM q)
             OR similarity(
               lower(
@@ -2658,7 +2799,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
                   coalesce(kdi.alt_text, '') || ' ' ||
                   coalesce(kdi.preceding_text, '') || ' ' ||
                   coalesce(kdi.following_text, '') || ' ' ||
-                  coalesce(kdi.surrounding_text, ''),
+                  coalesce(kdi.surrounding_text, '') || ' ' ||
+                  coalesce(kdi.image_type, '') || ' ' ||
+                  coalesce(kdi.ocr_text, '') || ' ' ||
+                  coalesce(kdi.exact_value_snippets::text, '') || ' ' ||
+                  coalesce(kdi.structured_data::text, ''),
                   '\s+',
                   ' ',
                   'g'
@@ -2696,6 +2841,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         surroundingText: row.surrounding_text,
         precedingText: row.preceding_text,
         followingText: row.following_text,
+        imageType: row.image_type,
+        ocrText: row.ocr_text,
+        ocrConfidence: row.ocr_confidence,
+        exactValueSnippets: row.exact_value_snippets,
+        structuredData: row.structured_data,
         isRenderable: row.is_renderable,
         manualLabel: row.manual_label,
         manualDescription: row.manual_description,
@@ -2741,6 +2891,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
       surrounding_text: string | null;
       preceding_text: string | null;
       following_text: string | null;
+      image_type:
+        | "ui"
+        | "chart"
+        | "table"
+        | "document_scan"
+        | "diagram"
+        | "photo"
+        | "other"
+        | null;
+      ocr_text: string | null;
+      ocr_confidence: number | null;
+      exact_value_snippets: string[] | null;
+      structured_data: KnowledgeDocumentImage["structuredData"] | null;
       is_renderable: boolean;
       manual_label: boolean;
       manual_description: boolean;
@@ -2772,6 +2935,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           kdi.surrounding_text,
           kdi.preceding_text,
           kdi.following_text,
+          kdi.image_type,
+          kdi.ocr_text,
+          kdi.ocr_confidence,
+          kdi.exact_value_snippets,
+          kdi.structured_data,
           kdi.is_renderable,
           kdi.manual_label,
           kdi.manual_description,
@@ -2813,6 +2981,11 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         surroundingText: row.surrounding_text,
         precedingText: row.preceding_text,
         followingText: row.following_text,
+        imageType: row.image_type,
+        ocrText: row.ocr_text,
+        ocrConfidence: row.ocr_confidence,
+        exactValueSnippets: row.exact_value_snippets,
+        structuredData: row.structured_data,
         isRenderable: row.is_renderable,
         manualLabel: row.manual_label,
         manualDescription: row.manual_description,
@@ -2968,8 +3141,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
         rerankingProvider: r.rerankingProvider ?? null,
         parseMode: r.parseMode ?? "always",
         parseRepairPolicy: r.parseRepairPolicy ?? "section-safe-reorder",
-        contextMode: r.contextMode ?? "always-llm",
-        imageMode: r.imageMode ?? "always",
+        contextMode: r.contextMode ?? "auto-llm",
+        imageMode: r.imageMode ?? "auto",
         lazyRefinementEnabled: r.lazyRefinementEnabled ?? true,
         parsingModel: r.parsingModel ?? null,
         parsingProvider: r.parsingProvider ?? null,

@@ -1,6 +1,6 @@
 "use client";
 
-import { isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
+import { isToolUIPart, type UIMessage } from "ai";
 import { memo, useMemo, useState } from "react";
 import equal from "lib/equal";
 import dynamic from "next/dynamic";
@@ -10,6 +10,7 @@ import type { UseChatHelpers } from "@ai-sdk/react";
 import {
   UserMessagePart,
   AssistMessagePart,
+  KnowledgeImageMessagePart,
   ToolMessagePart,
   ReasoningPart,
   FileMessagePart,
@@ -19,6 +20,8 @@ import { ChevronDown, ChevronUp, TriangleAlertIcon } from "lucide-react";
 import { Button } from "ui/button";
 import { useTranslations } from "next-intl";
 import { ChatMetadata } from "app-types/chat";
+import { getMessageKnowledgeImages } from "lib/chat/knowledge-sources";
+import { buildRenderGroups } from "./message-render-groups";
 
 const ParallelSubAgentsGroup = dynamic(
   () =>
@@ -27,51 +30,6 @@ const ParallelSubAgentsGroup = dynamic(
     ),
   { ssr: false },
 );
-
-type RenderGroup =
-  | { type: "single"; part: UIMessage["parts"][number]; index: number }
-  | { type: "parallel-subagents"; parts: ToolUIPart[]; startIndex: number };
-
-function buildRenderGroups(partsForDisplay: UIMessage["parts"]): RenderGroup[] {
-  const groups: RenderGroup[] = [];
-  let stepSubagents: { part: ToolUIPart; index: number }[] = [];
-
-  const flush = () => {
-    if (stepSubagents.length >= 2) {
-      groups.push({
-        type: "parallel-subagents",
-        parts: stepSubagents.map((s) => s.part),
-        startIndex: stepSubagents[0].index,
-      });
-    } else if (stepSubagents.length === 1) {
-      groups.push({
-        type: "single",
-        part: stepSubagents[0].part,
-        index: stepSubagents[0].index,
-      });
-    }
-    stepSubagents = [];
-  };
-
-  partsForDisplay.forEach((part, index) => {
-    if (part.type === "step-start") {
-      flush();
-      return;
-    }
-    if (
-      isToolUIPart(part) &&
-      ((part as any).toolName as string | undefined)?.startsWith("subagent_")
-    ) {
-      stepSubagents.push({ part: part as ToolUIPart, index });
-    } else {
-      flush();
-      groups.push({ type: "single", part, index });
-    }
-  });
-  flush();
-
-  return groups;
-}
 
 interface Props {
   message: UIMessage;
@@ -110,10 +68,15 @@ const PurePreviewMessage = ({
       ),
     [message.parts],
   );
+  const knowledgeImages = useMemo(
+    () =>
+      message.role === "assistant" ? getMessageKnowledgeImages(message) : [],
+    [message],
+  );
 
   const renderGroups = useMemo(
-    () => buildRenderGroups(partsForDisplay),
-    [partsForDisplay],
+    () => buildRenderGroups(partsForDisplay, knowledgeImages),
+    [partsForDisplay, knowledgeImages],
   );
 
   // Last index that is not a trailing reasoning part — this is where the
@@ -153,6 +116,15 @@ const PurePreviewMessage = ({
                 <ParallelSubAgentsGroup
                   key={`message-${messageIndex}-parallel-${group.startIndex}`}
                   parts={group.parts}
+                />
+              );
+            }
+
+            if (group.type === "knowledge-images") {
+              return (
+                <KnowledgeImageMessagePart
+                  key={`message-${messageIndex}-knowledge-images-${group.anchorIndex}`}
+                  images={group.images}
                 />
               );
             }
