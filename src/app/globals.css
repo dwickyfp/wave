@@ -1450,6 +1450,7 @@
     scrollbar-color: transparent transparent;
     scrollbar-width: thin;
     scrollbar-gutter: stable both-edges;
+    overscroll-behavior-y: contain;
   }
 
   .chat-minimal-scrollbar:hover,
