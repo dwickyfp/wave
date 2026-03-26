@@ -12,10 +12,27 @@ const { mockCreateAzure, mockAzureModelFactory } = vi.hoisted(() => {
   };
 });
 
+const { mockCreateOpenAICompatible, mockOpenAICompatibleModelFactory } =
+  vi.hoisted(() => {
+    const openAICompatibleModelFactory = vi.fn((modelName: string) => ({
+      provider: "openai-compatible",
+      modelName,
+    }));
+    const createOpenAICompatible = vi.fn(() => openAICompatibleModelFactory);
+    return {
+      mockCreateOpenAICompatible: createOpenAICompatible,
+      mockOpenAICompatibleModelFactory: openAICompatibleModelFactory,
+    };
+  });
+
 vi.mock("server-only", () => ({}));
 
 vi.mock("@ai-sdk/azure", () => ({
   createAzure: mockCreateAzure,
+}));
+
+vi.mock("@ai-sdk/openai-compatible", () => ({
+  createOpenAICompatible: mockCreateOpenAICompatible,
 }));
 
 vi.mock("lib/db/repository", () => ({
@@ -95,5 +112,128 @@ describe("createModelFromConfig - Azure OpenAI", () => {
       resourceName: "env-resource",
     });
     expect(mockAzureModelFactory).toHaveBeenCalledWith("env-deployment");
+  });
+});
+
+describe("createModelFromConfig - Snowflake", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env.SNOWFLAKE_API_KEY;
+    delete process.env.SNOWFLAKE_ACCOUNT_ID;
+  });
+
+  it("enables structured outputs for Snowflake chat models", () => {
+    const model = createModelFromConfig(
+      "snowflake",
+      "claude-sonnet-4-5",
+      "snowflake-key",
+      "acme-account",
+    );
+
+    expect(mockCreateOpenAICompatible).toHaveBeenCalledWith({
+      name: "snowflake",
+      apiKey: "snowflake-key",
+      baseURL: "https://acme-account.snowflakecomputing.com/api/v2/cortex/v1",
+      supportsStructuredOutputs: true,
+      transformRequestBody: expect.any(Function),
+    });
+    expect(mockOpenAICompatibleModelFactory).toHaveBeenCalledWith(
+      "claude-sonnet-4-5",
+    );
+    expect(model).toEqual({
+      provider: "openai-compatible",
+      modelName: "claude-sonnet-4-5",
+    });
+  });
+
+  it("sanitizes Snowflake structured output schemas to the documented subset", () => {
+    createModelFromConfig(
+      "snowflake",
+      "claude-sonnet-4-5",
+      "snowflake-key",
+      "acme-account",
+    );
+
+    const providerOptions = (mockCreateOpenAICompatible.mock.calls
+      .at(0)
+      ?.at(0) ?? null) as {
+      transformRequestBody?: (
+        args: Record<string, unknown>,
+      ) => Record<string, unknown>;
+    } | null;
+    const transformRequestBody = providerOptions?.transformRequestBody as
+      | ((args: Record<string, unknown>) => Record<string, unknown>)
+      | undefined;
+
+    expect(transformRequestBody).toBeTypeOf("function");
+
+    const transformed = transformRequestBody?.({
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "response",
+          strict: true,
+          description: "Structured output",
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              ocrConfidence: {
+                type: "number",
+                minimum: 0,
+                maximum: 1,
+                additionalProperties: false,
+                unevaluatedProperties: false,
+              },
+              tableData: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  rows: {
+                    type: "array",
+                    items: {
+                      type: "array",
+                      items: { type: "string", default: "" },
+                    },
+                  },
+                },
+              },
+            },
+            required: ["ocrConfidence"],
+          },
+        },
+      },
+    });
+
+    expect(transformed).toEqual({
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "response",
+          description: "Structured output",
+          schema: {
+            type: "object",
+            properties: {
+              ocrConfidence: {
+                type: "number",
+              },
+              tableData: {
+                type: "object",
+                properties: {
+                  rows: {
+                    type: "array",
+                    items: {
+                      type: "array",
+                      items: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            required: ["ocrConfidence"],
+          },
+        },
+      },
+    });
   });
 });

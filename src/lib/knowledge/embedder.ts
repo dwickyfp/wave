@@ -14,6 +14,38 @@ import type { ProviderSettings } from "app-types/settings";
 const EMBEDDING_CACHE_MAX_ENTRIES = 500;
 const EMBEDDING_CACHE_TTL_MS = 15 * 60 * 1000;
 const EMBEDDING_CACHE_TTL_SERVER_MS = 15 * 60 * 1000;
+const DEFAULT_EMBEDDING_RETRY_ATTEMPTS = 6;
+const DEFAULT_EMBEDDING_RETRY_BASE_DELAY_MS = 5_000;
+const DEFAULT_EMBEDDING_MAX_CONCURRENCY = 1;
+
+class AsyncSemaphore {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  async acquire(): Promise<() => void> {
+    if (this.active < this.limit) {
+      this.active += 1;
+      return () => this.release();
+    }
+
+    await new Promise<void>((resolve) => {
+      this.waiters.push(() => {
+        this.active += 1;
+        resolve();
+      });
+    });
+
+    return () => this.release();
+  }
+
+  private release() {
+    this.active = Math.max(0, this.active - 1);
+    const next = this.waiters.shift();
+    next?.();
+  }
+}
 
 class EmbeddingLruCache {
   private readonly entries = new Map<
@@ -50,6 +82,7 @@ class EmbeddingLruCache {
 }
 
 const embeddingCache = new EmbeddingLruCache();
+const embeddingSemaphores = new Map<string, AsyncSemaphore>();
 
 type EmbeddingBatchResult = {
   embeddings: number[][];
@@ -75,6 +108,152 @@ function readSetting(
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getEmbeddingRetryAttempts(): number {
+  return readPositiveIntEnv(
+    "KNOWLEDGE_EMBEDDING_RETRY_ATTEMPTS",
+    DEFAULT_EMBEDDING_RETRY_ATTEMPTS,
+  );
+}
+
+function getEmbeddingRetryBaseDelayMs(): number {
+  const raw = process.env.KNOWLEDGE_EMBEDDING_RETRY_BASE_DELAY_MS;
+  if (!raw) return DEFAULT_EMBEDDING_RETRY_BASE_DELAY_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? parsed
+    : DEFAULT_EMBEDDING_RETRY_BASE_DELAY_MS;
+}
+
+function getEmbeddingMaxConcurrency(): number {
+  return readPositiveIntEnv(
+    "KNOWLEDGE_EMBEDDING_MAX_CONCURRENCY",
+    DEFAULT_EMBEDDING_MAX_CONCURRENCY,
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getEmbeddingSemaphore(key: string): AsyncSemaphore {
+  const existing = embeddingSemaphores.get(key);
+  if (existing) return existing;
+  const created = new AsyncSemaphore(getEmbeddingMaxConcurrency());
+  embeddingSemaphores.set(key, created);
+  return created;
+}
+
+function buildEmbeddingThrottleKey(
+  provider: string,
+  modelName: string,
+): string {
+  return `${provider}:${modelName}`;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function parseRetryDelayMs(error: unknown, attempt: number): number {
+  const anyError = error as any;
+  const retryAfterHeader =
+    anyError?.responseHeaders?.["retry-after"] ??
+    anyError?.responseHeaders?.["Retry-After"] ??
+    anyError?.headers?.["retry-after"] ??
+    anyError?.headers?.["Retry-After"];
+
+  if (typeof retryAfterHeader === "string") {
+    const retryAfterSeconds = Number.parseInt(retryAfterHeader, 10);
+    if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+      return retryAfterSeconds * 1000;
+    }
+  }
+
+  const message = getErrorMessage(error);
+  const secondsMatch = message.match(/retry after\s+(\d+)\s*seconds?/i);
+  if (secondsMatch) {
+    const seconds = Number.parseInt(secondsMatch[1], 10);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      return seconds * 1000;
+    }
+  }
+
+  const millisecondsMatch = message.match(/retry after\s+(\d+)\s*ms/i);
+  if (millisecondsMatch) {
+    const milliseconds = Number.parseInt(millisecondsMatch[1], 10);
+    if (Number.isFinite(milliseconds) && milliseconds >= 0) {
+      return milliseconds;
+    }
+  }
+
+  const baseDelay = getEmbeddingRetryBaseDelayMs();
+  return baseDelay * 2 ** Math.max(0, attempt - 1);
+}
+
+function isRetriableEmbeddingError(error: unknown): boolean {
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("ratelimitreached") ||
+    message.includes("rate limit") ||
+    message.includes("too many requests") ||
+    message.includes("retry after") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("timeout") ||
+    message.includes("timed out") ||
+    message.includes("503")
+  );
+}
+
+async function runEmbeddingCallWithRetry<T>(
+  provider: string,
+  modelName: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const maxAttempts = getEmbeddingRetryAttempts();
+  let attempt = 0;
+
+  while (true) {
+    attempt += 1;
+    const release = await getEmbeddingSemaphore(
+      buildEmbeddingThrottleKey(provider, modelName),
+    ).acquire();
+    let released = false;
+
+    const safeRelease = () => {
+      if (released) return;
+      released = true;
+      release();
+    };
+
+    try {
+      return await operation();
+    } catch (error) {
+      if (attempt >= maxAttempts || !isRetriableEmbeddingError(error)) {
+        throw error;
+      }
+
+      const delayMs = parseRetryDelayMs(error, attempt);
+      console.warn(
+        `[ContextX] Embedding rate limited for ${provider}/${modelName}; retrying in ${Math.ceil(delayMs / 1000)}s (attempt ${attempt}/${maxAttempts})`,
+      );
+      safeRelease();
+      await sleep(delayMs);
+      continue;
+    } finally {
+      safeRelease();
+    }
+  }
 }
 
 function createEmbeddingModel(
@@ -252,10 +431,15 @@ export async function embedTextsWithUsage(
 
   for (let i = 0; i < preprocessed.length; i += BATCH_SIZE) {
     const batch = preprocessed.slice(i, i + BATCH_SIZE);
-    const { embeddings, usage } = await embedMany({
-      model,
-      values: batch,
-    });
+    const { embeddings, usage } = await runEmbeddingCallWithRetry(
+      provider,
+      modelName,
+      () =>
+        embedMany({
+          model,
+          values: batch,
+        }),
+    );
     if (Number.isFinite(usage.tokens)) {
       usageTokens += Number(usage.tokens);
     }
@@ -321,7 +505,11 @@ export async function embedSingleTextWithUsage(
     }
   }
 
-  const { embedding, usage } = await embed({ model, value: preprocessed });
+  const { embedding, usage } = await runEmbeddingCallWithRetry(
+    provider,
+    modelName,
+    () => embed({ model, value: preprocessed }),
+  );
   if (options.cache !== false) {
     embeddingCache.set(cacheKey, embedding);
     await serverCache.set(cacheKey, embedding, EMBEDDING_CACHE_TTL_SERVER_MS);
