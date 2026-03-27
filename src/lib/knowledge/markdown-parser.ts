@@ -68,6 +68,8 @@ const AUTO_PARSE_QUALITY_THRESHOLD = 0.68;
 const DEFAULT_PARSE_PAGE_CONCURRENCY = 4;
 const DEFAULT_PARSE_WINDOW_CONCURRENCY = 2;
 const DEFAULT_LONG_DOC_PAGE_THRESHOLD = 40;
+const DEFAULT_PARSE_RETRY_ATTEMPTS = 4;
+const DEFAULT_PARSE_RETRY_BASE_DELAY_MS = 3_000;
 
 const pageParseCache = new Map<string, ProcessedDocumentPage>();
 
@@ -116,6 +118,72 @@ export function isTransientKnowledgeParseError(error: unknown) {
     message.includes("temporarily unavailable") ||
     message.includes("timeout")
   );
+}
+
+function getParseRetryAttempts(): number {
+  return readPositiveIntEnv(
+    "KNOWLEDGE_PARSE_RETRY_ATTEMPTS",
+    DEFAULT_PARSE_RETRY_ATTEMPTS,
+  );
+}
+
+function getParseRetryBaseDelayMs(): number {
+  const raw = process.env.KNOWLEDGE_PARSE_RETRY_BASE_DELAY_MS;
+  if (!raw) return DEFAULT_PARSE_RETRY_BASE_DELAY_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? parsed
+    : DEFAULT_PARSE_RETRY_BASE_DELAY_MS;
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetriableParseError(error: unknown): boolean {
+  const anyError = error as any;
+  // Respect the AI SDK's own isRetryable flag (covers 500s marked retriable)
+  if (anyError?.isRetryable === true) return true;
+  const message = (
+    anyError instanceof Error ? anyError.message : String(anyError)
+  ).toLowerCase();
+  return (
+    message.includes("rate limit") ||
+    message.includes("too many requests") ||
+    message.includes("429") ||
+    message.includes("500") ||
+    message.includes("internal server error") ||
+    message.includes("internal error") ||
+    message.includes("overloaded") ||
+    message.includes("temporarily unavailable") ||
+    message.includes("timeout") ||
+    message.includes("timed out")
+  );
+}
+
+function buildParseRetryDelayMs(error: unknown, attempt: number): number {
+  const anyError = error as any;
+  const retryAfterHeader =
+    anyError?.responseHeaders?.["retry-after"] ??
+    anyError?.responseHeaders?.["Retry-After"] ??
+    anyError?.headers?.["retry-after"] ??
+    anyError?.headers?.["Retry-After"];
+
+  if (typeof retryAfterHeader === "string") {
+    const seconds = Number.parseInt(retryAfterHeader, 10);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  }
+
+  const message =
+    anyError instanceof Error ? anyError.message : String(anyError);
+  const secondsMatch = message.match(/retry after\s+(\d+)\s*seconds?/i);
+  if (secondsMatch) {
+    const seconds = Number.parseInt(secondsMatch[1], 10);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+  }
+
+  return getParseRetryBaseDelayMs() * 2 ** Math.max(0, attempt - 1);
 }
 
 async function resolveParsingModel(provider: string, modelName: string) {
@@ -308,23 +376,43 @@ async function parseWindowToMarkdown(input: {
   repairReason?: string | null;
   failureMode?: "fallback" | "fail";
 }): Promise<string> {
-  const { text } = await generateText({
-    model: input.model,
-    system: PARSE_SYSTEM_PROMPT,
-    prompt: buildParsePrompt({
-      rawText: input.rawText,
-      documentTitle: input.documentTitle,
-      pageNumber: input.pageNumber,
-      windowIndex: input.windowIndex,
-      totalWindows: input.totalWindows,
-      repairPolicy: input.repairPolicy,
-      qualityScore: input.qualityScore,
-      repairReason: input.repairReason,
-    }),
-    temperature: 0,
-  });
+  const maxAttempts = getParseRetryAttempts();
+  let attempt = 0;
+  let text: string;
 
-  const parsed = text.trim();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    attempt += 1;
+    try {
+      ({ text } = await generateText({
+        model: input.model,
+        system: PARSE_SYSTEM_PROMPT,
+        prompt: buildParsePrompt({
+          rawText: input.rawText,
+          documentTitle: input.documentTitle,
+          pageNumber: input.pageNumber,
+          windowIndex: input.windowIndex,
+          totalWindows: input.totalWindows,
+          repairPolicy: input.repairPolicy,
+          qualityScore: input.qualityScore,
+          repairReason: input.repairReason,
+        }),
+        temperature: 0,
+      }));
+      break;
+    } catch (error) {
+      if (attempt >= maxAttempts || !isRetriableParseError(error)) {
+        throw error;
+      }
+      const delayMs = buildParseRetryDelayMs(error, attempt);
+      console.warn(
+        `[ContextX] Parse API error for "${input.documentTitle}" page ${input.pageNumber} window ${input.windowIndex}; retrying in ${Math.ceil(delayMs / 1_000)}s (attempt ${attempt}/${maxAttempts})`,
+      );
+      await sleep(delayMs);
+    }
+  }
+
+  const parsed = text!.trim();
   // Only treat truly empty or near-empty responses as failures – these catch
   // LLM refusals ("I can't help"), blank outputs, or network truncation.
   // Ratio-based comparisons against rawText are unreliable: sparse financial

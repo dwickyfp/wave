@@ -16,14 +16,13 @@ import {
 import { buildDocumentImageEmbeddingText } from "./document-images";
 import {
   buildDocumentMetadataEmbeddingText,
-  buildDocumentRetrievalIdentity,
+  buildDocumentCanonicalTitle,
   extractAutoDocumentMetadata,
   generateDocumentMetadata,
 } from "./document-metadata";
 import { buildEntityEmbeddingText, extractKnowledgeEntities } from "./entities";
 import { embedSingleTextWithUsage, embedTextsWithUsage } from "./embedder";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
-import { classifyFinancialStatementDocument } from "./financial-statement";
 import {
   buildKnowledgeSectionGraph,
   SECTION_GRAPH_VERSION,
@@ -125,10 +124,6 @@ function buildSectionEmbeddingText(section: SectionGraphSection): string {
   const excerpt = section.content.trim().slice(0, 1200);
   return [
     section.canonicalTitle ? `Document: ${section.canonicalTitle}` : "",
-    section.issuerName ? `Issuer: ${section.issuerName}` : "",
-    section.issuerTicker ? `Ticker: ${section.issuerTicker}` : "",
-    section.reportType ? `Report type: ${section.reportType}` : "",
-    section.fiscalYear ? `Fiscal year: ${section.fiscalYear}` : "",
     `Section path: ${section.headingPath}`,
     section.noteNumber
       ? `Note: ${section.noteSubsection ? `${section.noteNumber}.${section.noteSubsection}` : section.noteNumber}`
@@ -152,8 +147,6 @@ function buildChunkIdentityText(chunk: {
     metadata?.canonicalTitle ? `Document: ${metadata.canonicalTitle}` : "",
     metadata?.headingPath ? `Section path: ${metadata.headingPath}` : "",
     metadata?.sectionTitle ? `Section title: ${metadata.sectionTitle}` : "",
-    metadata?.issuerName ? `Issuer: ${metadata.issuerName}` : "",
-    metadata?.issuerTicker ? `Ticker: ${metadata.issuerTicker}` : "",
     metadata?.libraryId ? `Library: ${metadata.libraryId}` : "",
     metadata?.libraryVersion
       ? `Library version: ${metadata.libraryVersion}`
@@ -201,27 +194,19 @@ export async function materializeDocumentMarkdown({
           pageCount: inputPages?.length ?? null,
           modelConfig: contextModel,
         });
-  const retrievalIdentity = buildDocumentRetrievalIdentity({
+  const retrievalCanonicalTitle = buildDocumentCanonicalTitle({
     markdown,
     fallbackTitle: generatedMeta.title || autoMeta.title || documentTitle,
-    originalFilename: doc.originalFilename,
-    pageCount: inputPages?.length ?? null,
-  });
-  const classification = classifyFinancialStatementDocument({
-    markdown,
-    pageCount: inputPages?.length ?? undefined,
-    filename: doc.originalFilename,
   });
   const resolvedTitle = doc.titleManual
     ? doc.name
-    : generatedMeta.title || retrievalIdentity.canonicalTitle || autoMeta.title;
+    : generatedMeta.title || retrievalCanonicalTitle || autoMeta.title;
   const resolvedDescription = doc.descriptionManual
     ? (doc.description ?? null)
     : (generatedMeta.description ?? autoMeta.description);
   const contentKind = resolveContentKind(doc.fileType);
   const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId, {
-    retrievalIdentity,
-    classification,
+    canonicalTitle: resolvedTitle,
   });
   let metadataTokens = 0;
   let imageTokens = 0;
@@ -235,7 +220,6 @@ export async function materializeDocumentMarkdown({
       description: resolvedDescription,
       originalFilename: doc.originalFilename,
       sourceUrl: doc.sourceUrl,
-      retrievalIdentity,
     });
     if (metadataText) {
       try {
@@ -259,7 +243,6 @@ export async function materializeDocumentMarkdown({
   const metadata = {
     ...(doc.metadata ?? {}),
     sectionGraphVersion: SECTION_GRAPH_VERSION,
-    retrievalIdentity,
     generatedMetadata: {
       title: generatedMeta.title,
       description: generatedMeta.description ?? null,
@@ -332,8 +315,6 @@ export async function materializeDocumentMarkdown({
       content: section.content,
       metadata: {
         canonicalTitle: section.canonicalTitle,
-        issuerName: section.issuerName,
-        issuerTicker: section.issuerTicker,
         section: section.heading,
         sectionTitle: section.heading,
         headingPath: section.headingPath,
@@ -351,9 +332,8 @@ export async function materializeDocumentMarkdown({
       ...(language ? { language } : {}),
       entityTerms,
       temporalHints: buildTemporalHints({
-        periodEnd: section.periodEnd ?? null,
-        freshnessLabel:
-          section.fiscalYear != null ? `FY ${section.fiscalYear}` : null,
+        periodEnd: null,
+        freshnessLabel: null,
       }),
     };
   });

@@ -67,8 +67,6 @@ export function createKnowledgeDocsTool(
     description: `Search the "${group.name}" knowledge base${group.description ? `: ${group.description}` : ""}. By default, return section-first context: the most relevant sections plus their parent or continuation context. Use mode="full-doc" only when the user explicitly needs the whole document or a complete document-wide summary.`,
     inputSchema: z.object({
       query: z.string().describe("The search query to find relevant documents"),
-      issuer: z.string().optional().describe("Optional issuer name filter."),
-      ticker: z.string().optional().describe("Optional ticker filter."),
       page: z
         .number()
         .int()
@@ -79,12 +77,6 @@ export function createKnowledgeDocsTool(
         .string()
         .optional()
         .describe("Optional exact note filter, e.g. '14' or '14.a'."),
-      strictEntityMatch: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, only return results from matching issuer/ticker documents.",
-        ),
       tokens: z
         .number()
         .optional()
@@ -98,24 +90,12 @@ export function createKnowledgeDocsTool(
           "Retrieval mode. Use section-first for targeted answers and full-doc only when complete document context is required.",
         ),
     }),
-    execute: async ({
-      query,
-      issuer,
-      ticker,
-      page,
-      note,
-      strictEntityMatch,
-      tokens,
-      mode,
-    }) => {
+    execute: async ({ query, page, note, tokens, mode }) => {
       const docs = await queryKnowledgeAsDocs(group, query, {
         ...queryOptions,
         source: queryOptions.source ?? "agent",
-        issuer,
-        ticker,
         page,
         note,
-        strictEntityMatch,
         tokens: tokens ?? DEFAULT_AGENT_KNOWLEDGE_TOKENS,
         resultMode: mode ?? "section-first",
       });

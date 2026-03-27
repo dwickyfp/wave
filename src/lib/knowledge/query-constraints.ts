@@ -1,19 +1,10 @@
-import {
-  buildIssuerLookupTerms,
-  extractIssuerConstraintFromQuery,
-  extractTickerConstraintFromQuery,
-  type RetrievalIdentity,
-} from "./financial-statement";
-import { extractEntityTermsFromQuery, normalizeEntityName } from "./entities";
+import { extractEntityTermsFromQuery } from "./entities";
 
 export type KnowledgeQueryConstraints = {
-  issuer?: string | null;
-  ticker?: string | null;
   page?: number | null;
   note?: string | null;
   noteNumber?: string | null;
   noteSubsection?: string | null;
-  strictEntityMatch?: boolean;
   entityTerms?: string[];
 };
 
@@ -38,20 +29,7 @@ export function extractKnowledgeQueryConstraints(
       : constraints.noteNumber;
   }
 
-  const ticker = extractTickerConstraintFromQuery(query);
-  if (ticker) {
-    constraints.ticker = ticker;
-  }
-
-  const issuer = extractIssuerConstraintFromQuery(query);
-  if (issuer) {
-    constraints.issuer = issuer;
-  }
-
   constraints.entityTerms = extractEntityTermsFromQuery(query);
-  constraints.strictEntityMatch = Boolean(
-    constraints.ticker || constraints.issuer,
-  );
 
   return constraints;
 }
@@ -75,9 +53,6 @@ export function mergeKnowledgeQueryConstraints(
       merged.noteSubsection = noteMatch[2]?.toLowerCase() ?? null;
     }
   }
-  if (merged.strictEntityMatch === undefined) {
-    merged.strictEntityMatch = Boolean(merged.issuer || merged.ticker);
-  }
   merged.entityTerms = Array.from(
     new Set([
       ...(extracted.entityTerms ?? []),
@@ -85,48 +60,4 @@ export function mergeKnowledgeQueryConstraints(
     ]),
   );
   return merged;
-}
-
-export function matchesRetrievalIdentityConstraints(
-  identity: RetrievalIdentity | null | undefined,
-  constraints: KnowledgeQueryConstraints,
-): boolean {
-  if (!identity) {
-    return !constraints.issuer && !constraints.ticker;
-  }
-
-  const lookup = buildIssuerLookupTerms(identity)
-    .map((value) => value.toUpperCase())
-    .join(" ");
-
-  if (
-    constraints.ticker &&
-    !lookup.includes(constraints.ticker.toUpperCase())
-  ) {
-    return false;
-  }
-
-  if (
-    constraints.issuer &&
-    !lookup.includes(constraints.issuer.toUpperCase())
-  ) {
-    return false;
-  }
-
-  if ((constraints.entityTerms?.length ?? 0) > 0) {
-    const normalizedIdentity = buildIssuerLookupTerms(identity)
-      .map(normalizeEntityName)
-      .filter(Boolean)
-      .join(" ");
-    if (
-      constraints.entityTerms?.some((term) => {
-        const normalizedTerm = normalizeEntityName(term);
-        return normalizedTerm && normalizedIdentity.includes(normalizedTerm);
-      })
-    ) {
-      return true;
-    }
-  }
-
-  return true;
 }

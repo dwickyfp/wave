@@ -5,10 +5,6 @@
 import { LanguageModel, generateText } from "ai";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
-import {
-  buildFinancialStatementRetrievalIdentity,
-  type RetrievalIdentity,
-} from "./financial-statement";
 
 const METADATA_MODEL_KEY = "knowledge-context-model";
 const LEGACY_METADATA_MODEL_KEY = "contextx-model";
@@ -375,20 +371,11 @@ export async function generateDocumentMetadata(input: {
   }
 }
 
-export function buildDocumentRetrievalIdentity(input: {
+export function buildDocumentCanonicalTitle(input: {
   markdown: string;
   fallbackTitle: string;
-  originalFilename?: string | null;
-  pageCount?: number | null;
-}): RetrievalIdentity {
-  const autoTitle = extractFirstHeading(input.markdown);
-  return buildFinancialStatementRetrievalIdentity({
-    markdown: input.markdown,
-    fallbackTitle: input.fallbackTitle,
-    originalFilename: input.originalFilename ?? null,
-    autoTitle,
-    pageCount: input.pageCount ?? null,
-  });
+}): string {
+  return extractFirstHeading(input.markdown) || input.fallbackTitle;
 }
 
 export function buildDocumentMetadataEmbeddingText(input: {
@@ -396,34 +383,9 @@ export function buildDocumentMetadataEmbeddingText(input: {
   description?: string | null;
   originalFilename?: string | null;
   sourceUrl?: string | null;
-  retrievalIdentity?: RetrievalIdentity | null;
 }): string {
   return [
     `title: ${input.title}`,
-    input.retrievalIdentity?.canonicalTitle
-      ? `canonical_title: ${input.retrievalIdentity.canonicalTitle}`
-      : "",
-    input.retrievalIdentity?.issuerName
-      ? `issuer: ${input.retrievalIdentity.issuerName}`
-      : "",
-    input.retrievalIdentity?.issuerTicker
-      ? `ticker: ${input.retrievalIdentity.issuerTicker}`
-      : "",
-    input.retrievalIdentity?.issuerAliases?.length
-      ? `aliases: ${input.retrievalIdentity.issuerAliases.join(", ")}`
-      : "",
-    input.retrievalIdentity?.reportType
-      ? `report_type: ${input.retrievalIdentity.reportType}`
-      : "",
-    input.retrievalIdentity?.fiscalYear
-      ? `fiscal_year: ${input.retrievalIdentity.fiscalYear}`
-      : "",
-    input.retrievalIdentity?.periodEnd
-      ? `period_end: ${input.retrievalIdentity.periodEnd}`
-      : "",
-    input.retrievalIdentity?.pageCount
-      ? `page_count: ${input.retrievalIdentity.pageCount}`
-      : "",
     input.description ? `description: ${input.description}` : "",
     input.originalFilename ? `filename: ${input.originalFilename}` : "",
     input.sourceUrl ? `source: ${input.sourceUrl}` : "",

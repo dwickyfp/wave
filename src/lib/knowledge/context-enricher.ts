@@ -145,16 +145,6 @@ function buildEmbeddingIdentityPrefix(chunk: TextChunk): string {
     chunk.metadata.canonicalTitle
       ? `Document: ${chunk.metadata.canonicalTitle}.`
       : "",
-    chunk.metadata.issuerName ? `Issuer: ${chunk.metadata.issuerName}.` : "",
-    chunk.metadata.issuerTicker
-      ? `Ticker: ${chunk.metadata.issuerTicker}.`
-      : "",
-    chunk.metadata.reportType
-      ? `Report type: ${chunk.metadata.reportType}.`
-      : "",
-    chunk.metadata.fiscalYear
-      ? `Fiscal year: ${chunk.metadata.fiscalYear}.`
-      : "",
     chunk.metadata.noteNumber
       ? `Note: ${chunk.metadata.noteSubsection ? `${chunk.metadata.noteNumber}.${chunk.metadata.noteSubsection}` : chunk.metadata.noteNumber}.`
       : "",

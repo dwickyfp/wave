@@ -89,11 +89,8 @@ export const emmaRunAgentSchema = z.object({
 
 export const knowledgeQuerySchema = z.object({
   query: z.string().min(1),
-  issuer: z.string().optional(),
-  ticker: z.string().optional(),
   page: z.number().int().positive().optional(),
   note: z.string().optional(),
-  strictEntityMatch: z.boolean().optional(),
   tokens: z.number().positive().optional(),
 });
 

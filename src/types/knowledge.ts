@@ -93,11 +93,6 @@ export type KnowledgeChunkMetadata = {
   headings?: string[];
   headingPath?: string;
   canonicalTitle?: string;
-  issuerName?: string;
-  issuerTicker?: string;
-  reportType?: string;
-  fiscalYear?: number;
-  periodEnd?: string;
   noteNumber?: string;
   noteTitle?: string;
   noteSubsection?: string;

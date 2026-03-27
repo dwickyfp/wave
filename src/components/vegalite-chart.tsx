@@ -83,10 +83,17 @@ export function VegaLiteChart({ spec }: VegaLiteChartProps) {
         if (!cancelled) setLoading(false);
       } catch (err) {
         if (!cancelled) {
-          setError(
-            err instanceof Error ? err.message : "Failed to render chart",
-          );
-          setLoading(false);
+          const message =
+            err instanceof Error ? err.message : "Failed to render chart";
+          // Incomplete JSON arrives while the stream is still in progress.
+          // Keep the loading spinner visible rather than flashing an error.
+          const isIncompleteJson =
+            message.includes("Unexpected end of JSON") ||
+            message.includes("Unterminated string in JSON");
+          if (!isIncompleteJson) {
+            setError(message);
+            setLoading(false);
+          }
         }
       }
     };

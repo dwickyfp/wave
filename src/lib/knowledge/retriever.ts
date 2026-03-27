@@ -34,7 +34,6 @@ import { extractPrimaryLegalReferenceKey } from "./legal-references";
 import { rewriteKnowledgeQuery } from "./query-rewrite";
 import {
   mergeKnowledgeQueryConstraints,
-  matchesRetrievalIdentityConstraints,
   type KnowledgeQueryConstraints,
 } from "./query-constraints";
 import { getContextXRollout } from "./rollout";
@@ -59,11 +58,11 @@ type MemoryPolicy = "off" | "user";
 // ─── Tuning Constants ──────────────────────────────────────────────────────────
 const RRF_K = 60;
 /** Per-search-arm candidate limit (increased for better recall) */
-const CANDIDATE_LIMIT = 60;
+const CANDIDATE_LIMIT = 80;
 /** Default final topN returned */
 const FINAL_AFTER_RERANK = 10;
 /** Minimum cosine similarity to keep a vector result (filters noise) */
-const MIN_VECTOR_SCORE = 0.25;
+const MIN_VECTOR_SCORE = 0.2;
 /** Vector search results get a weight boost in RRF (semantic > keyword) */
 const VECTOR_RRF_WEIGHT = 1.5;
 const IMAGE_VECTOR_RRF_WEIGHT = 1.35;
@@ -73,7 +72,7 @@ const IMAGE_MIN_VECTOR_SCORE = 0.2;
 const MAX_MATCHED_IMAGES = 4;
 const MAX_MATCHED_IMAGES_PER_DOC = 2;
 /** Maximum multiplicative boost from document metadata relevance. */
-const DOC_META_BOOST_MAX = 0.35;
+const DOC_META_BOOST_MAX = 0.2;
 /** Whether doc-level metadata vector scoring is enabled. */
 const DOC_META_VECTOR_ENABLED = process.env.DOC_META_VECTOR_ENABLED !== "false";
 const LISTWISE_RERANK_MODEL_KEY = "knowledge-context-model";
@@ -334,13 +333,11 @@ async function getDocumentMetadataSignals(
   query: string,
   queryEmbedding?: number[],
   limit = CANDIDATE_LIMIT,
-  documentIds?: string[],
 ): Promise<Map<string, number>> {
   const lexicalPromise = knowledgeRepository.searchDocumentMetadata(
     groupId,
     query,
     limit,
-    documentIds,
   );
   const semanticPromise =
     DOC_META_VECTOR_ENABLED && queryEmbedding
@@ -348,7 +345,6 @@ async function getDocumentMetadataSignals(
           groupId,
           queryEmbedding,
           limit,
-          documentIds,
         )
       : Promise.resolve([]);
 
@@ -632,24 +628,24 @@ function getRecallProfile(
 
   if (resultMode === "full-doc" || count >= 9) {
     return {
+      docCandidates: 40,
+      sectionCandidates: 160,
+      chunkCandidates: 220,
+    };
+  }
+
+  if (count >= 4) {
+    return {
       docCandidates: 28,
       sectionCandidates: 112,
       chunkCandidates: 160,
     };
   }
 
-  if (count >= 4) {
-    return {
-      docCandidates: 20,
-      sectionCandidates: 80,
-      chunkCandidates: 120,
-    };
-  }
-
   return {
-    docCandidates: 12,
-    sectionCandidates: 48,
-    chunkCandidates: 72,
+    docCandidates: 18,
+    sectionCandidates: 72,
+    chunkCandidates: 108,
   };
 }
 
@@ -682,6 +678,13 @@ function expandQuery(query: string): string[] {
   // helps embed closer to actual answer content
   if (keywords.length >= 2 && isLikelyLatinQuery(trimmed)) {
     variants.push(`Information about ${keywords.slice(0, 8).join(" ")}`);
+  }
+
+  // 3. Document-name variant — phrase the query as if looking for a named
+  // document. Helps surface documents whose title/description matches the
+  // query terms even when the chunk content does not contain them verbatim.
+  if (keywords.length >= 2) {
+    variants.push(`document report ${keywords.slice(0, 6).join(" ")}`);
   }
 
   return variants;
@@ -826,6 +829,15 @@ function compareRankedChunkCandidates(
     return delta;
   }
 
+  // Secondary tiebreaker: prefer chunks with a temporal hint over those without,
+  // then fall back to most recently created.
+  const leftHasTime = !!left.result.chunk.metadata?.temporalHints?.effectiveAt;
+  const rightHasTime =
+    !!right.result.chunk.metadata?.temporalHints?.effectiveAt;
+  if (rightHasTime !== leftHasTime) {
+    return rightHasTime ? 1 : -1;
+  }
+
   return (
     right.result.chunk.createdAt.getTime() -
     left.result.chunk.createdAt.getTime()
@@ -885,24 +897,42 @@ function mergeChunkCandidates(input: {
   };
 
   input.vectorLists.forEach((results, index) => {
-    const weight = index === 0 ? VECTOR_RRF_WEIGHT : VECTOR_RRF_WEIGHT * 0.75;
+    // Logarithmic weight decay per variant keeps primary query dominant
+    // while secondary variants contribute diminishing but non-trivial signal.
+    const weight = VECTOR_RRF_WEIGHT / Math.sqrt(index + 1);
     results.forEach((result, rank) => upsert(result, rank, weight, "semantic"));
   });
   input.textResults.forEach((result, rank) =>
     upsert(result, rank, 1, "lexical"),
   );
 
-  return Array.from(candidates.values())
+  const allCandidates = Array.from(candidates.values()).map((candidate) => {
+    candidate.docSignal =
+      input.docSignalMap.get(candidate.result.documentId) ?? 0;
+    candidate.fusionScore *= 1 + DOC_META_BOOST_MAX * candidate.docSignal;
+    return candidate;
+  });
+
+  // Normalize lexical scores across the candidate set so cross-corpus BM25
+  // magnitude only affects the confidenceScore weight, not the hard inclusion
+  // floor (which uses the raw score via toLexicalConfidence).
+  const maxLexScore = Math.max(...allCandidates.map((c) => c.lexicalScore), 1);
+  return allCandidates
     .map((candidate) => {
-      candidate.docSignal =
-        input.docSignalMap.get(candidate.result.documentId) ?? 0;
-      candidate.fusionScore *= 1 + DOC_META_BOOST_MAX * candidate.docSignal;
-      const { lexicalConfidence, confidenceScore } = computeConfidenceScore({
+      // lexicalConfidence for passesHardInclusionFloor uses raw BM25 score.
+      const rawLexConfidence = toLexicalConfidence(candidate.lexicalScore);
+      // For confidenceScore weighting, normalize so the best BM25 in the set
+      // always contributes fully rather than being capped by arbitrary scale.
+      const normalizedLexForScoring =
+        maxLexScore > 1
+          ? candidate.lexicalScore / maxLexScore
+          : candidate.lexicalScore;
+      const { confidenceScore } = computeConfidenceScore({
         semanticScore: candidate.semanticScore,
-        lexicalScore: candidate.lexicalScore,
+        lexicalScore: normalizedLexForScoring,
         docSignal: candidate.docSignal,
       });
-      candidate.lexicalConfidence = lexicalConfidence;
+      candidate.lexicalConfidence = rawLexConfidence;
       candidate.confidenceScore = confidenceScore;
       return candidate;
     })
@@ -964,23 +994,39 @@ function mergeSectionCandidates(input: {
   };
 
   input.vectorLists.forEach((results, index) => {
-    const weight = index === 0 ? VECTOR_RRF_WEIGHT : VECTOR_RRF_WEIGHT * 0.75;
+    const weight = VECTOR_RRF_WEIGHT / Math.sqrt(index + 1);
     results.forEach((result, rank) => upsert(result, rank, weight, "semantic"));
   });
   input.textResults.forEach((result, rank) =>
     upsert(result, rank, 1, "lexical"),
   );
 
-  return Array.from(candidates.values())
-    .map((candidate) => {
+  const allSectionCandidates = Array.from(candidates.values()).map(
+    (candidate) => {
       candidate.docSignal = input.docSignalMap.get(candidate.documentId) ?? 0;
       candidate.fusionScore *= 1 + DOC_META_BOOST_MAX * candidate.docSignal;
-      const { lexicalConfidence, confidenceScore } = computeConfidenceScore({
+      return candidate;
+    },
+  );
+
+  const maxSectionLexScore = Math.max(
+    ...allSectionCandidates.map((c) => c.lexicalScore),
+    1,
+  );
+  return allSectionCandidates
+    .map((candidate) => {
+      const rawLexConfidence = toLexicalConfidence(candidate.lexicalScore);
+      const normalizedLexForScoring =
+        maxSectionLexScore > 1
+          ? candidate.lexicalScore / maxSectionLexScore
+          : candidate.lexicalScore;
+      const { confidenceScore } = computeConfidenceScore({
         semanticScore: candidate.semanticScore,
-        lexicalScore: candidate.lexicalScore,
+        lexicalScore: normalizedLexForScoring,
         docSignal: candidate.docSignal,
       });
-      candidate.lexicalConfidence = lexicalConfidence;
+      candidate.lexicalScore = normalizedLexForScoring;
+      candidate.lexicalConfidence = rawLexConfidence;
       candidate.confidenceScore = confidenceScore;
       return candidate;
     })
@@ -1012,7 +1058,11 @@ async function attachNeighborContext(
 
   const topResults = results.slice(
     0,
-    Math.min(NEIGHBOR_EXPAND_TOP, results.length),
+    // Expand neighbor context for all results when there are few hits;
+    // up to NEIGHBOR_EXPAND_TOP for larger result sets.
+    results.length <= NEIGHBOR_EXPAND_TOP * 2
+      ? results.length
+      : Math.min(NEIGHBOR_EXPAND_TOP, results.length),
   );
   const requests: Array<{ documentId: string; chunkIndex: number }> = [];
 
@@ -1091,6 +1141,106 @@ type QueryRuntime = {
   rollout: Awaited<ReturnType<typeof getContextXRollout>>;
 };
 
+// ─── Source Diversity Helpers ─────────────────────────────────────────────────
+
+/**
+ * After sorting chunk candidates by score, applies a per-document soft cap so
+ * that a single document cannot monopolise all topN slots when multiple
+ * documents have relevant results. Every document with qualifying candidates
+ * gets at least ⌊topN / numDocs⌋ (minimum 1) slots reserved before the
+ * remaining quota is filled by pure-score ordering.
+ */
+function selectChunkCandidatesWithDocDiversity(
+  sortedCandidates: RankedChunkCandidate[],
+  topN: number,
+): RankedChunkCandidate[] {
+  const docIds = new Set(sortedCandidates.map((c) => c.result.documentId));
+  if (docIds.size <= 1 || topN <= 1) return sortedCandidates.slice(0, topN);
+
+  const docGroups = new Map<string, RankedChunkCandidate[]>();
+  for (const candidate of sortedCandidates) {
+    const list = docGroups.get(candidate.result.documentId) ?? [];
+    list.push(candidate);
+    docGroups.set(candidate.result.documentId, list);
+  }
+
+  const guaranteedPerDoc = Math.max(1, Math.floor(topN / docGroups.size));
+  const selectedIds = new Set<string>();
+  const result: RankedChunkCandidate[] = [];
+
+  // First pass: guaranteed minimum from each document (score-ordered within each doc).
+  for (const candidates of docGroups.values()) {
+    for (const candidate of candidates.slice(0, guaranteedPerDoc)) {
+      if (!selectedIds.has(candidate.result.chunk.id)) {
+        result.push(candidate);
+        selectedIds.add(candidate.result.chunk.id);
+      }
+    }
+  }
+
+  // Second pass: fill remaining slots from the global score-ordered list.
+  for (const candidate of sortedCandidates) {
+    if (result.length >= topN) break;
+    if (!selectedIds.has(candidate.result.chunk.id)) {
+      result.push(candidate);
+      selectedIds.add(candidate.result.chunk.id);
+    }
+  }
+
+  // Re-sort to restore score-descending order after guaranteed-pick insertion.
+  return result.sort(compareRankedChunkCandidates).slice(0, topN);
+}
+
+/**
+ * After merging cross-scope results into a score-sorted list, guarantees that
+ * each scope (inherited knowledge group) with relevant hits contributes at
+ * least ⌊topN / numScopes⌋ (minimum 1) chunks to the final result. Remaining
+ * slots fall back to pure score ordering.
+ */
+function selectResultsWithScopeDiversity(
+  sortedResults: KnowledgeQueryResult[],
+  scopeCount: number,
+  topN: number,
+): KnowledgeQueryResult[] {
+  if (scopeCount <= 1 || topN <= 1) return sortedResults.slice(0, topN);
+
+  const scopeGroups = new Map<string, KnowledgeQueryResult[]>();
+  for (const result of sortedResults) {
+    const scopeId =
+      (result.chunk.metadata?.sourceGroupId as string | undefined) ?? "";
+    const list = scopeGroups.get(scopeId) ?? [];
+    list.push(result);
+    scopeGroups.set(scopeId, list);
+  }
+
+  if (scopeGroups.size <= 1) return sortedResults.slice(0, topN);
+
+  const guaranteedPerScope = Math.max(1, Math.floor(topN / scopeGroups.size));
+  const selectedIds = new Set<string>();
+  const result: KnowledgeQueryResult[] = [];
+
+  // First pass: guaranteed minimum from each scope (score-ordered within each scope).
+  for (const results of scopeGroups.values()) {
+    for (const r of results.slice(0, guaranteedPerScope)) {
+      if (!selectedIds.has(r.chunk.id)) {
+        result.push(r);
+        selectedIds.add(r.chunk.id);
+      }
+    }
+  }
+
+  // Second pass: fill remaining slots from the global score-ordered list.
+  for (const r of sortedResults) {
+    if (result.length >= topN) break;
+    if (!selectedIds.has(r.chunk.id)) {
+      result.push(r);
+      selectedIds.add(r.chunk.id);
+    }
+  }
+
+  return result.sort(compareKnowledgeResults).slice(0, topN);
+}
+
 async function queryKnowledgeSingleScope(
   scope: RetrievalScope,
   query: string,
@@ -1101,23 +1251,6 @@ async function queryKnowledgeSingleScope(
 ): Promise<KnowledgeQueryResult[]> {
   const allQueries = [query, ...runtime.queryVariants];
   const recallProfile = getRecallProfile(query, resultMode);
-  const entityMatches =
-    constraints.strictEntityMatch && (constraints.issuer || constraints.ticker)
-      ? await knowledgeRepository.findDocumentIdsByRetrievalIdentity(scope.id, {
-          issuer: constraints.issuer ?? null,
-          ticker: constraints.ticker ?? null,
-          limit: recallProfile.docCandidates,
-        })
-      : [];
-  const entityMatchedDocumentIds = entityMatches.map((row) => row.documentId);
-
-  if (
-    constraints.strictEntityMatch &&
-    (constraints.issuer || constraints.ticker) &&
-    entityMatchedDocumentIds.length === 0
-  ) {
-    return [];
-  }
 
   let embeddings: number[][] = [];
   try {
@@ -1141,30 +1274,15 @@ async function queryKnowledgeSingleScope(
           queryVariant,
           embeddings[index],
           recallProfile.docCandidates,
-          entityMatchedDocumentIds.length > 0
-            ? entityMatchedDocumentIds
-            : undefined,
         ),
       ),
     ),
   );
-  for (const match of entityMatches) {
-    const existing = docSignalMap.get(match.documentId) ?? 0;
-    docSignalMap.set(
-      match.documentId,
-      Math.max(existing, 1 + match.score * 0.05),
-    );
-  }
 
   let candidateDocIds = Array.from(docSignalMap.entries())
     .sort((a, b) => b[1] - a[1])
     .slice(0, recallProfile.docCandidates)
     .map(([documentId]) => documentId);
-  if (entityMatchedDocumentIds.length > 0) {
-    candidateDocIds = Array.from(
-      new Set([...entityMatchedDocumentIds, ...candidateDocIds]),
-    ).slice(0, recallProfile.docCandidates);
-  }
 
   const structuredSectionMatches =
     constraints.page || constraints.noteNumber
@@ -1402,7 +1520,7 @@ async function queryKnowledgeSingleScope(
   }
 
   const threshold = scope.retrievalThreshold ?? 0;
-  let finalResults: KnowledgeQueryResult[] = chunkCandidates
+  let sortedFinalCandidates = chunkCandidates
     .filter((candidate) =>
       passesHardInclusionFloor({
         semanticScore: candidate.semanticScore,
@@ -1413,29 +1531,67 @@ async function queryKnowledgeSingleScope(
     .filter((candidate) =>
       threshold > 0 ? candidate.confidenceScore >= threshold : true,
     )
-    .sort(compareRankedChunkCandidates)
-    .slice(0, topN)
-    .map((candidate) => ({
-      ...candidate.result,
-      score: candidate.confidenceScore,
-      confidenceScore: candidate.confidenceScore,
-      semanticScore: candidate.semanticScore,
-      lexicalScore: candidate.lexicalScore,
-      docSignal: candidate.docSignal,
-      ...(candidate.rerankScore !== undefined
-        ? { rerankScore: candidate.rerankScore }
-        : {}),
-    }));
+    .sort(compareRankedChunkCandidates);
+
+  // Fallback: if all candidates were filtered by the hard floor (but NOT by
+  // a user-configured threshold), admit the top-scoring ones to avoid silently
+  // returning nothing when there are relevant candidates.
+  if (
+    sortedFinalCandidates.length === 0 &&
+    chunkCandidates.length > 0 &&
+    threshold <= 0
+  ) {
+    sortedFinalCandidates = chunkCandidates
+      .sort(compareRankedChunkCandidates)
+      .slice(0, Math.min(3, chunkCandidates.length));
+  }
+
+  // Minimum-representation guarantee: every document that had ANY candidate in
+  // the pre-floor pool gets at least one slot in the final list. This prevents
+  // cumulative/comparative documents (e.g. Q3 covering Jan-Sep) from completely
+  // crowding out standalone period docs (Q1, Q2) that scored just below the
+  // hard floor but are still the most relevant sources for period-specific queries.
+  if (chunkCandidates.length > 0 && threshold <= 0) {
+    const representedDocIds = new Set(
+      sortedFinalCandidates.map((c) => c.result.documentId),
+    );
+    const bestByUnrepresentedDoc = new Map<string, RankedChunkCandidate>();
+    for (const candidate of chunkCandidates) {
+      const docId = candidate.result.documentId;
+      if (representedDocIds.has(docId)) continue;
+      const existing = bestByUnrepresentedDoc.get(docId);
+      const candidateScore = candidate.rerankScore ?? candidate.confidenceScore;
+      const existingScore = existing
+        ? (existing.rerankScore ?? existing.confidenceScore)
+        : -Infinity;
+      if (candidateScore > existingScore) {
+        bestByUnrepresentedDoc.set(docId, candidate);
+      }
+    }
+    if (bestByUnrepresentedDoc.size > 0) {
+      sortedFinalCandidates = [
+        ...sortedFinalCandidates,
+        ...bestByUnrepresentedDoc.values(),
+      ].sort(compareRankedChunkCandidates);
+    }
+  }
+
+  let finalResults: KnowledgeQueryResult[] =
+    selectChunkCandidatesWithDocDiversity(sortedFinalCandidates, topN).map(
+      (candidate) => ({
+        ...candidate.result,
+        score: candidate.confidenceScore,
+        confidenceScore: candidate.confidenceScore,
+        semanticScore: candidate.semanticScore,
+        lexicalScore: candidate.lexicalScore,
+        docSignal: candidate.docSignal,
+        ...(candidate.rerankScore !== undefined
+          ? { rerankScore: candidate.rerankScore }
+          : {}),
+      }),
+    );
 
   finalResults = await attachNeighborContext(finalResults, scope.id);
-  if (
-    constraints.strictEntityMatch &&
-    (constraints.issuer || constraints.ticker)
-  ) {
-    finalResults = finalResults.filter((result) =>
-      entityMatchedDocumentIds.includes(result.documentId),
-    );
-  }
 
   return finalResults;
 }
@@ -1544,9 +1700,11 @@ export async function queryKnowledge(
     }
   }
 
-  const merged = Array.from(mergedByChunk.values())
-    .sort(compareKnowledgeResults)
-    .slice(0, topN);
+  const merged = selectResultsWithScopeDiversity(
+    Array.from(mergedByChunk.values()).sort(compareKnowledgeResults),
+    scopes.length,
+    topN,
+  );
 
   if (!skipLogging) {
     const latencyMs = Date.now() - start;
@@ -2429,11 +2587,8 @@ export interface QueryKnowledgeDocsOptions {
   libraryId?: string;
   /** Optional library version scope. */
   libraryVersion?: string;
-  issuer?: string;
-  ticker?: string;
   page?: number;
   note?: string;
-  strictEntityMatch?: boolean;
   userId?: string | null;
   source?: "chat" | "agent" | "mcp";
   memoryPolicy?: MemoryPolicy;
@@ -3432,14 +3587,58 @@ async function assembleSectionFirstResults(input: {
   >;
   tokenBudget: number;
   threshold: number;
+  query: string;
+  scopeById: Map<string, RetrievalScope>;
 }): Promise<{
   results: DocRetrievalResult[];
   tokensUsed: number;
   sectionCount: number;
 }> {
-  const { docsToAssemble, chunkStats, tokenBudget, threshold } = input;
+  const {
+    docsToAssemble,
+    chunkStats,
+    tokenBudget,
+    threshold,
+    query,
+    scopeById,
+  } = input;
   if (docsToAssemble.length === 0) {
     return { results: [], tokensUsed: 0, sectionCount: 0 };
+  }
+
+  // Backfill chunk matches for rescued docs that have no chunk hits in chunkStats.
+  // Without this, rescued docs (those with strong metadata signal but chunkHits=0)
+  // would produce empty sectionCandidates and be completely invisible to the model.
+  const embeddingCache = new Map<string, number[] | null>();
+  const docsNeedingBackfill = docsToAssemble.filter(
+    (doc) => (chunkStats.get(doc.documentId)?.chunkHits ?? 0) === 0,
+  );
+  if (docsNeedingBackfill.length > 0) {
+    await Promise.all(
+      docsNeedingBackfill.map(async (doc) => {
+        const backfilled = await backfillChunkMatchesForDocument({
+          doc,
+          query,
+          scopeById,
+          embeddingCache,
+          limit: 6,
+        });
+        if (backfilled.length > 0) {
+          chunkStats.set(doc.documentId, {
+            name: doc.documentName,
+            chunkHits: backfilled.length,
+            sumScore: backfilled.reduce(
+              (sum, c) => sum + (c.confidenceScore ?? c.score ?? 0),
+              0,
+            ),
+            maxScore: Math.max(
+              ...backfilled.map((c) => c.confidenceScore ?? c.score ?? 0),
+            ),
+            matches: backfilled,
+          });
+        }
+      }),
+    );
   }
 
   const sectionCandidates = new Map<
@@ -3648,17 +3847,36 @@ async function assembleSectionFirstResults(input: {
  * This provides complete, uncut context to the LLM — trading higher
  * token usage for higher accuracy and coherence.
  */
+
+/**
+ * Extracts period/time tokens from a query string. Used to boost documents
+ * whose title and description directly mention the queried period (e.g. Q1, Q2,
+ * Maret, Juni, 2025) so they are not crowded out by cumulative documents that
+ * happen to score better semantically because they cover multiple periods.
+ */
+function extractPeriodTokensFromQuery(query: string): string[] {
+  const tokens: string[] = [];
+  // Quarter markers (Q1–Q4, q1–q4)
+  for (const m of query.matchAll(/\bQ[1-4]\b/gi))
+    tokens.push(m[0].toLowerCase());
+  // Indonesian and English month names commonly used in financial reports
+  for (const m of query.matchAll(
+    /\b(januari|februari|maret|april|mei|juni|juli|agustus|september|oktober|november|desember|january|february|march|april|may|june|july|august|september|october|november|december)\b/gi,
+  ))
+    tokens.push(m[0].toLowerCase());
+  // 4-digit years
+  for (const m of query.matchAll(/\b20\d{2}\b/g)) tokens.push(m[0]);
+  return [...new Set(tokens)];
+}
+
 export async function queryKnowledgeAsDocs(
   group: GroupForRetrieval,
   query: string,
   options: QueryKnowledgeDocsOptions = {},
 ): Promise<DocRetrievalResult[]> {
   const constraints = mergeKnowledgeQueryConstraints(query, {
-    issuer: options.issuer,
-    ticker: options.ticker,
     page: options.page,
     note: options.note,
-    strictEntityMatch: options.strictEntityMatch,
   });
   const tokenBudget = Math.min(
     Math.max(options.tokens || DEFAULT_FULL_DOC_TOKENS, 500),
@@ -3737,6 +3955,38 @@ export async function queryKnowledgeAsDocs(
     for (const [docId, score] of signalMap.entries()) {
       const existing = docSignalMap.get(docId) ?? 0;
       if (score > existing) docSignalMap.set(docId, score);
+    }
+  }
+
+  // Additional targeted metadata search using only period tokens (e.g. "Q1 2025").
+  // The full query creates a long AND-style tsquery that no single doc passes,
+  // making BM25 on doc metadata fail to distinguish "Q1 2025" from "Q3 2025".
+  // Running a focused short query fixes this discrimination problem.
+  const periodQuery = extractPeriodTokensFromQuery(query).join(" ");
+  if (periodQuery) {
+    const periodSignalMaps = await Promise.all(
+      scopes.map(async (scope) => {
+        let periodEmbedding: number[] | undefined;
+        if (DOC_META_VECTOR_ENABLED) {
+          periodEmbedding = await embedSingleText(
+            periodQuery,
+            scope.embeddingProvider,
+            scope.embeddingModel,
+          ).catch(() => undefined);
+        }
+        return getDocumentMetadataSignals(
+          scope.id,
+          periodQuery,
+          periodEmbedding,
+          recallProfile.docCandidates,
+        );
+      }),
+    );
+    for (const signalMap of periodSignalMaps) {
+      for (const [docId, score] of signalMap.entries()) {
+        const existing = docSignalMap.get(docId) ?? 0;
+        if (score > existing) docSignalMap.set(docId, score);
+      }
     }
   }
   const imageEvidenceByDoc =
@@ -3828,18 +4078,13 @@ export async function queryKnowledgeAsDocs(
   if (candidateDocMeta.length === 0) return [];
 
   const allowedGroupIds = new Set(scopes.map((scope) => scope.id));
-  const candidateDocMetaInScope = candidateDocMeta.filter(
-    (doc) =>
-      allowedGroupIds.has(doc.groupId) &&
-      (!constraints.strictEntityMatch ||
-        matchesRetrievalIdentityConstraints(
-          (doc.metadata?.retrievalIdentity as any) ?? null,
-          constraints,
-        )),
+  const candidateDocMetaInScope = candidateDocMeta.filter((doc) =>
+    allowedGroupIds.has(doc.groupId),
   );
   if (candidateDocMetaInScope.length === 0) return [];
 
   const now = Date.now();
+  const periodTokens = extractPeriodTokensFromQuery(query);
   let rankedDocs: RankedDocCandidate[] = candidateDocMetaInScope
     .map((doc) => {
       const stats = chunkStats.get(doc.documentId);
@@ -3853,13 +4098,25 @@ export async function queryKnowledgeAsDocs(
       const maxChunkScore = stats?.maxScore ?? 0;
       const hitScore = Math.min(1, (stats?.chunkHits ?? 0) / 5);
       const imageHitScore = Math.min(1, (imageStats?.hitCount ?? 0) / 3);
+
+      // Boost docs whose title/description explicitly mention the queried
+      // period tokens (e.g. "Q1", "Maret", "2025"). This prevents cumulative
+      // docs (Q3 covering Jan–Sep) from crowding out standalone period docs.
+      const docText = `${doc.name} ${doc.description ?? ""}`.toLowerCase();
+      const titlePeriodMatch =
+        periodTokens.length > 0
+          ? periodTokens.filter((t) => docText.includes(t)).length /
+            periodTokens.length
+          : 0;
+
       const relevanceScoreRaw =
-        maxChunkScore * 0.5 +
-        avgChunkScore * 0.18 +
+        maxChunkScore * 0.42 +
+        avgChunkScore * 0.14 +
         hitScore * 0.04 +
-        metadataSignal * 0.1 +
-        imageEvidenceScore * 0.22 +
-        imageHitScore * 0.06;
+        metadataSignal * 0.18 +
+        titlePeriodMatch * 0.12 +
+        imageEvidenceScore * 0.08 +
+        imageHitScore * 0.02;
       const relevanceScore = Math.max(0, Math.min(1, relevanceScoreRaw));
 
       const ageDays = Math.max(
@@ -3941,14 +4198,28 @@ export async function queryKnowledgeAsDocs(
       ? rankedDocs.filter((d) => d.relevanceScore >= threshold)
       : rankedDocs;
   if (filteredDocs.length === 0) return [];
+  // In section-first mode keep docs that have direct chunk hits at the normal
+  // threshold. Additionally rescue docs that have no chunk hits yet but carry a
+  // strong doc-level metadata signal — those are often highly relevant docs
+  // whose chunks were crowded out by a dominant document in the shared pool.
+  const sectionFirstThreshold = Math.max(threshold, 0.24);
   const docsToAssemble =
     resultMode === "section-first"
-      ? filteredDocs
-          .filter(
+      ? (() => {
+          const primary = filteredDocs.filter(
+            (d) => d.chunkHits > 0 && d.relevanceScore >= sectionFirstThreshold,
+          );
+          if (primary.length >= maxDocs) return primary.slice(0, maxDocs);
+
+          // Rescue: docs with strong metadata signal that didn't win chunks.
+          const rescued = filteredDocs.filter(
             (d) =>
-              d.chunkHits > 0 && d.relevanceScore >= Math.max(threshold, 0.24),
-          )
-          .slice(0, maxDocs)
+              d.chunkHits === 0 &&
+              (docSignalMap.get(d.documentId) ?? 0) >= 0.35 &&
+              !primary.some((p) => p.documentId === d.documentId),
+          );
+          return [...primary, ...rescued].slice(0, maxDocs);
+        })()
       : filteredDocs.slice(0, maxDocs);
   if (resultMode === "full-doc" && docsToAssemble.length === 0) return [];
 
@@ -3967,6 +4238,8 @@ export async function queryKnowledgeAsDocs(
       chunkStats,
       tokenBudget,
       threshold,
+      query,
+      scopeById,
     });
 
     results = assembled.results;

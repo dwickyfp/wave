@@ -125,7 +125,7 @@ describe("knowledge-tool", () => {
     );
   });
 
-  it("passes structured issuer and page filters through to retrieval", async () => {
+  it("passes page filter through to retrieval", async () => {
     const tool = createKnowledgeDocsTool({
       id: "group-1",
       name: "Product Docs",
@@ -154,21 +154,17 @@ describe("knowledge-tool", () => {
 
     await tool.execute?.(
       {
-        query: "BBCA halaman 100",
-        ticker: "BBCA",
+        query: "annual report page 100",
         page: 100,
-        strictEntityMatch: true,
       },
       { toolCallId: "call-structured", messages: [] } as any,
     );
 
     expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
       expect.anything(),
-      "BBCA halaman 100",
+      "annual report page 100",
       expect.objectContaining({
-        ticker: "BBCA",
         page: 100,
-        strictEntityMatch: true,
       }),
     );
   });

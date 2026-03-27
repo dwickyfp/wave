@@ -12,11 +12,6 @@ export interface TextChunk {
     /** Full heading breadcrumb path, e.g. "Guide > Installation > macOS" */
     headingPath?: string;
     canonicalTitle?: string;
-    issuerName?: string;
-    issuerTicker?: string;
-    reportType?: string;
-    fiscalYear?: number;
-    periodEnd?: string;
     noteNumber?: string;
     noteTitle?: string;
     noteSubsection?: string;
@@ -75,11 +70,6 @@ export interface ChunkableKnowledgeSection {
   pageStart?: number;
   pageEnd?: number;
   canonicalTitle?: string;
-  issuerName?: string;
-  issuerTicker?: string;
-  reportType?: string;
-  fiscalYear?: number;
-  periodEnd?: string;
   noteNumber?: string;
   noteTitle?: string;
   noteSubsection?: string;
@@ -1014,11 +1004,6 @@ export function chunkKnowledgeSections(
         pageNumber:
           section.pageStart === section.pageEnd ? section.pageStart : undefined,
         canonicalTitle: section.canonicalTitle,
-        issuerName: section.issuerName,
-        issuerTicker: section.issuerTicker,
-        reportType: section.reportType,
-        fiscalYear: section.fiscalYear,
-        periodEnd: section.periodEnd,
         noteNumber: section.noteNumber,
         noteTitle: section.noteTitle,
         noteSubsection: section.noteSubsection,

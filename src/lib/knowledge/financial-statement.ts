@@ -566,8 +566,23 @@ function extractFiscalYear(values: string[]): number | null {
 }
 
 function extractPeriodEnd(markdown: string): string | null {
-  const match = markdown.match(/\b(31\s+(?:DESEMBER|DECEMBER)\s+20\d{2})\b/i);
-  return match?.[1]?.trim() ?? null;
+  // Capture all common fiscal quarter-end date patterns so documents from
+  // different quarters get unique periodEnd values.
+  // Q4: 31 December / 31 Desember
+  // Q3: 30 September
+  // Q2: 30 June / 30 Juni
+  // Q1: 31 March / 31 Maret
+  const patterns = [
+    /\b(31\s+(?:DESEMBER|DECEMBER)\s+20\d{2})\b/i,
+    /\b(30\s+SEPTEMBER\s+20\d{2})\b/i,
+    /\b(30\s+(?:JUNI|JUNE)\s+20\d{2})\b/i,
+    /\b(31\s+(?:MARET|MARCH)\s+20\d{2})\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = markdown.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+  return null;
 }
 
 function synthesizeCanonicalTitle(identity: {
@@ -575,6 +590,7 @@ function synthesizeCanonicalTitle(identity: {
   issuerTicker?: string | null;
   reportType?: string | null;
   fiscalYear?: number | null;
+  periodEnd?: string | null;
 }): string | null {
   if (!identity.issuerName && !identity.issuerTicker) return null;
 
@@ -587,8 +603,16 @@ function synthesizeCanonicalTitle(identity: {
       : identity.reportType === "annual_report"
         ? "Annual Report"
         : null;
-  const year = identity.fiscalYear ? String(identity.fiscalYear) : null;
-  return dedupeStrings([base, reportType, year]).join(" ");
+
+  // Prefer the precise period-end date string (gives uniqueness across quarters).
+  // Fall back to fiscal year when only that is available.
+  const period = identity.periodEnd
+    ? identity.periodEnd
+    : identity.fiscalYear
+      ? String(identity.fiscalYear)
+      : null;
+
+  return dedupeStrings([base, reportType, period]).join(" ");
 }
 
 export function buildFinancialStatementRetrievalIdentity(input: {
@@ -641,6 +665,7 @@ export function buildFinancialStatementRetrievalIdentity(input: {
     issuerTicker: issuer?.issuerTicker,
     reportType,
     fiscalYear,
+    periodEnd,
   });
   const autoTitleIssuer = input.autoTitle
     ? detectIssuerFromTexts([input.autoTitle])

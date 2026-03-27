@@ -460,44 +460,43 @@ describe("queryKnowledgeAsDocs", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("hard-filters explicit issuer queries to matching documents", async () => {
-    vi.mocked(
-      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
-    ).mockResolvedValue([{ documentId: "doc-1", score: 1 }]);
+  it("returns hits across multiple documents when diversity is needed", async () => {
     vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
       makeChunkHit({
         documentId: "doc-1",
         chunk: {
           documentId: "doc-1",
-          metadata: {
-            headingPath: "Financial Statements > Note 14",
-            section: "Note 14",
-            issuerTicker: "BBCA",
-            issuerName: "PT Bank Central Asia Tbk",
-          },
+          id: "chunk-1",
+          metadata: { headingPath: "Guide > Authentication" },
         },
+        score: 0.92,
+      }),
+      makeChunkHit({
+        documentId: "doc-2",
+        chunk: {
+          documentId: "doc-2",
+          id: "chunk-3",
+          metadata: { headingPath: "Guide > Authorization" },
+        },
+        score: 0.88,
+        documentName: "Guide 2",
       }),
     ]);
 
-    const results = await queryKnowledge(group, "BBCA marketable securities", {
-      topN: 3,
-    });
+    const results = await queryKnowledge(
+      group,
+      "authentication authorization",
+      {
+        topN: 2,
+      },
+    );
 
-    expect(
-      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
-    ).toHaveBeenCalledWith("group-1", {
-      issuer: null,
-      ticker: "BBCA",
-      limit: expect.any(Number),
-    });
-    expect(results).toHaveLength(1);
-    expect(results[0]?.documentId).toBe("doc-1");
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.documentId)).toContain("doc-1");
+    expect(results.map((r) => r.documentId)).toContain("doc-2");
   });
 
   it("uses structured section filters for exact page queries", async () => {
-    vi.mocked(
-      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
-    ).mockResolvedValue([{ documentId: "doc-1", score: 1 }]);
     vi.mocked(
       knowledgeRepository.findSectionsByStructuredFilters,
     ).mockResolvedValue([

@@ -90,8 +90,6 @@ export function extractKnowledgeEntities(input: {
 
   const directTerms = [
     metadata?.canonicalTitle,
-    metadata?.issuerName,
-    metadata?.issuerTicker,
     metadata?.libraryId,
     metadata?.libraryVersion,
     metadata?.section,
@@ -104,14 +102,7 @@ export function extractKnowledgeEntities(input: {
   for (const term of directTerms) {
     addEntity(
       out,
-      buildEntity(
-        term,
-        term === metadata?.issuerName || term === metadata?.issuerTicker
-          ? "issuer"
-          : term === metadata?.libraryId
-            ? "library"
-            : "heading",
-      ),
+      buildEntity(term, term === metadata?.libraryId ? "library" : "heading"),
     );
   }
 
