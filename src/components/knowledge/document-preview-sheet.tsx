@@ -21,13 +21,9 @@ import {
   TableIcon,
   XIcon,
 } from "lucide-react";
-import {
-  useEffect,
-  useEffectEvent,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import useSWR, { useSWRConfig } from "swr";
+import { fetcher } from "lib/utils";
 import { toast } from "sonner";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
@@ -65,8 +61,6 @@ const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
 
 type MainTab = "configuration" | "original" | "images" | "markdown" | "history";
 
-const LIVE_IMAGE_CACHE_KEY = "__live__";
-
 function isMainTab(value: string): value is MainTab {
   return (
     value === "configuration" ||
@@ -82,10 +76,6 @@ function formatBytes(bytes?: number | null): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1048576).toFixed(1)} MB`;
-}
-
-function getImageCacheKey(versionId?: string | null) {
-  return versionId ?? LIVE_IMAGE_CACHE_KEY;
 }
 
 function formatVersionLabel(version: KnowledgeDocumentVersionSummary) {
@@ -209,6 +199,8 @@ function getHistoryEventTone(event: KnowledgeDocumentHistoryEvent) {
   }
 }
 
+const EMPTY_IMAGES: KnowledgeDocumentImagePreview[] = [];
+
 interface Props {
   doc: KnowledgeDocument | null;
   groupId: string;
@@ -224,12 +216,6 @@ export function DocumentPreviewSheet({
   onClose,
   onDocumentUpdated,
 }: Props) {
-  const [previewData, setPreviewData] =
-    useState<KnowledgeDocumentPreview | null>(null);
-  const [history, setHistory] = useState<KnowledgeDocumentHistoryEvent[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [savingConfig, setSavingConfig] = useState(false);
@@ -244,29 +230,78 @@ export function DocumentPreviewSheet({
     null,
   );
   const [draftMarkdown, setDraftMarkdown] = useState("");
-  const [markdownByVersion, setMarkdownByVersion] = useState<
-    Record<string, string>
-  >({});
-  const [markdownLoading, setMarkdownLoading] = useState(false);
-  const [markdownError, setMarkdownError] = useState<string | null>(null);
-  const [documentImages, setDocumentImages] = useState<
-    KnowledgeDocumentImagePreview[]
-  >([]);
-  const [imagesByVersion, setImagesByVersion] = useState<
-    Record<string, KnowledgeDocumentImagePreview[]>
-  >({});
   const [draftImages, setDraftImages] = useState<
     KnowledgeDocumentImagePreview[]
   >([]);
-  const [imagesLoading, setImagesLoading] = useState(false);
   const markdownEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const markdownPreviewViewportRef = useRef<HTMLDivElement | null>(null);
-  const historyRequestKeyRef = useRef<string | null>(null);
   const pendingMarkdownScrollTopRef = useRef<number | null>(null);
   const pendingMarkdownSelectionRef = useRef<{
     start: number;
     end: number;
   } | null>(null);
+
+  const { mutate: globalMutate } = useSWRConfig();
+
+  // Preview: key includes versionId only when viewing a specific version in the "original" tab
+  const previewVersionParam =
+    mainTab === "original" && selectedVersionId ? selectedVersionId : null;
+  const previewKey =
+    open && doc?.id
+      ? previewVersionParam
+        ? `/api/knowledge/${groupId}/documents/${doc.id}/preview?versionId=${encodeURIComponent(previewVersionParam)}`
+        : `/api/knowledge/${groupId}/documents/${doc.id}/preview`
+      : null;
+  const {
+    data: previewData,
+    isLoading: loading,
+    error: previewFetchError,
+    mutate: mutatePreview,
+  } = useSWR<KnowledgeDocumentPreview, Error>(previewKey, fetcher, {
+    revalidateOnFocus: false,
+    keepPreviousData: true,
+    refreshInterval: (data) =>
+      data?.versions.some((v) => v.status === "processing") ? 2000 : 0,
+  });
+  const error = previewFetchError?.message ?? null;
+
+  // History: only fetch when the history tab is active
+  const historyKey =
+    open && doc?.id && mainTab === "history"
+      ? `/api/knowledge/${groupId}/documents/${doc.id}/history`
+      : null;
+  const { data: historyData, isLoading: historyLoading } = useSWR<
+    { history: KnowledgeDocumentHistoryEvent[] },
+    Error
+  >(historyKey, fetcher, { revalidateOnFocus: false });
+  const history = historyData?.history ?? [];
+
+  // Images: only fetch when the images tab is active; key scoped by selected version
+  const imagesKey =
+    open && doc?.id && mainTab === "images"
+      ? selectedVersionId
+        ? `/api/knowledge/${groupId}/documents/${doc.id}/images?versionId=${encodeURIComponent(selectedVersionId)}`
+        : `/api/knowledge/${groupId}/documents/${doc.id}/images`
+      : null;
+  const { data: imagesData, isLoading: imagesLoading } = useSWR<
+    { images: KnowledgeDocumentImagePreview[] },
+    Error
+  >(imagesKey, fetcher, { revalidateOnFocus: false });
+  const documentImages = imagesData?.images ?? EMPTY_IMAGES;
+
+  // Markdown: only fetch when the markdown tab is active and a version is selected
+  const markdownKey =
+    open && doc?.id && mainTab === "markdown" && selectedVersionId
+      ? `/api/knowledge/${groupId}/documents/${doc.id}/versions/${selectedVersionId}/content`
+      : null;
+  const {
+    data: markdownData,
+    isLoading: markdownLoading,
+    error: markdownFetchError,
+  } = useSWR<KnowledgeDocumentVersionContent, Error>(markdownKey, fetcher, {
+    revalidateOnFocus: false,
+  });
+  const markdownError = markdownFetchError?.message ?? null;
 
   const syncDraftMarkdownFromEditor = () => {
     const editor = markdownEditorRef.current;
@@ -279,241 +314,16 @@ export function DocumentPreviewSheet({
     return nextValue;
   };
 
-  const loadPreview = useEffectEvent(
-    async ({
-      showLoader = true,
-      versionId,
-    }: {
-      showLoader?: boolean;
-      versionId?: string | null;
-    } = {}) => {
-      if (!doc) return;
-      if (showLoader) {
-        setLoading(true);
-      }
-      setError(null);
-
-      try {
-        const searchParams = new URLSearchParams({
-          ts: String(Date.now()),
-        });
-        if (versionId) {
-          searchParams.set("versionId", versionId);
-        }
-        const response = await fetch(
-          `/api/knowledge/${groupId}/documents/${doc.id}/preview?${searchParams.toString()}`,
-          {
-            cache: "no-store",
-          },
-        );
-        const data = (await response.json()) as KnowledgeDocumentPreview & {
-          error?: string;
-        };
-        if (!response.ok || data.error) {
-          throw new Error(data.error || "Failed to load preview");
-        }
-        setPreviewData(data);
-      } catch (loadError) {
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Failed to load preview",
-        );
-      } finally {
-        if (showLoader) {
-          setLoading(false);
-        }
-      }
-    },
-  );
-
-  const loadHistory = useEffectEvent(
-    async (
-      documentId: string,
-      { silent = false }: { silent?: boolean } = {},
-    ) => {
-      const requestKey = documentId;
-      if (historyRequestKeyRef.current === requestKey) {
-        return;
-      }
-      historyRequestKeyRef.current = requestKey;
-      if (!silent) {
-        setHistoryLoading(true);
-      }
-      try {
-        const response = await fetch(
-          `/api/knowledge/${groupId}/documents/${documentId}/history?ts=${Date.now()}`,
-          {
-            cache: "no-store",
-          },
-        );
-        const data = (await response.json()) as {
-          history?: KnowledgeDocumentHistoryEvent[];
-          error?: string;
-        };
-        if (!response.ok || data.error) {
-          throw new Error(data.error || "Failed to load history");
-        }
-        setHistory(data.history ?? []);
-      } catch (historyError) {
-        if (!silent) {
-          toast.error(
-            historyError instanceof Error
-              ? historyError.message
-              : "Failed to load history",
-          );
-        }
-      } finally {
-        if (historyRequestKeyRef.current === requestKey) {
-          historyRequestKeyRef.current = null;
-        }
-        if (!silent) {
-          setHistoryLoading(false);
-        }
-      }
-    },
-  );
-
-  const loadImages = useEffectEvent(
-    async (
-      documentId: string,
-      versionId?: string | null,
-      { silent = false }: { silent?: boolean } = {},
-    ) => {
-      const currentPreview = previewData;
-      const cacheKey = getImageCacheKey(versionId);
-      const cachedImages = imagesByVersion[cacheKey];
-      if (cachedImages !== undefined) {
-        setDocumentImages(cachedImages);
-        return;
-      }
-
-      if (
-        versionId &&
-        versionId ===
-          (currentPreview?.resolvedVersionId ??
-            currentPreview?.activeVersionId) &&
-        (currentPreview?.images.length ?? 0) > 0
-      ) {
-        setImagesByVersion((current) => ({
-          ...current,
-          [cacheKey]: currentPreview?.images ?? [],
-        }));
-        setDocumentImages(currentPreview?.images ?? []);
-        return;
-      }
-
-      if (!silent) {
-        setImagesLoading(true);
-      }
-      try {
-        const search = versionId
-          ? `?versionId=${encodeURIComponent(versionId)}`
-          : "";
-        const response = await fetch(
-          `/api/knowledge/${groupId}/documents/${documentId}/images${search}`,
-          {
-            cache: "no-store",
-          },
-        );
-        const data = (await response.json()) as {
-          images?: KnowledgeDocumentImagePreview[];
-          error?: string;
-        };
-        if (!response.ok || data.error) {
-          throw new Error(data.error || "Failed to load images");
-        }
-        const nextImages = data.images ?? [];
-        setImagesByVersion((current) => ({
-          ...current,
-          [cacheKey]: nextImages,
-        }));
-        setDocumentImages(nextImages);
-      } catch (imagesError) {
-        if (!silent) {
-          toast.error(
-            imagesError instanceof Error
-              ? imagesError.message
-              : "Failed to load images",
-          );
-        }
-      } finally {
-        if (!silent) {
-          setImagesLoading(false);
-        }
-      }
-    },
-  );
-
-  const loadVersionMarkdown = useEffectEvent(
-    async (
-      documentId: string,
-      versionId: string,
-      { force = false }: { force?: boolean } = {},
-    ) => {
-      if (!force && markdownByVersion[versionId] !== undefined) {
-        setDraftMarkdown(markdownByVersion[versionId] ?? "");
-        setMarkdownError(null);
-        return;
-      }
-
-      setMarkdownLoading(true);
-      setMarkdownError(null);
-      try {
-        const response = await fetch(
-          `/api/knowledge/${groupId}/documents/${documentId}/versions/${versionId}/content?ts=${Date.now()}`,
-          {
-            cache: "no-store",
-          },
-        );
-        const data = (await response.json()) as
-          | (KnowledgeDocumentVersionContent & { error?: string })
-          | { error?: string };
-        if (!response.ok || data.error) {
-          throw new Error(data.error || "Failed to load markdown");
-        }
-
-        const markdown =
-          "markdownContent" in data ? (data.markdownContent ?? "") : "";
-        setMarkdownByVersion((current) => ({
-          ...current,
-          [versionId]: markdown,
-        }));
-        setDraftMarkdown(markdown);
-      } catch (loadError) {
-        setMarkdownError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Failed to load markdown",
-        );
-        setDraftMarkdown("");
-      } finally {
-        setMarkdownLoading(false);
-      }
-    },
-  );
-
   useEffect(() => {
     if (!open || !doc) {
-      setPreviewData(null);
-      setHistory([]);
-      setError(null);
       setSelectedVersionId(null);
       setPreferredVersionId(null);
       setIsMarkdownEditing(false);
       setDraftMarkdown("");
-      setMarkdownByVersion({});
-      setMarkdownLoading(false);
-      setMarkdownError(null);
-      setDocumentImages([]);
-      setImagesByVersion({});
       setDraftImages([]);
       setMainTab("configuration");
-      return;
     }
-
-    void loadPreview();
-  }, [open, doc, groupId]);
+  }, [open, doc]);
 
   useEffect(() => {
     if (!previewData?.doc) return;
@@ -523,98 +333,6 @@ export function DocumentPreviewSheet({
     previewData?.doc?.id,
     previewData?.doc?.name,
     previewData?.doc?.description,
-  ]);
-
-  useEffect(() => {
-    const currentPreview = previewData;
-    if (!currentPreview) return;
-
-    const previewVersionId =
-      currentPreview.resolvedVersionId ?? currentPreview.activeVersionId;
-    if (!previewVersionId) return;
-    const activeImages = currentPreview.images ?? [];
-    const activeCacheKey = getImageCacheKey(previewVersionId);
-    setImagesByVersion((current) =>
-      current[activeCacheKey] === activeImages
-        ? current
-        : {
-            ...current,
-            [activeCacheKey]: activeImages,
-          },
-    );
-
-    if ((selectedVersionId ?? previewVersionId) === previewVersionId) {
-      setDocumentImages(activeImages);
-    }
-  }, [
-    previewData?.activeVersionId,
-    previewData?.resolvedVersionId,
-    previewData?.images,
-    selectedVersionId,
-  ]);
-
-  useEffect(() => {
-    if (mainTab === "history" && previewData?.doc?.id) {
-      void loadHistory(previewData.doc.id);
-    }
-    if (mainTab === "images" && previewData?.doc?.id) {
-      void loadImages(previewData.doc.id, selectedVersionId ?? null);
-    }
-    if (mainTab === "markdown" && previewData?.doc?.id && selectedVersionId) {
-      void loadVersionMarkdown(previewData.doc.id, selectedVersionId);
-    }
-  }, [mainTab, previewData?.doc?.id, groupId, selectedVersionId]);
-
-  useEffect(() => {
-    if (
-      !open ||
-      !doc ||
-      mainTab !== "original" ||
-      !selectedVersionId ||
-      selectedVersionId ===
-        (previewData?.resolvedVersionId ?? previewData?.activeVersionId ?? null)
-    ) {
-      return;
-    }
-
-    void loadPreview({ versionId: selectedVersionId });
-  }, [
-    open,
-    doc,
-    mainTab,
-    selectedVersionId,
-    previewData?.resolvedVersionId,
-    previewData?.activeVersionId,
-  ]);
-
-  const hasPendingVersionJob =
-    previewData?.versions.some((version) => version.status === "processing") ??
-    false;
-
-  useEffect(() => {
-    if (!open || !doc || !previewData?.doc?.id || !hasPendingVersionJob) {
-      return;
-    }
-
-    const documentId = previewData.doc.id;
-    const pollId = window.setInterval(() => {
-      void loadPreview({
-        showLoader: false,
-        versionId: selectedVersionId ?? null,
-      });
-      if (mainTab === "history") {
-        void loadHistory(documentId, { silent: true });
-      }
-    }, 2000);
-
-    return () => window.clearInterval(pollId);
-  }, [
-    open,
-    doc,
-    previewData?.doc?.id,
-    hasPendingVersionJob,
-    mainTab,
-    selectedVersionId,
   ]);
 
   useEffect(() => {
@@ -642,15 +360,12 @@ export function DocumentPreviewSheet({
     }
   }, [previewData?.activeVersionId, preferredVersionId]);
 
+  // Sync draftMarkdown from SWR-fetched markdown content
   useEffect(() => {
-    if (
-      selectedVersionId &&
-      markdownByVersion[selectedVersionId] !== undefined
-    ) {
-      setDraftMarkdown(markdownByVersion[selectedVersionId] ?? "");
-      setMarkdownError(null);
+    if (markdownData !== undefined) {
+      setDraftMarkdown(markdownData.markdownContent ?? "");
     }
-  }, [selectedVersionId, markdownByVersion]);
+  }, [markdownData]);
 
   useEffect(() => {
     setIsMarkdownEditing(false);
@@ -700,16 +415,14 @@ export function DocumentPreviewSheet({
     previewData?.versions.find((version) => version.id === selectedVersionId) ??
     activeVersion ??
     null;
-  const baselineMarkdown =
-    (selectedVersionId && markdownByVersion[selectedVersionId]) ?? "";
+  const baselineMarkdown = markdownData?.markdownContent ?? "";
   const currentMarkdownDraft =
     isMarkdownEditing && markdownEditorRef.current
       ? markdownEditorRef.current.value
       : draftMarkdown;
   const markdownAvailable =
     !!previewData?.markdownAvailable && !!selectedVersionId;
-  const hasLoadedMarkdown =
-    !!selectedVersionId && markdownByVersion[selectedVersionId] !== undefined;
+  const hasLoadedMarkdown = !!selectedVersionId && markdownData !== undefined;
   const hasConfigChanges =
     !isInherited &&
     (title.trim() !== currentTitle ||
@@ -778,19 +491,21 @@ export function DocumentPreviewSheet({
       if (!response.ok) throw new Error("Failed to update document");
       const updated = (await response.json()) as KnowledgeDocument;
 
-      setPreviewData((prev) =>
-        prev
-          ? {
-              ...prev,
-              doc: {
-                ...prev.doc,
-                name: updated.name,
-                description: updated.description ?? null,
-                titleManual: updated.titleManual ?? true,
-                descriptionManual: updated.descriptionManual ?? true,
-              },
-            }
-          : prev,
+      void mutatePreview(
+        (prev) =>
+          prev
+            ? {
+                ...prev,
+                doc: {
+                  ...prev.doc,
+                  name: updated.name,
+                  description: updated.description ?? null,
+                  titleManual: updated.titleManual ?? true,
+                  descriptionManual: updated.descriptionManual ?? true,
+                },
+              }
+            : prev,
+        { revalidate: false },
       );
       onDocumentUpdated?.(updated);
       toast.success("Document metadata updated");
@@ -805,12 +520,7 @@ export function DocumentPreviewSheet({
     setSelectedVersionId(previewData?.activeVersionId ?? null);
     setPreferredVersionId(null);
     setIsMarkdownEditing(false);
-    if (previewData?.activeVersionId) {
-      setDraftMarkdown(markdownByVersion[previewData.activeVersionId] ?? "");
-      setMarkdownError(null);
-    } else {
-      setDraftMarkdown("");
-    }
+    setDraftMarkdown("");
   };
 
   const handleSaveMarkdown = async () => {
@@ -874,12 +584,14 @@ export function DocumentPreviewSheet({
         setPreferredVersionId(null);
         setIsMarkdownEditing(false);
       }
-      await loadPreview();
+      await mutatePreview();
       if (mainTab === "markdown" && queuedVersionId) {
-        await loadVersionMarkdown(doc.id, queuedVersionId, { force: true });
+        await globalMutate(
+          `/api/knowledge/${groupId}/documents/${doc.id}/versions/${queuedVersionId}/content`,
+        );
       }
-      if (mainTab === "history") {
-        await loadHistory(doc.id);
+      if (mainTab === "history" && historyKey) {
+        await globalMutate(historyKey);
       }
     } catch (saveError) {
       toast.error(
@@ -925,8 +637,7 @@ export function DocumentPreviewSheet({
         setSelectedVersionId(queuedVersionId);
       }
       toast.success("Image annotation edit queued for re-embedding");
-      await loadPreview();
-      await loadImages(doc.id, queuedVersionId ?? previewData.activeVersionId);
+      await mutatePreview();
     } catch (saveError) {
       toast.error(
         saveError instanceof Error
@@ -941,9 +652,7 @@ export function DocumentPreviewSheet({
   const handleSelectVersion = (value: string) => {
     setSelectedVersionId(value);
     setIsMarkdownEditing(false);
-    setDraftMarkdown(markdownByVersion[value] ?? "");
-    setMarkdownError(null);
-    setDocumentImages(imagesByVersion[getImageCacheKey(value)] ?? []);
+    setDraftMarkdown("");
   };
 
   const startMarkdownEdit = ({

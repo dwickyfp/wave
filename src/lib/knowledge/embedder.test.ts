@@ -46,6 +46,9 @@ const { embedSingleTextWithUsage, embedTextsWithUsage } = await import(
 describe("embedder usage accounting", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.KNOWLEDGE_EMBEDDING_RETRY_ATTEMPTS;
+    delete process.env.KNOWLEDGE_EMBEDDING_RETRY_BASE_DELAY_MS;
+    delete process.env.KNOWLEDGE_EMBEDDING_MAX_CONCURRENCY;
     getProviderByNameMock.mockResolvedValue({
       enabled: true,
       apiKey: "test-key",
@@ -101,5 +104,31 @@ describe("embedder usage accounting", () => {
     expect(first.usageTokens).toBe(7);
     expect(second.usageTokens).toBe(0);
     expect(embedMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries batch embeddings when the provider returns a rate-limit error", async () => {
+    process.env.KNOWLEDGE_EMBEDDING_RETRY_ATTEMPTS = "2";
+    process.env.KNOWLEDGE_EMBEDDING_RETRY_BASE_DELAY_MS = "0";
+
+    embedManyMock
+      .mockRejectedValueOnce(
+        new Error(
+          "RateLimitReached: Please retry after 0 seconds before creating more embeddings.",
+        ),
+      )
+      .mockResolvedValueOnce({
+        embeddings: [[0.1, 0.2]],
+        usage: { tokens: 9 },
+      });
+
+    const result = await embedTextsWithUsage(
+      ["alpha"],
+      "openai",
+      "usage-batch-model",
+    );
+
+    expect(result.usageTokens).toBe(9);
+    expect(result.embeddings).toEqual([[0.1, 0.2]]);
+    expect(embedManyMock).toHaveBeenCalledTimes(2);
   });
 });

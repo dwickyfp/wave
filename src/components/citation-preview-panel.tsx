@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { cn } from "lib/utils";
 import { appStore } from "@/app/store";
 import type { KnowledgeDocumentPreview } from "app-types/knowledge";
 import { useShallow } from "zustand/shallow";
@@ -14,9 +15,12 @@ import {
   DownloadIcon,
   Loader2Icon,
   XIcon,
+  Maximize2Icon,
+  Minimize2Icon,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { KnowledgeDocumentViewer } from "./knowledge/knowledge-document-viewer";
+import { useSidebar } from "ui/sidebar";
 
 const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   pdf: FileTextIcon,
@@ -55,6 +59,8 @@ function CitationPanelBody({
   loading,
   error,
   onClose,
+  isMaximized,
+  onToggleMaximize,
 }: {
   citationPreview: NonNullable<
     ReturnType<typeof appStore.getState>["citationDocumentPreview"]
@@ -63,6 +69,8 @@ function CitationPanelBody({
   loading: boolean;
   error: string | null;
   onClose: () => void;
+  isMaximized: boolean;
+  onToggleMaximize: () => void;
 }) {
   const fileType =
     previewData?.doc.fileType ?? citationPreview.fileType ?? "file";
@@ -139,6 +147,19 @@ function CitationPanelBody({
             variant="ghost"
             size="icon"
             className="-mr-1 -mt-1 size-8 shrink-0 rounded-full"
+            onClick={onToggleMaximize}
+            title={isMaximized ? "Minimize" : "Maximize"}
+          >
+            {isMaximized ? (
+              <Minimize2Icon className="size-4" />
+            ) : (
+              <Maximize2Icon className="size-4" />
+            )}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="-mr-1 -mt-1 size-8 shrink-0 rounded-full"
             onClick={onClose}
           >
             <XIcon className="size-4" />
@@ -207,10 +228,12 @@ export function CitationPreviewPanel() {
   const [citationPreview, mutate] = appStore(
     useShallow((state) => [state.citationDocumentPreview, state.mutate]),
   );
+  const { open: sidebarOpen, setOpen: setSidebarOpen } = useSidebar();
 
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isMaximized, setIsMaximized] = useState(false);
   const latestRequestRef = useRef(0);
 
   useEffect(() => {
@@ -291,6 +314,15 @@ export function CitationPreviewPanel() {
 
   const handleClose = () => {
     mutate({ citationDocumentPreview: null });
+    setIsMaximized(false);
+  };
+
+  const handleToggleMaximize = () => {
+    const nextMaximized = !isMaximized;
+    setIsMaximized(nextMaximized);
+    if (nextMaximized && sidebarOpen) {
+      setSidebarOpen(false);
+    }
   };
 
   return (
@@ -311,7 +343,12 @@ export function CitationPreviewPanel() {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 24 }}
             transition={{ duration: 0.25, ease: "easeInOut" }}
-            className="fixed inset-x-4 bottom-4 top-4 z-50 flex overflow-hidden bg-transparent md:relative md:inset-auto md:z-40 md:h-full md:w-[520px] md:flex-shrink-0 md:p-5"
+            className={cn(
+              "fixed inset-x-4 bottom-4 top-4 z-50 flex overflow-hidden bg-transparent",
+              "md:relative md:inset-auto md:z-40 md:h-full md:flex-shrink-0 md:p-5",
+              "md:transition-[width] md:duration-[350ms] md:ease-in-out",
+              isMaximized ? "md:w-[860px]" : "md:w-[520px]",
+            )}
           >
             <CitationPanelBody
               citationPreview={citationPreview}
@@ -319,6 +356,8 @@ export function CitationPreviewPanel() {
               loading={loading}
               error={error}
               onClose={handleClose}
+              isMaximized={isMaximized}
+              onToggleMaximize={handleToggleMaximize}
             />
           </motion.div>
         </>

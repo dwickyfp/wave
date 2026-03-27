@@ -6,7 +6,7 @@ import type {
 } from "app-types/knowledge";
 import * as cheerio from "cheerio";
 import TurndownService from "turndown";
-import { LanguageModel, Output, generateText } from "ai";
+import { LanguageModel, Output, generateText, jsonSchema } from "ai";
 import { z } from "zod";
 import { createModelFromConfig } from "lib/ai/provider-factory";
 import { settingsRepository } from "lib/db/repository";
@@ -54,50 +54,140 @@ Requirements:
 - Only put exact text or numeric values in OCR/value fields when they are clearly visible
 - Leave chartData, tableData, OCR text, or value snippets empty when they are not applicable`;
 
-const IMAGE_ANALYSIS_OUTPUT_SCHEMA = z.object({
-  imageType: z
-    .enum([
-      "ui",
-      "chart",
-      "table",
-      "document_scan",
-      "diagram",
-      "photo",
-      "other",
-    ])
-    .default("other"),
-  label: z.string().default(""),
-  description: z.string().default(""),
-  ocrText: z.string().default(""),
-  exactValueSnippets: z.array(z.string()).default([]),
-  chartData: z
-    .object({
-      chartType: z.string().nullish(),
-      title: z.string().nullish(),
-      xAxisLabel: z.string().nullish(),
-      yAxisLabel: z.string().nullish(),
-      legend: z.array(z.string()).nullish(),
-      units: z.array(z.string()).nullish(),
-      series: z
-        .array(
+const IMAGE_TYPES = [
+  "ui",
+  "chart",
+  "table",
+  "document_scan",
+  "diagram",
+  "photo",
+  "other",
+] as const;
+
+const nullToUndefined = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess(
+    (value) => (value === null ? undefined : value),
+    schema.optional(),
+  );
+
+const IMAGE_ANALYSIS_OUTPUT_RUNTIME_SCHEMA = z.object({
+  imageType: nullToUndefined(z.enum(IMAGE_TYPES)),
+  label: nullToUndefined(z.string()),
+  description: nullToUndefined(z.string()),
+  ocrText: nullToUndefined(z.string()),
+  exactValueSnippets: nullToUndefined(z.array(z.string())),
+  chartData: nullToUndefined(
+    z.object({
+      chartType: nullToUndefined(z.string()),
+      title: nullToUndefined(z.string()),
+      xAxisLabel: nullToUndefined(z.string()),
+      yAxisLabel: nullToUndefined(z.string()),
+      legend: nullToUndefined(z.array(z.string())),
+      units: nullToUndefined(z.array(z.string())),
+      series: nullToUndefined(
+        z.array(
           z.object({
-            name: z.string(),
-            values: z.array(z.string()).default([]),
+            name: nullToUndefined(z.string()),
+            values: nullToUndefined(z.array(z.string())),
           }),
-        )
-        .nullish(),
-      summary: z.string().nullish(),
-    })
-    .nullish(),
-  tableData: z
-    .object({
-      headers: z.array(z.string()).nullish(),
-      rows: z.array(z.array(z.string())).nullish(),
-      summary: z.string().nullish(),
-    })
-    .nullish(),
-  ocrConfidence: z.number().min(0).max(1).nullish(),
+        ),
+      ),
+      summary: nullToUndefined(z.string()),
+    }),
+  ),
+  tableData: nullToUndefined(
+    z.object({
+      headers: nullToUndefined(z.array(z.string())),
+      rows: nullToUndefined(z.array(z.array(z.string()))),
+      summary: nullToUndefined(z.string()),
+    }),
+  ),
+  ocrConfidence: nullToUndefined(z.number().min(0).max(1)),
 });
+
+type StructuredImageAnalysisOutput = z.infer<
+  typeof IMAGE_ANALYSIS_OUTPUT_RUNTIME_SCHEMA
+>;
+
+const IMAGE_ANALYSIS_OUTPUT_SCHEMA = jsonSchema<StructuredImageAnalysisOutput>(
+  {
+    type: "object",
+    properties: {
+      imageType: {
+        type: "string",
+        enum: [...IMAGE_TYPES],
+      },
+      label: { type: "string" },
+      description: { type: "string" },
+      ocrText: { type: "string" },
+      exactValueSnippets: {
+        type: "array",
+        items: { type: "string" },
+      },
+      chartData: {
+        type: "object",
+        properties: {
+          chartType: { type: "string" },
+          title: { type: "string" },
+          xAxisLabel: { type: "string" },
+          yAxisLabel: { type: "string" },
+          legend: {
+            type: "array",
+            items: { type: "string" },
+          },
+          units: {
+            type: "array",
+            items: { type: "string" },
+          },
+          series: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string" },
+                values: {
+                  type: "array",
+                  items: { type: "string" },
+                },
+              },
+            },
+          },
+          summary: { type: "string" },
+        },
+      },
+      tableData: {
+        type: "object",
+        properties: {
+          headers: {
+            type: "array",
+            items: { type: "string" },
+          },
+          rows: {
+            type: "array",
+            items: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          summary: { type: "string" },
+        },
+      },
+      ocrConfidence: {
+        type: "number",
+        minimum: 0,
+        maximum: 1,
+      },
+    },
+  },
+  {
+    validate: (value) => {
+      const result = IMAGE_ANALYSIS_OUTPUT_RUNTIME_SCHEMA.safeParse(value);
+      return result.success
+        ? { success: true, value: result.data }
+        : { success: false, error: result.error };
+    },
+  },
+);
 
 const VALUE_DENSE_IMAGE_HINT_PATTERN =
   /\b(chart|graph|plot|figure|fig\.?|table|exhibit|diagram|legend|axis|series|histogram|heatmap|matrix|trend|scan|statement|invoice|receipt|schedule|appendix|balance|revenue|liabilities|assets|cash flow)\b/i;
@@ -121,9 +211,6 @@ type ImageCandidate = {
   anchor?: ProcessedImageAnchor | null;
 };
 
-type StructuredImageAnalysisOutput = z.infer<
-  typeof IMAGE_ANALYSIS_OUTPUT_SCHEMA
->;
 type ImageAnalysisDetail = "simple" | "rich";
 
 type ImageAnalysis = {
@@ -584,7 +671,7 @@ function normalizeStructuredData(
   const chartSeries = (output.chartData?.series ?? [])
     .map((entry) => ({
       name: cleanInlineText(entry.name),
-      values: entry.values
+      values: (entry.values ?? [])
         .map((value) => cleanInlineText(value))
         .filter(Boolean),
     }))
@@ -769,9 +856,10 @@ function buildStructuredImageAnalysis(
   candidate: ImageCandidate,
 ): ImageAnalysis {
   const fallback = buildImageFallbackAnalysis(candidate);
-  const label = normalizeGeneratedLabel(output.label) || fallback.label;
+  const label = normalizeGeneratedLabel(output.label ?? "") || fallback.label;
   const description =
-    normalizeGeneratedDescription(output.description) || fallback.description;
+    normalizeGeneratedDescription(output.description ?? "") ||
+    fallback.description;
   const ocrText = cleanMultilineText(output.ocrText);
 
   return {
@@ -857,7 +945,18 @@ function parseImageAnalysisResponse(
   result: { output?: unknown; text?: string },
   candidate: ImageCandidate,
 ): ImageAnalysis {
-  const structured = IMAGE_ANALYSIS_OUTPUT_SCHEMA.safeParse(result.output);
+  // result.output is a lazy getter that throws NoOutputGeneratedError when the
+  // model did not return structured output (e.g. Snowflake falling back to text).
+  // Read it safely so we can still attempt the text-based fallbacks below.
+  let outputValue: unknown;
+  try {
+    outputValue = result.output;
+  } catch {
+    outputValue = undefined;
+  }
+
+  const structured =
+    IMAGE_ANALYSIS_OUTPUT_RUNTIME_SCHEMA.safeParse(outputValue);
   if (structured.success) {
     return buildStructuredImageAnalysis(structured.data, candidate);
   }
@@ -870,7 +969,7 @@ function parseImageAnalysisResponse(
   try {
     const parsedJson = JSON.parse(text);
     const structuredFromJson =
-      IMAGE_ANALYSIS_OUTPUT_SCHEMA.safeParse(parsedJson);
+      IMAGE_ANALYSIS_OUTPUT_RUNTIME_SCHEMA.safeParse(parsedJson);
     if (structuredFromJson.success) {
       return buildStructuredImageAnalysis(structuredFromJson.data, candidate);
     }

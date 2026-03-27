@@ -1,5 +1,7 @@
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { pgDb as db } from "lib/db/pg/db.pg";
+
+const GRAPH_BATCH_SIZE = 200;
 import {
   KnowledgeEntityMentionTable,
   KnowledgeEntityTable,
@@ -152,33 +154,38 @@ export async function replaceDocumentKnowledgeGraph(input: {
 
   const extractedEntities = Array.from(extracted.values());
   if (extractedEntities.length > 0) {
-    const rows = await db
-      .insert(KnowledgeEntityTable)
-      .values(
-        extractedEntities.map((entity) => ({
-          groupId: input.groupId,
-          documentId: input.documentId,
-          canonicalName: entity.canonicalName,
-          normalizedName: entity.normalizedName,
-          entityType: entity.entityType,
-          aliases: entity.aliases,
-          updatedAt: new Date(),
-        })),
-      )
-      .onConflictDoUpdate({
-        target: [
-          KnowledgeEntityTable.groupId,
-          KnowledgeEntityTable.normalizedName,
-        ],
-        set: {
-          documentId: input.documentId,
-          updatedAt: new Date(),
-        },
-      })
-      .returning({
-        id: KnowledgeEntityTable.id,
-        normalizedName: KnowledgeEntityTable.normalizedName,
-      });
+    const rows: Array<{ id: string; normalizedName: string }> = [];
+    for (let i = 0; i < extractedEntities.length; i += GRAPH_BATCH_SIZE) {
+      const batch = extractedEntities.slice(i, i + GRAPH_BATCH_SIZE);
+      const batchRows = await db
+        .insert(KnowledgeEntityTable)
+        .values(
+          batch.map((entity) => ({
+            groupId: input.groupId,
+            documentId: input.documentId,
+            canonicalName: entity.canonicalName,
+            normalizedName: entity.normalizedName,
+            entityType: entity.entityType,
+            aliases: entity.aliases,
+            updatedAt: new Date(),
+          })),
+        )
+        .onConflictDoUpdate({
+          target: [
+            KnowledgeEntityTable.groupId,
+            KnowledgeEntityTable.normalizedName,
+          ],
+          set: {
+            documentId: input.documentId,
+            updatedAt: new Date(),
+          },
+        })
+        .returning({
+          id: KnowledgeEntityTable.id,
+          normalizedName: KnowledgeEntityTable.normalizedName,
+        });
+      rows.push(...batchRows);
+    }
 
     const entityIdByNormalizedName = new Map(
       rows.map((row) => [row.normalizedName, row.id]),
@@ -201,7 +208,10 @@ export async function replaceDocumentKnowledgeGraph(input: {
     });
 
     if (mentionRows.length > 0) {
-      await db.insert(KnowledgeEntityMentionTable).values(mentionRows);
+      for (let i = 0; i < mentionRows.length; i += GRAPH_BATCH_SIZE) {
+        const batch = mentionRows.slice(i, i + GRAPH_BATCH_SIZE);
+        await db.insert(KnowledgeEntityMentionTable).values(batch);
+      }
     }
 
     const currentUpdatedAt = input.documentUpdatedAt ?? new Date();
@@ -320,14 +330,17 @@ export async function replaceDocumentKnowledgeGraph(input: {
     );
 
     if (relationRows.length > 0) {
-      await db.insert(KnowledgeRelationTable).values(
-        relationRows.map((relation) => ({
-          ...relation,
-          effectiveAt: currentUpdatedAt,
-          expiresAt: null,
-          updatedAt: new Date(),
-        })),
-      );
+      for (let i = 0; i < relationRows.length; i += GRAPH_BATCH_SIZE) {
+        const batch = relationRows.slice(i, i + GRAPH_BATCH_SIZE);
+        await db.insert(KnowledgeRelationTable).values(
+          batch.map((relation) => ({
+            ...relation,
+            effectiveAt: currentUpdatedAt,
+            expiresAt: null,
+            updatedAt: new Date(),
+          })),
+        );
+      }
     }
   }
 }

@@ -19,6 +19,16 @@ import { settingsRepository } from "lib/db/repository";
 
 const PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
 
+const SNOWFLAKE_ALLOWED_JSON_SCHEMA_KEYS = new Set([
+  "type",
+  "properties",
+  "items",
+  "required",
+  "enum",
+  "description",
+  "title",
+]);
+
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
 }
@@ -39,6 +49,76 @@ function readSettingBoolean(
 ): boolean | null {
   const value = settings?.[key];
   return typeof value === "boolean" ? value : null;
+}
+
+function sanitizeSnowflakeJsonSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map((item) => sanitizeSnowflakeJsonSchema(item));
+  }
+
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+
+  const entries = Object.entries(schema as Record<string, unknown>)
+    .filter(([key]) => SNOWFLAKE_ALLOWED_JSON_SCHEMA_KEYS.has(key))
+    .map(([key, value]) => {
+      if (key === "properties" && value && typeof value === "object") {
+        return [
+          key,
+          Object.fromEntries(
+            Object.entries(value as Record<string, unknown>).map(
+              ([propertyName, propertySchema]) => [
+                propertyName,
+                sanitizeSnowflakeJsonSchema(propertySchema),
+              ],
+            ),
+          ),
+        ] as const;
+      }
+
+      if (key === "items") {
+        return [key, sanitizeSnowflakeJsonSchema(value)] as const;
+      }
+
+      return [key, value] as const;
+    });
+
+  return Object.fromEntries(entries);
+}
+
+function transformSnowflakeRequestBody(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const responseFormat = args.response_format;
+  if (!responseFormat || typeof responseFormat !== "object") {
+    return args;
+  }
+
+  const typedResponseFormat = responseFormat as Record<string, unknown>;
+  if (typedResponseFormat.type !== "json_schema") {
+    return args;
+  }
+
+  const jsonSchema = typedResponseFormat.json_schema;
+  if (!jsonSchema || typeof jsonSchema !== "object") {
+    return args;
+  }
+
+  const typedJsonSchema = jsonSchema as Record<string, unknown>;
+
+  return {
+    ...args,
+    response_format: {
+      ...typedResponseFormat,
+      json_schema: {
+        ...Object.fromEntries(
+          Object.entries(typedJsonSchema).filter(([key]) => key !== "strict"),
+        ),
+        schema: sanitizeSnowflakeJsonSchema(typedJsonSchema.schema),
+      },
+    },
+  };
 }
 
 /**
@@ -160,6 +240,8 @@ export function createModelFromConfig(
           name: "snowflake",
           apiKey: key,
           baseURL: snowflakeBaseUrl,
+          supportsStructuredOutputs: true,
+          transformRequestBody: transformSnowflakeRequestBody,
         });
         return provider(modelApiName);
       }

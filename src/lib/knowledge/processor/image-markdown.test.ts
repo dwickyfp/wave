@@ -638,4 +638,69 @@ describe("image-markdown", () => {
       "This image does not look strongly value-dense.",
     );
   });
+
+  it("uses a provider-safe raw JSON schema for structured image analysis", async () => {
+    getProviderByNameMock.mockResolvedValue({
+      enabled: true,
+      apiKey: "test-key",
+      baseUrl: null,
+      settings: null,
+    });
+    getModelForChatMock.mockResolvedValue({
+      apiName: "claude-sonnet-4-5",
+      supportsImageInput: true,
+    });
+    generateTextMock.mockResolvedValue({
+      output: {
+        imageType: "chart",
+        label: "Revenue by quarter",
+        description: "A bar chart comparing quarterly revenue.",
+      },
+    });
+
+    await generateContextImageArtifacts(
+      [
+        {
+          index: 1,
+          marker: "CTX_IMAGE_1",
+          buffer: Buffer.from("chart-image"),
+          mediaType: "image/png",
+        },
+      ],
+      {
+        documentTitle: "Quarterly report",
+        imageAnalysis: {
+          provider: "snowflake",
+          model: "claude-sonnet-4-5",
+        },
+      },
+    );
+
+    const responseFormat =
+      await generateTextMock.mock.calls[0]?.[0]?.output?.responseFormat;
+    const schema = responseFormat?.schema;
+    const serializedSchema = JSON.stringify(schema);
+
+    expect(responseFormat?.type).toBe("json");
+    expect(schema).toMatchObject({
+      type: "object",
+      properties: expect.objectContaining({
+        imageType: expect.objectContaining({
+          type: "string",
+        }),
+        label: expect.objectContaining({
+          type: "string",
+        }),
+        chartData: expect.objectContaining({
+          type: "object",
+        }),
+      }),
+    });
+    expect(serializedSchema).not.toContain("additionalProperties");
+    expect(serializedSchema).not.toContain("unevaluatedProperties");
+    expect(serializedSchema).not.toContain('"default"');
+    expect(serializedSchema).not.toContain('"anyOf"');
+    expect(serializedSchema).not.toContain('"oneOf"');
+    expect(serializedSchema).not.toContain('"null"');
+  });
 });

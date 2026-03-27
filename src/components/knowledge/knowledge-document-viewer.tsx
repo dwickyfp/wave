@@ -11,6 +11,8 @@ import {
   FileIcon,
   LinkIcon,
   Loader2Icon,
+  MinusIcon,
+  PlusIcon,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "ui/badge";
@@ -80,6 +82,7 @@ function PdfDocumentViewer({
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(requestedInitialPage);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [userZoom, setUserZoom] = useState(100);
   const [loadingDocument, setLoadingDocument] = useState(true);
   const [renderingPage, setRenderingPage] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -192,8 +195,8 @@ function PdfDocumentViewer({
         const baseViewport = page.getViewport({ scale: 1 });
         const scale =
           containerWidth > 0
-            ? Math.max(0.6, Math.min(2.6, containerWidth / baseViewport.width))
-            : 1;
+            ? (containerWidth / baseViewport.width) * (userZoom / 100)
+            : userZoom / 100;
         const viewport = page.getViewport({ scale });
         const devicePixelRatio = window.devicePixelRatio || 1;
         const canvas = canvasRef.current;
@@ -250,12 +253,16 @@ function PdfDocumentViewer({
       cancelled = true;
       void renderTask?.cancel?.();
     };
-  }, [containerWidth, currentPage, pdfDocument]);
+  }, [containerWidth, currentPage, pdfDocument, userZoom]);
 
   useEffect(() => {
     if (!viewportRef.current) return;
     viewportRef.current.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [currentPage]);
+
+  const handleZoomChange = (delta: number) => {
+    setUserZoom((prev) => Math.max(50, Math.min(200, prev + delta)));
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -269,34 +276,75 @@ function PdfDocumentViewer({
           </span>
         </div>
 
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 rounded-full"
-            disabled={loadingDocument || renderingPage || currentPage <= 1}
-            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
-          >
-            <ChevronLeftIcon className="size-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 rounded-full"
-            disabled={
-              loadingDocument ||
-              renderingPage ||
-              pageCount === 0 ||
-              currentPage >= pageCount
-            }
-            onClick={() =>
-              setCurrentPage((page) => Math.min(pageCount, page + 1))
-            }
-          >
-            <ChevronRightIcon className="size-4" />
-          </Button>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 rounded-full"
+              disabled={loadingDocument || userZoom <= 50}
+              onClick={() => handleZoomChange(-10)}
+              title="Zoom out (-10%)"
+            >
+              <MinusIcon className="size-3.5" />
+            </Button>
+            <input
+              type="range"
+              min={50}
+              max={200}
+              step={10}
+              value={userZoom}
+              onChange={(e) => setUserZoom(Number(e.target.value))}
+              disabled={loadingDocument}
+              className="h-1.5 w-20 cursor-pointer accent-primary"
+              title={`Zoom: ${userZoom}%`}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-7 rounded-full"
+              disabled={loadingDocument || userZoom >= 200}
+              onClick={() => handleZoomChange(10)}
+              title="Zoom in (+10%)"
+            >
+              <PlusIcon className="size-3.5" />
+            </Button>
+            <span className="w-10 text-center text-xs text-muted-foreground tabular-nums">
+              {userZoom}%
+            </span>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 rounded-full"
+              disabled={loadingDocument || renderingPage || currentPage <= 1}
+              onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            >
+              <ChevronLeftIcon className="size-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8 rounded-full"
+              disabled={
+                loadingDocument ||
+                renderingPage ||
+                pageCount === 0 ||
+                currentPage >= pageCount
+              }
+              onClick={() =>
+                setCurrentPage((page) => Math.min(pageCount, page + 1))
+              }
+            >
+              <ChevronRightIcon className="size-4" />
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -323,10 +371,7 @@ function PdfDocumentViewer({
         ) : (
           <div className="mx-auto w-fit rounded-2xl border border-border/60 bg-background shadow-sm">
             <div className="relative">
-              <canvas
-                ref={canvasRef}
-                className="block max-w-full rounded-2xl"
-              />
+              <canvas ref={canvasRef} className="block rounded-2xl" />
               <div
                 ref={textLayerRef}
                 className="pdf-text-layer absolute inset-0 overflow-hidden rounded-2xl"
