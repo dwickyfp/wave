@@ -14,6 +14,10 @@ import { cn } from "lib/utils";
 import { toast } from "sonner";
 
 const ACCEPTED_TYPES = {
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"],
+  "image/webp": [".webp"],
+  "image/gif": [".gif"],
   "application/pdf": [".pdf"],
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
     ".docx",
@@ -188,7 +192,7 @@ export function DocumentUploadZone({
             {isDragActive ? "Drop files here" : "Drag & drop files"}
           </p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            PDF, DOCX, XLSX, CSV, TXT, MD — or click to browse
+            JPG, PNG, WEBP, GIF, PDF, DOCX, XLSX, CSV, TXT, MD
           </p>
         </div>
       </div>

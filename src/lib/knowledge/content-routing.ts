@@ -40,6 +40,11 @@ const MIME_TO_TYPE: Record<string, DocumentFileType> = {
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
     "docx",
   "application/xml": "code",
+  "image/gif": "gif",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
   "message/rfc822": "eml",
   "text/csv": "csv",
   "text/html": "html",
@@ -55,14 +60,19 @@ const EXTENSION_TO_TYPE: Record<string, DocumentFileType> = {
   eml: "eml",
   htm: "html",
   html: "html",
+  gif: "gif",
+  jpeg: "jpeg",
+  jpg: "jpg",
   json: "json",
   md: "md",
   markdown: "md",
   msg: "eml",
   pdf: "pdf",
+  png: "png",
   pptx: "pptx",
   txt: "txt",
   url: "url",
+  webp: "webp",
   xls: "xlsx",
   xlsx: "xlsx",
   xml: "code",
@@ -108,6 +118,11 @@ export function resolveContentKind(
       return "spreadsheet";
     case "code":
       return "code";
+    case "png":
+    case "jpg":
+    case "jpeg":
+    case "gif":
+    case "webp":
     case "pdf":
     case "docx":
     case "txt":

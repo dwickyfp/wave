@@ -14,6 +14,7 @@ import {
   Clock3Icon,
   FileIcon,
   FileTextIcon,
+  ImageIcon,
   LinkIcon,
   Loader2Icon,
   RotateCcwIcon,
@@ -57,6 +58,11 @@ const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   txt: FileTextIcon,
   md: FileTextIcon,
   html: FileTextIcon,
+  png: ImageIcon,
+  jpg: ImageIcon,
+  jpeg: ImageIcon,
+  gif: ImageIcon,
+  webp: ImageIcon,
 };
 
 type MainTab = "configuration" | "original" | "images" | "markdown" | "history";

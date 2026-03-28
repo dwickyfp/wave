@@ -48,7 +48,12 @@ export type DocumentFileType =
   | "html"
   | "json"
   | "eml"
-  | "code";
+  | "code"
+  | "png"
+  | "jpg"
+  | "jpeg"
+  | "gif"
+  | "webp";
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type UsageSource = "chat" | "agent" | "mcp";
 export type KnowledgeChunkEmbeddingKind =

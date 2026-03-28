@@ -216,6 +216,69 @@ describe("knowledge documents route", () => {
     );
   });
 
+  it("stores uploaded image knowledge as an image document type", async () => {
+    vi.mocked(serverFileStorage.upload).mockResolvedValue({
+      key: "user-content/user-1/knowledge/documents/group-1/product-ui.png",
+      sourceUrl: "https://example.com/uploads/product-ui.png",
+      metadata: {
+        key: "user-content/user-1/knowledge/documents/group-1/product-ui.png",
+        filename: "product-ui.png",
+        contentType: "image/png",
+        size: 12,
+      },
+    } as any);
+    vi.mocked(knowledgeRepository.insertDocument).mockResolvedValue({
+      id: "doc-image",
+      groupId: "group-1",
+      userId: "user-1",
+      name: "Product UI",
+      originalFilename: "product-ui.png",
+      fileType: "png",
+      fileSize: 12,
+      storagePath:
+        "user-content/user-1/knowledge/documents/group-1/product-ui.png",
+      fingerprint: "fingerprint-image",
+      status: "pending",
+      chunkCount: 0,
+      tokenCount: 0,
+      createdAt: new Date("2026-03-10T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-10T00:00:00.000Z"),
+    } as any);
+    vi.mocked(enqueueIngestDocument).mockResolvedValue(undefined);
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new File(["png-content"], "product-ui.png", {
+        type: "image/png",
+      }),
+    );
+    form.append("name", "Product UI");
+
+    const response = await POST(
+      new Request("http://localhost/api/knowledge/group-1/documents", {
+        method: "POST",
+        body: form,
+      }) as any,
+      withParams("group-1"),
+    );
+
+    expect(response.status).toBe(201);
+    expect(knowledgeRepository.insertDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "Product UI",
+        originalFilename: "product-ui.png",
+        fileType: "png",
+      }),
+    );
+    expect(serverFileStorage.upload).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({
+        contentType: "image/png",
+      }),
+    );
+  });
+
   it("marks the document failed when enqueueing ingestion fails", async () => {
     vi.mocked(knowledgeRepository.insertDocument).mockResolvedValue({
       id: "doc-3",
