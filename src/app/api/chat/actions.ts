@@ -39,6 +39,7 @@ import {
   requireMessageAccess,
   requireThreadAccess,
 } from "lib/chat/access";
+import { sanitizeThreadTitle } from "lib/chat/thread-title";
 import { linkifyAssistantKnowledgeCitations } from "lib/chat/knowledge-citations";
 import {
   recordSelfLearningSignal,
@@ -65,7 +66,7 @@ export async function generateTitleFromUserMessageAction({
     prompt,
   });
 
-  return title.trim();
+  return sanitizeThreadTitle(title);
 }
 
 export async function selectThreadWithMessagesAction(threadId: string) {

@@ -15,8 +15,10 @@ Critical rules:
 - Generate a concise title based on the first user message
 - Title must be under 80 characters (absolutely no more than 80 characters)
 - Summarize only the core content clearly
-- Do not use quotes, colons, or special characters
-- Use the same language as the user's message`;
+- Return plain text only
+- Do not use markdown, headings, bullets, numbering, quotes, colons, or symbols
+- Use the same language as the user's message
+- Return only the title text with no extra commentary`;
 
 export const buildAgentGenerationPrompt = (toolNames: string[]) => {
   const toolsList = toolNames.map((name) => `- ${name}`).join("\n");

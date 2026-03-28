@@ -3,6 +3,7 @@
 import { appStore } from "@/app/store";
 import { useCompletion } from "@ai-sdk/react";
 import { ChatModel } from "app-types/chat";
+import { sanitizeThreadTitle } from "lib/chat/thread-title";
 import { useCallback, useEffect } from "react";
 import { mutate } from "swr";
 import { safe } from "ts-safe";
@@ -73,7 +74,7 @@ export function useGenerateThreadTitle(option: {
   );
 
   useEffect(() => {
-    const title = completion.trim();
+    const title = sanitizeThreadTitle(completion);
     if (title) {
       updateTitle(title);
     }
