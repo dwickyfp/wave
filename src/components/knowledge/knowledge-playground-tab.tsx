@@ -29,12 +29,32 @@ interface DocRetrievalResult {
   sourceGroupId?: string | null;
   sourceGroupName?: string | null;
   isInherited?: boolean;
+  display?: {
+    documentLabel?: string | null;
+    variantLabel?: string | null;
+    topicLabel?: string | null;
+    locationLabel?: string | null;
+  };
   relevanceScore: number;
   chunkHits: number;
   markdown: string;
   matchedSections?: Array<{
     heading: string;
     score: number;
+  }>;
+  matchedTopics?: Array<{
+    topicLabel: string;
+    relevanceScore: number;
+    evidenceCount: number;
+  }>;
+  evidenceItems?: Array<{
+    id: string;
+    excerpt: string;
+    display?: {
+      variantLabel?: string | null;
+      topicLabel?: string | null;
+      locationLabel?: string | null;
+    };
   }>;
 }
 
@@ -52,6 +72,13 @@ function DocumentCard({
     ? Array.from(
         new Map(
           doc.matchedSections.map((section) => [section.heading, section]),
+        ).values(),
+      ).slice(0, 4)
+    : [];
+  const uniqueMatchedTopics = doc.matchedTopics
+    ? Array.from(
+        new Map(
+          doc.matchedTopics.map((topic) => [topic.topicLabel, topic]),
         ).values(),
       ).slice(0, 4)
     : [];
@@ -85,6 +112,14 @@ function DocumentCard({
               from {doc.sourceGroupName}
             </Badge>
           )}
+          {doc.display?.variantLabel && (
+            <Badge
+              variant="outline"
+              className="text-xs font-mono px-1.5 py-0 bg-amber-500/10 text-amber-700 border-amber-500/30"
+            >
+              {doc.display.variantLabel}
+            </Badge>
+          )}
           <Badge
             variant="outline"
             className="text-xs font-mono px-1.5 py-0 bg-blue-500/10 text-blue-600 border-blue-500/30"
@@ -110,6 +145,48 @@ function DocumentCard({
               title={section.heading}
             >
               {section.heading}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      {uniqueMatchedTopics.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {uniqueMatchedTopics.map((topic) => (
+            <Badge
+              key={`${doc.documentId}:${topic.topicLabel}`}
+              variant="outline"
+              className="text-[11px] px-1.5 py-0 bg-amber-500/10 text-amber-700 border-amber-500/30 max-w-full truncate"
+              title={topic.topicLabel}
+            >
+              {topic.topicLabel}
+            </Badge>
+          ))}
+        </div>
+      )}
+
+      {doc.evidenceItems && doc.evidenceItems.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {doc.evidenceItems.slice(0, 4).map((item) => (
+            <Badge
+              key={item.id}
+              variant="outline"
+              className="text-[11px] px-1.5 py-0 bg-sky-500/10 text-sky-700 border-sky-500/30 max-w-full truncate"
+              title={[
+                item.display?.variantLabel,
+                item.display?.topicLabel,
+                item.display?.locationLabel,
+              ]
+                .filter(Boolean)
+                .join(" | ")}
+            >
+              {[
+                item.display?.variantLabel,
+                item.display?.topicLabel,
+                item.display?.locationLabel,
+              ]
+                .filter(Boolean)
+                .join(" | ") || "evidence"}
             </Badge>
           ))}
         </div>

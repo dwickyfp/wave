@@ -70,8 +70,19 @@ const DEFAULT_PARSE_WINDOW_CONCURRENCY = 2;
 const DEFAULT_LONG_DOC_PAGE_THRESHOLD = 40;
 const DEFAULT_PARSE_RETRY_ATTEMPTS = 4;
 const DEFAULT_PARSE_RETRY_BASE_DELAY_MS = 3_000;
+const MIN_ADAPTIVE_SPLIT_WINDOW_CHARS = 8_000;
+const MIN_ADAPTIVE_SPLIT_OVERLAP_CHARS = 800;
+const MAX_PARSE_WINDOW_SPLIT_DEPTH = 2;
+const REPEATED_PARSE_ERROR_SPLIT_THRESHOLD = 2;
 
 const pageParseCache = new Map<string, ProcessedDocumentPage>();
+
+type ParsedWindowResult = {
+  markdown: string;
+  attemptCount: number;
+  fallbackUsed: boolean;
+  errorMessage?: string | null;
+};
 
 function readPositiveIntEnv(name: string, fallback: number) {
   const raw = process.env[name];
@@ -139,6 +150,71 @@ function getParseRetryBaseDelayMs(): number {
 function sleep(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getParseErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function buildParseErrorSignature(error: unknown): string {
+  const anyError = error as any;
+  const status =
+    anyError?.statusCode ??
+    anyError?.status ??
+    anyError?.response?.status ??
+    "unknown";
+  return `${status}:${getParseErrorMessage(error).trim().toLowerCase()}`;
+}
+
+function isPayloadRelatedParseError(error: unknown): boolean {
+  const anyError = error as any;
+  const status =
+    anyError?.statusCode ?? anyError?.status ?? anyError?.response?.status;
+  const message = getParseErrorMessage(error).toLowerCase();
+
+  return (
+    status === 400 ||
+    status === 413 ||
+    status === 422 ||
+    message.includes("context length") ||
+    message.includes("maximum context length") ||
+    message.includes("too many tokens") ||
+    message.includes("prompt is too long") ||
+    message.includes("input is too long") ||
+    message.includes("request too large") ||
+    message.includes("payload too large") ||
+    message.includes("413") ||
+    message.includes("422") ||
+    message.includes("invalid prompt") ||
+    message.includes("invalid request")
+  );
+}
+
+function getAdaptiveSplitWindowChars(rawTextLength: number): number {
+  return Math.max(
+    MIN_ADAPTIVE_SPLIT_WINDOW_CHARS,
+    Math.ceil(rawTextLength / 2),
+  );
+}
+
+function getAdaptiveSplitOverlapChars(windowChars: number): number {
+  return Math.max(
+    MIN_ADAPTIVE_SPLIT_OVERLAP_CHARS,
+    Math.min(WINDOW_OVERLAP_CHARS, Math.floor(windowChars * 0.1)),
+  );
+}
+
+function shouldAdaptiveSplitParseWindow(input: {
+  rawText: string;
+  error: unknown;
+  repeatedErrorCount: number;
+  splitDepth: number;
+}): boolean {
+  if (input.splitDepth >= MAX_PARSE_WINDOW_SPLIT_DEPTH) return false;
+  if (input.rawText.length < MIN_ADAPTIVE_SPLIT_WINDOW_CHARS) return false;
+  if (isPayloadRelatedParseError(input.error)) return true;
+  return input.repeatedErrorCount >= REPEATED_PARSE_ERROR_SPLIT_THRESHOLD;
 }
 
 function isRetriableParseError(error: unknown): boolean {
@@ -225,7 +301,7 @@ function buildParsePrompt(input: {
   rawText: string;
   documentTitle: string;
   pageNumber: number;
-  windowIndex: number;
+  windowIndex: number | string;
   totalWindows: number;
   repairPolicy: KnowledgeParseRepairPolicy;
   qualityScore: number;
@@ -370,15 +446,20 @@ async function parseWindowToMarkdown(input: {
   documentTitle: string;
   pageNumber: number;
   windowIndex: number;
+  windowLabel?: string;
   totalWindows: number;
   repairPolicy: KnowledgeParseRepairPolicy;
   qualityScore: number;
   repairReason?: string | null;
   failureMode?: "fallback" | "fail";
-}): Promise<string> {
+  splitDepth?: number;
+}): Promise<ParsedWindowResult> {
   const maxAttempts = getParseRetryAttempts();
   let attempt = 0;
   let text: string;
+  const windowLabel = input.windowLabel ?? String(input.windowIndex);
+  let lastErrorSignature: string | null = null;
+  let repeatedErrorCount = 0;
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -391,7 +472,7 @@ async function parseWindowToMarkdown(input: {
           rawText: input.rawText,
           documentTitle: input.documentTitle,
           pageNumber: input.pageNumber,
-          windowIndex: input.windowIndex,
+          windowIndex: windowLabel,
           totalWindows: input.totalWindows,
           repairPolicy: input.repairPolicy,
           qualityScore: input.qualityScore,
@@ -401,12 +482,71 @@ async function parseWindowToMarkdown(input: {
       }));
       break;
     } catch (error) {
+      const errorSignature = buildParseErrorSignature(error);
+      repeatedErrorCount =
+        errorSignature === lastErrorSignature ? repeatedErrorCount + 1 : 1;
+      lastErrorSignature = errorSignature;
+
+      if (
+        shouldAdaptiveSplitParseWindow({
+          rawText: input.rawText,
+          error,
+          repeatedErrorCount,
+          splitDepth: input.splitDepth ?? 0,
+        })
+      ) {
+        const childWindowChars = getAdaptiveSplitWindowChars(
+          input.rawText.length,
+        );
+        const childOverlapChars =
+          getAdaptiveSplitOverlapChars(childWindowChars);
+        const childWindows = splitRawTextIntoWindows(
+          input.rawText,
+          childWindowChars,
+          childOverlapChars,
+        );
+
+        if (childWindows.length > 1) {
+          console.warn(
+            `[ContextX] Parse API kept failing for "${input.documentTitle}" page ${input.pageNumber} window ${windowLabel}; splitting into ${childWindows.length} smaller windows`,
+          );
+          const childResults = await mapWithConcurrency(
+            childWindows,
+            1,
+            async (windowText, childIndex) =>
+              parseWindowToMarkdown({
+                ...input,
+                rawText: windowText,
+                windowIndex: childIndex + 1,
+                windowLabel: `${windowLabel}.${childIndex + 1}`,
+                totalWindows: childWindows.length,
+                splitDepth: (input.splitDepth ?? 0) + 1,
+              }),
+          );
+          return {
+            markdown: mergeParsedMarkdownWindows(
+              childResults.map((result) => result.markdown),
+            ),
+            attemptCount:
+              attempt +
+              childResults.reduce(
+                (sum, result) => sum + result.attemptCount,
+                0,
+              ),
+            fallbackUsed: childResults.some((result) => result.fallbackUsed),
+            errorMessage:
+              childResults.find((result) => result.errorMessage)
+                ?.errorMessage ?? getParseErrorMessage(error),
+          };
+        }
+      }
+
       if (attempt >= maxAttempts || !isRetriableParseError(error)) {
         throw error;
       }
       const delayMs = buildParseRetryDelayMs(error, attempt);
       console.warn(
-        `[ContextX] Parse API error for "${input.documentTitle}" page ${input.pageNumber} window ${input.windowIndex}; retrying in ${Math.ceil(delayMs / 1_000)}s (attempt ${attempt}/${maxAttempts})`,
+        `[ContextX] Parse API error for "${input.documentTitle}" page ${input.pageNumber} window ${windowLabel}; retrying in ${Math.ceil(delayMs / 1_000)}s (attempt ${attempt}/${maxAttempts})`,
       );
       await sleep(delayMs);
     }
@@ -424,10 +564,19 @@ async function parseWindowToMarkdown(input: {
       throw new Error(message);
     }
     console.warn(`${message}; using normalized text`);
-    return input.rawText;
+    return {
+      markdown: input.rawText,
+      attemptCount: attempt,
+      fallbackUsed: true,
+      errorMessage: message,
+    };
   }
 
-  return parsed;
+  return {
+    markdown: parsed,
+    attemptCount: attempt,
+    fallbackUsed: false,
+  };
 }
 
 function shouldRepairPage(
@@ -474,45 +623,71 @@ async function parseSinglePage(input: {
   const sourceText = input.page.rawText || input.page.normalizedText;
   const windows = splitRawTextIntoWindows(sourceText);
   const windowConcurrency = Math.max(1, input.windowConcurrency ?? 1);
+  const parseWindowSafely = async (
+    windowText: string,
+    index: number,
+  ): Promise<ParsedWindowResult> => {
+    try {
+      return await parseWindowToMarkdown({
+        model: input.model,
+        rawText: windowText,
+        documentTitle: input.documentTitle,
+        pageNumber: input.page.pageNumber,
+        windowIndex: index + 1,
+        totalWindows: windows.length,
+        repairPolicy: input.repairPolicy,
+        qualityScore: input.page.qualityScore,
+        repairReason: input.page.repairReason,
+        failureMode: input.failureMode,
+        splitDepth: 0,
+      });
+    } catch (error) {
+      if (input.failureMode === "fail") {
+        throw error;
+      }
+      console.warn(
+        `[ContextX] Falling back to raw text for "${input.documentTitle}" page ${input.page.pageNumber} window ${index + 1}:`,
+        error,
+      );
+      return {
+        markdown: windowText,
+        attemptCount: getParseRetryAttempts(),
+        fallbackUsed: true,
+        errorMessage: getParseErrorMessage(error),
+      };
+    }
+  };
   const parsedWindows =
     windowConcurrency <= 1 || windows.length <= 1
-      ? await mapWithConcurrency(windows, 1, async (windowText, index) =>
-          parseWindowToMarkdown({
-            model: input.model,
-            rawText: windowText,
-            documentTitle: input.documentTitle,
-            pageNumber: input.page.pageNumber,
-            windowIndex: index + 1,
-            totalWindows: windows.length,
-            repairPolicy: input.repairPolicy,
-            qualityScore: input.page.qualityScore,
-            repairReason: input.page.repairReason,
-            failureMode: input.failureMode,
-          }),
-        )
+      ? await mapWithConcurrency(windows, 1, parseWindowSafely)
       : await mapWithConcurrency(
           windows,
           Math.min(windowConcurrency, windows.length),
-          async (windowText, index) =>
-            parseWindowToMarkdown({
-              model: input.model,
-              rawText: windowText,
-              documentTitle: input.documentTitle,
-              pageNumber: input.page.pageNumber,
-              windowIndex: index + 1,
-              totalWindows: windows.length,
-              repairPolicy: input.repairPolicy,
-              qualityScore: input.page.qualityScore,
-              repairReason: input.page.repairReason,
-              failureMode: input.failureMode,
-            }),
+          parseWindowSafely,
         );
 
-  const markdown = mergeParsedMarkdownWindows(parsedWindows).trim();
+  const markdown = mergeParsedMarkdownWindows(
+    parsedWindows.map((window) => window.markdown),
+  ).trim();
+  const failedWindows = parsedWindows.filter((window) => window.fallbackUsed);
+  const parseErrors = Array.from(
+    new Set(
+      failedWindows
+        .map((window) => window.errorMessage?.trim())
+        .filter((message): message is string => Boolean(message)),
+    ),
+  );
   const repairedPage: ProcessedDocumentPage = {
     ...input.page,
     markdown: markdown || input.page.normalizedText,
-    extractionMode: "refined",
+    extractionMode:
+      failedWindows.length >= windows.length
+        ? input.page.extractionMode
+        : "refined",
+    parseFallbackUsed: failedWindows.length > 0,
+    parseWindowCount: windows.length,
+    parseFailedWindowCount: failedWindows.length,
+    parseError: parseErrors[0] ?? null,
   };
   pageParseCache.set(cacheKey, repairedPage);
   return repairedPage;
@@ -640,7 +815,11 @@ export async function parseDocumentToMarkdown(input: {
             );
             return {
               index: entry.index,
-              page: entry.page,
+              page: {
+                ...entry.page,
+                parseFallbackUsed: true,
+                parseError: getParseErrorMessage(error),
+              },
               repairing: true,
             };
           }

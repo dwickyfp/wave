@@ -3,14 +3,39 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("server-only", () => ({}));
 
 vi.mock("lib/knowledge/retriever", () => ({
-  queryKnowledgeAsDocs: vi.fn(async () => []),
-  formatDocsAsText: vi.fn(() => "formatted knowledge"),
+  queryKnowledgeStructured: vi.fn(async (_group, query) => ({
+    groupName: "Product Docs",
+    query,
+    docs: [],
+    queryAnalysis: {
+      intent: "lookup",
+      explicitAxes: [],
+      requestedTopics: [],
+    },
+    comparisonGroups: [],
+    evidenceItems: [],
+  })),
+  formatKnowledgeRetrievalEnvelopeAsText: vi.fn(() => "formatted knowledge"),
 }));
 
 const { createKnowledgeDocsTool } = await import("./knowledge-tool");
-const { queryKnowledgeAsDocs, formatDocsAsText } = await import(
-  "lib/knowledge/retriever"
-);
+const { queryKnowledgeStructured, formatKnowledgeRetrievalEnvelopeAsText } =
+  await import("lib/knowledge/retriever");
+
+function makeEnvelope(docs: any[] = [], query = "test query") {
+  return {
+    groupName: "Product Docs",
+    query,
+    docs,
+    queryAnalysis: {
+      intent: "lookup" as const,
+      explicitAxes: [],
+      requestedTopics: [],
+    },
+    comparisonGroups: [],
+    evidenceItems: docs.flatMap((doc) => doc.evidenceItems ?? []),
+  };
+}
 
 function expectKnowledgeToolResult<T>(
   result: T | AsyncIterable<unknown> | undefined,
@@ -61,7 +86,7 @@ describe("knowledge-tool", () => {
       messages: [],
     } as any);
 
-    expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
+    expect(queryKnowledgeStructured).toHaveBeenCalledWith(
       expect.objectContaining({ id: "group-1" }),
       "how to sign in",
       expect.objectContaining({
@@ -70,7 +95,7 @@ describe("knowledge-tool", () => {
         resultMode: "section-first",
       }),
     );
-    expect(formatDocsAsText).toHaveBeenCalled();
+    expect(formatKnowledgeRetrievalEnvelopeAsText).toHaveBeenCalled();
     expect(result).toMatchObject({
       source: "attached_agent_knowledge",
       groupId: "group-1",
@@ -80,6 +105,8 @@ describe("knowledge-tool", () => {
       citations: [],
       evidencePack: null,
       hasResults: false,
+      comparisonGroups: [],
+      evidenceItems: [],
     });
   });
 
@@ -115,7 +142,7 @@ describe("knowledge-tool", () => {
       { toolCallId: "call-2", messages: [] } as any,
     );
 
-    expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
+    expect(queryKnowledgeStructured).toHaveBeenCalledWith(
       expect.anything(),
       "read everything",
       expect.objectContaining({
@@ -160,7 +187,7 @@ describe("knowledge-tool", () => {
       { toolCallId: "call-structured", messages: [] } as any,
     );
 
-    expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
+    expect(queryKnowledgeStructured).toHaveBeenCalledWith(
       expect.anything(),
       "annual report page 100",
       expect.objectContaining({
@@ -199,7 +226,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "how to sign in") as any,
+    );
     const onRetrieved = vi.fn();
     const tool = createKnowledgeDocsTool(
       {
@@ -235,13 +264,18 @@ describe("knowledge-tool", () => {
       messages: [],
     } as any);
 
-    expect(onRetrieved).toHaveBeenCalledWith({
-      groupId: "group-1",
-      groupName: "Product Docs",
-      query: "how to sign in",
-      docs,
-      contextText: "formatted knowledge",
-    });
+    expect(onRetrieved).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupId: "group-1",
+        groupName: "Product Docs",
+        query: "how to sign in",
+        docs,
+        contextText: "formatted knowledge",
+        queryAnalysis: expect.objectContaining({ intent: "lookup" }),
+        comparisonGroups: [],
+        evidenceItems: [],
+      }),
+    );
   });
 
   it("returns stable citation payload from the callback for the model to cite", async () => {
@@ -267,7 +301,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "is vape taxed?") as any,
+    );
 
     const tool = createKnowledgeDocsTool(
       {
@@ -363,7 +399,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "is vape taxed?") as any,
+    );
 
     const tool = createKnowledgeDocsTool({
       id: "group-1",
@@ -456,7 +494,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "show me the sign-in UI") as any,
+    );
 
     const tool = createKnowledgeDocsTool({
       id: "group-1",

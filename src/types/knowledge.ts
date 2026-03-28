@@ -73,12 +73,118 @@ export type KnowledgeRelationType =
   | "derives"
   | "contradicts"
   | "related";
+export type KnowledgeRetrievalAxisKind =
+  | "period"
+  | "version"
+  | "effective_at"
+  | "jurisdiction"
+  | "region"
+  | "language"
+  | "custom";
 export type KnowledgeDocumentProcessingStage =
   | "extracting"
   | "parsing"
   | "materializing"
   | "embedding"
   | "finalizing";
+
+export interface KnowledgeRetrievalAxis {
+  kind: KnowledgeRetrievalAxisKind;
+  key: string;
+  label: string;
+  value?: string | null;
+  confidence?: number | null;
+}
+
+export interface KnowledgeDocumentContext {
+  documentId?: string | null;
+  documentName?: string | null;
+  canonicalTitle?: string | null;
+  baseTitle?: string | null;
+}
+
+export interface KnowledgeSourceContext {
+  libraryId?: string | null;
+  libraryVersion?: string | null;
+  sourcePath?: string | null;
+  sheetName?: string | null;
+  sourceGroupName?: string | null;
+}
+
+export interface KnowledgeLocationContext {
+  sectionId?: string | null;
+  headingPath?: string | null;
+  noteNumber?: string | null;
+  noteTitle?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  chunkIndex?: number | null;
+}
+
+export interface KnowledgeDisplayContext {
+  documentLabel?: string | null;
+  variantLabel?: string | null;
+  topicLabel?: string | null;
+  locationLabel?: string | null;
+}
+
+export interface KnowledgeTemporalHints {
+  effectiveAt?: string | null;
+  expiresAt?: string | null;
+  freshnessLabel?: string | null;
+}
+
+export interface KnowledgeMatchedTopic {
+  topicLabel: string;
+  relevanceScore: number;
+  evidenceCount: number;
+}
+
+export interface KnowledgeEvidenceItem {
+  id: string;
+  documentId: string;
+  documentName: string;
+  topicKey: string;
+  excerpt: string;
+  relevanceScore: number;
+  documentContext: KnowledgeDocumentContext;
+  sourceContext: KnowledgeSourceContext;
+  locationContext: KnowledgeLocationContext;
+  temporalHints?: KnowledgeTemporalHints | null;
+  display: KnowledgeDisplayContext;
+}
+
+export interface KnowledgeQueryAnalysis {
+  intent: "lookup" | "compare";
+  explicitAxes: KnowledgeRetrievalAxis[];
+  requestedTopics: string[];
+}
+
+export interface KnowledgeComparisonVariant {
+  variantLabel: string;
+  axisValueKey?: string | null;
+  axisValueLabel?: string | null;
+  documentIds: string[];
+  documentNames: string[];
+  evidenceItemIds: string[];
+}
+
+export interface KnowledgeComparisonGroup {
+  familyLabel: string;
+  topicLabel: string;
+  axisKind: KnowledgeRetrievalAxisKind;
+  variants: KnowledgeComparisonVariant[];
+}
+
+export interface KnowledgeRetrievalEnvelope<TDoc = unknown> {
+  groupId?: string;
+  groupName: string;
+  query?: string;
+  docs: TDoc[];
+  queryAnalysis: KnowledgeQueryAnalysis;
+  comparisonGroups: KnowledgeComparisonGroup[];
+  evidenceItems: KnowledgeEvidenceItem[];
+}
 
 export interface KnowledgeDocumentProcessingState {
   stage: KnowledgeDocumentProcessingStage;
@@ -122,11 +228,11 @@ export type KnowledgeChunkMetadata = {
   language?: string;
   entityIds?: string[];
   entityTerms?: string[];
-  temporalHints?: {
-    effectiveAt?: string | null;
-    expiresAt?: string | null;
-    freshnessLabel?: string | null;
-  } | null;
+  temporalHints?: KnowledgeTemporalHints | null;
+  documentContext?: KnowledgeDocumentContext | null;
+  sourceContext?: KnowledgeSourceContext | null;
+  locationContext?: KnowledgeLocationContext | null;
+  display?: KnowledgeDisplayContext | null;
 };
 
 export type KnowledgeImageChartData = {

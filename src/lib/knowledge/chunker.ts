@@ -1,3 +1,4 @@
+import type { KnowledgeChunkMetadata } from "app-types/knowledge";
 import { parsePageMarker } from "./page-markers";
 
 export interface TextChunk {
@@ -5,55 +6,7 @@ export interface TextChunk {
   content: string;
   chunkIndex: number;
   tokenCount: number;
-  metadata: {
-    section?: string;
-    sectionTitle?: string;
-    headings?: string[];
-    /** Full heading breadcrumb path, e.g. "Guide > Installation > macOS" */
-    headingPath?: string;
-    canonicalTitle?: string;
-    noteNumber?: string;
-    noteTitle?: string;
-    noteSubsection?: string;
-    continued?: boolean;
-    chunkType?:
-      | "code"
-      | "directive"
-      | "api"
-      | "narrative"
-      | "table"
-      | "list"
-      | "other";
-    sourcePath?: string;
-    libraryId?: string;
-    libraryVersion?: string;
-    /** Whether this chunk contains a table or code block */
-    hasStructuredContent?: boolean;
-    pageNumber?: number;
-    pageStart?: number;
-    pageEnd?: number;
-    extractionMode?: "raw" | "normalized" | "refined";
-    qualityScore?: number;
-    repairReason?: string;
-    contentKind?:
-      | "document"
-      | "web"
-      | "markdown"
-      | "code"
-      | "json"
-      | "email"
-      | "presentation"
-      | "spreadsheet"
-      | "other";
-    language?: string;
-    entityIds?: string[];
-    entityTerms?: string[];
-    temporalHints?: {
-      effectiveAt?: string | null;
-      expiresAt?: string | null;
-      freshnessLabel?: string | null;
-    } | null;
-  };
+  metadata: KnowledgeChunkMetadata;
 }
 
 export interface ChunkableKnowledgeSection {
@@ -90,11 +43,11 @@ export interface ChunkableKnowledgeSection {
   language?: string;
   entityIds?: string[];
   entityTerms?: string[];
-  temporalHints?: {
-    effectiveAt?: string | null;
-    expiresAt?: string | null;
-    freshnessLabel?: string | null;
-  } | null;
+  temporalHints?: KnowledgeChunkMetadata["temporalHints"];
+  documentContext?: KnowledgeChunkMetadata["documentContext"];
+  sourceContext?: KnowledgeChunkMetadata["sourceContext"];
+  locationContext?: KnowledgeChunkMetadata["locationContext"];
+  display?: KnowledgeChunkMetadata["display"];
 }
 
 // ─── Token Estimation ──────────────────────────────────────────────────────────
@@ -738,6 +691,10 @@ function chunkText(
             metadata.sourcePath ??
             extractSourcePath(metadata.headingPath, chunk),
           hasStructuredContent: chunk.includes("```") || chunk.includes("| "),
+          locationContext: {
+            ...(metadata.locationContext ?? {}),
+            chunkIndex: idx - 1,
+          },
         },
       });
     }
@@ -1016,6 +973,10 @@ export function chunkKnowledgeSections(
         entityIds: section.entityIds,
         entityTerms: section.entityTerms,
         temporalHints: section.temporalHints,
+        documentContext: section.documentContext,
+        sourceContext: section.sourceContext,
+        locationContext: section.locationContext,
+        display: section.display,
       },
       allChunks.length,
     ).map((chunk) => {

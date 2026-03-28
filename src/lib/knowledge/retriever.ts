@@ -4,9 +4,21 @@ import { createHash } from "node:crypto";
 import { generateText, Output, rerank } from "ai";
 import { z } from "zod";
 import {
+  KnowledgeComparisonGroup,
+  KnowledgeDisplayContext,
   KnowledgeDocumentImage,
+  KnowledgeDocumentContext,
+  KnowledgeEvidenceItem,
+  KnowledgeMatchedTopic,
+  KnowledgeLocationContext,
   KnowledgeQueryResult,
+  KnowledgeQueryAnalysis,
+  KnowledgeRetrievalAxis,
+  KnowledgeRetrievalAxisKind,
+  KnowledgeRetrievalEnvelope,
   KnowledgeSection,
+  KnowledgeSourceContext,
+  KnowledgeTemporalHints,
 } from "app-types/knowledge";
 import { CacheKeys } from "lib/cache/cache-keys";
 import { serverCache } from "lib/cache";
@@ -36,6 +48,15 @@ import {
   mergeKnowledgeQueryConstraints,
   type KnowledgeQueryConstraints,
 } from "./query-constraints";
+import {
+  buildKnowledgeBaseTitle,
+  buildKnowledgeDisplayContext,
+  buildKnowledgeLocationLabel,
+  buildKnowledgeTopicLabel,
+  buildKnowledgeVariantLabel,
+  deriveKnowledgeTemporalHints,
+  extractKnowledgeComparisonAxesFromText,
+} from "./document-metadata";
 import { getContextXRollout } from "./rollout";
 
 // Minimal group interface — satisfied by both KnowledgeGroup and KnowledgeSummary
@@ -1983,7 +2004,7 @@ function buildKnowledgeDocsCacheKey(input: {
   const hash = createHash("sha256")
     .update(
       JSON.stringify({
-        cacheVersion: 5,
+        cacheVersion: 6,
         query: input.query,
         retrievalThreshold: input.retrievalThreshold ?? null,
         libraryId: input.libraryId ?? null,
@@ -2018,6 +2039,869 @@ function getSectionGraphVersion(
     return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
+}
+
+const COMPARISON_AXIS_PRIORITY: KnowledgeRetrievalAxisKind[] = [
+  "period",
+  "version",
+  "effective_at",
+  "jurisdiction",
+  "region",
+  "language",
+  "custom",
+];
+
+function normalizeKey(value: string) {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function readNullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function parseDocumentContext(value: unknown): KnowledgeDocumentContext | null {
+  if (!isRecord(value)) return null;
+  return {
+    documentId: readNullableString(value.documentId),
+    documentName: readNullableString(value.documentName),
+    canonicalTitle: readNullableString(value.canonicalTitle),
+    baseTitle: readNullableString(value.baseTitle),
+  };
+}
+
+function parseSourceContext(value: unknown): KnowledgeSourceContext | null {
+  if (!isRecord(value)) return null;
+  return {
+    libraryId: readNullableString(value.libraryId),
+    libraryVersion: readNullableString(value.libraryVersion),
+    sourcePath: readNullableString(value.sourcePath),
+    sheetName: readNullableString(value.sheetName),
+    sourceGroupName: readNullableString(value.sourceGroupName),
+  };
+}
+
+function parseTemporalHints(value: unknown): KnowledgeTemporalHints | null {
+  if (!isRecord(value)) return null;
+  return {
+    effectiveAt: readNullableString(value.effectiveAt),
+    expiresAt: readNullableString(value.expiresAt),
+    freshnessLabel: readNullableString(value.freshnessLabel),
+  };
+}
+
+function parseDisplayContext(value: unknown): KnowledgeDisplayContext | null {
+  if (!isRecord(value)) return null;
+  return {
+    documentLabel: readNullableString(value.documentLabel),
+    variantLabel: readNullableString(value.variantLabel),
+    topicLabel: readNullableString(value.topicLabel),
+    locationLabel: readNullableString(value.locationLabel),
+  };
+}
+
+type ResolvedDocProvenance = {
+  documentContext: KnowledgeDocumentContext;
+  sourceContext: KnowledgeSourceContext;
+  temporalHints: KnowledgeTemporalHints | null;
+  display: KnowledgeDisplayContext;
+};
+
+function buildFallbackDocProvenance(input: {
+  documentId: string;
+  documentName: string;
+  sourceGroupName?: string | null;
+}): ResolvedDocProvenance {
+  const documentContext = {
+    documentId: input.documentId,
+    documentName: input.documentName,
+    canonicalTitle: input.documentName,
+    baseTitle: buildKnowledgeBaseTitle(input.documentName),
+  } satisfies KnowledgeDocumentContext;
+  const temporalHints =
+    deriveKnowledgeTemporalHints({
+      title: input.documentName,
+      originalFilename: input.documentName,
+    }) ?? null;
+  return {
+    documentContext,
+    sourceContext: {
+      libraryId: null,
+      libraryVersion: null,
+      sourcePath: null,
+      sheetName: null,
+      sourceGroupName: input.sourceGroupName ?? null,
+    },
+    temporalHints,
+    display: buildKnowledgeDisplayContext({
+      documentLabel: input.documentName,
+      variantLabel: buildKnowledgeVariantLabel({
+        title: input.documentName,
+        originalFilename: input.documentName,
+        temporalHints,
+      }),
+    }),
+  };
+}
+
+function resolveDocProvenance(input: {
+  documentId: string;
+  documentName: string;
+  metadata?: Record<string, unknown> | null;
+  sourceGroupName?: string | null;
+}): ResolvedDocProvenance {
+  const fallback = buildFallbackDocProvenance(input);
+  const metadata = input.metadata ?? null;
+  const documentContext = parseDocumentContext(metadata?.documentContext) ?? {};
+  const sourceContext = parseSourceContext(metadata?.sourceContext) ?? {};
+  const temporalHints =
+    parseTemporalHints(metadata?.temporalHints) ?? fallback.temporalHints;
+  const displayContext = parseDisplayContext(metadata?.display) ?? {};
+
+  const legacy = isRecord(metadata?.retrievalIdentity)
+    ? metadata?.retrievalIdentity
+    : null;
+  const legacyCanonicalTitle = readNullableString(legacy?.canonicalTitle);
+  const legacyVariantLabel = readNullableString(legacy?.variantLabel);
+
+  const resolvedDocumentContext = {
+    documentId: documentContext.documentId ?? input.documentId,
+    documentName: documentContext.documentName ?? input.documentName,
+    canonicalTitle:
+      documentContext.canonicalTitle ??
+      legacyCanonicalTitle ??
+      input.documentName,
+    baseTitle:
+      documentContext.baseTitle ??
+      buildKnowledgeBaseTitle(
+        documentContext.canonicalTitle ??
+          legacyCanonicalTitle ??
+          input.documentName,
+      ),
+  } satisfies KnowledgeDocumentContext;
+  const resolvedSourceContext = {
+    libraryId: sourceContext.libraryId ?? null,
+    libraryVersion: sourceContext.libraryVersion ?? null,
+    sourcePath: sourceContext.sourcePath ?? null,
+    sheetName: sourceContext.sheetName ?? null,
+    sourceGroupName:
+      sourceContext.sourceGroupName ?? input.sourceGroupName ?? null,
+  } satisfies KnowledgeSourceContext;
+
+  return {
+    documentContext: resolvedDocumentContext,
+    sourceContext: resolvedSourceContext,
+    temporalHints,
+    display: buildKnowledgeDisplayContext({
+      documentLabel:
+        displayContext.documentLabel ??
+        resolvedDocumentContext.canonicalTitle ??
+        input.documentName,
+      variantLabel:
+        displayContext.variantLabel ??
+        legacyVariantLabel ??
+        buildKnowledgeVariantLabel({
+          title: [
+            resolvedDocumentContext.canonicalTitle,
+            resolvedDocumentContext.documentName,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+          sourceUrl: resolvedSourceContext.sourcePath,
+          libraryVersion: resolvedSourceContext.libraryVersion,
+          temporalHints,
+        }),
+      topicLabel: displayContext.topicLabel ?? null,
+      locationLabel: displayContext.locationLabel ?? null,
+    }),
+  };
+}
+
+function buildEvidenceUnitId(input: {
+  documentId: string;
+  sectionId?: string | null;
+  topicKey: string;
+  variantLabel: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  excerpt: string;
+}) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        documentId: input.documentId,
+        sectionId: input.sectionId ?? null,
+        topicKey: input.topicKey,
+        variantLabel: input.variantLabel,
+        pageStart: input.pageStart ?? null,
+        pageEnd: input.pageEnd ?? null,
+        excerpt: input.excerpt,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function resolveEvidenceAxes(
+  item: KnowledgeEvidenceItem,
+): KnowledgeRetrievalAxis[] {
+  return extractKnowledgeComparisonAxesFromText({
+    text: [
+      item.display.variantLabel,
+      item.documentContext.canonicalTitle,
+      item.documentContext.documentName,
+      item.locationContext.headingPath,
+      item.excerpt,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    libraryVersion: item.sourceContext.libraryVersion,
+    temporalHints: item.temporalHints,
+  }).sort(
+    (left, right) =>
+      COMPARISON_AXIS_PRIORITY.indexOf(left.kind) -
+      COMPARISON_AXIS_PRIORITY.indexOf(right.kind),
+  );
+}
+
+function resolveEvidenceFamilyLabel(item: KnowledgeEvidenceItem): string {
+  return (
+    item.sourceContext.libraryId?.trim() ||
+    item.documentContext.baseTitle?.trim() ||
+    item.display.documentLabel?.trim() ||
+    item.documentName
+  );
+}
+
+function resolveEvidenceTopicLabel(item: KnowledgeEvidenceItem): string {
+  return (
+    item.display.topicLabel?.trim() ||
+    item.locationContext.headingPath?.trim() ||
+    item.display.locationLabel?.trim() ||
+    "Document overview"
+  );
+}
+
+function resolveEvidenceVariantLabel(item: KnowledgeEvidenceItem): string {
+  return (
+    item.display.variantLabel?.trim() ||
+    item.documentContext.canonicalTitle?.trim() ||
+    item.documentName
+  );
+}
+
+function buildMatchedTopics(evidenceItems: KnowledgeEvidenceItem[] = []) {
+  const grouped = new Map<string, KnowledgeMatchedTopic>();
+  for (const item of evidenceItems) {
+    const existing = grouped.get(item.topicKey);
+    if (existing) {
+      existing.evidenceCount += 1;
+      existing.relevanceScore = Math.max(
+        existing.relevanceScore,
+        item.relevanceScore,
+      );
+      continue;
+    }
+    grouped.set(item.topicKey, {
+      topicLabel: item.display.topicLabel ?? resolveEvidenceTopicLabel(item),
+      relevanceScore: item.relevanceScore,
+      evidenceCount: 1,
+    });
+  }
+  return Array.from(grouped.values()).sort(
+    (left, right) => right.relevanceScore - left.relevanceScore,
+  );
+}
+
+function formatEvidenceContext(item: KnowledgeEvidenceItem) {
+  if (item.display.locationLabel?.trim()) {
+    return item.display.locationLabel.trim();
+  }
+  const parts: string[] = [];
+  if (item.locationContext.noteNumber) {
+    parts.push(
+      `Note ${item.locationContext.noteNumber}${item.locationContext.noteTitle ? ` ${item.locationContext.noteTitle}` : ""}`,
+    );
+  }
+  if (item.locationContext.pageStart && item.locationContext.pageEnd) {
+    parts.push(
+      item.locationContext.pageStart === item.locationContext.pageEnd
+        ? `Page ${item.locationContext.pageStart}`
+        : `Pages ${item.locationContext.pageStart}-${item.locationContext.pageEnd}`,
+    );
+  } else if (item.locationContext.pageStart) {
+    parts.push(`Page ${item.locationContext.pageStart}`);
+  }
+  return parts.join(" | ");
+}
+
+function buildEvidenceItemFromSection(input: {
+  doc: Pick<
+    RankedDocCandidate,
+    | "documentId"
+    | "documentName"
+    | "documentContext"
+    | "sourceContext"
+    | "temporalHints"
+    | "display"
+  >;
+  section: Pick<
+    KnowledgeSection,
+    | "id"
+    | "headingPath"
+    | "heading"
+    | "content"
+    | "pageStart"
+    | "pageEnd"
+    | "noteNumber"
+    | "noteTitle"
+    | "noteSubsection"
+  >;
+  relevanceScore: number;
+}): KnowledgeEvidenceItem {
+  const temporalHints =
+    deriveKnowledgeTemporalHints({
+      title: input.doc.documentContext.canonicalTitle,
+      content: [input.section.headingPath, input.section.content].join("\n"),
+    }) ?? input.doc.temporalHints;
+  const topicLabel = buildKnowledgeTopicLabel({
+    headingPath: input.section.headingPath,
+    sectionTitle: input.section.heading,
+    noteNumber: input.section.noteNumber ?? null,
+    noteSubsection: input.section.noteSubsection ?? null,
+    noteTitle: input.section.noteTitle ?? null,
+  });
+  const locationContext = {
+    sectionId: input.section.id,
+    headingPath: input.section.headingPath,
+    noteNumber: input.section.noteSubsection
+      ? `${input.section.noteNumber ?? ""}.${input.section.noteSubsection}`
+      : (input.section.noteNumber ?? null),
+    noteTitle: input.section.noteTitle ?? null,
+    pageStart: input.section.pageStart ?? null,
+    pageEnd: input.section.pageEnd ?? null,
+    chunkIndex: null,
+  } satisfies KnowledgeLocationContext;
+  const display = buildKnowledgeDisplayContext({
+    documentLabel:
+      input.doc.display.documentLabel ??
+      input.doc.documentContext.canonicalTitle ??
+      input.doc.documentName,
+    variantLabel:
+      buildKnowledgeVariantLabel({
+        title: [input.doc.documentName, input.section.headingPath].join("\n"),
+        libraryVersion: input.doc.sourceContext.libraryVersion,
+        sourceUrl: input.doc.sourceContext.sourcePath,
+        temporalHints,
+        fallback: input.doc.display.variantLabel ?? null,
+      }) ?? input.doc.display.variantLabel,
+    topicLabel,
+    locationLabel: buildKnowledgeLocationLabel({
+      headingPath: input.section.headingPath,
+      noteNumber: input.section.noteNumber ?? null,
+      noteSubsection: input.section.noteSubsection ?? null,
+      noteTitle: input.section.noteTitle ?? null,
+      pageStart: input.section.pageStart ?? null,
+      pageEnd: input.section.pageEnd ?? null,
+    }),
+  });
+  const excerpt = buildCitationExcerpt(input.section.content, 320);
+  const topicKey = normalizeKey(topicLabel);
+  const variantLabel =
+    display.variantLabel ?? input.doc.documentName ?? input.doc.documentId;
+
+  return {
+    id: buildEvidenceUnitId({
+      documentId: input.doc.documentId,
+      sectionId: input.section.id,
+      topicKey,
+      variantLabel,
+      pageStart: input.section.pageStart ?? null,
+      pageEnd: input.section.pageEnd ?? null,
+      excerpt,
+    }),
+    documentId: input.doc.documentId,
+    documentName: input.doc.documentName,
+    topicKey,
+    excerpt,
+    relevanceScore: input.relevanceScore,
+    documentContext: input.doc.documentContext,
+    sourceContext: input.doc.sourceContext,
+    locationContext,
+    temporalHints,
+    display,
+  };
+}
+
+function buildEvidenceItemFromMatch(input: {
+  doc: Pick<
+    RankedDocCandidate,
+    | "documentId"
+    | "documentName"
+    | "documentContext"
+    | "sourceContext"
+    | "temporalHints"
+    | "display"
+  >;
+  match: KnowledgeQueryResult;
+}): KnowledgeEvidenceItem {
+  const metadata = input.match.chunk.metadata;
+  const documentContext = {
+    ...input.doc.documentContext,
+    ...(metadata?.documentContext ?? {}),
+    documentId: metadata?.documentContext?.documentId ?? input.doc.documentId,
+    documentName:
+      metadata?.documentContext?.documentName ?? input.doc.documentName,
+    canonicalTitle:
+      metadata?.documentContext?.canonicalTitle ??
+      metadata?.canonicalTitle ??
+      input.doc.documentContext.canonicalTitle ??
+      input.doc.documentName,
+    baseTitle:
+      metadata?.documentContext?.baseTitle ??
+      buildKnowledgeBaseTitle(
+        metadata?.documentContext?.canonicalTitle ??
+          metadata?.canonicalTitle ??
+          input.doc.documentContext.canonicalTitle ??
+          input.doc.documentName,
+      ),
+  } satisfies KnowledgeDocumentContext;
+  const sourceContext = {
+    ...input.doc.sourceContext,
+    ...(metadata?.sourceContext ?? {}),
+    libraryId:
+      metadata?.sourceContext?.libraryId ?? metadata?.libraryId ?? null,
+    libraryVersion:
+      metadata?.sourceContext?.libraryVersion ??
+      metadata?.libraryVersion ??
+      input.doc.sourceContext.libraryVersion ??
+      null,
+    sourcePath:
+      metadata?.sourceContext?.sourcePath ??
+      metadata?.sourcePath ??
+      input.doc.sourceContext.sourcePath ??
+      null,
+    sheetName:
+      metadata?.sourceContext?.sheetName ?? metadata?.sheetName ?? null,
+    sourceGroupName:
+      metadata?.sourceContext?.sourceGroupName ??
+      input.doc.sourceContext.sourceGroupName ??
+      null,
+  } satisfies KnowledgeSourceContext;
+  const pageStart = metadata?.pageStart ?? metadata?.pageNumber ?? null;
+  const pageEnd = metadata?.pageEnd ?? metadata?.pageNumber ?? null;
+  const locationContext = {
+    ...(metadata?.locationContext ?? {}),
+    sectionId:
+      metadata?.locationContext?.sectionId ??
+      input.match.chunk.sectionId ??
+      null,
+    headingPath:
+      metadata?.locationContext?.headingPath ??
+      metadata?.headingPath ??
+      metadata?.section ??
+      null,
+    noteNumber:
+      metadata?.locationContext?.noteNumber ??
+      (metadata?.noteSubsection
+        ? `${metadata.noteNumber ?? ""}.${metadata.noteSubsection}`
+        : (metadata?.noteNumber ?? null)),
+    noteTitle:
+      metadata?.locationContext?.noteTitle ?? metadata?.noteTitle ?? null,
+    pageStart: metadata?.locationContext?.pageStart ?? pageStart ?? null,
+    pageEnd: metadata?.locationContext?.pageEnd ?? pageEnd ?? null,
+    chunkIndex:
+      metadata?.locationContext?.chunkIndex ?? input.match.chunk.chunkIndex,
+  } satisfies KnowledgeLocationContext;
+  const temporalHints =
+    metadata?.temporalHints ??
+    deriveKnowledgeTemporalHints({
+      title: documentContext.canonicalTitle,
+      sourceUrl: sourceContext.sourcePath,
+      content: [
+        metadata?.headingPath,
+        metadata?.sectionTitle,
+        input.match.chunk.content ?? "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    }) ??
+    input.doc.temporalHints;
+  const topicLabel = buildKnowledgeTopicLabel({
+    headingPath: locationContext.headingPath,
+    sectionTitle: metadata?.sectionTitle ?? metadata?.section ?? null,
+    noteNumber: metadata?.noteNumber ?? null,
+    noteSubsection: metadata?.noteSubsection ?? null,
+    noteTitle: metadata?.noteTitle ?? null,
+    sourcePath: sourceContext.sourcePath,
+    sheetName: sourceContext.sheetName,
+  });
+  const display = buildKnowledgeDisplayContext({
+    documentLabel:
+      metadata?.display?.documentLabel ??
+      input.doc.display.documentLabel ??
+      documentContext.canonicalTitle ??
+      input.doc.documentName,
+    variantLabel:
+      metadata?.display?.variantLabel ??
+      buildKnowledgeVariantLabel({
+        title: [
+          documentContext.canonicalTitle,
+          documentContext.documentName,
+          metadata?.headingPath,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        sourceUrl: sourceContext.sourcePath,
+        libraryVersion: sourceContext.libraryVersion,
+        temporalHints,
+        fallback: input.doc.display.variantLabel ?? null,
+      }) ??
+      input.doc.display.variantLabel,
+    topicLabel: metadata?.display?.topicLabel ?? topicLabel,
+    locationLabel:
+      metadata?.display?.locationLabel ??
+      buildKnowledgeLocationLabel({
+        headingPath: locationContext.headingPath,
+        noteNumber: metadata?.noteNumber ?? null,
+        noteSubsection: metadata?.noteSubsection ?? null,
+        noteTitle: metadata?.noteTitle ?? null,
+        pageStart,
+        pageEnd,
+      }),
+  });
+  const excerpt = buildCitationExcerpt(input.match.chunk.content ?? "", 320);
+  const topicKey = normalizeKey(display.topicLabel ?? topicLabel);
+  const variantLabel =
+    display.variantLabel ??
+    documentContext.canonicalTitle ??
+    input.doc.documentName;
+
+  return {
+    id: buildEvidenceUnitId({
+      documentId: input.doc.documentId,
+      sectionId: input.match.chunk.sectionId ?? null,
+      topicKey,
+      variantLabel,
+      pageStart,
+      pageEnd,
+      excerpt,
+    }),
+    documentId: input.doc.documentId,
+    documentName: input.doc.documentName,
+    topicKey,
+    excerpt,
+    relevanceScore:
+      input.match.rerankScore ??
+      input.match.confidenceScore ??
+      input.match.score,
+    documentContext,
+    sourceContext,
+    locationContext,
+    temporalHints,
+    display,
+  };
+}
+
+function formatDocHeading(doc: DocRetrievalResult) {
+  const title =
+    doc.isInherited && doc.sourceGroupName
+      ? `${doc.documentName} (from ${doc.sourceGroupName})`
+      : doc.documentName;
+  const lines = [`## ${title}`];
+  if (doc.display?.variantLabel) {
+    lines.push(`Variant: ${doc.display.variantLabel}`);
+  }
+  if (doc.matchedTopics?.length) {
+    lines.push(
+      `Matched topics: ${doc.matchedTopics
+        .slice(0, 4)
+        .map((topic) => topic.topicLabel)
+        .join(" | ")}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function hasSharedVariantTopic(evidenceItems: KnowledgeEvidenceItem[]) {
+  const groups = new Map<string, Set<string>>();
+  for (const item of evidenceItems) {
+    const key = `${normalizeKey(resolveEvidenceFamilyLabel(item))}:${item.topicKey}`;
+    const variants = groups.get(key) ?? new Set<string>();
+    variants.add(resolveEvidenceVariantLabel(item));
+    groups.set(key, variants);
+  }
+  return Array.from(groups.values()).some((variants) => variants.size >= 2);
+}
+
+function buildQueryAnalysis(input: {
+  query?: string;
+  evidenceItems: KnowledgeEvidenceItem[];
+}): KnowledgeQueryAnalysis {
+  const explicitAxes = extractKnowledgeComparisonAxesFromText({
+    text: input.query ?? "",
+  });
+  const explicitCompareSignal =
+    explicitAxes.length >= 2 ||
+    /(compare|versus|vs\b|trend|across|between|perbandingan|bandingkan)/i.test(
+      input.query ?? "",
+    );
+
+  return {
+    intent:
+      explicitCompareSignal || hasSharedVariantTopic(input.evidenceItems)
+        ? "compare"
+        : "lookup",
+    explicitAxes,
+    requestedTopics: extractSignificantQueryTerms(input.query ?? "").slice(
+      0,
+      8,
+    ),
+  };
+}
+
+function selectComparisonAxisKind(input: {
+  explicitAxes: KnowledgeRetrievalAxis[];
+  evidenceItems: KnowledgeEvidenceItem[];
+}): KnowledgeRetrievalAxisKind {
+  if (input.explicitAxes.length > 0) {
+    return input.explicitAxes[0]?.kind ?? "custom";
+  }
+
+  const counts = new Map<KnowledgeRetrievalAxisKind, Set<string>>();
+  for (const item of input.evidenceItems) {
+    for (const axis of resolveEvidenceAxes(item)) {
+      const values = counts.get(axis.kind) ?? new Set<string>();
+      values.add(axis.key);
+      counts.set(axis.kind, values);
+    }
+  }
+
+  const candidate = COMPARISON_AXIS_PRIORITY.find(
+    (kind) => (counts.get(kind)?.size ?? 0) >= 2,
+  );
+  return candidate ?? "custom";
+}
+
+function sortComparisonVariants(
+  axisKind: KnowledgeRetrievalAxisKind,
+  variants: KnowledgeComparisonGroup["variants"],
+) {
+  const compareLabels = (left: string, right: string) =>
+    left.localeCompare(right, undefined, { numeric: true });
+
+  return [...variants].sort((left, right) => {
+    const leftLabel = left.axisValueLabel ?? left.variantLabel;
+    const rightLabel = right.axisValueLabel ?? right.variantLabel;
+
+    if (axisKind === "period") {
+      const quarterValue = (value: string) => {
+        const match = value.match(/Q([1-4])\s*(20\d{2})?/i);
+        if (!match) return Number.MAX_SAFE_INTEGER;
+        const year = Number.parseInt(match[2] ?? "0", 10);
+        const quarter = Number.parseInt(match[1], 10);
+        return year * 10 + quarter;
+      };
+      return quarterValue(leftLabel) - quarterValue(rightLabel);
+    }
+
+    return compareLabels(leftLabel, rightLabel);
+  });
+}
+
+function buildKnowledgeRetrievalEnvelope(input: {
+  groupId?: string;
+  groupName: string;
+  query?: string;
+  docs: DocRetrievalResult[];
+}): KnowledgeRetrievalEnvelope<DocRetrievalResult> {
+  const evidenceItems = Array.from(
+    new Map(
+      input.docs
+        .flatMap((doc) => doc.evidenceItems ?? [])
+        .map((item) => [item.id, item] as const),
+    ).values(),
+  );
+  const queryAnalysis = buildQueryAnalysis({
+    query: input.query,
+    evidenceItems,
+  });
+
+  const grouped = new Map<
+    string,
+    {
+      familyLabel: string;
+      topicLabel: string;
+      evidenceItems: KnowledgeEvidenceItem[];
+    }
+  >();
+  for (const item of evidenceItems) {
+    const familyLabel = resolveEvidenceFamilyLabel(item);
+    const topicLabel = resolveEvidenceTopicLabel(item);
+    const key = `${normalizeKey(familyLabel)}:${item.topicKey}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.evidenceItems.push(item);
+      continue;
+    }
+    grouped.set(key, {
+      familyLabel,
+      topicLabel,
+      evidenceItems: [item],
+    });
+  }
+
+  const comparisonGroups: KnowledgeComparisonGroup[] =
+    queryAnalysis.intent === "compare"
+      ? Array.from(grouped.values())
+          .map((group) => {
+            const axisKind = selectComparisonAxisKind({
+              explicitAxes: queryAnalysis.explicitAxes,
+              evidenceItems: group.evidenceItems,
+            });
+            const variants = new Map<
+              string,
+              KnowledgeComparisonGroup["variants"][number]
+            >();
+            for (const item of group.evidenceItems) {
+              const variantLabel = resolveEvidenceVariantLabel(item);
+              const axes = resolveEvidenceAxes(item);
+              const axisValue = axes.find((axis) => axis.kind === axisKind);
+              const key = axisValue?.key ?? normalizeKey(variantLabel);
+              const existing = variants.get(key);
+              if (existing) {
+                existing.documentIds = Array.from(
+                  new Set([...existing.documentIds, item.documentId]),
+                );
+                existing.documentNames = Array.from(
+                  new Set([...existing.documentNames, item.documentName]),
+                );
+                existing.evidenceItemIds = Array.from(
+                  new Set([...existing.evidenceItemIds, item.id]),
+                );
+                continue;
+              }
+              variants.set(key, {
+                variantLabel: axisValue?.label ?? variantLabel,
+                axisValueKey: axisValue?.key ?? null,
+                axisValueLabel: axisValue?.label ?? null,
+                documentIds: [item.documentId],
+                documentNames: [item.documentName],
+                evidenceItemIds: [item.id],
+              });
+            }
+
+            if (variants.size < 2) return null;
+            return {
+              familyLabel: group.familyLabel,
+              topicLabel: group.topicLabel,
+              axisKind,
+              variants: sortComparisonVariants(
+                axisKind,
+                Array.from(variants.values()),
+              ),
+            } satisfies KnowledgeComparisonGroup;
+          })
+          .filter((group): group is KnowledgeComparisonGroup => group !== null)
+      : [];
+
+  return {
+    groupId: input.groupId,
+    groupName: input.groupName,
+    query: input.query,
+    docs: input.docs,
+    queryAnalysis,
+    comparisonGroups,
+    evidenceItems,
+  };
+}
+
+function formatEvidenceHeader(item: KnowledgeEvidenceItem) {
+  return [
+    item.display.documentLabel ?? item.documentName,
+    item.display.variantLabel,
+    item.display.topicLabel,
+    item.display.locationLabel,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
+
+function formatComparisonGroupsAsText(
+  envelope: KnowledgeRetrievalEnvelope<DocRetrievalResult>,
+) {
+  if (!envelope.comparisonGroups.length) return null;
+
+  const evidenceById = new Map(
+    envelope.evidenceItems.map((item) => [item.id, item] as const),
+  );
+  const blocks = envelope.comparisonGroups.map((group) => {
+    const lines = [
+      `### ${group.familyLabel} -> ${group.topicLabel}`,
+      `Compared by: ${group.axisKind}`,
+      "",
+    ];
+
+    for (const variant of group.variants) {
+      const items = variant.evidenceItemIds
+        .map((id) => evidenceById.get(id) ?? null)
+        .filter((item): item is KnowledgeEvidenceItem => item !== null)
+        .sort((left, right) => right.relevanceScore - left.relevanceScore);
+      const topItem = items[0];
+      if (!topItem) continue;
+      const context = formatEvidenceContext(topItem);
+      lines.push(
+        `- ${variant.variantLabel} | ${variant.documentNames.join(" / ")} | ${topItem.display.topicLabel ?? resolveEvidenceTopicLabel(topItem)}${context ? ` | ${context}` : ""}: ${topItem.excerpt}`,
+      );
+    }
+
+    return lines.join("\n").trim();
+  });
+
+  return ["## Comparison", ...blocks].join("\n\n");
+}
+
+function formatDocEvidenceBlocks(doc: DocRetrievalResult) {
+  if (!doc.evidenceItems?.length) return null;
+
+  return [
+    "Evidence:",
+    ...doc.evidenceItems
+      .slice(0, 4)
+      .map((item) => `- ${formatEvidenceHeader(item)}: ${item.excerpt}`),
+  ].join("\n");
+}
+
+function formatDocsBodyAsText(docs: DocRetrievalResult[]) {
+  return docs
+    .map((doc) =>
+      [formatDocHeading(doc), formatDocEvidenceBlocks(doc), doc.markdown]
+        .filter(Boolean)
+        .join("\n\n")
+        .trim(),
+    )
+    .join("\n\n");
+}
+
+export function formatKnowledgeRetrievalEnvelopeAsText(
+  envelope: KnowledgeRetrievalEnvelope<DocRetrievalResult>,
+): string {
+  if (envelope.docs.length === 0) {
+    return `[Knowledge: ${envelope.groupName}]\nNo relevant content found${envelope.query ? ` for: "${envelope.query}"` : ""}.`;
+  }
+
+  const comparisonText = formatComparisonGroupsAsText(envelope);
+  const docText = formatDocsBodyAsText(envelope.docs);
+  return [`[Knowledge: ${envelope.groupName}]`, comparisonText, docText]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 type RankedDocCandidate = Omit<
@@ -2604,6 +3488,10 @@ export interface DocRetrievalResult {
   sourceGroupName?: string | null;
   isInherited?: boolean;
   versionId?: string | null;
+  documentContext: KnowledgeDocumentContext;
+  sourceContext: KnowledgeSourceContext;
+  temporalHints?: KnowledgeTemporalHints | null;
+  display: KnowledgeDisplayContext;
   /** Aggregated relevance score from chunk-level search */
   relevanceScore: number;
   /** Number of chunks from this document that appeared in search results */
@@ -2615,6 +3503,8 @@ export interface DocRetrievalResult {
     heading: string;
     score: number;
   }>;
+  matchedTopics?: KnowledgeMatchedTopic[];
+  evidenceItems?: KnowledgeEvidenceItem[];
   citationCandidates?: RetrievedKnowledgeCitation[];
   matchedImages?: RetrievedKnowledgeImage[];
 }
@@ -3479,6 +4369,12 @@ async function assembleFullDocResults(input: {
         citationMatches,
         4,
       );
+      const evidenceItems = selectedCitationMatches.map((match) =>
+        buildEvidenceItemFromMatch({
+          doc,
+          match,
+        }),
+      );
       const citationCandidates = Array.from(
         new Map(
           selectedCitationMatches.map((match) => {
@@ -3510,9 +4406,15 @@ async function assembleFullDocResults(input: {
         sourceGroupName: doc.sourceGroupName,
         isInherited: doc.isInherited,
         versionId: doc.versionId ?? null,
+        documentContext: doc.documentContext,
+        sourceContext: doc.sourceContext,
+        temporalHints: doc.temporalHints,
+        display: doc.display,
         relevanceScore: doc.relevanceScore,
         chunkHits: doc.chunkHits,
         markdown: docData.markdown,
+        matchedTopics: buildMatchedTopics(evidenceItems),
+        evidenceItems,
         citationCandidates,
       });
       tokensUsed += contentTokens;
@@ -3532,6 +4434,12 @@ async function assembleFullDocResults(input: {
       citationMatches,
       4,
     );
+    const evidenceItems = selectedCitationMatches.map((match) =>
+      buildEvidenceItemFromMatch({
+        doc,
+        match,
+      }),
+    );
     results.push({
       documentId: doc.documentId,
       documentName: doc.documentName,
@@ -3539,9 +4447,15 @@ async function assembleFullDocResults(input: {
       sourceGroupName: doc.sourceGroupName,
       isInherited: doc.isInherited,
       versionId: doc.versionId ?? null,
+      documentContext: doc.documentContext,
+      sourceContext: doc.sourceContext,
+      temporalHints: doc.temporalHints,
+      display: doc.display,
       relevanceScore: doc.relevanceScore,
       chunkHits: doc.chunkHits,
       markdown: truncated,
+      matchedTopics: buildMatchedTopics(evidenceItems),
+      evidenceItems,
       citationCandidates: Array.from(
         new Map(
           selectedCitationMatches.map((match) => {
@@ -3723,6 +4637,7 @@ async function assembleSectionFirstResults(input: {
     RankedDocCandidate & {
       blocks: string[];
       matchedSections: Array<{ heading: string; score: number }>;
+      evidenceItems: KnowledgeEvidenceItem[];
       citationCandidates: Array<{
         candidate: RetrievedKnowledgeCitation;
         pageSnippets: string[];
@@ -3753,6 +4668,13 @@ async function assembleSectionFirstResults(input: {
         heading: formatSectionHeading(bundle.section),
         score: bundle.score,
       });
+      existing.evidenceItems.push(
+        buildEvidenceItemFromSection({
+          doc: bundle.doc,
+          section: bundle.section,
+          relevanceScore: bundle.score,
+        }),
+      );
       existing.citationCandidates.push(
         ...buildSectionCitationEntries({
           section: bundle.section,
@@ -3772,6 +4694,13 @@ async function assembleSectionFirstResults(input: {
           heading: formatSectionHeading(bundle.section),
           score: bundle.score,
         },
+      ],
+      evidenceItems: [
+        buildEvidenceItemFromSection({
+          doc: bundle.doc,
+          section: bundle.section,
+          relevanceScore: bundle.score,
+        }),
       ],
       citationCandidates: buildSectionCitationEntries({
         section: bundle.section,
@@ -3803,10 +4732,16 @@ async function assembleSectionFirstResults(input: {
       sourceGroupName: aggregatedDoc.sourceGroupName,
       isInherited: aggregatedDoc.isInherited,
       versionId: aggregatedDoc.versionId ?? null,
+      documentContext: aggregatedDoc.documentContext,
+      sourceContext: aggregatedDoc.sourceContext,
+      temporalHints: aggregatedDoc.temporalHints,
+      display: aggregatedDoc.display,
       relevanceScore: aggregatedDoc.relevanceScore,
       chunkHits: aggregatedDoc.chunkHits,
       markdown: `${aggregatedDoc.blocks.join("\n\n---\n\n")}\n\n[... section-first context]`,
       matchedSections: aggregatedDoc.matchedSections,
+      matchedTopics: buildMatchedTopics(aggregatedDoc.evidenceItems),
+      evidenceItems: aggregatedDoc.evidenceItems,
       citationCandidates: Array.from(
         new Map(
           aggregatedDoc.citationCandidates.map(
@@ -3869,7 +4804,7 @@ function extractPeriodTokensFromQuery(query: string): string[] {
   return [...new Set(tokens)];
 }
 
-export async function queryKnowledgeAsDocs(
+async function queryKnowledgeAsDocsImpl(
   group: GroupForRetrieval,
   query: string,
   options: QueryKnowledgeDocsOptions = {},
@@ -4032,16 +4967,17 @@ export async function queryKnowledgeAsDocs(
   >();
 
   for (const r of scopedChunkResults) {
+    const documentId = r.chunk.documentId || r.documentId;
     const score = Math.max(0, r.confidenceScore ?? r.score);
     const hitIncrement = score > 0 ? 1 : 0;
-    const existing = chunkStats.get(r.documentId);
+    const existing = chunkStats.get(documentId);
     if (existing) {
       existing.chunkHits += hitIncrement;
       existing.sumScore += score;
       existing.maxScore = Math.max(existing.maxScore, score);
       existing.matches.push(r);
     } else {
-      chunkStats.set(r.documentId, {
+      chunkStats.set(documentId, {
         name: r.documentName,
         chunkHits: hitIncrement,
         sumScore: score,
@@ -4125,6 +5061,12 @@ export async function queryKnowledgeAsDocs(
       );
       const freshnessScore = Math.exp(-ageDays / 90);
       const sourceScope = scopeById.get(doc.groupId);
+      const provenance = resolveDocProvenance({
+        documentId: doc.documentId,
+        documentName: stats?.name ?? doc.name,
+        metadata: doc.metadata,
+        sourceGroupName: sourceScope?.name ?? null,
+      });
 
       return {
         documentId: doc.documentId,
@@ -4133,6 +5075,10 @@ export async function queryKnowledgeAsDocs(
         sourceGroupName: sourceScope?.name ?? null,
         isInherited: doc.groupId !== group.id,
         versionId: doc.activeVersionId ?? null,
+        documentContext: provenance.documentContext,
+        sourceContext: provenance.sourceContext,
+        temporalHints: provenance.temporalHints,
+        display: provenance.display,
         chunkHits: stats?.chunkHits ?? 0,
         imageHits: imageStats?.hitCount ?? 0,
         imageEvidenceScore,
@@ -4372,6 +5318,29 @@ export async function queryKnowledgeAsDocs(
   return results;
 }
 
+export async function queryKnowledgeStructured(
+  group: GroupForRetrieval,
+  query: string,
+  options: QueryKnowledgeDocsOptions = {},
+): Promise<KnowledgeRetrievalEnvelope<DocRetrievalResult>> {
+  const docs = await queryKnowledgeAsDocsImpl(group, query, options);
+  return buildKnowledgeRetrievalEnvelope({
+    groupId: group.id,
+    groupName: group.name,
+    query,
+    docs,
+  });
+}
+
+export async function queryKnowledgeAsDocs(
+  group: GroupForRetrieval,
+  query: string,
+  options: QueryKnowledgeDocsOptions = {},
+): Promise<DocRetrievalResult[]> {
+  const envelope = await queryKnowledgeStructured(group, query, options);
+  return envelope.docs;
+}
+
 /**
  * Format doc retrieval results as a single markdown text block for LLM injection.
  */
@@ -4380,15 +5349,11 @@ export function formatDocsAsText(
   docs: DocRetrievalResult[],
   query?: string,
 ): string {
-  if (docs.length === 0) {
-    return `[Knowledge: ${groupName}]\nNo relevant content found${query ? ` for: "${query}"` : ""}.`;
-  }
-  const parts = docs.map((d) => {
-    const title =
-      d.isInherited && d.sourceGroupName
-        ? `${d.documentName} (from ${d.sourceGroupName})`
-        : d.documentName;
-    return `## ${title}\n\n${d.markdown}`;
-  });
-  return `[Knowledge: ${groupName}]\n\n${parts.join("\n\n")}`;
+  return formatKnowledgeRetrievalEnvelopeAsText(
+    buildKnowledgeRetrievalEnvelope({
+      groupName,
+      query,
+      docs,
+    }),
+  );
 }

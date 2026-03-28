@@ -1,9 +1,9 @@
 import { compare } from "bcrypt-ts";
 import { knowledgeRepository } from "lib/db/repository";
 import {
-  formatDocsAsText,
+  formatKnowledgeRetrievalEnvelopeAsText,
   queryKnowledge,
-  queryKnowledgeAsDocs,
+  queryKnowledgeStructured,
 } from "lib/knowledge/retriever";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -600,7 +600,7 @@ async function handleJsonRpcRequest(
     ) {
       const parsed = queryDocsSchema.parse(args);
       const scopedQuery = `${parsed.libraryId}\n${parsed.query}`;
-      const docs = await queryKnowledgeAsDocs(group, scopedQuery, {
+      const envelope = await queryKnowledgeStructured(group, scopedQuery, {
         tokens: parsed.tokens ?? 10000,
         maxDocs: parsed.maxDocs ?? 8,
         resultMode: "matched-sections",
@@ -609,7 +609,7 @@ async function handleJsonRpcRequest(
         source: "mcp",
       });
 
-      if (docs.length === 0) {
+      if (envelope.docs.length === 0) {
         const text = [
           `[ContextX Knowledge: ${group.name}]`,
           `No relevant sections found for source ID "${parsed.libraryId}"${parsed.version ? ` @ ${parsed.version}` : ""}.`,
@@ -617,7 +617,10 @@ async function handleJsonRpcRequest(
           "",
           `Tip: call "${TOOL_RESOLVE_LIBRARY_ID}" first, then retry with one of the returned source IDs (libraryId parameter).`,
         ].join("\n");
-        return jsonRpcResultPayload(id, { content: [{ type: "text", text }] });
+        return jsonRpcResultPayload(id, {
+          content: [{ type: "text", text }],
+          structuredContent: envelope,
+        });
       }
 
       const text = [
@@ -625,9 +628,12 @@ async function handleJsonRpcRequest(
         `Source: ${parsed.libraryId}${parsed.version ? ` @ ${parsed.version}` : ""}`,
         `Query: ${parsed.query}`,
         "",
-        formatDocsAsText(group.name, docs, parsed.query),
+        formatKnowledgeRetrievalEnvelopeAsText(envelope),
       ].join("\n");
-      return jsonRpcResultPayload(id, { content: [{ type: "text", text }] });
+      return jsonRpcResultPayload(id, {
+        content: [{ type: "text", text }],
+        structuredContent: envelope,
+      });
     }
 
     if (name === TOOL_GET_DOCS) {
@@ -637,13 +643,16 @@ async function handleJsonRpcRequest(
           tokens: z.number().min(500).max(50000).optional(),
         })
         .parse(args);
-      const docs = await queryKnowledgeAsDocs(group, parsed.query, {
+      const envelope = await queryKnowledgeStructured(group, parsed.query, {
         tokens: parsed.tokens ?? 10000,
         resultMode: "full-doc",
         source: "mcp",
       });
-      const text = formatDocsAsText(group.name, docs, parsed.query);
-      return jsonRpcResultPayload(id, { content: [{ type: "text", text }] });
+      const text = formatKnowledgeRetrievalEnvelopeAsText(envelope);
+      return jsonRpcResultPayload(id, {
+        content: [{ type: "text", text }],
+        structuredContent: envelope,
+      });
     }
 
     if (name === "list_documents") {

@@ -1334,6 +1334,25 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     if (!issuer && !ticker) {
       return [];
     }
+    const canonicalTitleSql = sql`coalesce(
+      kd.metadata::jsonb->'documentContext'->>'canonicalTitle',
+      kd.metadata::jsonb->'display'->>'documentLabel',
+      kd.metadata::jsonb->'documentContext'->>'baseTitle',
+      kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle',
+      ''
+    )`;
+    const familyLabelSql = sql`coalesce(
+      kd.metadata::jsonb->'sourceContext'->>'libraryId',
+      kd.metadata::jsonb->'documentContext'->>'baseTitle',
+      kd.metadata::jsonb->'retrievalIdentity'->>'issuerName',
+      ''
+    )`;
+    const variantLabelSql = sql`coalesce(
+      kd.metadata::jsonb->'sourceContext'->>'libraryVersion',
+      kd.metadata::jsonb->'display'->>'variantLabel',
+      kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker',
+      ''
+    )`;
 
     const rows = await db.execute<{ document_id: string; score: number }>(
       sql`
@@ -1348,7 +1367,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             CASE
               WHEN (SELECT ticker_q FROM q) IS NOT NULL
                AND (
-                 upper(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')) = (SELECT ticker_q FROM q)
+                 upper(${variantLabelSql}) = (SELECT ticker_q FROM q)
                  OR upper(coalesce(kd.name, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
                  OR upper(coalesce(kd.original_filename, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
                  OR EXISTS (
@@ -1366,8 +1385,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             CASE
               WHEN (SELECT issuer_q FROM q) IS NOT NULL
                AND (
-                 lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
-                 OR lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                 lower(${familyLabelSql}) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                 OR lower(${canonicalTitleSql}) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
                  OR lower(coalesce(kd.name, '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
                  OR EXISTS (
                    SELECT 1
@@ -1388,7 +1407,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             (
               (SELECT ticker_q FROM q) IS NOT NULL
               AND (
-                upper(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')) = (SELECT ticker_q FROM q)
+                upper(${variantLabelSql}) = (SELECT ticker_q FROM q)
                 OR upper(coalesce(kd.name, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
                 OR upper(coalesce(kd.original_filename, '')) LIKE '%' || (SELECT ticker_q FROM q) || '%'
                 OR EXISTS (
@@ -1404,8 +1423,8 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             (
               (SELECT issuer_q FROM q) IS NOT NULL
               AND (
-                lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
-                OR lower(coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                lower(${familyLabelSql}) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
+                OR lower(${canonicalTitleSql}) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
                 OR lower(coalesce(kd.name, '')) LIKE '%' || lower((SELECT issuer_q FROM q)) || '%'
                 OR EXISTS (
                   SELECT 1
@@ -1430,6 +1449,37 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
 
   async searchDocumentMetadata(groupId, query, limit, documentIds) {
     const documentFilter = buildUuidFilterSql("kd.id", documentIds);
+    const canonicalTitleSql = sql`coalesce(
+      kd.metadata::jsonb->'documentContext'->>'canonicalTitle',
+      kd.metadata::jsonb->'display'->>'documentLabel',
+      kd.metadata::jsonb->'documentContext'->>'baseTitle',
+      kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle',
+      ''
+    )`;
+    const familyLabelSql = sql`coalesce(
+      kd.metadata::jsonb->'sourceContext'->>'libraryId',
+      kd.metadata::jsonb->'documentContext'->>'baseTitle',
+      kd.metadata::jsonb->'retrievalIdentity'->>'issuerName',
+      ''
+    )`;
+    const variantLabelSql = sql`coalesce(
+      kd.metadata::jsonb->'sourceContext'->>'libraryVersion',
+      kd.metadata::jsonb->'display'->>'variantLabel',
+      kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker',
+      ''
+    )`;
+    const compactMetadataSearchText = sql`
+      coalesce(kd.name, '') || ' ' ||
+      coalesce(kd.description, '') || ' ' ||
+      ${canonicalTitleSql} || ' ' ||
+      ${familyLabelSql} || ' ' ||
+      ${variantLabelSql}
+    `;
+    const fullMetadataSearchText = sql`
+      ${compactMetadataSearchText} || ' ' ||
+      coalesce(kd.original_filename, '') || ' ' ||
+      coalesce(kd.source_url, '')
+    `;
     const rows = await db.execute<{ document_id: string; score: number }>(
       sql`
         WITH q AS (
@@ -1447,26 +1497,14 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
               ts_rank_cd(
                 to_tsvector(
                   'simple',
-                  coalesce(kd.name, '') || ' ' ||
-                  coalesce(kd.description, '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
-                  coalesce(kd.original_filename, '') || ' ' ||
-                  coalesce(kd.source_url, '')
+                  ${fullMetadataSearchText}
                 ),
                 (SELECT simple_q FROM q)
               ),
               ts_rank_cd(
                 to_tsvector(
                   'english',
-                  coalesce(kd.name, '') || ' ' ||
-                  coalesce(kd.description, '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
-                  coalesce(kd.original_filename, '') || ' ' ||
-                  coalesce(kd.source_url, '')
+                  ${fullMetadataSearchText}
                 ),
                 (SELECT english_q FROM q)
               )
@@ -1474,35 +1512,19 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
             + 0.25 * ts_rank_cd(
                 to_tsvector(
                   'simple',
-                  coalesce(kd.name, '') || ' ' ||
-                  coalesce(kd.description, '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')
+                  ${compactMetadataSearchText}
                 ),
                 (SELECT phrase_q FROM q)
               )
             + CASE
-                WHEN (
-                  coalesce(kd.name, '') || ' ' ||
-                  coalesce(kd.description, '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')
-                )
-                  ILIKE (SELECT ilike_q FROM q) THEN 0.15
+                WHEN (${compactMetadataSearchText}) ILIKE (SELECT ilike_q FROM q)
+                THEN 0.15
                 ELSE 0
               END
             + 0.35 * similarity(
                 lower(
                   regexp_replace(
-                    coalesce(kd.name, '') || ' ' ||
-                    coalesce(kd.description, '') || ' ' ||
-                    coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-                    coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-                    coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
-                    coalesce(kd.original_filename, '') || ' ' ||
-                    coalesce(kd.source_url, ''),
+                    ${fullMetadataSearchText},
                     '\s+',
                     ' ',
                     'g'
@@ -1518,42 +1540,17 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           AND (
             to_tsvector(
               'simple',
-              coalesce(kd.name, '') || ' ' ||
-              coalesce(kd.description, '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
-              coalesce(kd.original_filename, '') || ' ' ||
-              coalesce(kd.source_url, '')
+              ${fullMetadataSearchText}
             ) @@ (SELECT simple_q FROM q)
             OR to_tsvector(
               'english',
-              coalesce(kd.name, '') || ' ' ||
-              coalesce(kd.description, '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
-              coalesce(kd.original_filename, '') || ' ' ||
-              coalesce(kd.source_url, '')
+              ${fullMetadataSearchText}
             ) @@ (SELECT english_q FROM q)
-            OR (
-              coalesce(kd.name, '') || ' ' ||
-              coalesce(kd.description, '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-              coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '')
-            )
-              ILIKE (SELECT ilike_q FROM q)
+            OR (${compactMetadataSearchText}) ILIKE (SELECT ilike_q FROM q)
             OR similarity(
               lower(
                 regexp_replace(
-                  coalesce(kd.name, '') || ' ' ||
-                  coalesce(kd.description, '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'canonicalTitle', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerName', '') || ' ' ||
-                  coalesce(kd.metadata::jsonb->'retrievalIdentity'->>'issuerTicker', '') || ' ' ||
-                  coalesce(kd.original_filename, '') || ' ' ||
-                  coalesce(kd.source_url, ''),
+                  ${fullMetadataSearchText},
                   '\s+',
                   ' ',
                   'g'

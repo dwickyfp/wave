@@ -264,6 +264,124 @@ describe("markdown-parser", () => {
     ).toBe(true);
   });
 
+  it("falls back only the failed window and keeps page parsing moving", async () => {
+    const previousRetryAttempts = process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS = "1";
+    generateTextMock
+      .mockRejectedValueOnce(new Error("parser offline"))
+      .mockResolvedValueOnce({
+        text: "## Second Window\n\nTail parsed cleanly",
+      });
+
+    try {
+      const result = await parseDocumentToMarkdown({
+        pages: [
+          {
+            pageNumber: 63,
+            rawText: [
+              "# First Window\n",
+              "A".repeat(41_000),
+              "\n## Second Window\n",
+              "Tail marker\n",
+              "B".repeat(2_000),
+            ].join(""),
+            normalizedText: "Normalized page fallback",
+            markdown: "Normalized page fallback",
+            fingerprint: "page-partial-window-fallback",
+            qualityScore: 0.2,
+            extractionMode: "normalized",
+            repairReason: "broken_reading_order",
+          },
+        ],
+        documentTitle: "BBCA_Q4_2025",
+        parsingProvider: "openai",
+        parsingModel: "gpt-4.1-mini",
+        mode: "always",
+        repairPolicy: "section-safe-reorder",
+      });
+
+      expect(generateTextMock).toHaveBeenCalledTimes(2);
+      expect(result.pages[0]?.parseFallbackUsed).toBe(true);
+      expect(result.pages[0]?.parseWindowCount).toBeGreaterThan(1);
+      expect(result.pages[0]?.parseFailedWindowCount).toBe(1);
+      expect(result.pages[0]?.parseError).toMatch(/parser offline/i);
+      expect(result.pages[0]?.extractionMode).toBe("refined");
+      expect(result.markdown).toContain("# First Window");
+      expect(result.markdown).toContain("Tail parsed cleanly");
+    } finally {
+      warnSpy.mockRestore();
+      if (previousRetryAttempts === undefined) {
+        delete process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS;
+      } else {
+        process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS = previousRetryAttempts;
+      }
+    }
+  });
+
+  it("splits a repeatedly failing large window into smaller parse windows", async () => {
+    const previousRetryAttempts = process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS;
+    const previousRetryDelay = process.env.KNOWLEDGE_PARSE_RETRY_BASE_DELAY_MS;
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS = "4";
+    process.env.KNOWLEDGE_PARSE_RETRY_BASE_DELAY_MS = "0";
+    generateTextMock
+      .mockRejectedValueOnce(new Error("500 internal error"))
+      .mockRejectedValueOnce(new Error("500 internal error"))
+      .mockResolvedValueOnce({
+        text: "## Window 1.1\n\nFirst half repaired",
+      })
+      .mockResolvedValueOnce({
+        text: "## Window 1.2\n\nSecond half repaired",
+      });
+
+    try {
+      const result = await parseDocumentToMarkdown({
+        pages: [
+          {
+            pageNumber: 63,
+            rawText: [
+              "# Profit Section\n",
+              "A".repeat(5_200),
+              "\n## Tail Section\n",
+              "B".repeat(5_200),
+            ].join(""),
+            normalizedText: "Normalized page fallback",
+            markdown: "Normalized page fallback",
+            fingerprint: "page-adaptive-window-split",
+            qualityScore: 0.2,
+            extractionMode: "normalized",
+            repairReason: "broken_reading_order",
+          },
+        ],
+        documentTitle: "BBCA_Q4_2025",
+        parsingProvider: "openai",
+        parsingModel: "gpt-4.1-mini",
+        mode: "always",
+        repairPolicy: "section-safe-reorder",
+      });
+
+      expect(generateTextMock).toHaveBeenCalledTimes(4);
+      expect(result.pages[0]?.parseFallbackUsed).toBe(false);
+      expect(result.pages[0]?.parseFailedWindowCount).toBe(0);
+      expect(result.pages[0]?.extractionMode).toBe("refined");
+      expect(result.markdown).toContain("First half repaired");
+      expect(result.markdown).toContain("Second half repaired");
+    } finally {
+      warnSpy.mockRestore();
+      if (previousRetryAttempts === undefined) {
+        delete process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS;
+      } else {
+        process.env.KNOWLEDGE_PARSE_RETRY_ATTEMPTS = previousRetryAttempts;
+      }
+      if (previousRetryDelay === undefined) {
+        delete process.env.KNOWLEDGE_PARSE_RETRY_BASE_DELAY_MS;
+      } else {
+        process.env.KNOWLEDGE_PARSE_RETRY_BASE_DELAY_MS = previousRetryDelay;
+      }
+    }
+  });
+
   it("fails the page parse when strict failure mode rejects short output", async () => {
     generateTextMock.mockResolvedValueOnce({
       text: "too short",

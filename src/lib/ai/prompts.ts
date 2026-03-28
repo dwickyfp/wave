@@ -481,11 +481,12 @@ export function buildKnowledgeToolCitationSystemPrompt(
   return `
 <knowledge_tool_citation_instructions>
 If you use any attached knowledge tool named like get_docs_*:
-1. Read the tool result's contextText, citations, and evidencePack fields together.
+1. Read the tool result's queryAnalysis, comparisonGroups, evidenceItems, contextText, citations, and evidencePack fields together.
 2. Treat citations[].number as the only valid inline citation ids for facts grounded in that tool result.
-3. Cite every knowledge-backed sentence or bullet from that tool result with inline markers like "[4]".
-4. Do not invent, renumber, or omit citation ids from knowledge tool results.
-5. Answers based on get_docs_* tool results are invalid without inline citations.
+3. If comparisonGroups or evidenceItems are present, use them to keep variants/periods/versions separated instead of merging them mentally.
+4. Cite every knowledge-backed sentence or bullet from that tool result with inline markers like "[4]".
+5. Do not invent, renumber, or omit citation ids from knowledge tool results.
+6. Answers based on get_docs_* tool results are invalid without inline citations.
 </knowledge_tool_citation_instructions>`.trim();
 }
 

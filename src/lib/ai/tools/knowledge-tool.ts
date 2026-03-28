@@ -3,12 +3,17 @@ import "server-only";
 import { tool } from "ai";
 import type { ChatKnowledgeCitation, ChatKnowledgeImage } from "app-types/chat";
 import { z } from "zod";
-import { KnowledgeSummary } from "app-types/knowledge";
+import type {
+  KnowledgeComparisonGroup,
+  KnowledgeEvidenceItem,
+  KnowledgeQueryAnalysis,
+  KnowledgeSummary,
+} from "app-types/knowledge";
 import {
   DocRetrievalResult,
-  queryKnowledgeAsDocs,
-  formatDocsAsText,
+  formatKnowledgeRetrievalEnvelopeAsText,
   QueryKnowledgeDocsOptions,
+  queryKnowledgeStructured,
 } from "lib/knowledge/retriever";
 import {
   buildKnowledgeCitations,
@@ -27,6 +32,9 @@ export type KnowledgeDocsRetrievedPayload = {
   groupName: string;
   query: string;
   docs: DocRetrievalResult[];
+  queryAnalysis: KnowledgeQueryAnalysis;
+  comparisonGroups: KnowledgeComparisonGroup[];
+  evidenceItems: KnowledgeEvidenceItem[];
   contextText: string;
 };
 
@@ -48,6 +56,9 @@ export type KnowledgeDocsToolResult = {
   evidencePack: string | null;
   citations: ChatKnowledgeCitation[];
   images: ChatKnowledgeImage[];
+  queryAnalysis: KnowledgeQueryAnalysis;
+  comparisonGroups: KnowledgeComparisonGroup[];
+  evidenceItems: KnowledgeEvidenceItem[];
 };
 
 export function createKnowledgeDocsTool(
@@ -91,7 +102,7 @@ export function createKnowledgeDocsTool(
         ),
     }),
     execute: async ({ query, page, note, tokens, mode }) => {
-      const docs = await queryKnowledgeAsDocs(group, query, {
+      const envelope = await queryKnowledgeStructured(group, query, {
         ...queryOptions,
         source: queryOptions.source ?? "agent",
         page,
@@ -99,13 +110,17 @@ export function createKnowledgeDocsTool(
         tokens: tokens ?? DEFAULT_AGENT_KNOWLEDGE_TOKENS,
         resultMode: mode ?? "section-first",
       });
-      const contextText = formatDocsAsText(group.name, docs, query);
+      const docs = envelope.docs;
+      const contextText = formatKnowledgeRetrievalEnvelopeAsText(envelope);
       const prepared = await Promise.resolve(
         onRetrieved?.({
           groupId: group.id,
           groupName: group.name,
           query,
           docs,
+          queryAnalysis: envelope.queryAnalysis,
+          comparisonGroups: envelope.comparisonGroups,
+          evidenceItems: envelope.evidenceItems,
           contextText,
         }),
       ).catch(() => undefined);
@@ -147,6 +162,9 @@ export function createKnowledgeDocsTool(
         evidencePack,
         citations,
         images,
+        queryAnalysis: envelope.queryAnalysis,
+        comparisonGroups: envelope.comparisonGroups,
+        evidenceItems: envelope.evidenceItems,
       } satisfies KnowledgeDocsToolResult;
     },
   });
