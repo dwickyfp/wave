@@ -121,6 +121,29 @@ describe("Markdown citations", () => {
     expect(html).toContain("<li");
   });
 
+  it("renders mermaid fences with the dedicated mermaid frame", () => {
+    const html = renderToStaticMarkup(
+      <Markdown animate={false}>
+        {"```mermaid\nflowchart TD\nA[Start] --> B[End]\n```"}
+      </Markdown>,
+    );
+
+    expect(html).toContain('data-mermaid-block="true"');
+    expect(html).not.toContain('data-code-frame="true"');
+    expect(html).toContain("Detailed diagram viewer");
+  });
+
+  it("renders mermaid fences in the snowflake variant with the mermaid frame", () => {
+    const html = renderToStaticMarkup(
+      <Markdown animate={false} variant="snowflake">
+        {"```mermaid\nflowchart TD\nA[Start] --> B[End]\n```"}
+      </Markdown>,
+    );
+
+    expect(html).toContain('data-mermaid-block="true"');
+    expect(html).not.toContain('data-code-frame="true"');
+  });
+
   it("renders citations inside markdown tables as interactive buttons", () => {
     const citations: ChatKnowledgeCitation[] = [
       {

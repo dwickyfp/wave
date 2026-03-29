@@ -41,7 +41,7 @@ const VegaLiteChart = dynamic(
   },
 );
 
-const PurePre = ({
+const CodePre = ({
   children,
   className,
   code,
@@ -55,14 +55,16 @@ const PurePre = ({
   const { copied, copy } = useCopy();
 
   return (
-    <pre className={cn("relative", className)}>
+    <pre data-code-frame="true" className={cn("relative", className)}>
       <div className="p-1.5 border-b mb-4 z-20 bg-secondary">
         <div className="w-full flex z-20 py-0.5 px-4 items-center">
           <span className="text-sm text-muted-foreground">{lang}</span>
           <Button
+            type="button"
             size="icon"
             variant={copied ? "secondary" : "ghost"}
             className="ml-auto z-10 p-3! size-2! rounded-sm"
+            aria-label={`Copy ${lang} code`}
             onClick={() => {
               copy(code);
             }}
@@ -88,18 +90,14 @@ export async function Highlight(
 
   if (lang === "json") {
     return (
-      <PurePre code={code} lang={lang}>
+      <CodePre code={code} lang={lang}>
         <JsonView data={code} initialExpandDepth={3} />
-      </PurePre>
+      </CodePre>
     );
   }
 
   if (lang === "mermaid") {
-    return (
-      <PurePre code={code} lang={lang}>
-        <MermaidDiagram chart={code} />
-      </PurePre>
-    );
+    return <MermaidDiagram chart={code} />;
   }
 
   if (lang === "vegalite" || lang === "vega-lite") {
@@ -120,7 +118,7 @@ export async function Highlight(
     jsx,
     jsxs,
     components: {
-      pre: (props) => <PurePre {...props} code={code} lang={lang} />,
+      pre: (props) => <CodePre {...props} code={code} lang={lang} />,
     },
   }) as JSX.Element;
 }
@@ -129,14 +127,25 @@ export function PreBlock({ children }: { children: any }) {
   const code = children.props.children;
   const { theme } = useTheme();
   const language = children.props.className?.split("-")?.[1] || "bash";
+  const isMermaid = language === "mermaid";
   const [loading, setLoading] = useState(true);
   const [component, setComponent] = useState<JSX.Element | null>(
-    <PurePre className="animate-pulse" code={code} lang={language}>
-      {children}
-    </PurePre>,
+    isMermaid ? (
+      <MermaidDiagram chart={code} />
+    ) : (
+      <CodePre className="animate-pulse" code={code} lang={language}>
+        {children}
+      </CodePre>
+    ),
   );
 
   useLayoutEffect(() => {
+    if (isMermaid) {
+      setComponent(<MermaidDiagram chart={code} />);
+      setLoading(false);
+      return;
+    }
+
     safe()
       .map(() =>
         Highlight(
@@ -147,14 +156,15 @@ export function PreBlock({ children }: { children: any }) {
       )
       .ifOk(setComponent)
       .watch(() => setLoading(false));
-  }, [theme, language, code]);
+  }, [theme, language, code, isMermaid]);
 
-  // For other code blocks, render as before
   return (
     <div
       className={cn(
-        loading && "animate-pulse",
-        "text-sm flex bg-secondary/40 shadow border flex-col rounded relative my-4 overflow-hidden",
+        loading && !isMermaid && "animate-pulse",
+        isMermaid
+          ? "relative"
+          : "text-sm flex bg-secondary/40 shadow border flex-col rounded relative my-4 overflow-hidden",
       )}
     >
       {component}
@@ -166,7 +176,7 @@ export function PreBlock({ children }: { children: any }) {
  * Snowflake-specific pre-block renderer.
  * - `vegalite` / `vega-lite` → VegaLiteChart (same as default)
  * - `json` containing a Vega-Lite `$schema` → VegaLiteChart
- * - `mermaid` → disabled; falls through to generic syntax-highlighted code
+ * - `mermaid` → MermaidDiagram (same as default)
  */
 export function SnowflakePreBlock({ children }: { children: any }) {
   const code = children.props.children;
@@ -180,39 +190,45 @@ export function SnowflakePreBlock({ children }: { children: any }) {
     code.includes('"$schema"') &&
     code.includes("vega-lite");
   const language = isVegaJson ? "vegalite" : rawLang;
+  const isMermaid = language === "mermaid";
 
   const [loading, setLoading] = useState(true);
   const [component, setComponent] = useState<JSX.Element | null>(
-    <PurePre className="animate-pulse" code={code} lang={language}>
-      {children}
-    </PurePre>,
+    isMermaid ? (
+      <MermaidDiagram chart={code} />
+    ) : (
+      <CodePre className="animate-pulse" code={code} lang={language}>
+        {children}
+      </CodePre>
+    ),
   );
 
   useLayoutEffect(() => {
+    if (isMermaid) {
+      setComponent(<MermaidDiagram chart={code} />);
+      setLoading(false);
+      return;
+    }
+
     safe()
       .map(() =>
-        // For snowflake: treat mermaid as plain text (no mermaid diagrams)
-        language === "mermaid"
-          ? Highlight(
-              code,
-              "md",
-              theme == "dark" ? "dark-plus" : "github-light",
-            )
-          : Highlight(
-              code,
-              language,
-              theme == "dark" ? "dark-plus" : "github-light",
-            ),
+        Highlight(
+          code,
+          language,
+          theme == "dark" ? "dark-plus" : "github-light",
+        ),
       )
       .ifOk(setComponent)
       .watch(() => setLoading(false));
-  }, [theme, language, code]);
+  }, [theme, language, code, isMermaid]);
 
   return (
     <div
       className={cn(
-        loading && "animate-pulse",
-        "text-sm flex bg-secondary/40 shadow border flex-col rounded relative my-4 overflow-hidden",
+        loading && !isMermaid && "animate-pulse",
+        isMermaid
+          ? "relative"
+          : "text-sm flex bg-secondary/40 shadow border flex-col rounded relative my-4 overflow-hidden",
       )}
     >
       {component}

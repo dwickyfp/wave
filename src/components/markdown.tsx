@@ -667,8 +667,8 @@ const NonMemoizedMarkdown = ({
     () =>
       variant === "snowflake"
         ? {
-            ...snowflakeComponents,
             ...buildComponents(citationRenderPayload, false),
+            ...snowflakeComponents,
           }
         : buildComponents(citationRenderPayload, animate),
     [animate, citationRenderPayload, variant],
