@@ -133,6 +133,53 @@ export interface KnowledgeDisplayContext {
   locationLabel?: string | null;
 }
 
+export interface KnowledgeSectionSummaryContinuation {
+  partIndex: number;
+  partCount: number;
+  usesPrevPart: boolean;
+  usesNextPart: boolean;
+}
+
+export interface KnowledgeSectionSummaryCoverageFlags {
+  hasTable: boolean;
+  hasDenseNumbers: boolean;
+  hasResearchResults: boolean;
+  hasContinuation: boolean;
+}
+
+export interface KnowledgeSectionValueDigestItem {
+  kind:
+    | "numeric_sentence"
+    | "list_item"
+    | "table_value"
+    | "image_value"
+    | "research_result"
+    | "chart_value";
+  text: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+}
+
+export interface KnowledgeSectionTableDigest {
+  source: "markdown" | "image";
+  title?: string | null;
+  headers?: string[] | null;
+  rows?: string[][] | null;
+  summary?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+}
+
+export interface KnowledgeSectionSummaryData {
+  logicalSectionKey: string;
+  partSummary: string;
+  logicalSectionSummary: string;
+  continuation: KnowledgeSectionSummaryContinuation;
+  valueDigest: KnowledgeSectionValueDigestItem[];
+  tableDigest: KnowledgeSectionTableDigest[];
+  coverageFlags: KnowledgeSectionSummaryCoverageFlags;
+}
+
 export interface KnowledgeTemporalHints {
   effectiveAt?: string | null;
   expiresAt?: string | null;
@@ -388,6 +435,7 @@ export interface KnowledgeSection {
   partCount: number;
   content: string;
   summary: string;
+  summaryData?: KnowledgeSectionSummaryData | null;
   tokenCount: number;
   pageStart?: number | null;
   pageEnd?: number | null;
@@ -555,6 +603,57 @@ export interface KnowledgeDocumentVersionSummary {
   updatedAt: Date;
   canRollback: boolean;
   rollbackBlockedReason?: string | null;
+}
+
+export interface KnowledgeDocumentSummaryOutlineItem {
+  logicalSectionKey: string;
+  sectionId: string;
+  heading: string;
+  headingPath: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  summary: string;
+  hasContinuation: boolean;
+}
+
+export interface KnowledgeDocumentSummarySectionRef {
+  logicalSectionKey: string;
+  sectionId: string;
+  heading: string;
+  headingPath: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  summary: string;
+  valueDigest: KnowledgeSectionValueDigestItem[];
+  coverageFlags: KnowledgeSectionSummaryCoverageFlags;
+}
+
+export interface KnowledgeDocumentSummaryValueItem
+  extends KnowledgeSectionValueDigestItem {
+  logicalSectionKey: string;
+  sectionId: string;
+  sectionHeading: string;
+}
+
+export interface RetrievedKnowledgeCitation {
+  versionId?: string | null;
+  sectionId?: string | null;
+  sectionHeading?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  excerpt: string;
+  relevanceScore: number;
+}
+
+export interface KnowledgeDocumentSummaryResult {
+  documentId: string;
+  documentName: string;
+  versionId?: string | null;
+  outline: KnowledgeDocumentSummaryOutlineItem[];
+  summary: string;
+  valueDigest: KnowledgeDocumentSummaryValueItem[];
+  sectionRefs: KnowledgeDocumentSummarySectionRef[];
+  citations: RetrievedKnowledgeCitation[];
 }
 
 export interface KnowledgeDocumentVersionContent {
@@ -900,6 +999,7 @@ export interface KnowledgeRepository {
     sections: Array<Omit<KnowledgeSection, "createdAt">>,
   ): Promise<void>;
   deleteSectionsByDocumentId(documentId: string): Promise<void>;
+  getSectionsByDocumentId(documentId: string): Promise<KnowledgeSection[]>;
   getSectionsByIds(ids: string[]): Promise<KnowledgeSection[]>;
   getRelatedSections(sectionIds: string[]): Promise<KnowledgeSection[]>;
   findSectionsByStructuredFilters(input: {

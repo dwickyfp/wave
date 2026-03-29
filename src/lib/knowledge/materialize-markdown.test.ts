@@ -333,4 +333,92 @@ describe("materialize-markdown", () => {
       warnSpy.mockRestore();
     }
   });
+
+  it("fails materialization when no usable chunk embedding remains", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let embedCall = 0;
+    embedTextsWithUsageMock.mockImplementation(async () => {
+      embedCall += 1;
+      switch (embedCall) {
+        case 1:
+          return {
+            embeddings: [[0.1, 0.1]],
+            usageTokens: 10,
+          };
+        case 2:
+        case 3:
+        case 4:
+        case 5:
+        case 6:
+          throw new Error(`chunk embedding failure ${embedCall}`);
+        default:
+          return {
+            embeddings: [],
+            usageTokens: 0,
+          };
+      }
+    });
+
+    try {
+      await expect(
+        materializeDocumentMarkdown({
+          documentId: "doc-1",
+          groupId: "group-1",
+          documentTitle: "Bank ABC Q4 2025",
+          doc: {
+            id: "doc-1",
+            groupId: "group-1",
+            userId: "user-1",
+            name: "Bank ABC Q4 2025",
+            description: null,
+            descriptionManual: false,
+            titleManual: false,
+            originalFilename: "bank-abc-q4-2025.pdf",
+            fileType: "pdf",
+            status: "processing",
+            chunkCount: 0,
+            tokenCount: 0,
+            embeddingTokenCount: 0,
+            metadata: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          } as any,
+          group: {
+            id: "group-1",
+            name: "Reports",
+            userId: "user-1",
+            visibility: "private",
+            purpose: "default",
+            isSystemManaged: false,
+            embeddingModel: "text-embedding-3-small",
+            embeddingProvider: "openai",
+            parseMode: "always",
+            parseRepairPolicy: "section-safe-reorder",
+            contextMode: "deterministic",
+            imageMode: "off",
+            lazyRefinementEnabled: false,
+            retrievalThreshold: 0.3,
+            mcpEnabled: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          } as any,
+          markdown: "# Profit\n\nProfit before tax",
+          pages: [
+            {
+              pageNumber: 63,
+              rawText: "Profit before tax",
+              normalizedText: "Profit before tax",
+              markdown: "Profit before tax",
+              fingerprint: "page-63",
+              qualityScore: 0.4,
+              extractionMode: "refined",
+              repairReason: null,
+            },
+          ],
+        }),
+      ).rejects.toThrow(/Chunk embeddings unavailable/);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });

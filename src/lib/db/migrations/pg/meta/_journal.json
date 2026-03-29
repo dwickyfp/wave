@@ -414,6 +414,13 @@
       "when": 1776000000000,
       "tag": "0059_contextx_rich_image_ocr",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1776100000000,
+      "tag": "0060_contextx_value_preserving_summaries",
+      "breakpoints": true
     }
   ]
 }

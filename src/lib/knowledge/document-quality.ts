@@ -1,12 +1,15 @@
+import { normalizeWhitespaceArtifacts } from "./text-cleaning";
+
 type PageQualityAssessment = {
   score: number;
   reasons: string[];
 };
 
 export function formatExtractedPageToMarkdown(rawText: string): string {
-  if (!rawText.trim()) return "";
+  const cleanedRawText = normalizeWhitespaceArtifacts(rawText);
+  if (!cleanedRawText.trim()) return "";
 
-  const lines = rawText
+  const lines = cleanedRawText
     .split("\n")
     .map((line) => line.replace(/[ \t]+/g, " ").trim())
     .filter(Boolean);
@@ -43,7 +46,7 @@ export function assessExtractedPageQuality(
   rawText: string,
   normalizedText = formatExtractedPageToMarkdown(rawText),
 ): PageQualityAssessment {
-  const trimmed = rawText.trim();
+  const trimmed = normalizeWhitespaceArtifacts(rawText).trim();
   if (!trimmed) {
     return { score: 0, reasons: ["empty_page"] };
   }

@@ -1,12 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { embedManyMock, embedMock, createOpenAIMock, getProviderByNameMock } =
-  vi.hoisted(() => ({
-    embedManyMock: vi.fn(),
-    embedMock: vi.fn(),
-    createOpenAIMock: vi.fn(),
-    getProviderByNameMock: vi.fn(),
-  }));
+const {
+  embedManyMock,
+  embedMock,
+  createOpenAIMock,
+  createOpenRouterMock,
+  getProviderByNameMock,
+} = vi.hoisted(() => ({
+  embedManyMock: vi.fn(),
+  embedMock: vi.fn(),
+  createOpenAIMock: vi.fn(),
+  createOpenRouterMock: vi.fn(),
+  getProviderByNameMock: vi.fn(),
+}));
 
 vi.mock("ai", async () => {
   const actual = await vi.importActual<typeof import("ai")>("ai");
@@ -21,6 +27,14 @@ vi.mock("@ai-sdk/openai", () => ({
   createOpenAI: createOpenAIMock,
 }));
 
+vi.mock("@ai-sdk/google", () => ({
+  createGoogleGenerativeAI: vi.fn(),
+}));
+
+vi.mock("@ai-sdk/openai-compatible", () => ({
+  createOpenAICompatible: vi.fn(),
+}));
+
 vi.mock("@ai-sdk/cohere", () => ({
   createCohere: vi.fn(),
 }));
@@ -30,7 +44,7 @@ vi.mock("ollama-ai-provider-v2", () => ({
 }));
 
 vi.mock("@openrouter/ai-sdk-provider", () => ({
-  createOpenRouter: vi.fn(),
+  createOpenRouter: createOpenRouterMock,
 }));
 
 vi.mock("lib/db/repository", () => ({
@@ -53,9 +67,13 @@ describe("embedder usage accounting", () => {
       enabled: true,
       apiKey: "test-key",
       baseUrl: null,
+      settings: {},
     });
     createOpenAIMock.mockImplementation(() => ({
-      embedding: (modelName: string) => ({ modelName }),
+      textEmbeddingModel: (modelName: string) => ({ modelName }),
+    }));
+    createOpenRouterMock.mockImplementation(() => ({
+      textEmbeddingModel: (modelName: string) => ({ modelName }),
     }));
   });
 
@@ -129,6 +147,51 @@ describe("embedder usage accounting", () => {
 
     expect(result.usageTokens).toBe(9);
     expect(result.embeddings).toEqual([[0.1, 0.2]]);
+    expect(embedManyMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("normalizes html whitespace artifacts before batch embedding", async () => {
+    embedManyMock.mockResolvedValue({
+      embeddings: [[0.1, 0.2]],
+      usage: { tokens: 5 },
+    });
+
+    await embedTextsWithUsage(
+      ["PT BANK CENTRAL ASIA&nbsp;&nbsp;&nbsp;&nbsp;Tbk"],
+      "openai",
+      "usage-batch-model",
+    );
+
+    expect(embedManyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        values: ["PT BANK CENTRAL ASIA Tbk"],
+      }),
+    );
+  });
+
+  it("retries openrouter upstream failures that report no successful provider responses", async () => {
+    process.env.KNOWLEDGE_EMBEDDING_RETRY_ATTEMPTS = "2";
+    process.env.KNOWLEDGE_EMBEDDING_RETRY_BASE_DELAY_MS = "0";
+
+    embedManyMock
+      .mockRejectedValueOnce(
+        Object.assign(new Error("No successful provider responses."), {
+          statusCode: 404,
+        }),
+      )
+      .mockResolvedValueOnce({
+        embeddings: [[0.6, 0.7]],
+        usage: { tokens: 11 },
+      });
+
+    const result = await embedTextsWithUsage(
+      ["alpha"],
+      "openrouter",
+      "openai/text-embedding-3-large",
+    );
+
+    expect(result.usageTokens).toBe(11);
+    expect(result.embeddings).toEqual([[0.6, 0.7]]);
     expect(embedManyMock).toHaveBeenCalledTimes(2);
   });
 });

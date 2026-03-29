@@ -308,6 +308,7 @@ function mapSection(
     noteTitle: row.noteTitle ?? null,
     noteSubsection: row.noteSubsection ?? null,
     continued: row.continued ?? false,
+    summaryData: row.summaryData ?? null,
     embedding: null,
   };
 }
@@ -1618,6 +1619,7 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
           partCount: section.partCount,
           content: section.content,
           summary: section.summary,
+          summaryData: section.summaryData ?? null,
           tokenCount: section.tokenCount,
           pageStart: section.pageStart ?? null,
           pageEnd: section.pageEnd ?? null,
@@ -1639,6 +1641,20 @@ export const pgKnowledgeRepository: KnowledgeRepository = {
     await db
       .delete(KnowledgeSectionTable)
       .where(eq(KnowledgeSectionTable.documentId, documentId));
+  },
+
+  async getSectionsByDocumentId(documentId) {
+    const rows = await db
+      .select()
+      .from(KnowledgeSectionTable)
+      .where(eq(KnowledgeSectionTable.documentId, documentId))
+      .orderBy(
+        KnowledgeSectionTable.pageStart,
+        KnowledgeSectionTable.createdAt,
+        KnowledgeSectionTable.partIndex,
+      );
+
+    return rows.map(mapSection);
   },
 
   async getSectionsByIds(ids) {

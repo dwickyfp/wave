@@ -4,6 +4,7 @@ import type {
   KnowledgeDocument,
   KnowledgeDocumentImage,
   KnowledgeGroup,
+  KnowledgeSectionSummaryData,
 } from "app-types/knowledge";
 import { generateUUID } from "lib/utils";
 import { chunkKnowledgeSections } from "./chunker";
@@ -29,6 +30,7 @@ import {
   buildKnowledgeSectionGraph,
   SECTION_GRAPH_VERSION,
 } from "./section-graph";
+import { buildKnowledgeSectionSummaryData } from "./section-summary-data";
 import type {
   ProcessedDocumentImage,
   ProcessedDocumentPage,
@@ -42,6 +44,7 @@ type SectionGraphSection = ReturnType<
 
 export type MaterializedKnowledgeSection = SectionGraphSection & {
   embedding?: number[] | null;
+  summaryData?: KnowledgeSectionSummaryData | null;
 };
 
 export type MaterializedKnowledgeChunk = {
@@ -97,6 +100,14 @@ type EmbeddingWarning = {
   message: string;
 };
 
+const PRIMARY_CHUNK_EMBEDDING_STAGES = new Set([
+  "legacy_chunk",
+  "content_chunk",
+  "context_chunk",
+  "identity_chunk",
+  "entity_chunk",
+]);
+
 type MaterializationInput = {
   documentId: string;
   groupId: string;
@@ -127,7 +138,11 @@ function formatSectionPageSpan(section: {
   return `Pages ${start}-${end}`;
 }
 
-function buildSectionEmbeddingText(section: SectionGraphSection): string {
+function buildSectionEmbeddingText(
+  section: SectionGraphSection & {
+    summaryData?: KnowledgeSectionSummaryData | null;
+  },
+): string {
   const excerpt = section.content.trim().slice(0, 1200);
   return [
     section.canonicalTitle ? `Document: ${section.canonicalTitle}` : "",
@@ -137,6 +152,14 @@ function buildSectionEmbeddingText(section: SectionGraphSection): string {
       : "",
     section.noteTitle ? `Note title: ${section.noteTitle}` : "",
     section.summary ? `Summary: ${section.summary}` : "",
+    section.summaryData?.logicalSectionSummary
+      ? `Logical summary: ${section.summaryData.logicalSectionSummary}`
+      : "",
+    section.summaryData?.valueDigest?.length
+      ? `Value digest: ${section.summaryData.valueDigest
+          .map((item) => item.text)
+          .join("; ")}`
+      : "",
     excerpt ? `Excerpt: ${excerpt}` : "",
     formatSectionPageSpan(section),
   ]
@@ -186,6 +209,14 @@ function buildChunkIdentityText(chunk: {
 function getEmbeddingErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function hasUsableEmbedding(embedding: number[] | null | undefined): boolean {
+  return (
+    Array.isArray(embedding) &&
+    embedding.length > 0 &&
+    embedding.every((value) => Number.isFinite(value))
+  );
 }
 
 async function embedTextsSafely(input: {
@@ -290,8 +321,25 @@ export async function materializeDocumentMarkdown({
     sheetName: null,
     sourceGroupName: group.name,
   };
-  const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId, {
-    canonicalTitle: resolvedTitle,
+  const rawSections = buildKnowledgeSectionGraph(
+    markdown,
+    documentId,
+    groupId,
+    {
+      canonicalTitle: resolvedTitle,
+    },
+  );
+  const summaryDataBySectionId = buildKnowledgeSectionSummaryData(
+    rawSections,
+    inputImages ?? [],
+  );
+  const sections = rawSections.map((section) => {
+    const summaryData = summaryDataBySectionId.get(section.id) ?? null;
+    return {
+      ...section,
+      summary: summaryData?.partSummary ?? section.summary,
+      summaryData,
+    };
   });
   let metadataTokens = 0;
   let imageTokens = 0;
@@ -686,6 +734,24 @@ export async function materializeDocumentMarkdown({
     contextEmbeddingResult.usageTokens +
     identityEmbeddingResult.usageTokens +
     entityEmbeddingResult.usageTokens;
+
+  const missingChunkEmbeddingCount = embeddings.filter(
+    (embedding) => !hasUsableEmbedding(embedding),
+  ).length;
+  if (missingChunkEmbeddingCount > 0) {
+    const chunkWarnings = embeddingWarnings.filter((warning) =>
+      PRIMARY_CHUNK_EMBEDDING_STAGES.has(warning.stage),
+    );
+    const detail =
+      chunkWarnings.length > 0
+        ? ` Failed stages: ${chunkWarnings
+            .map((warning) => `${warning.stage}: ${warning.message}`)
+            .join("; ")}`
+        : "";
+    throw new Error(
+      `Chunk embeddings unavailable for ${missingChunkEmbeddingCount} of ${enrichedChunks.length} chunk(s) using ${group.embeddingProvider}/${group.embeddingModel}.${detail}`,
+    );
+  }
 
   const totalTokens = enrichedChunks.reduce((sum, chunk) => {
     return sum + chunk.tokenCount;

@@ -6,6 +6,7 @@ import type {
   KnowledgeDocumentVersion,
   KnowledgeDocumentVersionSummary,
   KnowledgeGroup,
+  KnowledgeSectionSummaryData,
 } from "app-types/knowledge";
 import { desc, eq, inArray, sql } from "drizzle-orm";
 import { knowledgeRepository } from "lib/db/repository";
@@ -64,6 +65,7 @@ type VersionSnapshotSection = {
   partCount: number;
   content: string;
   summary: string;
+  summaryData?: KnowledgeSectionSummaryData | null;
   tokenCount: number;
   pageStart?: number | null;
   pageEnd?: number | null;
@@ -672,6 +674,7 @@ async function selectLiveSections(
     part_count: number;
     content: string;
     summary: string;
+    summary_data: KnowledgeSectionSummaryData | null;
     token_count: number;
     page_start: number | null;
     page_end: number | null;
@@ -694,6 +697,7 @@ async function selectLiveSections(
         part_count,
         content,
         summary,
+        summary_data,
         token_count,
         page_start,
         page_end,
@@ -720,6 +724,7 @@ async function selectLiveSections(
     partCount: row.part_count,
     content: row.content,
     summary: row.summary,
+    summaryData: row.summary_data ?? null,
     tokenCount: row.token_count,
     pageStart: row.page_start ?? null,
     pageEnd: row.page_end ?? null,
@@ -913,6 +918,7 @@ async function selectVersionSections(
     part_count: number;
     content: string;
     summary: string;
+    summary_data: KnowledgeSectionSummaryData | null;
     token_count: number;
     embedding_text: string | null;
     page_start: number | null;
@@ -939,6 +945,7 @@ async function selectVersionSections(
         part_count,
         content,
         summary,
+        summary_data,
         token_count,
         embedding::text AS embedding_text,
         page_start,
@@ -969,6 +976,7 @@ async function selectVersionSections(
     partCount: row.part_count,
     content: row.content,
     summary: row.summary,
+    summaryData: row.summary_data ?? null,
     tokenCount: row.token_count,
     pageStart: row.page_start ?? null,
     pageEnd: row.page_end ?? null,
@@ -1312,6 +1320,7 @@ export function buildLiveSectionInsertRow(args: {
     partCount: args.section.partCount,
     content: args.section.content,
     summary: args.section.summary,
+    summaryData: args.section.summaryData ?? null,
     tokenCount: args.section.tokenCount,
     pageStart: args.section.pageStart ?? null,
     pageEnd: args.section.pageEnd ?? null,
@@ -1352,6 +1361,7 @@ async function insertSectionSnapshots(
         partCount: section.partCount,
         content: section.content,
         summary: section.summary,
+        summaryData: section.summaryData ?? null,
         tokenCount: section.tokenCount,
         pageStart: section.pageStart ?? null,
         pageEnd: section.pageEnd ?? null,
@@ -2216,6 +2226,7 @@ export async function completeSourceDocumentVersion(args: {
       partCount: section.partCount,
       content: section.content,
       summary: section.summary,
+      summaryData: section.summaryData ?? null,
       tokenCount: section.tokenCount,
       embedding: section.embedding ?? null,
       sourcePath: section.sourcePath ?? null,
@@ -2301,6 +2312,7 @@ export async function runMarkdownEditVersion(args: {
       partCount: section.partCount,
       content: section.content,
       summary: section.summary,
+      summaryData: section.summaryData ?? null,
       tokenCount: section.tokenCount,
       embedding: section.embedding ?? null,
       sourcePath: section.sourcePath ?? null,

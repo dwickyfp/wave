@@ -18,6 +18,17 @@ import {
 import { KnowledgeJob } from "./worker-client";
 
 const QUEUE_NAME = "contextx-ingest";
+const DEFAULT_WORKER_CONCURRENCY = 2;
+const DEFAULT_WORKER_LOCK_DURATION_MS = 10 * 60 * 1000;
+const DEFAULT_WORKER_STALLED_INTERVAL_MS = 60 * 1000;
+const DEFAULT_WORKER_MAX_STALLED_COUNT = 1;
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 async function handleReembedGroup(groupId: string): Promise<void> {
   const docs = await knowledgeRepository.selectDocumentsByGroupId(groupId);
@@ -42,6 +53,22 @@ async function handleReembedGroup(groupId: string): Promise<void> {
 async function main() {
   const redisUrl = await getRedisUrl();
   console.log(`[ContextX Worker] Connecting to Redis: ${redisUrl}`);
+  const workerConcurrency = readPositiveIntEnv(
+    "KNOWLEDGE_WORKER_CONCURRENCY",
+    DEFAULT_WORKER_CONCURRENCY,
+  );
+  const workerLockDuration = readPositiveIntEnv(
+    "KNOWLEDGE_WORKER_LOCK_DURATION_MS",
+    DEFAULT_WORKER_LOCK_DURATION_MS,
+  );
+  const workerStalledInterval = readPositiveIntEnv(
+    "KNOWLEDGE_WORKER_STALLED_INTERVAL_MS",
+    DEFAULT_WORKER_STALLED_INTERVAL_MS,
+  );
+  const workerMaxStalledCount = readPositiveIntEnv(
+    "KNOWLEDGE_WORKER_MAX_STALLED_COUNT",
+    DEFAULT_WORKER_MAX_STALLED_COUNT,
+  );
 
   const connection = new IORedis(redisUrl, {
     maxRetriesPerRequest: null,
@@ -70,7 +97,10 @@ async function main() {
     },
     {
       connection: connection as any,
-      concurrency: 5,
+      concurrency: workerConcurrency,
+      lockDuration: workerLockDuration,
+      stalledInterval: workerStalledInterval,
+      maxStalledCount: workerMaxStalledCount,
     },
   );
 
@@ -101,6 +131,12 @@ async function main() {
   });
 
   console.log("[ContextX Worker] Started, listening on queue:", QUEUE_NAME);
+  console.log("[ContextX Worker] Runtime settings:", {
+    concurrency: workerConcurrency,
+    lockDurationMs: workerLockDuration,
+    stalledIntervalMs: workerStalledInterval,
+    maxStalledCount: workerMaxStalledCount,
+  });
 }
 
 main().catch((err) => {

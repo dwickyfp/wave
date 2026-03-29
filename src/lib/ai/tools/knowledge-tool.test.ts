@@ -18,9 +18,51 @@ vi.mock("lib/knowledge/retriever", () => ({
   formatKnowledgeRetrievalEnvelopeAsText: vi.fn(() => "formatted knowledge"),
 }));
 
+vi.mock("lib/knowledge/document-summary", () => ({
+  resolveKnowledgeDocumentByName: vi.fn(async () => ({
+    status: "resolved",
+    document: { id: "doc-summary-1", name: "Annual Report 2025" },
+  })),
+  summarizeKnowledgeDocumentById: vi.fn(async () => ({
+    documentId: "doc-summary-1",
+    documentName: "Annual Report 2025",
+    versionId: "version-1",
+    outline: [],
+    summary: "Annual Report 2025 summary.",
+    valueDigest: [
+      {
+        kind: "numeric_sentence",
+        text: "Revenue 120.5",
+        logicalSectionKey: "Report > Results::::",
+        sectionId: "section-1",
+        sectionHeading: "Report > Results",
+      },
+    ],
+    sectionRefs: [],
+    citations: [
+      {
+        sectionId: "section-1",
+        sectionHeading: "Report > Results",
+        pageStart: 10,
+        pageEnd: 10,
+        excerpt: "Revenue 120.5",
+        relevanceScore: 0.92,
+      },
+    ],
+  })),
+  formatKnowledgeDocumentSummaryAsText: vi.fn(
+    () => "formatted document summary",
+  ),
+}));
+
 const { createKnowledgeDocsTool } = await import("./knowledge-tool");
 const { queryKnowledgeStructured, formatKnowledgeRetrievalEnvelopeAsText } =
   await import("lib/knowledge/retriever");
+const {
+  resolveKnowledgeDocumentByName,
+  summarizeKnowledgeDocumentById,
+  formatKnowledgeDocumentSummaryAsText,
+} = await import("lib/knowledge/document-summary");
 
 function makeEnvelope(docs: any[] = [], query = "test query") {
   return {
@@ -150,6 +192,67 @@ describe("knowledge-tool", () => {
         resultMode: "full-doc",
       }),
     );
+  });
+
+  it("uses document-summary mode for value-preserving document summaries", async () => {
+    const tool = createKnowledgeDocsTool({
+      id: "group-1",
+      name: "Product Docs",
+      userId: "user-1",
+      visibility: "private",
+      purpose: "default",
+      isSystemManaged: false,
+      embeddingModel: "embed",
+      embeddingProvider: "openai",
+      rerankingModel: null,
+      rerankingProvider: null,
+      parsingModel: null,
+      parsingProvider: null,
+      parseMode: "auto",
+      parseRepairPolicy: "section-safe-reorder",
+      contextMode: "deterministic",
+      imageMode: "auto",
+      lazyRefinementEnabled: true,
+      retrievalThreshold: 0,
+      mcpEnabled: false,
+      documentCount: 1,
+      chunkCount: 10,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const raw = await tool.execute?.(
+      {
+        query: "summarize the annual report",
+        mode: "document-summary",
+        document: "Annual Report 2025",
+      },
+      { toolCallId: "call-summary", messages: [] } as any,
+    );
+    const result = expectKnowledgeToolResult(raw);
+
+    expect(resolveKnowledgeDocumentByName).toHaveBeenCalledWith({
+      groupId: "group-1",
+      document: "Annual Report 2025",
+    });
+    expect(summarizeKnowledgeDocumentById).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentId: "doc-summary-1",
+        tokens: 5000,
+      }),
+    );
+    expect(formatKnowledgeDocumentSummaryAsText).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      hasResults: true,
+      contextText: "formatted document summary",
+      citations: [
+        expect.objectContaining({
+          documentId: "doc-summary-1",
+          documentName: "Annual Report 2025",
+          sectionHeading: "Report > Results",
+        }),
+      ],
+    });
   });
 
   it("passes page filter through to retrieval", async () => {

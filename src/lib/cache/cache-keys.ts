@@ -18,5 +18,12 @@ export const CacheKeys = {
     tokens: number,
     maxDocs: number,
   ) => `knowledge-docs-${groupId}-${mode}-${tokens}-${maxDocs}-${hash}`,
+  knowledgeDocumentSummary: (
+    groupId: string,
+    documentId: string,
+    versionId: string,
+    hash: string,
+  ) =>
+    `knowledge-document-summary-${groupId}-${documentId}-${versionId}-${hash}`,
   knowledgeQueryRewrite: (hash: string) => `knowledge-query-rewrite-${hash}`,
 };

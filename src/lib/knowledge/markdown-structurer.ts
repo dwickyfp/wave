@@ -7,12 +7,25 @@
  * - Reduce noisy spacing/artifacts
  * - Remove stray horizontal rules that fragment content and waste tokens
  */
+import { normalizeWhitespaceArtifacts } from "./text-cleaning";
+
+function collapseInlineSpacingArtifacts(line: string): string {
+  if (/^\t|^ {4,}/.test(line)) {
+    return line;
+  }
+
+  const leadingWhitespace = line.match(/^\s*/)?.[0] ?? "";
+  const content = line
+    .slice(leadingWhitespace.length)
+    .replace(/(?<=\S)[ \t]{2,}(?=\S)/g, " ");
+
+  return `${leadingWhitespace}${content}`;
+}
+
 export function normalizeStructuredMarkdown(markdown: string): string {
   if (!markdown.trim()) return "";
 
-  const cleaned = markdown
-    .normalize("NFC")
-    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "")
+  const cleaned = normalizeWhitespaceArtifacts(markdown)
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .replace(/[^\S\n]+$/gm, "")
@@ -44,7 +57,7 @@ export function normalizeStructuredMarkdown(markdown: string): string {
       continue;
     }
 
-    out.push(line);
+    out.push(collapseInlineSpacingArtifacts(line));
   }
 
   return out
