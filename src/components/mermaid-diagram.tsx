@@ -26,6 +26,7 @@ import {
 } from "./mermaid-diagram.utils";
 
 let mermaidModule: typeof import("mermaid").default | null = null;
+const DETAILED_MERMAID_RENDERER_VERSION = "2026-03-29-readable-nodes-v3";
 
 const loadMermaid = async () => {
   if (!mermaidModule) {
@@ -61,7 +62,7 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
   const debounce = useMemo(() => createDebounce(), []);
 
   useEffect(() => {
-    const renderKey = `${resolvedTheme ?? "system"}::${chart ?? ""}`;
+    const renderKey = `${resolvedTheme ?? "system"}::${DETAILED_MERMAID_RENDERER_VERSION}::${chart ?? ""}`;
 
     if (previousRenderKeyRef.current !== renderKey) {
       setState((prev) => ({

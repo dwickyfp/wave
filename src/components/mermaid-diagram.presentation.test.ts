@@ -85,5 +85,33 @@ describe("renderDetailedMermaidPresentationDiagram", () => {
     expect(rendered?.svg).not.toContain(
       "Requirements Gathering · User Research",
     );
+    expect(rendered?.svg).not.toMatch(/<path d="[^"]*\bC\b[^"]*"/);
+  });
+
+  test("suppresses unlabeled straight-through edges from decision nodes that already branch with labels", () => {
+    const rendered = renderDetailedMermaidPresentationDiagram({
+      chart: `flowchart TD
+A([🚀 Start]) --> B
+
+subgraph STAGE1 ["Stage 1"]
+  B[Staging Checks] --> C{Staging OK?}
+  C -->|No ❌| D[Fix Issues]
+  C -->|Yes ✅| E[Deploy to Production]
+  C --> F[Smoke Testing]
+  E --> F
+end
+`,
+      palette,
+    });
+
+    expect(rendered).not.toBeNull();
+
+    const edgeCount =
+      rendered?.svg.match(/class="mermaid-presentation__edge"/g)?.length ?? 0;
+
+    expect(rendered?.svg).toContain("No ❌");
+    expect(rendered?.svg).toContain("Yes ✅");
+    expect(rendered?.svg).toContain("Smoke Testing");
+    expect(edgeCount).toBe(5);
   });
 });

@@ -51,10 +51,16 @@ interface StageLayout {
   innerRight: number;
   label: string;
   left: number;
-  loopLaneX: number;
+  loopLaneLeftX: number;
+  loopLaneRightX: number;
   order: number;
   right: number;
   top: number;
+}
+
+interface Point {
+  x: number;
+  y: number;
 }
 
 interface RgbColor {
@@ -69,19 +75,19 @@ interface NodeAppearance {
   text: string;
 }
 
-const MAX_STAGE_NODE_WIDTH = 248;
-const MIN_STAGE_NODE_WIDTH = 178;
-const STAGE_LEFT = 60;
-const STAGE_WIDTH = 920;
+const MAX_STAGE_NODE_WIDTH = 360;
+const MIN_STAGE_NODE_WIDTH = 260;
+const STAGE_LEFT = 80;
+const STAGE_WIDTH = 1040;
 const STAGE_RIGHT = STAGE_LEFT + STAGE_WIDTH;
-const STAGE_TOP_PADDING = 18;
-const STAGE_BOTTOM_PADDING = 28;
-const STAGE_SIDE_PADDING = 20;
-const STAGE_NODE_GAP_X = 38;
-const STAGE_NODE_GAP_Y = 64;
-const STAGE_GAP_Y = 92;
+const STAGE_TOP_PADDING = 24;
+const STAGE_BOTTOM_PADDING = 44;
+const STAGE_SIDE_PADDING = 36;
+const STAGE_NODE_GAP_X = 52;
+const STAGE_NODE_GAP_Y = 104;
+const STAGE_GAP_Y = 110;
 const START_Y = 28;
-const CANVAS_WIDTH = 1040;
+const CANVAS_WIDTH = 1200;
 
 export function parseMermaidPresentationDiagram(
   chart: string,
@@ -329,24 +335,23 @@ export function renderDetailedMermaidPresentationDiagram({
       const group = (rankGroups.get(rank) ?? []).sort(
         (left, right) => left.order - right.order,
       );
-      const groupWidth =
-        group.reduce(
-          (total, node) => total + (nodeMeasurements.get(node.id)?.width ?? 0),
-          0,
-        ) +
-        Math.max(0, group.length - 1) * STAGE_NODE_GAP_X;
-      let nodeLeft =
-        STAGE_LEFT +
-        STAGE_SIDE_PADDING +
-        (STAGE_WIDTH - STAGE_SIDE_PADDING * 2 - groupWidth) / 2;
       let rankMaxHeight = 0;
+      const rowPlacements = distributeRankNodes({
+        group,
+        innerLeft: STAGE_LEFT + STAGE_SIDE_PADDING,
+        innerRight: STAGE_RIGHT - STAGE_SIDE_PADDING,
+        nodeMeasurements,
+        nodeLayouts: nodeMeasurements,
+        parsed,
+        stage,
+      });
 
       for (const node of group) {
         const layout = nodeMeasurements.get(node.id)!;
-        layout.left = nodeLeft;
+        layout.left =
+          rowPlacements.get(node.id) ?? CANVAS_WIDTH / 2 - layout.width / 2;
         layout.top = nodeTop;
         rankMaxHeight = Math.max(rankMaxHeight, layout.height);
-        nodeLeft += layout.width + STAGE_NODE_GAP_X;
       }
 
       nodeTop += rankMaxHeight + STAGE_NODE_GAP_Y;
@@ -365,7 +370,8 @@ export function renderDetailedMermaidPresentationDiagram({
       innerRight: STAGE_RIGHT - STAGE_SIDE_PADDING,
       label: normalizeStageLabel(stage.label, stage.order),
       left: STAGE_LEFT,
-      loopLaneX: STAGE_LEFT + 26,
+      loopLaneLeftX: STAGE_LEFT - 28,
+      loopLaneRightX: STAGE_RIGHT + 28,
       order: stage.order,
       right: STAGE_RIGHT,
       top: currentStageTop,
@@ -417,8 +423,41 @@ export function renderDetailedMermaidPresentationDiagram({
     ),
   );
   const canvasHeight = diagramBottom + 40;
+  const outgoingEdgesBySource = new Map<string, MermaidPresentationEdge[]>();
 
-  const edgeMarkup = parsed.edges
+  for (const edge of parsed.edges) {
+    const group = outgoingEdgesBySource.get(edge.sourceId) ?? [];
+    group.push(edge);
+    outgoingEdgesBySource.set(edge.sourceId, group);
+  }
+
+  const renderedEdges = parsed.edges.filter((edge) => {
+    const sourceNode = nodesById.get(edge.sourceId);
+    const outgoingEdges = outgoingEdgesBySource.get(edge.sourceId) ?? [];
+    const labeledOutgoingEdges = outgoingEdges.filter((candidate) =>
+      Boolean(candidate.label?.trim()),
+    );
+
+    // Decision diamonds should either show their explicit branch exits
+    // or, for simpler flows, a single unlabeled continuation. When a
+    // diagram already defines two labeled branches such as Yes/No,
+    // suppress any extra fallback edge from the same decision.
+    if (sourceNode?.shape === "decision" && labeledOutgoingEdges.length >= 2) {
+      return Boolean(edge.label?.trim());
+    }
+
+    if (
+      sourceNode?.shape === "decision" &&
+      !edge.label &&
+      labeledOutgoingEdges.length > 0
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+
+  const edgeMarkup = renderedEdges
     .map((edge) => {
       const sourceNode = nodesById.get(edge.sourceId);
       const targetNode = nodesById.get(edge.targetId);
@@ -429,56 +468,24 @@ export function renderDetailedMermaidPresentationDiagram({
         return "";
       }
 
-      const sameStage =
-        sourceNode.stageId !== null &&
-        sourceNode.stageId === targetNode.stageId &&
-        sourceNode.stageId !== null;
-      const sourceCenterX = sourceLayout.left + sourceLayout.width / 2;
-      const targetCenterX = targetLayout.left + targetLayout.width / 2;
-      const sourceBottomY = sourceLayout.top + sourceLayout.height;
-      const targetTopY = targetLayout.top;
-      const sourceMidY = sourceLayout.top + sourceLayout.height / 2;
-      const targetMidY = targetLayout.top + targetLayout.height / 2;
-      const sourceLeftX = sourceLayout.left;
-      const targetLeftX = targetLayout.left;
-      const targetOrder = targetNode.order;
-      const sourceOrder = sourceNode.order;
-      const isLoopEdge = sameStage && targetOrder <= sourceOrder;
-      let path = "";
-      let labelX = (sourceCenterX + targetCenterX) / 2;
-      let labelY = (sourceBottomY + targetTopY) / 2;
+      const route = routePresentationEdge({
+        outgoingEdges: outgoingEdgesBySource.get(edge.sourceId) ?? [],
+        sourceLayout,
+        sourceNode,
+        stageLayouts,
+        targetLayout,
+        targetNode,
+      });
 
-      if (isLoopEdge) {
-        const stageLayout = stageLayouts.get(sourceNode.stageId!);
-        const laneX = stageLayout?.loopLaneX ?? STAGE_LEFT + 18;
-        const loopTop = targetMidY;
-        path = [
-          `M ${sourceLeftX} ${sourceMidY}`,
-          `C ${sourceLeftX - 18} ${sourceMidY}, ${laneX + 18} ${sourceMidY}, ${laneX} ${sourceMidY}`,
-          `L ${laneX} ${loopTop}`,
-          `C ${laneX} ${loopTop}, ${targetLeftX - 18} ${loopTop}, ${targetLeftX} ${loopTop}`,
-        ].join(" ");
-        labelX = laneX + 14;
-        labelY = sourceMidY - Math.max(14, (sourceMidY - loopTop) / 2);
-      } else if (Math.abs(sourceCenterX - targetCenterX) < 6) {
-        path = `M ${sourceCenterX} ${sourceBottomY} L ${targetCenterX} ${targetTopY}`;
-      } else {
-        const midY = sourceBottomY + (targetTopY - sourceBottomY) / 2;
-        path = [
-          `M ${sourceCenterX} ${sourceBottomY}`,
-          `C ${sourceCenterX} ${midY}, ${targetCenterX} ${midY}, ${targetCenterX} ${targetTopY}`,
-        ].join(" ");
-      }
-
-      const pathMarkup = `<path d="${path}" fill="none" stroke="${edgeColor}" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#detailed-flow-arrow)" />`;
+      const pathMarkup = `<path d="${route.path}" fill="none" stroke="${edgeColor}" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#detailed-flow-arrow)" />`;
       const labelMarkup = edge.label
         ? renderEdgeLabel({
             background: canvasBackground,
             border: nodeStroke,
             color: nodeText,
             text: edge.label,
-            x: labelX,
-            y: labelY,
+            x: route.labelX,
+            y: route.labelY,
           })
         : "";
 
@@ -549,8 +556,8 @@ export function renderDetailedMermaidPresentationDiagram({
     `<svg width="100%" viewBox="0 0 ${CANVAS_WIDTH} ${canvasHeight}" xmlns="http://www.w3.org/2000/svg" data-mermaid-svg="true" data-mermaid-presentation="detailed" class="mermaid-diagram__svg" preserveAspectRatio="xMidYMin meet" style="display: block; height: auto; max-width: none; width: 100%;">`,
     `<defs><marker id="detailed-flow-arrow" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M2 1L8 5L2 9" fill="none" stroke="${edgeColor}" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" /></marker></defs>`,
     `<style>
-      .mermaid-presentation__node-text { font-family: ${escapeXml(palette.fontFamily)}; font-size: 12.5px; font-weight: 700; }
-      .mermaid-presentation__edge-text { font-family: ${escapeXml(palette.fontFamily)}; font-size: 11px; font-weight: 600; }
+      .mermaid-presentation__node-text { font-family: ${escapeXml(palette.fontFamily)}; font-size: 15.5px; font-weight: 700; }
+      .mermaid-presentation__edge-text { font-family: ${escapeXml(palette.fontFamily)}; font-size: 12.5px; font-weight: 600; }
     </style>`,
     `<rect x="0" y="0" width="${CANVAS_WIDTH}" height="${canvasHeight}" rx="28" fill="${canvasBackground}" />`,
     edgeMarkup,
@@ -750,6 +757,347 @@ function readBracketedSegment(
   return null;
 }
 
+function distributeRankNodes({
+  group,
+  innerLeft,
+  innerRight,
+  nodeMeasurements,
+  nodeLayouts,
+  parsed,
+  stage,
+}: {
+  group: MermaidPresentationNode[];
+  innerLeft: number;
+  innerRight: number;
+  nodeMeasurements: Map<string, NodeLayout>;
+  nodeLayouts: Map<string, NodeLayout>;
+  parsed: ParsedMermaidPresentationDiagram;
+  stage: MermaidPresentationStage;
+}) {
+  const stageNodeIds = new Set(stage.nodeIds);
+  const placements = new Map<string, number>();
+  const desiredCenters = group.map((node) => {
+    const parentCenters = parsed.edges
+      .filter(
+        (edge) =>
+          edge.targetId === node.id &&
+          stageNodeIds.has(edge.sourceId) &&
+          (nodeLayouts.get(edge.sourceId)?.top ?? 0) > 0,
+      )
+      .map((edge) => {
+        const parentLayout = nodeLayouts.get(edge.sourceId);
+        return parentLayout ? parentLayout.left + parentLayout.width / 2 : null;
+      })
+      .filter((value): value is number => value !== null);
+
+    const desiredCenter =
+      parentCenters.length > 0
+        ? parentCenters.reduce((sum, value) => sum + value, 0) /
+          parentCenters.length
+        : CANVAS_WIDTH / 2;
+
+    return {
+      desiredCenter,
+      node,
+      width: nodeMeasurements.get(node.id)?.width ?? MIN_STAGE_NODE_WIDTH,
+    };
+  });
+
+  desiredCenters.sort((left, right) => {
+    if (Math.abs(left.desiredCenter - right.desiredCenter) > 1) {
+      return left.desiredCenter - right.desiredCenter;
+    }
+    return left.node.order - right.node.order;
+  });
+
+  let currentLeft = innerLeft;
+
+  for (const item of desiredCenters) {
+    const centeredLeft = item.desiredCenter - item.width / 2;
+    const left = Math.max(currentLeft, centeredLeft);
+    placements.set(item.node.id, left);
+    currentLeft = left + item.width + STAGE_NODE_GAP_X;
+  }
+
+  const rightmost = desiredCenters.reduce((maxRight, item) => {
+    const left = placements.get(item.node.id) ?? innerLeft;
+    return Math.max(maxRight, left + item.width);
+  }, innerLeft);
+
+  if (rightmost > innerRight) {
+    const overflow = rightmost - innerRight;
+    for (const item of [...desiredCenters].reverse()) {
+      const current = placements.get(item.node.id) ?? innerLeft;
+      const previous = desiredCenters
+        .filter((candidate) => candidate.node.order < item.node.order)
+        .map((candidate) => placements.get(candidate.node.id) ?? innerLeft);
+      const minLeft =
+        previous.length > 0
+          ? Math.max(...previous) + STAGE_NODE_GAP_X
+          : innerLeft;
+      placements.set(item.node.id, Math.max(minLeft, current - overflow));
+    }
+  }
+
+  return placements;
+}
+
+function routePresentationEdge({
+  outgoingEdges,
+  sourceLayout,
+  sourceNode,
+  stageLayouts,
+  targetLayout,
+  targetNode,
+}: {
+  outgoingEdges: MermaidPresentationEdge[];
+  sourceLayout: NodeLayout;
+  sourceNode: MermaidPresentationNode;
+  stageLayouts: Map<string, StageLayout>;
+  targetLayout: NodeLayout;
+  targetNode: MermaidPresentationNode;
+}) {
+  const sameStage =
+    sourceNode.stageId !== null &&
+    sourceNode.stageId === targetNode.stageId &&
+    sourceNode.stageId !== null;
+  const isLoopEdge = sameStage && targetNode.order <= sourceNode.order;
+
+  if (isLoopEdge) {
+    return routeLoopEdge({
+      sourceLayout,
+      sourceNode,
+      stageLayouts,
+      targetLayout,
+    });
+  }
+
+  if (sourceNode.shape === "decision") {
+    return routeDecisionEdge({
+      outgoingEdges,
+      sourceLayout,
+      targetLayout,
+    });
+  }
+
+  return routeForwardEdge({
+    sourceLayout,
+    targetLayout,
+  });
+}
+
+function routeForwardEdge({
+  sourceLayout,
+  targetLayout,
+}: {
+  sourceLayout: NodeLayout;
+  targetLayout: NodeLayout;
+}) {
+  const source = getNodeAnchor(sourceLayout, "bottom");
+  const target = getNodeAnchor(targetLayout, "top");
+
+  if (Math.abs(source.x - target.x) < 8) {
+    return {
+      labelX: source.x + 34,
+      labelY: source.y + Math.max(20, (target.y - source.y) / 2),
+      path: buildRoundedOrthogonalPath([source, target]),
+    };
+  }
+
+  const elbowY = source.y + Math.max(26, (target.y - source.y) / 2);
+  const points = [
+    source,
+    { x: source.x, y: elbowY },
+    { x: target.x, y: elbowY },
+    target,
+  ];
+  const labelSegmentMidX = (source.x + target.x) / 2;
+
+  return {
+    labelX: labelSegmentMidX,
+    labelY: elbowY - 12,
+    path: buildRoundedOrthogonalPath(points),
+  };
+}
+
+function routeDecisionEdge({
+  outgoingEdges,
+  sourceLayout,
+  targetLayout,
+}: {
+  outgoingEdges: MermaidPresentationEdge[];
+  sourceLayout: NodeLayout;
+  targetLayout: NodeLayout;
+}) {
+  const sourceCenterX = sourceLayout.left + sourceLayout.width / 2;
+  const targetCenterX = targetLayout.left + targetLayout.width / 2;
+  const sourceBottom = getNodeAnchor(sourceLayout, "bottom");
+  const hasExplicitBranches =
+    outgoingEdges.filter((candidate) => Boolean(candidate.label?.trim()))
+      .length >= 2;
+
+  if (hasExplicitBranches && targetCenterX < sourceCenterX - 12) {
+    const start = getNodeAnchor(sourceLayout, "left");
+    const end = getNodeAnchor(targetLayout, "top");
+    const elbowY = sourceBottom.y + 28;
+    const points = [
+      start,
+      { x: start.x, y: elbowY },
+      { x: end.x, y: elbowY },
+      end,
+    ];
+
+    return {
+      labelX: (start.x + end.x) / 2,
+      labelY: sourceBottom.y + 8,
+      path: buildRoundedOrthogonalPath(points),
+    };
+  }
+
+  if (hasExplicitBranches && targetCenterX > sourceCenterX + 12) {
+    const start = getNodeAnchor(sourceLayout, "right");
+    const end = getNodeAnchor(targetLayout, "top");
+    const elbowY = sourceBottom.y + 28;
+    const points = [
+      start,
+      { x: start.x, y: elbowY },
+      { x: end.x, y: elbowY },
+      end,
+    ];
+
+    return {
+      labelX: (start.x + end.x) / 2,
+      labelY: sourceBottom.y + 8,
+      path: buildRoundedOrthogonalPath(points),
+    };
+  }
+
+  const target = getNodeAnchor(targetLayout, "top");
+
+  return {
+    labelX: sourceBottom.x + 34,
+    labelY: sourceBottom.y + Math.max(20, (target.y - sourceBottom.y) / 2),
+    path: buildRoundedOrthogonalPath([sourceBottom, target]),
+  };
+}
+
+function routeLoopEdge({
+  sourceLayout,
+  sourceNode,
+  stageLayouts,
+  targetLayout,
+}: {
+  sourceLayout: NodeLayout;
+  sourceNode: MermaidPresentationNode;
+  stageLayouts: Map<string, StageLayout>;
+  targetLayout: NodeLayout;
+}) {
+  const stageLayout = sourceNode.stageId
+    ? stageLayouts.get(sourceNode.stageId)
+    : null;
+  const sourceCenterX = sourceLayout.left + sourceLayout.width / 2;
+  const targetCenterX = targetLayout.left + targetLayout.width / 2;
+  const useLeftLane = targetCenterX <= sourceCenterX;
+  const laneX =
+    (useLeftLane ? stageLayout?.loopLaneLeftX : stageLayout?.loopLaneRightX) ??
+    (useLeftLane ? STAGE_LEFT - 28 : STAGE_RIGHT + 28);
+  const start = getNodeAnchor(sourceLayout, useLeftLane ? "left" : "right");
+  const end = getNodeAnchor(targetLayout, useLeftLane ? "left" : "right");
+  const points = [start, { x: laneX, y: start.y }, { x: laneX, y: end.y }, end];
+
+  return {
+    labelX: useLeftLane ? laneX + 28 : laneX - 28,
+    labelY: start.y - Math.max(16, (start.y - end.y) / 2),
+    path: buildRoundedOrthogonalPath(points),
+  };
+}
+
+function getNodeAnchor(
+  layout: NodeLayout,
+  side: "top" | "right" | "bottom" | "left",
+): Point {
+  switch (side) {
+    case "top":
+      return {
+        x: layout.left + layout.width / 2,
+        y: layout.top,
+      };
+    case "right":
+      return {
+        x: layout.left + layout.width,
+        y: layout.top + layout.height / 2,
+      };
+    case "bottom":
+      return {
+        x: layout.left + layout.width / 2,
+        y: layout.top + layout.height,
+      };
+    case "left":
+      return {
+        x: layout.left,
+        y: layout.top + layout.height / 2,
+      };
+  }
+}
+
+function buildRoundedOrthogonalPath(points: Point[], radius = 14) {
+  const normalizedPoints = points.filter((point, index) => {
+    if (index === 0) {
+      return true;
+    }
+
+    const previous = points[index - 1];
+    return previous.x !== point.x || previous.y !== point.y;
+  });
+
+  if (normalizedPoints.length < 2) {
+    return "";
+  }
+
+  let path = `M ${normalizedPoints[0].x} ${normalizedPoints[0].y}`;
+
+  for (let index = 1; index < normalizedPoints.length; index += 1) {
+    if (index === normalizedPoints.length - 1) {
+      path += ` L ${normalizedPoints[index].x} ${normalizedPoints[index].y}`;
+      continue;
+    }
+
+    const previous = normalizedPoints[index - 1];
+    const current = normalizedPoints[index];
+    const next = normalizedPoints[index + 1];
+    const beforeDistance = Math.min(
+      radius,
+      Math.abs(current.x - previous.x || current.y - previous.y) / 2,
+    );
+    const afterDistance = Math.min(
+      radius,
+      Math.abs(next.x - current.x || next.y - current.y) / 2,
+    );
+
+    const before = movePointTowards(current, previous, beforeDistance);
+    const after = movePointTowards(current, next, afterDistance);
+
+    path += ` L ${before.x} ${before.y}`;
+    path += ` Q ${current.x} ${current.y} ${after.x} ${after.y}`;
+  }
+
+  return path;
+}
+
+function movePointTowards(from: Point, to: Point, distance: number): Point {
+  if (from.x === to.x) {
+    return {
+      x: from.x,
+      y: from.y + Math.sign(to.y - from.y) * distance,
+    };
+  }
+
+  return {
+    x: from.x + Math.sign(to.x - from.x) * distance,
+    y: from.y,
+  };
+}
+
 function computeStageRanks(
   stage: MermaidPresentationStage,
   edges: MermaidPresentationEdge[],
@@ -813,18 +1161,18 @@ function computeStageRanks(
 function measureNode(
   node: MermaidPresentationNode,
 ): Omit<NodeLayout, "left" | "rank" | "top"> {
-  const maxCharactersPerLine = node.shape === "decision" ? 16 : 22;
+  const maxCharactersPerLine = node.shape === "decision" ? 18 : 24;
   const labelLines = wrapWords(node.label, maxCharactersPerLine, 3);
-  const lineHeight = 18;
+  const lineHeight = node.shape === "decision" ? 22 : 20;
   const width = clamp(
-    Math.max(...labelLines.map((line) => line.length), 10) * 7.2 + 34,
-    node.shape === "decision" ? 144 : MIN_STAGE_NODE_WIDTH,
-    node.shape === "decision" ? 186 : MAX_STAGE_NODE_WIDTH,
+    Math.max(...labelLines.map((line) => line.length), 12) * 9.1 + 52,
+    node.shape === "decision" ? 250 : MIN_STAGE_NODE_WIDTH,
+    node.shape === "decision" ? 320 : MAX_STAGE_NODE_WIDTH,
   );
   const height =
     node.shape === "decision"
-      ? Math.max(100, 54 + (labelLines.length - 1) * lineHeight)
-      : Math.max(50, 28 + labelLines.length * lineHeight);
+      ? Math.max(132, 72 + (labelLines.length - 1) * lineHeight)
+      : Math.max(72, 34 + labelLines.length * lineHeight);
 
   return {
     height,
@@ -886,7 +1234,7 @@ function renderProcessNode({
 }) {
   return [
     `<g class="mermaid-presentation__node">`,
-    `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="14" fill="${fill}" stroke="${stroke}" stroke-width="1.05" />`,
+    `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="18" fill="${fill}" stroke="${stroke}" stroke-width="1.15" />`,
     renderNodeText({ height, labelLines, textColor, width, x, y }),
     `</g>`,
   ].join("");
@@ -914,9 +1262,9 @@ function renderTerminalNode({
   return [
     `<g class="mermaid-presentation__node">`,
     `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${Math.min(
-      24,
+      30,
       Math.round(height / 2),
-    )}" fill="${fill}" stroke="${stroke}" stroke-width="1.05" />`,
+    )}" fill="${fill}" stroke="${stroke}" stroke-width="1.15" />`,
     renderNodeText({ height, labelLines, textColor, width, x, y }),
     `</g>`,
   ].join("");
@@ -946,7 +1294,7 @@ function renderDecisionNode({
 
   return [
     `<g class="mermaid-presentation__node">`,
-    `<polygon points="${centerX},${y} ${x + width},${centerY} ${centerX},${y + height} ${x},${centerY}" fill="${fill}" stroke="${stroke}" stroke-width="1.05" />`,
+    `<polygon points="${centerX},${y} ${x + width},${centerY} ${centerX},${y + height} ${x},${centerY}" fill="${fill}" stroke="${stroke}" stroke-width="1.15" />`,
     renderNodeText({ height, labelLines, textColor, width, x, y }),
     `</g>`,
   ].join("");
@@ -968,9 +1316,9 @@ function renderNodeText({
   y: number;
 }) {
   const centerX = x + width / 2;
-  const lineHeight = 16;
+  const lineHeight = labelLines.length > 1 ? 19 : 18;
   const firstLineY =
-    y + height / 2 - ((labelLines.length - 1) * lineHeight) / 2 + 1;
+    y + height / 2 - ((labelLines.length - 1) * lineHeight) / 2;
 
   return labelLines
     .map((line, index) => {
@@ -1101,15 +1449,25 @@ function wrapWords(
 }
 
 function buildStageColorPalette(palette: MermaidThemePalette) {
-  return palette.chartColors.map((color) => {
+  const presentationColors = [
+    "#5146c6",
+    "#145899",
+    "#0f6d5d",
+    "#8a5200",
+    "#934019",
+    "#5a5a58",
+    "#2f6f16",
+  ];
+
+  return presentationColors.map((color) => {
     const accent = parseRgbColor(color);
     const background = parseRgbColor(palette.background);
-    const foreground = parseRgbColor(palette.foreground);
+    const foreground = parseRgbColor("#f8fafc");
 
     return {
-      fill: rgbToString(mixRgb(background, accent, 0.44)),
-      stroke: rgbToString(mixRgb(accent, foreground, 0.14)),
-      text: rgbToString(mixRgb(foreground, accent, 0.08)),
+      fill: rgbToString(mixRgb(background, accent, 0.74)),
+      stroke: rgbToString(mixRgb(accent, foreground, 0.28)),
+      text: rgbToString(mixRgb(foreground, accent, 0.04)),
     };
   });
 }
