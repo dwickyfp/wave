@@ -1,26 +1,26 @@
 "use client";
 
-import { isToolUIPart, type UIMessage } from "ai";
-import { memo, useMemo, useState } from "react";
+import { type UIMessage, isToolUIPart } from "ai";
 import equal from "lib/equal";
 import dynamic from "next/dynamic";
+import { memo, useMemo, useState } from "react";
 
-import { cn, truncateString } from "lib/utils";
 import type { UseChatHelpers } from "@ai-sdk/react";
-import {
-  UserMessagePart,
-  AssistMessagePart,
-  KnowledgeImageMessagePart,
-  ToolMessagePart,
-  ReasoningPart,
-  FileMessagePart,
-  SourceUrlMessagePart,
-} from "./message-parts";
-import { ChevronDown, ChevronUp, TriangleAlertIcon } from "lucide-react";
-import { Button } from "ui/button";
-import { useTranslations } from "next-intl";
 import { ChatMetadata } from "app-types/chat";
 import { getMessageKnowledgeImages } from "lib/chat/knowledge-sources";
+import { cn, truncateString } from "lib/utils";
+import { ChevronDown, ChevronUp, TriangleAlertIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { Button } from "ui/button";
+import {
+  AssistMessagePart,
+  FileMessagePart,
+  KnowledgeImageMessagePart,
+  ReasoningPart,
+  SourceUrlMessagePart,
+  ToolMessagePart,
+  UserMessagePart,
+} from "./message-parts";
 import { buildRenderGroups } from "./message-render-groups";
 
 const ParallelSubAgentsGroup = dynamic(
@@ -104,11 +104,11 @@ const PurePreviewMessage = ({
     <div className="w-full mx-auto max-w-3xl px-6 group/message">
       <div
         className={cn(
-          "flex gap-4 w-full group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl",
+          "flex gap-4 w-full min-w-0 group-data-[role=user]/message:ml-auto group-data-[role=user]/message:max-w-2xl",
           className,
         )}
       >
-        <div className="flex flex-col gap-4 w-full">
+        <div className="flex flex-col gap-4 w-full min-w-0">
           {renderGroups.map((group, groupIdx) => {
             // Parallel subagent group
             if (group.type === "parallel-subagents") {
