@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  getStaticToolName,
-  isToolUIPart,
-  isStaticToolUIPart,
-  type ToolUIPart,
-  type UIMessage,
-} from "ai";
+import { getToolName, isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
 
 import { useOpenAIVoiceChat as OpenAIVoiceChat } from "lib/ai/speech/open-ai/use-voice-chat.openai";
 import { AppDefaultToolkit, DefaultToolName } from "lib/ai/tools";
@@ -14,8 +8,6 @@ import { cn, generateUUID, groupBy, isNull } from "lib/utils";
 import {
   AudioLinesIcon,
   ArrowUpRight,
-  BotIcon,
-  CheckCircle2Icon,
   Clock3Icon,
   Loader,
   MicIcon,
@@ -23,13 +15,17 @@ import {
   PhoneIcon,
   SparklesIcon,
   TriangleAlertIcon,
-  UserRoundIcon,
   XIcon,
-  MessagesSquareIcon,
-  MessageSquareMoreIcon,
 } from "lucide-react";
 import type { UseChatHelpers } from "@ai-sdk/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { safe } from "ts-safe";
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
@@ -47,8 +43,13 @@ import { Drawer, DrawerContent, DrawerPortal, DrawerTitle } from "ui/drawer";
 import { MessageLoading } from "ui/message-loading";
 import { ScrollArea } from "ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
-import { PreviewMessage } from "./message";
-
+import {
+  FileMessagePart,
+  KnowledgeImageMessagePart,
+  SourceUrlMessagePart,
+  ToolMessagePart,
+} from "./message-parts";
+import { Markdown } from "./markdown";
 import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
 import { useShallow } from "zustand/shallow";
@@ -58,6 +59,13 @@ import { useAgent } from "@/hooks/queries/use-agent";
 import { ChatMention } from "app-types/chat";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import Link from "next/link";
+import {
+  type VoiceArtifactEntry,
+  type VoiceLatestTurnModel,
+  buildVoiceLatestTurnModel,
+} from "./chat-bot-voice.utils";
+import { buildRenderGroups } from "./message-render-groups";
+import { ParallelSubAgentsGroup } from "./tool-invocation/parallel-subagents-group";
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
@@ -83,7 +91,6 @@ export function ChatBotVoice() {
 
   const [isClosing, setIsClosing] = useState(false);
   const startAudio = useRef<HTMLAudioElement>(null);
-  const [useCompactView, setUseCompactView] = useState(true);
 
   const voiceMentions = useMemo<ChatMention[]>(() => {
     if (!agentId) {
@@ -173,7 +180,7 @@ export function ChatBotVoice() {
         </p>
       );
     }
-    if (isUserSpeaking && useCompactView) {
+    if (isUserSpeaking) {
       return <MessageLoading className="text-muted-foreground" />;
     }
     if (!isAssistantSpeaking && !isUserSpeaking) {
@@ -191,7 +198,6 @@ export function ChatBotVoice() {
     isProcessingTurn,
     isListening,
     messages.length,
-    useCompactView,
   ]);
 
   const tools = useMemo<EnabledTools[]>(() => {
@@ -310,25 +316,10 @@ export function ChatBotVoice() {
 
     return [...configuredDefaultTools, ...configuredMcpTools];
   }, [allowedAppDefaultToolkit, allowedMcpServers, mcpList, voiceMentions]);
-
-  const hasPendingInteractiveToolStep = useMemo(
-    () =>
-      messages.some((message) =>
-        message.parts.some(
-          (part) =>
-            isToolUIPart(part) &&
-            !part.providerExecuted &&
-            !part.state.startsWith("output"),
-        ),
-      ),
+  const latestTurn = useMemo(
+    () => buildVoiceLatestTurnModel(messages),
     [messages],
   );
-
-  useEffect(() => {
-    if (hasPendingInteractiveToolStep && useCompactView) {
-      setUseCompactView(false);
-    }
-  }, [hasPendingInteractiveToolStep, useCompactView]);
 
   useEffect(() => {
     return () => {
@@ -405,78 +396,74 @@ export function ChatBotVoice() {
     <Drawer dismissible={false} open={voiceChat.isOpen} direction="top">
       <DrawerPortal>
         <DrawerContent className="max-h-[100vh]! h-full border-none! rounded-none! flex flex-col bg-card">
-          <div className="w-full h-full flex flex-col ">
+          <div className="relative w-full h-full flex flex-col overflow-hidden bg-[radial-gradient(circle_at_top_left,rgba(245,158,11,0.10),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(59,130,246,0.10),transparent_28%)]">
             <div
-              className="w-full flex p-6 gap-2"
+              className="w-full flex items-center justify-between p-6 gap-3"
               style={{
                 userSelect: "text",
               }}
             >
-              {agent && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <div
-                      style={agent.icon?.style}
-                      className="size-9 items-center justify-center flex rounded-lg ring ring-secondary"
-                    >
-                      <Avatar className="size-6">
-                        <AvatarImage src={agent.icon?.value} />
-                        <AvatarFallback>
-                          {agent.name.slice(0, 1)}
-                        </AvatarFallback>
-                      </Avatar>
-                    </div>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" className="p-3 max-w-xs">
-                    <div className="space-y-2">
-                      <div className="font-semibold text-sm">{agent.name}</div>
-                      {agent.description && (
-                        <div className="text-xs text-muted-foreground leading-relaxed">
-                          {agent.description}
+              <div className="flex items-center gap-3 min-w-0">
+                {agent && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div
+                        style={agent.icon?.style}
+                        className="size-10 shrink-0 items-center justify-center flex rounded-2xl ring ring-secondary/80 bg-background/40"
+                      >
+                        <Avatar className="size-6">
+                          <AvatarImage src={agent.icon?.value} />
+                          <AvatarFallback>
+                            {agent.name.slice(0, 1)}
+                          </AvatarFallback>
+                        </Avatar>
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="p-3 max-w-xs">
+                      <div className="space-y-2">
+                        <div className="font-semibold text-sm">
+                          {agent.name}
                         </div>
-                      )}
-                    </div>
-                  </TooltipContent>
-                </Tooltip>
-              )}
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant={"secondary"}
-                    size={"icon"}
-                    disabled={hasPendingInteractiveToolStep}
-                    onClick={() => setUseCompactView(!useCompactView)}
-                  >
-                    {useCompactView ? (
-                      <MessageSquareMoreIcon />
-                    ) : (
-                      <MessagesSquareIcon />
-                    )}
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {useCompactView
-                    ? t("VoiceChat.compactDisplayMode")
-                    : t("VoiceChat.conversationDisplayMode")}
-                </TooltipContent>
-              </Tooltip>
-
-              <EnabledToolsDropdown align="start" side="bottom" tools={tools} />
-              {voiceChat.threadId ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button asChild variant={"secondary"} size={"icon"}>
-                      <Link href={`/chat/${voiceChat.threadId}`}>
-                        <ArrowUpRight className="size-4" />
-                      </Link>
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Open thread</TooltipContent>
-                </Tooltip>
-              ) : null}
+                        {agent.description && (
+                          <div className="text-xs text-muted-foreground leading-relaxed">
+                            {agent.description}
+                          </div>
+                        )}
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">
+                    {agent?.name ?? "Voice Call"}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Last-turn voice workspace
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <EnabledToolsDropdown
+                  align="start"
+                  side="bottom"
+                  tools={tools}
+                />
+                {voiceChat.threadId ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button asChild variant={"secondary"} size={"icon"}>
+                        <Link href={`/chat/${voiceChat.threadId}`}>
+                          <ArrowUpRight className="size-4" />
+                        </Link>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Open thread</TooltipContent>
+                  </Tooltip>
+                ) : null}
+              </div>
               <DrawerTitle className="sr-only">Voice Chat</DrawerTitle>
             </div>
-            <div className="flex-1 min-h-0 mx-auto w-full">
+            <div className="flex-1 min-h-0 mx-auto w-full max-w-6xl px-4 pb-40 md:px-6">
               {error ? (
                 <div className="max-w-3xl mx-auto">
                   <Alert variant={"destructive"}>
@@ -493,25 +480,15 @@ export function ChatBotVoice() {
                 </div>
               ) : null}
               {isLoading ? (
-                <div className="flex-1"></div>
+                <div className="flex-1" />
               ) : (
-                <div className="h-full w-full">
-                  {useCompactView ? (
-                    <CompactMessageView
-                      messages={messages}
-                      isProcessingTurn={isProcessingTurn}
-                      isAssistantSpeaking={isAssistantSpeaking}
-                      isUserSpeaking={isUserSpeaking}
-                    />
-                  ) : (
-                    <ConversationView
-                      messages={messages}
-                      isLoading={isProcessingTurn}
-                      threadId={voiceChat.threadId}
-                      addToolResult={addToolResult}
-                    />
-                  )}
-                </div>
+                <VoiceTurnStage
+                  turn={latestTurn}
+                  isProcessingTurn={isProcessingTurn}
+                  isAssistantSpeaking={isAssistantSpeaking}
+                  isUserSpeaking={isUserSpeaking}
+                  addToolResult={addToolResult}
+                />
               )}
             </div>
             <div className="relative w-full p-6 flex items-center justify-center gap-4">
@@ -593,419 +570,443 @@ export function ChatBotVoice() {
   );
 }
 
-function ConversationView({
-  messages,
-  isLoading,
-  threadId,
-  addToolResult,
-}: {
-  messages: UIMessage[];
-  isLoading: boolean;
-  threadId?: string;
-  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const streamSignature = useMemo(
-    () => buildVoiceStreamSignature(messages),
-    [messages],
-  );
-
-  useEffect(() => {
-    if (ref.current) {
-      ref.current.scrollTo({
-        top: ref.current.scrollHeight,
-        behavior: "smooth",
-      });
-    }
-  }, [streamSignature]);
-  return (
-    <div className="h-full overflow-y-auto select-text" ref={ref}>
-      <div>
-        <div className="max-w-4xl mx-auto flex flex-col px-6 gap-6 pb-44 min-h-0 min-w-0">
-          {messages.map((message, index) => (
-            <PreviewMessage
-              key={message.id}
-              readonly
-              message={message}
-              prevMessage={messages[index - 1]}
-              isLoading={isLoading && index === messages.length - 1}
-              isLastMessage={index === messages.length - 1}
-              threadId={threadId}
-              addToolResult={addToolResult}
-              messageIndex={index}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function getMessageText(message: UIMessage) {
-  return message.parts
-    .filter(
-      (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
-        part.type === "text",
-    )
-    .map((part) => part.text.trim())
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-}
-
-function buildVoiceStreamSignature(messages: UIMessage[]) {
+function buildVoiceStreamSignature(turn: VoiceLatestTurnModel) {
   return [
-    ...messages.map((message) =>
+    turn.latestUserMessage?.id ?? "",
+    turn.latestUserText,
+    turn.assistantSummaryText,
+    ...turn.artifactEntries.map((entry) =>
       [
-        message.id,
-        message.role,
-        ...message.parts.map((part) => {
+        entry.message.id,
+        ...entry.parts.map((part) => {
           if (part.type === "text") {
             return `text:${part.text}`;
           }
-          if (isStaticToolUIPart(part)) {
-            return `${getStaticToolName(part)}:${part.state}`;
+          if (isToolUIPart(part)) {
+            return `${getToolName(part)}:${part.toolCallId}:${part.state}`;
+          }
+          if (part.type === "file") {
+            return `file:${part.filename ?? part.url ?? ""}`;
+          }
+          if ((part as { type?: string }).type === "source-url") {
+            return `source:${(part as { url?: string }).url ?? ""}`;
           }
           return part.type;
         }),
+        ...entry.knowledgeImages.map((image) => image.imageId),
       ].join("|"),
     ),
+    ...turn.runningToolStates.map((tool) => `${tool.id}:${tool.state}`),
   ].join("::");
 }
 
-function summarizeToolOutput(part: ToolUIPart) {
-  if (part.state === "output-error") {
-    return part.errorText || "Tool execution failed.";
-  }
-
-  if (part.state !== "output-available") {
-    return "Running...";
-  }
-
-  const output = part.output as unknown;
-  if (typeof output === "string") {
-    return output.slice(0, 180);
-  }
-
-  if (Array.isArray(output)) {
-    return `${output.length} item${output.length === 1 ? "" : "s"} returned`;
-  }
-
-  if (output && typeof output === "object") {
-    const keys = Object.keys(output as Record<string, unknown>);
-    if ("statusMessage" in (output as Record<string, unknown>)) {
-      return String((output as Record<string, unknown>).statusMessage);
-    }
-    if ("result" in (output as Record<string, unknown>)) {
-      return "Completed with structured output";
-    }
-    return keys.length
-      ? `Returned ${keys.slice(0, 4).join(", ")}`
-      : "Completed";
-  }
-
-  return "Completed";
+function formatToolTitle(name: string) {
+  return name
+    .replace(/^tool-/, "")
+    .replace(/^tool_/, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function VoiceCompactCallView({
-  messages,
+function getToolStatusLabel(part: ToolUIPart) {
+  if (part.state === "output-error") {
+    return "Failed";
+  }
+
+  if (part.state.startsWith("output")) {
+    return "Ready";
+  }
+
+  return "Running";
+}
+
+function getToolStateTone(part: ToolUIPart) {
+  if (part.state === "output-error") {
+    return "border-destructive/20 bg-destructive/10 text-destructive";
+  }
+
+  if (part.state.startsWith("output")) {
+    return "border-emerald-500/20 bg-emerald-500/10 text-emerald-200";
+  }
+
+  return "border-amber-400/25 bg-amber-500/10 text-amber-100";
+}
+
+function VoiceTurnStage({
+  turn,
   isProcessingTurn,
   isAssistantSpeaking,
   isUserSpeaking,
+  addToolResult,
 }: {
-  messages: UIMessage[];
+  turn: VoiceLatestTurnModel;
   isProcessingTurn: boolean;
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
 }) {
-  const transcriptRef = useRef<HTMLDivElement>(null);
+  const bottomAnchorRef = useRef<HTMLDivElement>(null);
   const streamSignature = useMemo(
-    () => buildVoiceStreamSignature(messages),
-    [messages],
+    () => buildVoiceStreamSignature(turn),
+    [turn],
   );
 
-  const transcriptMessages = useMemo(() => {
-    return messages
-      .filter(
-        (message) => message.role === "user" || message.role === "assistant",
-      )
-      .map((message) => ({
-        id: message.id,
-        role: message.role,
-        text: getMessageText(message),
-      }))
-      .filter((message) => message.text)
-      .slice(-6);
-  }, [messages]);
-
-  const latestAssistantText = useMemo(() => {
-    for (let index = transcriptMessages.length - 1; index >= 0; index -= 1) {
-      if (transcriptMessages[index]?.role === "assistant") {
-        return transcriptMessages[index].text;
-      }
-    }
-    return "";
-  }, [transcriptMessages]);
-
-  const toolActivities = useMemo(() => {
-    return messages
-      .flatMap((message) =>
-        message.parts.filter(isStaticToolUIPart).map((part) => ({
-          id: `${message.id}-${part.toolCallId}`,
-          name: getStaticToolName(part),
-          part: part as ToolUIPart,
-        })),
-      )
-      .slice(-8);
-  }, [messages]);
-
   useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTo({
-        top: transcriptRef.current.scrollHeight,
-        behavior: "smooth",
-      });
-    }
+    bottomAnchorRef.current?.scrollIntoView({
+      block: "end",
+      behavior: "smooth",
+    });
   }, [streamSignature]);
 
-  const activeToolCount = toolActivities.filter((activity) =>
-    activity.part.state.startsWith("input"),
-  ).length;
+  const callStateLabel = isAssistantSpeaking
+    ? "Speaking"
+    : isUserSpeaking
+      ? "Listening"
+      : isProcessingTurn
+        ? "Thinking"
+        : "Ready";
 
   return (
-    <div className="relative h-full overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(245,158,11,0.12),transparent_38%),radial-gradient(circle_at_bottom_right,rgba(14,165,233,0.12),transparent_32%)]" />
-      <div className="relative mx-auto grid h-full max-w-6xl gap-6 px-4 pb-40 md:px-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <Card className="min-h-0 gap-0 overflow-hidden border-white/10 bg-gradient-to-br from-card via-card to-amber-500/5 shadow-2xl">
-          <CardHeader className="border-b border-border/60 pb-5">
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-2">
-                <Badge
-                  variant="outline"
-                  className="border-amber-500/30 bg-amber-500/10 text-amber-200"
-                >
-                  <AudioLinesIcon className="size-3.5" />
-                  Live Call
-                </Badge>
-                <CardTitle className="text-xl tracking-tight">
-                  Voice Timeline
-                </CardTitle>
-                <CardDescription>
-                  Live transcript while you speak, then concise assistant
-                  replies and tool progress.
-                </CardDescription>
-              </div>
-              <Badge
-                variant="outline"
-                className={cn(
-                  "border-white/10 bg-white/5",
-                  isAssistantSpeaking &&
-                    "border-sky-400/30 bg-sky-500/10 text-sky-100",
-                  isUserSpeaking &&
-                    "border-amber-400/30 bg-amber-500/10 text-amber-100",
-                )}
-              >
-                {isAssistantSpeaking
-                  ? "Assistant speaking"
-                  : isUserSpeaking
-                    ? "Listening"
-                    : isProcessingTurn
-                      ? "Thinking"
-                      : "Ready"}
-              </Badge>
-            </div>
+    <div className="flex h-full flex-col gap-5 pb-4">
+      <VoiceStatusStrip
+        callStateLabel={callStateLabel}
+        isAssistantSpeaking={isAssistantSpeaking}
+        isUserSpeaking={isUserSpeaking}
+        runningToolStates={turn.runningToolStates}
+      />
+
+      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <Card className="border-white/10 bg-background/50 shadow-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm tracking-wide text-muted-foreground">
+              You asked
+            </CardTitle>
           </CardHeader>
-          <CardContent className="min-h-0 flex-1 px-0">
-            <div
-              ref={transcriptRef}
-              className="h-full overflow-y-auto space-y-4 px-6 pb-6 pt-4"
-            >
-              {!transcriptMessages.length ? (
-                <div className="flex min-h-[280px] items-center justify-center">
-                  <div className="max-w-md rounded-[2rem] border border-dashed border-border/70 bg-background/40 px-6 py-8 text-center">
-                    <SparklesIcon className="mx-auto mb-4 size-8 text-amber-300" />
-                    <p className="text-lg font-medium">
-                      Start speaking naturally.
-                    </p>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      The drawer will keep your conversation and show tool
-                      activity as it happens.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
-
-              {transcriptMessages.map((message) => {
-                const isAssistant = message.role === "assistant";
-                const isLatestAssistant =
-                  isAssistant &&
-                  message.id ===
-                    transcriptMessages.findLast(
-                      (entry) => entry.role === "assistant",
-                    )?.id;
-
-                return (
-                  <div
-                    key={message.id}
-                    className={cn(
-                      "max-w-3xl rounded-[2rem] border px-5 py-4 shadow-sm backdrop-blur-sm",
-                      isAssistant
-                        ? "mr-10 border-white/10 bg-white/5"
-                        : "ml-10 border-amber-500/20 bg-amber-500/10",
-                    )}
-                  >
-                    <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                      {isAssistant ? (
-                        <BotIcon className="size-3.5" />
-                      ) : (
-                        <UserRoundIcon className="size-3.5" />
-                      )}
-                      {isAssistant ? "Assistant" : "You"}
-                    </div>
-                    <p
-                      className={cn(
-                        "whitespace-pre-wrap text-sm leading-7 md:text-base",
-                        isLatestAssistant && "text-lg font-medium md:text-xl",
-                      )}
-                    >
-                      {message.text}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
+          <CardContent className="pt-0">
+            {turn.latestUserText ? (
+              <p className="whitespace-pre-wrap text-sm leading-7 text-foreground">
+                {turn.latestUserText}
+              </p>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Start speaking and the latest request will appear here.
+              </p>
+            )}
           </CardContent>
         </Card>
 
-        <div className="grid min-h-0 gap-6 lg:grid-rows-[auto_minmax(0,1fr)]">
-          <Card className="gap-0 overflow-hidden border-white/10 bg-gradient-to-br from-sky-500/10 via-card to-amber-500/10">
-            <CardHeader className="pb-4">
-              <CardTitle className="text-base">Assistant Reply</CardTitle>
+        <Card className="border-white/10 bg-gradient-to-br from-card via-card to-sky-500/10 shadow-lg">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm tracking-wide text-muted-foreground">
+              Assistant
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {turn.assistantSummaryText ? (
+              <div className="text-base leading-7 md:text-lg">
+                <Markdown animate={false}>{turn.assistantSummaryText}</Markdown>
+              </div>
+            ) : isProcessingTurn ? (
+              <MessageLoading className="text-muted-foreground" />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                The latest assistant answer will stay focused here.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card className="flex min-h-0 flex-1 flex-col overflow-hidden border-white/10 bg-card/95 shadow-xl backdrop-blur">
+        <CardHeader className="border-b border-border/60 pb-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle className="text-base">Latest Result</CardTitle>
               <CardDescription>
-                Spoken output stays short and focused for voice calls.
+                Charts, tables, images, code outputs, and tool progress from the
+                latest turn.
               </CardDescription>
-            </CardHeader>
-            <CardContent className="pt-0">
-              {latestAssistantText ? (
-                <p className="line-clamp-6 whitespace-pre-wrap text-base leading-7">
-                  {latestAssistantText}
-                </p>
-              ) : isProcessingTurn ? (
-                <div className="py-2">
-                  <MessageLoading className="text-muted-foreground" />
+            </div>
+            <Badge variant="outline" className="border-white/10 bg-white/5">
+              {turn.artifactEntries.length
+                ? `${turn.artifactEntries.length} item${turn.artifactEntries.length === 1 ? "" : "s"}`
+                : "No artifacts"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="min-h-0 flex-1 px-0">
+          <ScrollArea className="h-full">
+            <div className="space-y-6 px-5 pb-6 pt-5">
+              {!turn.artifactEntries.length ? (
+                <div className="flex min-h-[260px] items-center justify-center">
+                  <div className="max-w-md rounded-[2rem] border border-dashed border-border/70 bg-background/40 px-6 py-8 text-center">
+                    <SparklesIcon className="mx-auto mb-4 size-8 text-amber-300" />
+                    <p className="text-lg font-medium">
+                      Latest turn results appear here.
+                    </p>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      Visual outputs and tool results from the current voice
+                      turn will stay focused in this stage.
+                    </p>
+                  </div>
                 </div>
               ) : (
-                <p className="text-sm text-muted-foreground">
-                  The next assistant reply will appear here as it streams.
-                </p>
+                <VoiceArtifactStack
+                  entries={turn.artifactEntries}
+                  addToolResult={addToolResult}
+                />
               )}
-            </CardContent>
-          </Card>
-
-          <Card className="min-h-0 gap-0 overflow-hidden border-white/10 bg-card/95 backdrop-blur">
-            <CardHeader className="border-b border-border/60 pb-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <CardTitle className="text-base">Tool Activity</CardTitle>
-                  <CardDescription>
-                    Live execution view for charts, tables, workflows, and
-                    external actions.
-                  </CardDescription>
-                </div>
-                <Badge variant="outline" className="border-white/10 bg-white/5">
-                  {activeToolCount > 0
-                    ? `${activeToolCount} running`
-                    : `${toolActivities.length} recent`}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="min-h-0 flex-1 px-0">
-              <ScrollArea className="h-full">
-                <div className="space-y-3 px-6 pb-6 pt-4">
-                  {toolActivities.length ? (
-                    toolActivities.map((activity) => {
-                      const isRunning = activity.part.state.startsWith("input");
-                      const isError = activity.part.state === "output-error";
-
-                      return (
-                        <div
-                          key={activity.id}
-                          className={cn(
-                            "rounded-2xl border px-4 py-3 shadow-sm",
-                            isRunning
-                              ? "border-amber-500/25 bg-amber-500/10"
-                              : isError
-                                ? "border-destructive/25 bg-destructive/10"
-                                : "border-sky-500/20 bg-sky-500/10",
-                          )}
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="truncate text-sm font-semibold">
-                              {activity.name}
-                            </p>
-                            <Badge
-                              variant="outline"
-                              className={cn(
-                                "border-current/20 bg-background/40",
-                                isRunning &&
-                                  "text-amber-200 border-amber-300/20",
-                                !isRunning &&
-                                  !isError &&
-                                  "text-sky-100 border-sky-300/20",
-                                isError && "text-red-100 border-red-300/20",
-                              )}
-                            >
-                              {isRunning ? (
-                                <Clock3Icon className="size-3.5" />
-                              ) : (
-                                <CheckCircle2Icon className="size-3.5" />
-                              )}
-                              {isRunning
-                                ? "Running"
-                                : isError
-                                  ? "Failed"
-                                  : "Done"}
-                            </Badge>
-                          </div>
-                          <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
-                            {summarizeToolOutput(activity.part)}
-                          </p>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div className="rounded-2xl border border-dashed border-border/70 bg-background/30 px-4 py-6 text-sm text-muted-foreground">
-                      Tool activity will show up here as the voice agent runs
-                      workflows, charts, tables, or MCP actions.
-                    </div>
-                  )}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
+              <div ref={bottomAnchorRef} />
+            </div>
+          </ScrollArea>
+        </CardContent>
+      </Card>
     </div>
   );
 }
 
-function CompactMessageView({
-  messages,
-  isProcessingTurn,
+function VoiceStatusStrip({
+  callStateLabel,
+  runningToolStates,
   isAssistantSpeaking,
   isUserSpeaking,
 }: {
-  messages: UIMessage[];
-  isProcessingTurn: boolean;
+  callStateLabel: string;
+  runningToolStates: VoiceLatestTurnModel["runningToolStates"];
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
 }) {
   return (
-    <VoiceCompactCallView
-      messages={messages}
-      isProcessingTurn={isProcessingTurn}
-      isAssistantSpeaking={isAssistantSpeaking}
-      isUserSpeaking={isUserSpeaking}
-    />
+    <div className="flex flex-wrap items-center gap-2">
+      <Badge
+        variant="outline"
+        className={cn(
+          "border-white/10 bg-white/5 text-foreground",
+          isAssistantSpeaking && "border-sky-400/30 bg-sky-500/10 text-sky-100",
+          isUserSpeaking &&
+            "border-amber-400/30 bg-amber-500/10 text-amber-100",
+        )}
+      >
+        <AudioLinesIcon className="size-3.5" />
+        {callStateLabel}
+      </Badge>
+      {runningToolStates.slice(0, 3).map((toolState) => (
+        <Badge
+          key={toolState.id}
+          variant="outline"
+          className="border-amber-400/25 bg-amber-500/10 text-amber-100"
+        >
+          <Clock3Icon className="size-3.5" />
+          {formatToolTitle(toolState.name)}
+        </Badge>
+      ))}
+      {runningToolStates.length > 3 ? (
+        <Badge variant="outline" className="border-white/10 bg-white/5">
+          +{runningToolStates.length - 3} more
+        </Badge>
+      ) : null}
+    </div>
+  );
+}
+
+function VoiceArtifactStack({
+  entries,
+  addToolResult,
+}: {
+  entries: VoiceArtifactEntry[];
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
+}) {
+  return (
+    <div className="space-y-5">
+      {entries.map((entry) => (
+        <VoiceArtifactEntryView
+          key={entry.message.id}
+          entry={entry}
+          addToolResult={addToolResult}
+        />
+      ))}
+    </div>
+  );
+}
+
+function VoiceArtifactEntryView({
+  entry,
+  addToolResult,
+}: {
+  entry: VoiceArtifactEntry;
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
+}) {
+  const renderGroups = useMemo(
+    () => buildRenderGroups(entry.parts, entry.knowledgeImages),
+    [entry.knowledgeImages, entry.parts],
+  );
+
+  if (!renderGroups.length) {
+    return null;
+  }
+
+  return (
+    <div className="space-y-4">
+      {renderGroups.map((group, groupIndex) => {
+        if (group.type === "knowledge-images") {
+          return (
+            <VoiceArtifactShell
+              key={`${entry.message.id}-images-${groupIndex}`}
+              title="Related Images"
+              statusLabel={`${group.images.length} image${group.images.length === 1 ? "" : "s"}`}
+            >
+              <KnowledgeImageMessagePart images={group.images} />
+            </VoiceArtifactShell>
+          );
+        }
+
+        if (group.type === "parallel-subagents") {
+          return (
+            <VoiceArtifactShell
+              key={`${entry.message.id}-parallel-${group.startIndex}`}
+              title="Parallel Agents"
+              statusLabel={`${group.parts.length} running`}
+            >
+              <ParallelSubAgentsGroup parts={group.parts} />
+            </VoiceArtifactShell>
+          );
+        }
+
+        const { part, index } = group;
+        if (part.type === "reasoning" || part.type === "step-start") {
+          return null;
+        }
+
+        if (isToolUIPart(part)) {
+          return (
+            <VoiceToolArtifact
+              key={`${entry.message.id}-tool-${part.toolCallId}-${index}`}
+              part={part as ToolUIPart}
+              message={entry.message}
+              addToolResult={addToolResult}
+            />
+          );
+        }
+
+        if (part.type === "text") {
+          return null;
+        }
+
+        if (part.type === "file") {
+          return (
+            <VoiceArtifactShell
+              key={`${entry.message.id}-file-${index}`}
+              title="Attachment"
+              statusLabel={part.filename ?? "File"}
+            >
+              <FileMessagePart part={part} isUserMessage={false} />
+            </VoiceArtifactShell>
+          );
+        }
+
+        if ((part as { type?: string }).type === "source-url") {
+          return (
+            <VoiceArtifactShell
+              key={`${entry.message.id}-source-${index}`}
+              title="Reference"
+              statusLabel="Attachment"
+            >
+              <SourceUrlMessagePart
+                part={
+                  part as { type: "source-url"; url: string; title?: string }
+                }
+                isUserMessage={false}
+              />
+            </VoiceArtifactShell>
+          );
+        }
+
+        return (
+          <VoiceArtifactShell
+            key={`${entry.message.id}-${part.type}-${index}`}
+            title="Assistant Output"
+            statusLabel={part.type}
+          >
+            <VoiceGenericArtifact part={part} />
+          </VoiceArtifactShell>
+        );
+      })}
+    </div>
+  );
+}
+
+function VoiceArtifactShell({
+  title,
+  statusLabel,
+  children,
+}: {
+  title: string;
+  statusLabel?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-[2rem] border border-white/10 bg-background/45 p-4 shadow-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+          {title}
+        </p>
+        {statusLabel ? (
+          <Badge variant="outline" className="border-white/10 bg-white/5">
+            {statusLabel}
+          </Badge>
+        ) : null}
+      </div>
+      <div className="min-w-0">{children}</div>
+    </div>
+  );
+}
+
+function VoiceGenericArtifact({
+  part,
+}: {
+  part: Exclude<UIMessage["parts"][number], ToolUIPart>;
+}) {
+  return (
+    <pre className="overflow-x-auto rounded-2xl border border-white/10 bg-black/20 p-4 text-xs leading-6 text-muted-foreground">
+      {JSON.stringify(part, null, 2)}
+    </pre>
+  );
+}
+
+function VoiceToolArtifact({
+  part,
+  message,
+  addToolResult,
+}: {
+  part: ToolUIPart;
+  message: UIMessage;
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
+}) {
+  const rawToolName = getToolName(part);
+
+  return (
+    <VoiceArtifactShell
+      title={formatToolTitle(rawToolName)}
+      statusLabel={getToolStatusLabel(part)}
+    >
+      <div
+        className={cn(
+          "min-w-0 rounded-[1.5rem] border p-3",
+          getToolStateTone(part),
+        )}
+      >
+        <ToolMessagePart
+          part={part}
+          messageId={message.id}
+          showActions={false}
+          readonly
+          isLast={!part.state.startsWith("output")}
+          isManualToolInvocation={false}
+          addToolResult={addToolResult}
+        />
+      </div>
+    </VoiceArtifactShell>
   );
 }
