@@ -1,6 +1,7 @@
 import { getSession } from "auth/server";
 import { NextRequest } from "next/server";
 import { colorize } from "consola/utils";
+import { buildVoiceTranscriptionBias } from "lib/ai/speech/voice-language";
 import { resolveVoiceAgentChatModel } from "lib/ai/speech/voice-agent-model";
 import { settingsRepository } from "lib/db/repository";
 import globalLogger from "lib/logger";
@@ -54,9 +55,9 @@ function normalizeAzureVoiceEndpoint(
 function buildVoiceTurnDetection() {
   return {
     type: "server_vad" as const,
-    threshold: 0.4,
-    prefix_padding_ms: 500,
-    silence_duration_ms: 900,
+    threshold: 0.55,
+    prefix_padding_ms: 450,
+    silence_duration_ms: 1_200,
     create_response: false,
     interrupt_response: false,
   };
@@ -65,26 +66,48 @@ function buildVoiceTurnDetection() {
 const TRANSPORT_ONLY_INSTRUCTIONS =
   "You are Emma's realtime voice transport. Transcribe the user's speech accurately. Do not create responses automatically. Only speak when the client explicitly asks you to generate audio output.";
 
-function buildLegacyVoiceSessionConfig({ voice }: { voice: string }) {
+function buildLegacyVoiceSessionConfig({
+  voice,
+  transcriptionLanguage,
+}: {
+  voice: string;
+  transcriptionLanguage?: string;
+}) {
+  const transcriptionBias = buildVoiceTranscriptionBias(transcriptionLanguage);
+
   return {
     modalities: ["text", "audio"],
     voice,
     instructions: TRANSPORT_ONLY_INSTRUCTIONS,
     input_audio_format: "pcm16",
     output_audio_format: "pcm16",
-    input_audio_transcription: { model: "whisper-1" },
+    input_audio_transcription: {
+      model: "whisper-1",
+      ...(transcriptionBias ?? {}),
+    },
     turn_detection: buildVoiceTurnDetection(),
   };
 }
 
-function buildGaVoiceSessionConfig({ voice }: { voice: string }) {
+function buildGaVoiceSessionConfig({
+  voice,
+  transcriptionLanguage,
+}: {
+  voice: string;
+  transcriptionLanguage?: string;
+}) {
+  const transcriptionBias = buildVoiceTranscriptionBias(transcriptionLanguage);
+
   return {
     type: "realtime",
     instructions: TRANSPORT_ONLY_INSTRUCTIONS,
     output_modalities: ["audio"],
     audio: {
       input: {
-        transcription: { model: "whisper-1" },
+        transcription: {
+          model: "whisper-1",
+          ...(transcriptionBias ?? {}),
+        },
         format: {
           type: "audio/pcm",
           rate: VOICE_AUDIO_SAMPLE_RATE,
@@ -131,10 +154,12 @@ export async function POST(request: NextRequest) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const { voice, agentId } = (await request.json()) as {
-      voice?: string;
-      agentId?: string;
-    };
+    const { voice, agentId, transcriptionLanguage } =
+      (await request.json()) as {
+        voice?: string;
+        agentId?: string;
+        transcriptionLanguage?: string;
+      };
 
     const agent = await rememberAgentAction(agentId, session.user.id);
 
@@ -157,9 +182,11 @@ export async function POST(request: NextRequest) {
     const resolvedVoice = voice || "alloy";
     const legacySessionConfig = buildLegacyVoiceSessionConfig({
       voice: resolvedVoice,
+      transcriptionLanguage,
     });
     const gaSessionConfig = buildGaVoiceSessionConfig({
       voice: resolvedVoice,
+      transcriptionLanguage,
     });
     const azureVoiceConfig = (await settingsRepository.getSetting(
       "voice-chat-azure",

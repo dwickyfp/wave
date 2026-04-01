@@ -305,6 +305,7 @@ export const chatApiSchemaRequestBodySchema = z.object({
   id: z.string(),
   message: z.any() as z.ZodType<UIMessage>,
   responseMode: z.enum(["default", "voice"]).optional(),
+  responseLanguageHint: z.string().optional(),
   chatModel: z
     .object({
       provider: z.string(),

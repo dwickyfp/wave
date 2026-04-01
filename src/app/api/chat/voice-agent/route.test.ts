@@ -73,6 +73,7 @@ describe("voice agent route", () => {
               serverId: "server-1",
             },
           ],
+          responseLanguageHint: "id",
         }),
       }),
     );
@@ -93,6 +94,7 @@ describe("voice agent route", () => {
       model: "gpt-4.1",
     });
     expect(body.responseMode).toBe("voice");
+    expect(body.responseLanguageHint).toBe("id");
     expect(body.toolChoice).toBe("auto");
     expect(body.mentions[0]).toMatchObject({
       type: "agent",

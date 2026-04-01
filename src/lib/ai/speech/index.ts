@@ -1,4 +1,5 @@
 import { UIMessage } from "ai";
+import type { UseChatHelpers } from "@ai-sdk/react";
 import { ChatMention } from "app-types/chat";
 import { AllowedMCPServer } from "app-types/mcp";
 import { AppDefaultToolkit } from "lib/ai/tools";
@@ -12,6 +13,7 @@ export interface VoiceChatSession {
   isProcessingTurn: boolean;
   liveInputTranscript: string;
   messages: UIMessage[];
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
   error: Error | null;
   start: () => Promise<void>;
   stop: () => Promise<void>;
@@ -25,6 +27,7 @@ export type VoiceChatOptions = {
   allowedAppDefaultToolkit?: AppDefaultToolkit[];
   agentId?: string;
   threadId?: string;
+  transcriptionLanguage?: string;
   voice?: string;
 };
 

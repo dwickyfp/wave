@@ -123,6 +123,7 @@ import {
   handleError,
   manualToolExecuteByLastMessage,
 } from "./shared.chat";
+import { getVoiceLanguageDisplayName } from "lib/ai/speech/voice-language";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `Chat API: `),
@@ -147,14 +148,22 @@ const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
   0,
 ];
 
-const VOICE_RESPONSE_STYLE_PROMPT = `
+function buildVoiceResponseStylePrompt(responseLanguageHint?: string) {
+  const pinnedLanguage = getVoiceLanguageDisplayName(responseLanguageHint);
+
+  return `
 You are answering inside a live voice call.
 
 - Behave like a calm customer support assistant.
 - Respond briefly and directly.
 - Do not introduce yourself unless the user explicitly asks who you are.
 - Do not greet repeatedly. Assume the conversation is already ongoing.
-- Use one language only, matching the user's latest message language.
+-${
+    pinnedLanguage
+      ? ` Stay in ${pinnedLanguage} for this call unless the user explicitly asks to switch languages.`
+      : " Use one language only, matching the user's latest message language."
+  }
+- Do not switch languages because of a single noisy or mistranscribed utterance.
 - Do not repeat the same answer in multiple languages.
 - Default to 1-3 short sentences unless the user explicitly asks for detail.
 - When tools are used, summarize only the result that matters to the user.
@@ -162,6 +171,7 @@ You are answering inside a live voice call.
 - Do not fill silence with extra commentary.
 - Ask at most one short follow-up question, and only when required to continue.
 `.trim();
+}
 
 type RetrievedKnowledgeGroup = {
   groupId: string;
@@ -265,6 +275,7 @@ export async function POST(request: Request) {
       id,
       message,
       responseMode = "default",
+      responseLanguageHint,
       chatModel,
       toolChoice,
       allowedAppDefaultToolkit,
@@ -1315,7 +1326,8 @@ export async function POST(request: Request) {
               toolCallUnsupported: !supportToolCall,
               extraPrompts: [
                 learnedPersonalizationPrompt,
-                responseMode === "voice" && VOICE_RESPONSE_STYLE_PROMPT,
+                responseMode === "voice" &&
+                  buildVoiceResponseStylePrompt(responseLanguageHint),
                 buildKnowledgeToolCitationSystemPrompt(
                   Object.keys(toolset.knowledgeTools ?? {}).length > 0,
                 ),

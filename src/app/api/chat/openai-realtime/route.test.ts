@@ -89,6 +89,7 @@ describe("openai realtime route", () => {
         },
         body: JSON.stringify({
           voice: "ash",
+          transcriptionLanguage: "id-ID",
         }),
       }) as any,
     );
@@ -120,10 +121,26 @@ describe("openai realtime route", () => {
         expires_at: 1234,
       },
       pendingSessionUpdate: {
+        audio: {
+          input: {
+            transcription: {
+              language: "id",
+              prompt: expect.stringContaining("bahasa indonesia"),
+            },
+          },
+        },
         instructions:
           "You are Emma's realtime voice transport. Transcribe the user's speech accurately. Do not create responses automatically. Only speak when the client explicitly asks you to generate audio output.",
       },
       websocketSessionUpdate: {
+        audio: {
+          input: {
+            transcription: {
+              language: "id",
+              prompt: expect.stringContaining("bahasa indonesia"),
+            },
+          },
+        },
         instructions:
           "You are Emma's realtime voice transport. Transcribe the user's speech accurately. Do not create responses automatically. Only speak when the client explicitly asks you to generate audio output.",
       },
@@ -162,6 +179,7 @@ describe("openai realtime route", () => {
         },
         body: JSON.stringify({
           voice: "ash",
+          transcriptionLanguage: "id-ID",
         }),
       }) as any,
     );
@@ -174,6 +192,10 @@ describe("openai realtime route", () => {
       proxySdpUrl:
         "/api/chat/openai-realtime-sdp?endpoint=https%3A%2F%2Fvoice-resource.openai.azure.com%2Fopenai%2Frealtime%3Fapi-version%3D2024-10-01-preview%26deployment%3Dmy-realtime-preview",
       pendingSessionUpdate: {
+        input_audio_transcription: {
+          language: "id",
+          prompt: expect.stringContaining("bahasa indonesia"),
+        },
         turn_detection: {
           create_response: false,
           interrupt_response: false,

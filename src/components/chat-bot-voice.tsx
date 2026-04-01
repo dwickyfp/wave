@@ -2,6 +2,7 @@
 
 import {
   getStaticToolName,
+  isToolUIPart,
   isStaticToolUIPart,
   type ToolUIPart,
   type UIMessage,
@@ -27,6 +28,7 @@ import {
   MessagesSquareIcon,
   MessageSquareMoreIcon,
 } from "lucide-react";
+import type { UseChatHelpers } from "@ai-sdk/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { safe } from "ts-safe";
@@ -102,8 +104,8 @@ export function ChatBotVoice() {
     isProcessingTurn,
     isActive,
     isUserSpeaking,
-    liveInputTranscript,
     messages,
+    addToolResult,
     error,
     start,
     startListening,
@@ -309,6 +311,25 @@ export function ChatBotVoice() {
     return [...configuredDefaultTools, ...configuredMcpTools];
   }, [allowedAppDefaultToolkit, allowedMcpServers, mcpList, voiceMentions]);
 
+  const hasPendingInteractiveToolStep = useMemo(
+    () =>
+      messages.some((message) =>
+        message.parts.some(
+          (part) =>
+            isToolUIPart(part) &&
+            !part.providerExecuted &&
+            !part.state.startsWith("output"),
+        ),
+      ),
+    [messages],
+  );
+
+  useEffect(() => {
+    if (hasPendingInteractiveToolStep && useCompactView) {
+      setUseCompactView(false);
+    }
+  }, [hasPendingInteractiveToolStep, useCompactView]);
+
   useEffect(() => {
     return () => {
       if (isActive) {
@@ -423,6 +444,7 @@ export function ChatBotVoice() {
                   <Button
                     variant={"secondary"}
                     size={"icon"}
+                    disabled={hasPendingInteractiveToolStep}
                     onClick={() => setUseCompactView(!useCompactView)}
                   >
                     {useCompactView ? (
@@ -477,7 +499,6 @@ export function ChatBotVoice() {
                   {useCompactView ? (
                     <CompactMessageView
                       messages={messages}
-                      liveInputTranscript={liveInputTranscript}
                       isProcessingTurn={isProcessingTurn}
                       isAssistantSpeaking={isAssistantSpeaking}
                       isUserSpeaking={isUserSpeaking}
@@ -487,6 +508,7 @@ export function ChatBotVoice() {
                       messages={messages}
                       isLoading={isProcessingTurn}
                       threadId={voiceChat.threadId}
+                      addToolResult={addToolResult}
                     />
                   )}
                 </div>
@@ -575,10 +597,12 @@ function ConversationView({
   messages,
   isLoading,
   threadId,
+  addToolResult,
 }: {
   messages: UIMessage[];
   isLoading: boolean;
   threadId?: string;
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const streamSignature = useMemo(
@@ -607,6 +631,7 @@ function ConversationView({
               isLoading={isLoading && index === messages.length - 1}
               isLastMessage={index === messages.length - 1}
               threadId={threadId}
+              addToolResult={addToolResult}
               messageIndex={index}
             />
           ))}
@@ -628,12 +653,8 @@ function getMessageText(message: UIMessage) {
     .trim();
 }
 
-function buildVoiceStreamSignature(
-  messages: UIMessage[],
-  liveInputTranscript = "",
-) {
+function buildVoiceStreamSignature(messages: UIMessage[]) {
   return [
-    liveInputTranscript,
     ...messages.map((message) =>
       [
         message.id,
@@ -688,21 +709,19 @@ function summarizeToolOutput(part: ToolUIPart) {
 
 function VoiceCompactCallView({
   messages,
-  liveInputTranscript,
   isProcessingTurn,
   isAssistantSpeaking,
   isUserSpeaking,
 }: {
   messages: UIMessage[];
-  liveInputTranscript: string;
   isProcessingTurn: boolean;
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
 }) {
   const transcriptRef = useRef<HTMLDivElement>(null);
   const streamSignature = useMemo(
-    () => buildVoiceStreamSignature(messages, liveInputTranscript),
-    [messages, liveInputTranscript],
+    () => buildVoiceStreamSignature(messages),
+    [messages],
   );
 
   const transcriptMessages = useMemo(() => {
@@ -801,7 +820,7 @@ function VoiceCompactCallView({
               ref={transcriptRef}
               className="h-full overflow-y-auto space-y-4 px-6 pb-6 pt-4"
             >
-              {!transcriptMessages.length && !liveInputTranscript ? (
+              {!transcriptMessages.length ? (
                 <div className="flex min-h-[280px] items-center justify-center">
                   <div className="max-w-md rounded-[2rem] border border-dashed border-border/70 bg-background/40 px-6 py-8 text-center">
                     <SparklesIcon className="mx-auto mb-4 size-8 text-amber-300" />
@@ -809,8 +828,8 @@ function VoiceCompactCallView({
                       Start speaking naturally.
                     </p>
                     <p className="mt-2 text-sm text-muted-foreground">
-                      The drawer will keep your transcript, stream assistant
-                      text, and show tool activity as it happens.
+                      The drawer will keep your conversation and show tool
+                      activity as it happens.
                     </p>
                   </div>
                 </div>
@@ -854,18 +873,6 @@ function VoiceCompactCallView({
                   </div>
                 );
               })}
-
-              {liveInputTranscript ? (
-                <div className="ml-10 max-w-3xl rounded-[2rem] border border-amber-400/25 bg-amber-500/10 px-5 py-4 shadow-sm backdrop-blur-sm">
-                  <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.24em] text-amber-100/80">
-                    <AudioLinesIcon className="size-3.5" />
-                    Live transcript
-                  </div>
-                  <p className="whitespace-pre-wrap text-sm leading-7 text-foreground md:text-base">
-                    {liveInputTranscript}
-                  </p>
-                </div>
-              ) : null}
             </div>
           </CardContent>
         </Card>
@@ -984,13 +991,11 @@ function VoiceCompactCallView({
 
 function CompactMessageView({
   messages,
-  liveInputTranscript,
   isProcessingTurn,
   isAssistantSpeaking,
   isUserSpeaking,
 }: {
   messages: UIMessage[];
-  liveInputTranscript: string;
   isProcessingTurn: boolean;
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
@@ -998,7 +1003,6 @@ function CompactMessageView({
   return (
     <VoiceCompactCallView
       messages={messages}
-      liveInputTranscript={liveInputTranscript}
       isProcessingTurn={isProcessingTurn}
       isAssistantSpeaking={isAssistantSpeaking}
       isUserSpeaking={isUserSpeaking}

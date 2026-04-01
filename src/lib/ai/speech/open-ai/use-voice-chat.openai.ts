@@ -1,7 +1,15 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport, type UIMessage } from "ai";
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
+  type UIMessage,
+} from "ai";
+import {
+  isTranscriptCompatibleWithLanguage,
+  pickVoiceLanguageHint,
+} from "lib/ai/speech/voice-language";
 import { generateUUID } from "lib/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VoiceChatOptions, VoiceChatSession } from "..";
@@ -31,6 +39,10 @@ const VOICE_AUDIO_SAMPLE_RATE = 24_000;
 const VOICE_TTS_TIMEOUT_MS = 30_000;
 const VOICE_RESUME_LISTENING_DELAY_MS = 1_500;
 const VOICE_ECHO_GUARD_MAX_MS = 15_000;
+const VOICE_SHORT_TRANSCRIPT_GRACE_MS = 2_500;
+const VOICE_SHORT_TRANSCRIPT_MAX_CHARS = 16;
+const VOICE_SHORT_TRANSCRIPT_MAX_WORDS = 2;
+const VOICE_SHORT_TRANSCRIPT_MAX_DURATION_MS = 900;
 
 function normalizeSpeechForEchoGuard(text: string) {
   return text
@@ -242,8 +254,29 @@ function buildSpeechInstructions(text: string) {
   return `Say exactly the following text out loud. Do not add, remove, or paraphrase anything.\n\n${text}`;
 }
 
+function isLikelyGhostTranscript(text: string) {
+  const normalized = normalizeSpeechForEchoGuard(text);
+  if (!normalized) {
+    return false;
+  }
+
+  const words = normalized.split(" ").filter(Boolean);
+  if (
+    normalized.length > VOICE_SHORT_TRANSCRIPT_MAX_CHARS ||
+    words.length > VOICE_SHORT_TRANSCRIPT_MAX_WORDS
+  ) {
+    return false;
+  }
+
+  return new Set(words).size <= 1;
+}
+
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
-  const { voice = OPENAI_VOICE.Ash, threadId } = props || {};
+  const {
+    voice = OPENAI_VOICE.Ash,
+    threadId,
+    transcriptionLanguage,
+  } = props || {};
 
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
@@ -254,8 +287,33 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const [liveInputTranscript, setLiveInputTranscript] = useState("");
   const [error, setError] = useState<Error | null>(null);
 
+  const preferredVoiceLanguage = useMemo(() => {
+    const browserLanguages =
+      typeof navigator === "undefined"
+        ? []
+        : [...(navigator.languages ?? []), navigator.language];
+    const browserTimeZone =
+      typeof Intl === "undefined"
+        ? undefined
+        : Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const documentLanguage =
+      typeof document === "undefined"
+        ? undefined
+        : document.documentElement.lang;
+
+    return pickVoiceLanguageHint({
+      candidates: [
+        transcriptionLanguage,
+        ...browserLanguages,
+        documentLanguage,
+      ],
+      timeZone: browserTimeZone,
+    });
+  }, [transcriptionLanguage]);
+
   const latestOptionsRef = useRef(props);
   const threadIdRef = useRef(threadId);
+  const preferredVoiceLanguageRef = useRef(preferredVoiceLanguage);
   const isListeningRef = useRef(false);
   const isActiveRef = useRef(false);
   const transportRef = useRef<"webrtc" | "websocket" | null>(null);
@@ -269,6 +327,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const autoResumeListeningRef = useRef(false);
   const lastAssistantSpeechRef = useRef("");
   const assistantEchoGuardUntilRef = useRef(0);
+  const listeningEnabledAtRef = useRef(0);
+  const speechStartedAtRef = useRef<number | null>(null);
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const dataChannel = useRef<RTCDataChannel | null>(null);
   const webSocket = useRef<WebSocket | null>(null);
@@ -285,6 +345,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   useEffect(() => {
     latestOptionsRef.current = props;
   }, [props]);
+
+  useEffect(() => {
+    preferredVoiceLanguageRef.current = preferredVoiceLanguage;
+  }, [preferredVoiceLanguage]);
 
   useEffect(() => {
     threadIdRef.current = threadId;
@@ -479,6 +543,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           });
         }
         isListeningRef.current = true;
+        listeningEnabledAtRef.current = Date.now();
         setIsListening(true);
         return;
       }
@@ -508,6 +573,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
 
       isListeningRef.current = false;
+      listeningEnabledAtRef.current = 0;
       setIsListening(false);
     },
     [ensureAudioStream, startWebSocketAudioCapture, stopWebSocketAudioCapture],
@@ -607,6 +673,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         body: JSON.stringify({
           voice,
           agentId: latestOptionsRef.current?.agentId,
+          transcriptionLanguage: preferredVoiceLanguageRef.current,
         }),
       });
       if (!response.ok) {
@@ -652,6 +719,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
               id,
               message: lastMessage,
               agentId: latestOptionsRef.current?.agentId,
+              responseLanguageHint: preferredVoiceLanguageRef.current,
               mentions: latestOptionsRef.current?.mentions,
               allowedMcpServers: latestOptionsRef.current?.allowedMcpServers,
               allowedAppDefaultToolkit:
@@ -668,16 +736,26 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     status,
     sendMessage,
     setMessages,
+    addToolResult,
     stop: stopChatResponse,
     error: chatError,
   } = useChat<UIMessage>({
     id: threadId ?? "voice-chat-pending",
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
     transport,
     generateId: generateUUID,
     experimental_throttle: 32,
-    onFinish: ({ message, isAbort }) => {
+    onFinish: ({ message, messages: finishedMessages, isAbort }) => {
       if (isAbort) {
         void finishAgentTurn();
+        return;
+      }
+
+      if (
+        lastAssistantMessageIsCompleteWithToolCalls({
+          messages: finishedMessages,
+        })
+      ) {
         return;
       }
 
@@ -733,6 +811,35 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     [finishAgentTurn, sendMessage, setListeningState],
   );
 
+  const shouldIgnoreTranscript = useCallback((transcript: string) => {
+    const expectedLanguage = preferredVoiceLanguageRef.current;
+
+    if (
+      expectedLanguage &&
+      !isTranscriptCompatibleWithLanguage(transcript, expectedLanguage)
+    ) {
+      return true;
+    }
+
+    const speechDurationMs = speechStartedAtRef.current
+      ? Date.now() - speechStartedAtRef.current
+      : Number.POSITIVE_INFINITY;
+    const recentlyResumedListening =
+      listeningEnabledAtRef.current > 0 &&
+      Date.now() - listeningEnabledAtRef.current <=
+        VOICE_SHORT_TRANSCRIPT_GRACE_MS;
+
+    if (
+      recentlyResumedListening &&
+      speechDurationMs <= VOICE_SHORT_TRANSCRIPT_MAX_DURATION_MS &&
+      isLikelyGhostTranscript(transcript)
+    ) {
+      return true;
+    }
+
+    return false;
+  }, []);
+
   const waitForIceGatheringComplete = useCallback(
     (pc: RTCPeerConnection, timeoutMs = 4000) =>
       new Promise<void>((resolve) => {
@@ -767,6 +874,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     (event: OpenAIRealtimeServerEvent) => {
       switch (event.type) {
         case "input_audio_buffer.speech_started": {
+          speechStartedAtRef.current = Date.now();
           if (!turnLockedRef.current) {
             setIsUserSpeaking(true);
             setLiveInputTranscript("");
@@ -781,17 +889,21 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
         case "conversation.item.input_audio_transcription.completed": {
           setIsUserSpeaking(false);
-          if (event.transcript?.trim()) {
-            if (
-              Date.now() <= assistantEchoGuardUntilRef.current &&
-              isLikelyEchoTranscript(
-                event.transcript,
-                lastAssistantSpeechRef.current,
-              )
-            ) {
+          const transcript = event.transcript?.trim();
+          speechStartedAtRef.current = null;
+          if (transcript) {
+            if (shouldIgnoreTranscript(transcript)) {
+              setLiveInputTranscript("");
               break;
             }
-            void sendVoiceTurn(event.transcript);
+            if (
+              Date.now() <= assistantEchoGuardUntilRef.current &&
+              isLikelyEchoTranscript(transcript, lastAssistantSpeechRef.current)
+            ) {
+              setLiveInputTranscript("");
+              break;
+            }
+            void sendVoiceTurn(transcript);
           }
           break;
         }
@@ -836,6 +948,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       getPlaybackResumeDelayMs,
       playWebSocketAudioDelta,
       sendVoiceTurn,
+      shouldIgnoreTranscript,
     ],
   );
 
@@ -1329,6 +1442,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
       outputAudioTime.current = 0;
       tracks.current = [];
+      speechStartedAtRef.current = null;
+      listeningEnabledAtRef.current = 0;
       setIsActive(false);
       isActiveRef.current = false;
       setIsListening(false);
@@ -1380,6 +1495,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     liveInputTranscript,
     error,
     messages,
+    addToolResult,
     start,
     stop,
     startListening,

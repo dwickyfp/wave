@@ -30,6 +30,7 @@ export async function POST(request: Request) {
     message,
     mentions = [],
     agentId,
+    responseLanguageHint,
     allowedAppDefaultToolkit,
     allowedMcpServers,
   } = voiceAgentRequestSchema.parse(await request.json());
@@ -76,6 +77,7 @@ export async function POST(request: Request) {
       id,
       message,
       responseMode: "voice",
+      responseLanguageHint,
       mentions: forwardedMentions,
       allowedAppDefaultToolkit,
       allowedMcpServers,
