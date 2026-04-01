@@ -191,6 +191,12 @@ export async function POST(request: NextRequest) {
       `Using Azure Voice Direct config: ${resolvedEndpoint} / ${deploymentName}`,
     );
 
+    const websocketBase = gaEndpoint?.replace(/^https:/, "wss:");
+    const isGaDeployment = deploymentName.startsWith("gpt-realtime");
+    const websocketEndpointUrl = isGaDeployment
+      ? `${websocketBase}/openai/v1/realtime?model=${encodeURIComponent(deploymentName)}&api-key=${encodeURIComponent(apiKey)}`
+      : `${resolvedEndpoint.replace(/^https:/, "wss:")}/openai/realtime?api-version=${encodeURIComponent(apiVersion)}&deployment=${encodeURIComponent(deploymentName)}&api-key=${encodeURIComponent(apiKey)}`;
+
     const pendingSessionUpdate = {
       voice: resolvedVoice,
       instructions: systemPrompt,
@@ -214,7 +220,9 @@ export async function POST(request: NextRequest) {
           },
           realtimeEndpointUrl,
           proxySdpUrl,
+          websocketEndpointUrl,
           pendingSessionUpdate,
+          websocketSessionUpdate: pendingSessionUpdate,
         },
         { status: 200 },
       );
@@ -289,11 +297,13 @@ export async function POST(request: NextRequest) {
             expires_at: gaData.expires_at ?? 0,
           },
           realtimeEndpointUrl: gaRealtimeEndpointUrl,
+          websocketEndpointUrl,
           sdpAuthHeader: "Authorization",
           pendingSessionUpdate: {
             tools: bindingTools,
             input_audio_transcription: { model: "whisper-1" },
           },
+          websocketSessionUpdate: pendingSessionUpdate,
         },
         { status: 200 },
       );

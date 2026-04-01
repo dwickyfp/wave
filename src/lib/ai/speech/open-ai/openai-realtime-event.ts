@@ -72,6 +72,7 @@ export type OpenAIRealtimeServerEvent =
     }
   | {
       type:
+        | "response.audio.delta"
         | "response.audio_transcript.delta"
         | "response.output_audio_transcript.delta"
         | "response.output_text.delta";
