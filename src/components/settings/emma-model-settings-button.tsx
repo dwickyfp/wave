@@ -15,6 +15,7 @@ import {
   Database,
   ImageIcon,
   Loader2,
+  Mic2,
   SlidersHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -37,6 +38,7 @@ const IMAGE_NEIGHBOR_CONTEXT_KEY =
   "/api/settings/knowledge-image-neighbor-context-enabled";
 const JUDGE_MODEL_KEY = "/api/settings/evaluation-judge-model";
 const EMBEDDING_MODEL_KEY = "/api/settings/self-learning-embedding-model";
+const VOICE_CHAT_MODEL_KEY = "/api/settings/voice-chat-model";
 
 type ContextXModelConfig = {
   provider: string;
@@ -169,6 +171,10 @@ export function EmmaModelSettingsButton() {
       EMBEDDING_MODEL_KEY,
       fetcher,
     );
+  const { data: voiceChatConfig } = useSWR<ContextXModelConfig>(
+    VOICE_CHAT_MODEL_KEY,
+    fetcher,
+  );
 
   const [parseValue, setParseValue] = useState(NONE_VALUE);
   const [contextValue, setContextValue] = useState(NONE_VALUE);
@@ -177,6 +183,7 @@ export function EmmaModelSettingsButton() {
     useState(true);
   const [judgeValue, setJudgeValue] = useState(NONE_VALUE);
   const [embeddingValue, setEmbeddingValue] = useState(NONE_VALUE);
+  const [voiceChatValue, setVoiceChatValue] = useState(NONE_VALUE);
 
   useEffect(() => {
     setParseValue(getConfiguredValue(parseConfig));
@@ -202,6 +209,10 @@ export function EmmaModelSettingsButton() {
     setEmbeddingValue(getConfiguredValue(embeddingConfig));
   }, [embeddingConfig]);
 
+  useEffect(() => {
+    setVoiceChatValue(getConfiguredValue(voiceChatConfig));
+  }, [voiceChatConfig]);
+
   const llmProviders = buildProviders(providers, "llm");
   const embeddingProviders = buildProviders(providers, "embedding");
 
@@ -212,6 +223,7 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabledConfig ?? true;
   const currentJudgeValue = getConfiguredValue(judgeConfig);
   const currentEmbeddingValue = getConfiguredValue(embeddingConfig);
+  const currentVoiceChatValue = getConfiguredValue(voiceChatConfig);
 
   const configuredCount = [
     parseConfig,
@@ -219,6 +231,7 @@ export function EmmaModelSettingsButton() {
     imageConfig,
     judgeConfig,
     embeddingConfig,
+    voiceChatConfig,
   ].filter(Boolean).length;
   const isLoading =
     parseConfig === undefined ||
@@ -226,14 +239,16 @@ export function EmmaModelSettingsButton() {
     imageConfig === undefined ||
     imageNeighborContextEnabledConfig === undefined ||
     judgeConfig === undefined ||
-    embeddingConfig === undefined;
+    embeddingConfig === undefined ||
+    voiceChatConfig === undefined;
   const isDirty =
     parseValue !== currentParseValue ||
     contextValue !== currentContextValue ||
     imageValue !== currentImageValue ||
     imageNeighborContextEnabled !== currentImageNeighborContextEnabled ||
     judgeValue !== currentJudgeValue ||
-    embeddingValue !== currentEmbeddingValue;
+    embeddingValue !== currentEmbeddingValue ||
+    voiceChatValue !== currentVoiceChatValue;
 
   async function saveSetting(url: string, value: string) {
     const parsed = parseModelValue(value);
@@ -311,6 +326,12 @@ export function EmmaModelSettingsButton() {
         value: embeddingValue,
         kind: "model" as const,
       },
+      {
+        label: "Voice chat",
+        url: VOICE_CHAT_MODEL_KEY,
+        value: voiceChatValue,
+        kind: "model" as const,
+      },
     ];
 
     const results = await Promise.allSettled(
@@ -328,6 +349,7 @@ export function EmmaModelSettingsButton() {
       swrMutate(IMAGE_NEIGHBOR_CONTEXT_KEY),
       swrMutate(JUDGE_MODEL_KEY),
       swrMutate(EMBEDDING_MODEL_KEY),
+      swrMutate(VOICE_CHAT_MODEL_KEY),
     ]);
 
     const failedLabels = tasks
@@ -369,7 +391,7 @@ export function EmmaModelSettingsButton() {
             Emma Models
           </span>
           <span className="text-muted-foreground text-xs">
-            {configuredCount}/5 configured
+            {configuredCount}/6 configured
           </span>
         </Button>
       </PopoverTrigger>
@@ -455,6 +477,15 @@ export function EmmaModelSettingsButton() {
               providers={embeddingProviders}
               placeholder="Select embedding model"
               icon={Database}
+            />
+            <SettingCard
+              title="Voice Chat"
+              description="Default model used for real-time voice chat sessions. Should be a Realtime-capable model (e.g. gpt-4o-realtime-preview)."
+              value={voiceChatValue}
+              onValueChange={setVoiceChatValue}
+              providers={llmProviders}
+              placeholder="Select voice chat model"
+              icon={Mic2}
             />
           </div>
 

@@ -1,7 +1,11 @@
 "use client";
 
 import { getStaticToolName, isStaticToolUIPart, TextPart } from "ai";
-import { DEFAULT_VOICE_TOOLS, UIMessageWithCompleted } from "lib/ai/speech";
+import {
+  DEFAULT_VOICE_TOOLS,
+  UIMessageWithCompleted,
+  VOICE_CHAT_MODELS,
+} from "lib/ai/speech";
 
 import {
   OPENAI_VOICE,
@@ -41,6 +45,7 @@ import {
   DropdownMenuTrigger,
 } from "ui/dropdown-menu";
 import { GeminiIcon } from "ui/gemini-icon";
+import { MicrosoftIcon } from "ui/microsoft-icon";
 import { MessageLoading } from "ui/message-loading";
 import { OpenAIIcon } from "ui/openai-icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
@@ -137,6 +142,7 @@ export function ChatBotVoice() {
   } = OpenAIVoiceChat({
     toolMentions,
     agentId,
+    provider: voiceChat.options.provider,
     ...voiceChat.options.providerOptions,
   });
 
@@ -358,6 +364,7 @@ export function ChatBotVoice() {
                     align="start"
                   >
                     <DropdownMenuGroup className="cursor-pointer">
+                      {/* ── OpenAI ── */}
                       <DropdownMenuSub>
                         <DropdownMenuSubTrigger
                           className="flex items-center gap-2 cursor-pointer"
@@ -365,58 +372,228 @@ export function ChatBotVoice() {
                         >
                           <OpenAIIcon className="size-3.5 stroke-none fill-foreground" />
                           Open AI
+                          {voiceChat.options.provider === "openai" && (
+                            <CheckIcon className="size-3.5 ml-auto" />
+                          )}
                         </DropdownMenuSubTrigger>
                         <DropdownMenuPortal>
                           <DropdownMenuSubContent>
-                            {Object.entries(OPENAI_VOICE).map(
-                              ([key, value]) => (
-                                <DropdownMenuItem
-                                  className="cursor-pointer flex items-center justify-between"
-                                  onClick={() =>
-                                    appStoreMutate({
-                                      voiceChat: {
-                                        ...voiceChat,
-                                        options: {
-                                          provider: "openai",
-                                          providerOptions: {
-                                            voice: value,
-                                          },
-                                        },
-                                      },
-                                    })
-                                  }
-                                  key={key}
-                                >
-                                  {key}
-
-                                  {value ===
-                                    voiceChat.options.providerOptions
-                                      ?.voice && (
-                                    <CheckIcon className="size-3.5" />
+                            {/* Model */}
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger
+                                className="cursor-pointer"
+                                icon=""
+                              >
+                                Model
+                              </DropdownMenuSubTrigger>
+                              <DropdownMenuPortal>
+                                <DropdownMenuSubContent>
+                                  {VOICE_CHAT_MODELS.openai.map(
+                                    ({ id, label }) => (
+                                      <DropdownMenuItem
+                                        key={id}
+                                        className="cursor-pointer flex items-center justify-between"
+                                        onClick={() =>
+                                          appStoreMutate({
+                                            voiceChat: {
+                                              ...voiceChat,
+                                              options: {
+                                                provider: "openai",
+                                                providerOptions: {
+                                                  ...voiceChat.options
+                                                    .providerOptions,
+                                                  model: id,
+                                                },
+                                              },
+                                            },
+                                          })
+                                        }
+                                      >
+                                        {label}
+                                        {voiceChat.options.provider ===
+                                          "openai" &&
+                                          voiceChat.options.providerOptions
+                                            ?.model === id && (
+                                            <CheckIcon className="size-3.5" />
+                                          )}
+                                      </DropdownMenuItem>
+                                    ),
                                   )}
-                                </DropdownMenuItem>
-                              ),
-                            )}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuPortal>
+                            </DropdownMenuSub>
+                            {/* Voice */}
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger
+                                className="cursor-pointer"
+                                icon=""
+                              >
+                                Voice
+                              </DropdownMenuSubTrigger>
+                              <DropdownMenuPortal>
+                                <DropdownMenuSubContent>
+                                  {Object.entries(OPENAI_VOICE).map(
+                                    ([key, value]) => (
+                                      <DropdownMenuItem
+                                        className="cursor-pointer flex items-center justify-between"
+                                        onClick={() =>
+                                          appStoreMutate({
+                                            voiceChat: {
+                                              ...voiceChat,
+                                              options: {
+                                                provider: "openai",
+                                                providerOptions: {
+                                                  ...voiceChat.options
+                                                    .providerOptions,
+                                                  voice: value,
+                                                },
+                                              },
+                                            },
+                                          })
+                                        }
+                                        key={key}
+                                      >
+                                        {key}
+                                        {voiceChat.options.provider ===
+                                          "openai" &&
+                                          value ===
+                                            voiceChat.options.providerOptions
+                                              ?.voice && (
+                                            <CheckIcon className="size-3.5" />
+                                          )}
+                                      </DropdownMenuItem>
+                                    ),
+                                  )}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuPortal>
+                            </DropdownMenuSub>
                           </DropdownMenuSubContent>
                         </DropdownMenuPortal>
                       </DropdownMenuSub>
+
+                      {/* ── Azure OpenAI ── */}
                       <DropdownMenuSub>
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger
-                            className="flex items-center gap-2 text-muted-foreground"
-                            icon=""
-                          >
-                            <GeminiIcon className="size-3.5" />
-                            Gemini
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuPortal>
-                            <DropdownMenuSubContent>
-                              <div className="text-xs text-muted-foreground p-6">
-                                Not Implemented Yet
-                              </div>
-                            </DropdownMenuSubContent>
-                          </DropdownMenuPortal>
-                        </DropdownMenuSub>
+                        <DropdownMenuSubTrigger
+                          className="flex items-center gap-2 cursor-pointer"
+                          icon=""
+                        >
+                          <MicrosoftIcon className="size-3.5" />
+                          Azure OpenAI
+                          {voiceChat.options.provider === "azure" && (
+                            <CheckIcon className="size-3.5 ml-auto" />
+                          )}
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuPortal>
+                          <DropdownMenuSubContent>
+                            {/* Model */}
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger
+                                className="cursor-pointer"
+                                icon=""
+                              >
+                                Model
+                              </DropdownMenuSubTrigger>
+                              <DropdownMenuPortal>
+                                <DropdownMenuSubContent>
+                                  {VOICE_CHAT_MODELS.azure.map(
+                                    ({ id, label }) => (
+                                      <DropdownMenuItem
+                                        key={id}
+                                        className="cursor-pointer flex items-center justify-between"
+                                        onClick={() =>
+                                          appStoreMutate({
+                                            voiceChat: {
+                                              ...voiceChat,
+                                              options: {
+                                                provider: "azure",
+                                                providerOptions: {
+                                                  ...voiceChat.options
+                                                    .providerOptions,
+                                                  model: id,
+                                                },
+                                              },
+                                            },
+                                          })
+                                        }
+                                      >
+                                        {label}
+                                        {voiceChat.options.provider ===
+                                          "azure" &&
+                                          voiceChat.options.providerOptions
+                                            ?.model === id && (
+                                            <CheckIcon className="size-3.5" />
+                                          )}
+                                      </DropdownMenuItem>
+                                    ),
+                                  )}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuPortal>
+                            </DropdownMenuSub>
+                            {/* Voice */}
+                            <DropdownMenuSub>
+                              <DropdownMenuSubTrigger
+                                className="cursor-pointer"
+                                icon=""
+                              >
+                                Voice
+                              </DropdownMenuSubTrigger>
+                              <DropdownMenuPortal>
+                                <DropdownMenuSubContent>
+                                  {Object.entries(OPENAI_VOICE).map(
+                                    ([key, value]) => (
+                                      <DropdownMenuItem
+                                        className="cursor-pointer flex items-center justify-between"
+                                        onClick={() =>
+                                          appStoreMutate({
+                                            voiceChat: {
+                                              ...voiceChat,
+                                              options: {
+                                                provider: "azure",
+                                                providerOptions: {
+                                                  ...voiceChat.options
+                                                    .providerOptions,
+                                                  voice: value,
+                                                },
+                                              },
+                                            },
+                                          })
+                                        }
+                                        key={key}
+                                      >
+                                        {key}
+                                        {voiceChat.options.provider ===
+                                          "azure" &&
+                                          value ===
+                                            voiceChat.options.providerOptions
+                                              ?.voice && (
+                                            <CheckIcon className="size-3.5" />
+                                          )}
+                                      </DropdownMenuItem>
+                                    ),
+                                  )}
+                                </DropdownMenuSubContent>
+                              </DropdownMenuPortal>
+                            </DropdownMenuSub>
+                          </DropdownMenuSubContent>
+                        </DropdownMenuPortal>
+                      </DropdownMenuSub>
+
+                      {/* ── Gemini (not implemented) ── */}
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger
+                          className="flex items-center gap-2 text-muted-foreground"
+                          icon=""
+                        >
+                          <GeminiIcon className="size-3.5" />
+                          Gemini
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuPortal>
+                          <DropdownMenuSubContent>
+                            <div className="text-xs text-muted-foreground p-6">
+                              Not Implemented Yet
+                            </div>
+                          </DropdownMenuSubContent>
+                        </DropdownMenuPortal>
                       </DropdownMenuSub>
                     </DropdownMenuGroup>
                   </DropdownMenuContent>

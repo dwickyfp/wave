@@ -77,8 +77,11 @@ const createUIMessage = (m: {
 };
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
-  const { model = "gpt-4o-realtime-preview", voice = OPENAI_VOICE.Ash } =
-    props || {};
+  const {
+    model = "gpt-4o-realtime-preview",
+    voice = OPENAI_VOICE.Ash,
+    provider = "openai",
+  } = props || {};
 
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
@@ -144,6 +147,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           body: JSON.stringify({
             model,
             voice,
+            provider,
             agentId: props?.agentId,
             mentions: props?.toolMentions,
           }),
@@ -158,7 +162,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
 
       return session;
-    }, [model, voice, props?.toolMentions, props?.agentId]);
+    }, [model, voice, provider, props?.toolMentions, props?.agentId]);
 
   const updateUIMessage = useCallback(
     (
@@ -386,6 +390,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       const session = await createSession();
       console.log({ session });
       const sessionToken = session.client_secret.value;
+      const realtimeEndpointUrl: string =
+        session.realtimeEndpointUrl || "https://api.openai.com/v1/realtime";
       const pc = new RTCPeerConnection();
       if (!audioElement.current) {
         audioElement.current = document.createElement("audio");
@@ -442,7 +448,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      const sdpResponse = await fetch(`https://api.openai.com/v1/realtime`, {
+      const sdpResponse = await fetch(realtimeEndpointUrl, {
         method: "POST",
         body: offer.sdp,
         headers: {

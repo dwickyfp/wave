@@ -22,6 +22,7 @@ import globalLogger from "lib/logger";
 import { colorize } from "consola/utils";
 import { getUserPreferences } from "lib/user/server";
 import { ChatMention } from "app-types/chat";
+import { settingsRepository } from "lib/db/repository";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `OpenAI Realtime API: `),
@@ -29,28 +30,47 @@ const logger = globalLogger.withDefaults({
 
 export async function POST(request: NextRequest) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
-      return new Response(
-        JSON.stringify({ error: "OPENAI_API_KEY is not set" }),
-        {
-          status: 500,
-        },
-      );
-    }
-
     const session = await getSession();
 
     if (!session?.user.id) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const { voice, mentions, agentId } = (await request.json()) as {
-      model: string;
+    const {
+      voice,
+      mentions,
+      agentId,
+      provider = "openai",
+      model,
+    } = (await request.json()) as {
+      model?: string;
       voice: string;
       agentId?: string;
       mentions: ChatMention[];
+      provider?: "openai" | "azure";
     };
 
+    // ── Early key validation ─────────────────────────────────────────────────
+    if (provider === "azure") {
+      const azureCheck = await settingsRepository.getProviderByName("azure");
+      const hasKey = !!(azureCheck?.apiKey || process.env.AZURE_API_KEY);
+      if (!hasKey) {
+        return new Response(
+          JSON.stringify({
+            error:
+              "Azure OpenAI API key is not configured. Please add it in Settings → Providers.",
+          }),
+          { status: 500 },
+        );
+      }
+    } else if (!process.env.OPENAI_API_KEY) {
+      return new Response(
+        JSON.stringify({ error: "OPENAI_API_KEY is not set" }),
+        { status: 500 },
+      );
+    }
+
+    // ── Shared: agent, MCP tools, system prompt ──────────────────────────────
     const agent = await rememberAgentAction(agentId, session.user.id);
 
     agentId && logger.info(`[${agentId}] Agent: ${agent?.name}`);
@@ -63,7 +83,6 @@ export async function POST(request: NextRequest) {
     });
 
     const toolNames = Object.keys(allowedMcpTools ?? {});
-
     if (toolNames.length > 0) {
       logger.info(`${toolNames.length} tools found`);
     } else {
@@ -88,9 +107,7 @@ export async function POST(request: NextRequest) {
       .orElse({});
 
     const openAITools = Object.entries(allowedMcpTools ?? {}).map(
-      ([name, tool]) => {
-        return vercelAIToolToOpenAITool(tool, name);
-      },
+      ([name, tool]) => vercelAIToolToOpenAITool(tool, name),
     );
 
     const systemPrompt = mergeSystemPrompt(
@@ -105,30 +122,99 @@ export async function POST(request: NextRequest) {
 
     const bindingTools = [...openAITools, ...DEFAULT_VOICE_TOOLS];
 
+    const voiceChatModelSetting = (await settingsRepository.getSetting(
+      "voice-chat-model",
+    )) as { provider?: string; model?: string } | null;
+
+    const resolvedModel =
+      model || voiceChatModelSetting?.model || "gpt-4o-realtime-preview";
+    const resolvedVoice = voice || "alloy";
+
+    const sessionBody = JSON.stringify({
+      model: resolvedModel,
+      voice: resolvedVoice,
+      input_audio_transcription: { model: "whisper-1" },
+      instructions: systemPrompt,
+      tools: bindingTools,
+    });
+
+    // ── Provider-specific: create session ────────────────────────────────────
+    if (provider === "azure") {
+      const azureProviderConfig =
+        await settingsRepository.getProviderByName("azure");
+
+      const apiKey =
+        azureProviderConfig?.apiKey || process.env.AZURE_API_KEY || "";
+      const settings = azureProviderConfig?.settings ?? {};
+      const baseUrl = azureProviderConfig?.baseUrl ?? null;
+
+      const configuredBaseUrl =
+        (settings["baseURL"] as string | undefined)?.trim() ||
+        (settings["baseUrl"] as string | undefined)?.trim() ||
+        (baseUrl && /^https?:\/\//.test(baseUrl) ? baseUrl : null);
+
+      const configuredResourceName =
+        (settings["resourceName"] as string | undefined)?.trim() ||
+        (settings["resource"] as string | undefined)?.trim() ||
+        (baseUrl && !/^https?:\/\//.test(baseUrl) ? baseUrl : null) ||
+        process.env.AZURE_RESOURCE_NAME ||
+        null;
+
+      const resolvedEndpoint = configuredBaseUrl
+        ? configuredBaseUrl.replace(/\/$/, "")
+        : configuredResourceName
+          ? `https://${configuredResourceName}.openai.azure.com`
+          : null;
+
+      if (!resolvedEndpoint) {
+        return new Response(
+          JSON.stringify({
+            error:
+              "Azure OpenAI endpoint is not configured. Please set Base URL or Resource Name in Settings → Providers.",
+          }),
+          { status: 500 },
+        );
+      }
+
+      const apiVersion =
+        (settings["apiVersion"] as string | undefined)?.trim() ||
+        process.env.AZURE_OPENAI_API_VERSION ||
+        "2025-01-01-preview";
+
+      const sessionUrl = `${resolvedEndpoint}/openai/realtime/sessions?api-version=${apiVersion}`;
+      const realtimeEndpointUrl = `${resolvedEndpoint}/openai/realtime?api-version=${apiVersion}`;
+
+      const r = await fetch(sessionUrl, {
+        method: "POST",
+        headers: { "api-key": apiKey, "Content-Type": "application/json" },
+        body: sessionBody,
+      });
+
+      const sessionData = await r.json();
+      return Response.json(
+        { ...sessionData, realtimeEndpointUrl },
+        { status: 200 },
+      );
+    }
+
+    // ── OpenAI path ───────────────────────────────────────────────────────────
     const r = await fetch("https://api.openai.com/v1/realtime/sessions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
-
-      body: JSON.stringify({
-        model: "gpt-4o-realtime-preview",
-        voice: voice || "alloy",
-        input_audio_transcription: {
-          model: "whisper-1",
-        },
-        instructions: systemPrompt,
-        tools: bindingTools,
-      }),
+      body: sessionBody,
     });
 
-    return new Response(r.body, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
+    const sessionData = await r.json();
+    return Response.json(
+      {
+        ...sessionData,
+        realtimeEndpointUrl: "https://api.openai.com/v1/realtime",
       },
-    });
+      { status: 200 },
+    );
   } catch (error: any) {
     console.error("Error:", error);
     return new Response(JSON.stringify({ error: error.message }), {

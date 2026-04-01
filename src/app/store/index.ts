@@ -65,8 +65,11 @@ export interface AppState {
     isOpen: boolean;
     agentId?: string;
     options: {
-      provider: string;
-      providerOptions?: Record<string, any>;
+      provider: "openai" | "azure";
+      providerOptions?: {
+        voice?: string;
+        model?: string;
+      };
     };
   };
   pendingThreadMention?: ChatMention;
@@ -126,7 +129,8 @@ const initialState: AppState = {
     options: {
       provider: "openai",
       providerOptions: {
-        model: OPENAI_VOICE["Alloy"],
+        voice: OPENAI_VOICE["Ash"],
+        model: "gpt-4o-realtime-preview",
       },
     },
   },

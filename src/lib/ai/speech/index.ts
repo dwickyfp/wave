@@ -3,6 +3,22 @@ import { ChatMention } from "app-types/chat";
 
 export type UIMessageWithCompleted = UIMessage & { completed: boolean };
 
+export type VoiceProvider = "openai" | "azure";
+
+export const VOICE_CHAT_MODELS: Record<
+  VoiceProvider,
+  { id: string; label: string }[]
+> = {
+  openai: [
+    { id: "gpt-4o-realtime-preview", label: "GPT-4o Realtime" },
+    { id: "gpt-4o-mini-realtime-preview", label: "GPT-4o Mini Realtime" },
+  ],
+  azure: [
+    { id: "gpt-4o-realtime-preview", label: "GPT-4o Realtime" },
+    { id: "gpt-4o-mini-realtime-preview", label: "GPT-4o Mini Realtime" },
+  ],
+};
+
 export interface VoiceChatSession {
   isActive: boolean;
   isListening: boolean;
@@ -20,6 +36,7 @@ export interface VoiceChatSession {
 export type VoiceChatOptions = {
   toolMentions?: ChatMention[];
   agentId?: string;
+  provider?: VoiceProvider;
   model?: string;
   voice?: string;
 };
