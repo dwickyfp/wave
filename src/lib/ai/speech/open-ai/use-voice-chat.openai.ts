@@ -1,23 +1,23 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { TextPart, ToolUIPart } from "ai";
+import { generateUUID } from "lib/utils";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   DEFAULT_VOICE_TOOLS,
   UIMessageWithCompleted,
   VoiceChatOptions,
   VoiceChatSession,
 } from "..";
-import { generateUUID } from "lib/utils";
-import { TextPart, ToolUIPart } from "ai";
 import {
   OpenAIRealtimeServerEvent,
   OpenAIRealtimeSession,
 } from "./openai-realtime-event";
 
-import { useTheme } from "next-themes";
-import { extractMCPToolId } from "lib/ai/mcp/mcp-tool-id";
 import { callMcpToolByServerNameAction } from "@/app/api/mcp/actions";
 import { appStore } from "@/app/store";
+import { extractMCPToolId } from "lib/ai/mcp/mcp-tool-id";
+import { useTheme } from "next-themes";
 
 export const OPENAI_VOICE = {
   Alloy: "alloy",
@@ -380,6 +380,20 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     outputAudioTime.current = startAt + buffer.duration;
   }, []);
 
+  const ensureAudioElementPlayback = useCallback(async () => {
+    if (!audioElement.current) {
+      audioElement.current = document.createElement("audio");
+      audioElement.current.style.display = "none";
+      audioElement.current.autoplay = true;
+      audioElement.current.setAttribute("playsinline", "true");
+      document.body.appendChild(audioElement.current);
+    }
+
+    if (audioElement.current.paused) {
+      await audioElement.current.play();
+    }
+  }, []);
+
   const sendRealtimeEvent = useCallback((event: object) => {
     const payload = JSON.stringify(event);
     if (transportRef.current === "websocket" && webSocket.current) {
@@ -574,7 +588,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       sendRealtimeEvent(event);
       sendRealtimeEvent({ type: "response.create" });
-      sendRealtimeEvent({ type: "response.create" });
     },
     [
       sendRealtimeEvent,
@@ -676,13 +689,16 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           });
           break;
         }
-        case "response.audio.delta": {
+        case "response.audio.delta":
+        case "response.output_audio.delta": {
           playWebSocketAudioDelta(event.delta).catch((playbackError) => {
             console.error("voice websocket playback error", playbackError);
           });
           break;
         }
-        case "response.audio.done": {
+        case "response.audio.done":
+        case "response.output_audio.done": {
+          setIsAssistantSpeaking(false);
           break;
         }
         case "output_audio_buffer.started": {
@@ -759,19 +775,23 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         socket.addEventListener("open", async () => {
           try {
             await startWebSocketAudioCapture(socket);
-            const websocketSessionUpdate = {
-              ...(session.websocketSessionUpdate ||
-                session.pendingSessionUpdate),
-              input_audio_format: "pcm16",
-              output_audio_format: "pcm16",
-              turn_detection: {
-                type: "server_vad",
-                threshold: 0.5,
-                prefix_padding_ms: 300,
-                silence_duration_ms: 250,
-                create_response: true,
-              },
-            };
+            const baseSessionUpdate =
+              session.websocketSessionUpdate || session.pendingSessionUpdate;
+            const websocketSessionUpdate =
+              baseSessionUpdate?.audio || baseSessionUpdate?.output_modalities
+                ? baseSessionUpdate
+                : {
+                    ...baseSessionUpdate,
+                    input_audio_format: "pcm16",
+                    output_audio_format: "pcm16",
+                    turn_detection: {
+                      type: "server_vad",
+                      threshold: 0.5,
+                      prefix_padding_ms: 300,
+                      silence_duration_ms: 250,
+                      create_response: true,
+                    },
+                  };
             socket.send(
               JSON.stringify({
                 type: "session.update",
@@ -848,12 +868,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         iceServers: getVoiceIceServers(),
         iceCandidatePoolSize: 4,
       });
-      if (!audioElement.current) {
-        audioElement.current = document.createElement("audio");
-        audioElement.current.style.display = "none";
-        document.body.appendChild(audioElement.current);
-      }
-      audioElement.current.autoplay = true;
+      await ensureAudioElementPlayback().catch(() => {});
       pc.onconnectionstatechange = () => {
         if (
           transportRef.current === "websocket" ||
@@ -946,7 +961,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       };
       pc.ontrack = (e) => {
         if (audioElement.current) {
-          audioElement.current.srcObject = e.streams[0];
+          audioElement.current.srcObject =
+            e.streams[0] ?? new MediaStream([e.track]);
+          ensureAudioElementPlayback().catch((playbackError) => {
+            console.error("voice webrtc playback error", playbackError);
+          });
         }
       };
       if (!audioStream.current) {
@@ -1152,6 +1171,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     isActive,
     isLoading,
     createSession,
+    ensureAudioElementPlayback,
     handleServerEvent,
     startWebSocketFallback,
     voice,
@@ -1181,6 +1201,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       if (outputAudioContext.current) {
         await outputAudioContext.current.close().catch(() => {});
         outputAudioContext.current = null;
+      }
+      if (audioElement.current) {
+        audioElement.current.pause();
+        audioElement.current.srcObject = null;
       }
       outputAudioTime.current = 0;
       tracks.current = [];

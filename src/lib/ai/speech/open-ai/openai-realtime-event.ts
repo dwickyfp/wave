@@ -73,6 +73,7 @@ export type OpenAIRealtimeServerEvent =
   | {
       type:
         | "response.audio.delta"
+        | "response.output_audio.delta"
         | "response.audio_transcript.delta"
         | "response.output_audio_transcript.delta"
         | "response.output_text.delta";
@@ -96,7 +97,7 @@ export type OpenAIRealtimeServerEvent =
       transcript: string;
     }
   | {
-      type: "response.audio.done";
+      type: "response.audio.done" | "response.output_audio.done";
       event_id: string;
       response_id: string;
       item_id: string;

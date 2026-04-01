@@ -1,32 +1,34 @@
-import { NextRequest } from "next/server";
-import { getSession } from "auth/server";
 import { VercelAIMcpTool } from "app-types/mcp";
+import { getSession } from "auth/server";
+import { resolveAgentPersonalizationPrompt } from "lib/ai/agent/personalization";
+import {
+  buildMcpServerCustomizationsSystemPrompt,
+  buildSpeechSystemPrompt,
+} from "lib/ai/prompts";
+import { NextRequest } from "next/server";
 import {
   filterMcpServerCustomizations,
   loadMcpTools,
   mergeSystemPrompt,
 } from "../shared.chat";
-import {
-  buildMcpServerCustomizationsSystemPrompt,
-  buildSpeechSystemPrompt,
-} from "lib/ai/prompts";
-import { resolveAgentPersonalizationPrompt } from "lib/ai/agent/personalization";
 
-import { safe } from "ts-safe";
+import { ChatMention } from "app-types/chat";
+import { colorize } from "consola/utils";
 import { DEFAULT_VOICE_TOOLS } from "lib/ai/speech";
+import { settingsRepository } from "lib/db/repository";
+import globalLogger from "lib/logger";
+import { getUserPreferences } from "lib/user/server";
+import { safe } from "ts-safe";
 import {
   rememberAgentAction,
   rememberMcpServerCustomizationsAction,
 } from "../actions";
-import globalLogger from "lib/logger";
-import { colorize } from "consola/utils";
-import { getUserPreferences } from "lib/user/server";
-import { ChatMention } from "app-types/chat";
-import { settingsRepository } from "lib/db/repository";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `OpenAI Realtime API: `),
 });
+
+const VOICE_AUDIO_SAMPLE_RATE = 24_000;
 
 // When AZURE_VOICE_SKIP_TLS_VERIFY=true the Azure Voice fetch calls bypass
 // TLS certificate verification. Use this only in environments where the network
@@ -65,6 +67,71 @@ function normalizeAzureVoiceEndpoint(
   }
 
   return url.toString().replace(/\/$/, "");
+}
+
+function buildVoiceTurnDetection() {
+  return {
+    type: "server_vad" as const,
+    threshold: 0.5,
+    prefix_padding_ms: 300,
+    silence_duration_ms: 250,
+    create_response: true,
+  };
+}
+
+function buildLegacyVoiceSessionConfig({
+  voice,
+  instructions,
+  tools,
+}: {
+  voice: string;
+  instructions: string;
+  tools: unknown[];
+}) {
+  return {
+    modalities: ["text", "audio"],
+    voice,
+    instructions,
+    tools,
+    input_audio_format: "pcm16",
+    output_audio_format: "pcm16",
+    input_audio_transcription: { model: "whisper-1" },
+    turn_detection: buildVoiceTurnDetection(),
+  };
+}
+
+function buildGaVoiceSessionConfig({
+  voice,
+  instructions,
+  tools,
+}: {
+  voice: string;
+  instructions: string;
+  tools: unknown[];
+}) {
+  return {
+    type: "realtime",
+    instructions,
+    tools,
+    output_modalities: ["audio"],
+    audio: {
+      input: {
+        transcription: { model: "whisper-1" },
+        format: {
+          type: "audio/pcm",
+          rate: VOICE_AUDIO_SAMPLE_RATE,
+        },
+        turn_detection: buildVoiceTurnDetection(),
+      },
+      output: {
+        voice,
+        format: {
+          type: "audio/pcm",
+          rate: VOICE_AUDIO_SAMPLE_RATE,
+        },
+      },
+    },
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -137,6 +204,16 @@ export async function POST(request: NextRequest) {
 
     const bindingTools = [...openAITools, ...DEFAULT_VOICE_TOOLS];
     const resolvedVoice = voice || "alloy";
+    const legacySessionConfig = buildLegacyVoiceSessionConfig({
+      voice: resolvedVoice,
+      instructions: systemPrompt,
+      tools: bindingTools,
+    });
+    const gaSessionConfig = buildGaVoiceSessionConfig({
+      voice: resolvedVoice,
+      instructions: systemPrompt,
+      tools: bindingTools,
+    });
     const azureVoiceConfig = (await settingsRepository.getSetting(
       "voice-chat-azure",
     )) as {
@@ -197,13 +274,6 @@ export async function POST(request: NextRequest) {
       ? `${websocketBase}/openai/v1/realtime?model=${encodeURIComponent(deploymentName)}&api-key=${encodeURIComponent(apiKey)}`
       : `${resolvedEndpoint.replace(/^https:/, "wss:")}/openai/realtime?api-version=${encodeURIComponent(apiVersion)}&deployment=${encodeURIComponent(deploymentName)}&api-key=${encodeURIComponent(apiKey)}`;
 
-    const pendingSessionUpdate = {
-      voice: resolvedVoice,
-      instructions: systemPrompt,
-      tools: bindingTools,
-      input_audio_transcription: { model: "whisper-1" },
-    };
-
     const runLegacyPreview = async (reason?: string) => {
       if (reason) {
         logger.info(`Using Azure legacy preview realtime (${reason})`);
@@ -221,8 +291,8 @@ export async function POST(request: NextRequest) {
           realtimeEndpointUrl,
           proxySdpUrl,
           websocketEndpointUrl,
-          pendingSessionUpdate,
-          websocketSessionUpdate: pendingSessionUpdate,
+          pendingSessionUpdate: legacySessionConfig,
+          websocketSessionUpdate: legacySessionConfig,
         },
         { status: 200 },
       );
@@ -233,10 +303,8 @@ export async function POST(request: NextRequest) {
       const gaRealtimeEndpointUrl = `${gaEndpoint}/openai/v1/realtime/calls?webrtcfilter=on`;
       const gaBody = JSON.stringify({
         session: {
-          type: "realtime",
+          ...gaSessionConfig,
           model: deploymentName,
-          instructions: systemPrompt,
-          audio: { output: { voice: resolvedVoice } },
         },
       });
 
@@ -299,11 +367,8 @@ export async function POST(request: NextRequest) {
           realtimeEndpointUrl: gaRealtimeEndpointUrl,
           websocketEndpointUrl,
           sdpAuthHeader: "Authorization",
-          pendingSessionUpdate: {
-            tools: bindingTools,
-            input_audio_transcription: { model: "whisper-1" },
-          },
-          websocketSessionUpdate: pendingSessionUpdate,
+          pendingSessionUpdate: gaSessionConfig,
+          websocketSessionUpdate: gaSessionConfig,
         },
         { status: 200 },
       );
