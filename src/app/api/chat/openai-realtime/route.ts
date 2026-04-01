@@ -81,7 +81,7 @@ function buildGaVoiceSessionConfig({ voice }: { voice: string }) {
   return {
     type: "realtime",
     instructions: TRANSPORT_ONLY_INSTRUCTIONS,
-    output_modalities: ["text", "audio"],
+    output_modalities: ["audio"],
     audio: {
       input: {
         transcription: { model: "whisper-1" },
