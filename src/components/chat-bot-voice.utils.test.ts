@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildVoiceLatestTurnModel,
   extractMarkdownTableBlocks,
+  getVoiceArtifactGridLayout,
 } from "./chat-bot-voice.utils";
 
 describe("buildVoiceLatestTurnModel", () => {
@@ -31,6 +32,7 @@ describe("buildVoiceLatestTurnModel", () => {
 
     expect(model.floatingPromptText).toBe("show me a line chart");
     expect(model.hiddenAssistantText).toBe("Here is the latest chart.");
+    expect(model.hasRenderableArtifacts).toBe(false);
     expect(model.assistantMessages.map((message) => message.id)).toEqual([
       "assistant-2",
     ]);
@@ -63,7 +65,8 @@ describe("buildVoiceLatestTurnModel", () => {
     ] as any);
 
     expect(model.hiddenAssistantText).toContain("Berikut datanya.");
-    expect(model.presentableArtifacts).toEqual([
+    expect(model.hasRenderableArtifacts).toBe(true);
+    expect(model.renderableArtifacts).toEqual([
       {
         kind: "markdown-table",
         id: "assistant-1-markdown-table-0-0",
@@ -107,8 +110,9 @@ describe("buildVoiceLatestTurnModel", () => {
       },
     ] as any);
 
-    expect(model.presentableArtifacts).toHaveLength(1);
-    expect(model.presentableArtifacts[0]).toMatchObject({
+    expect(model.hasRenderableArtifacts).toBe(true);
+    expect(model.renderableArtifacts).toHaveLength(1);
+    expect(model.renderableArtifacts[0]).toMatchObject({
       kind: "tool",
       messageId: "assistant-1",
     });
@@ -129,7 +133,8 @@ describe("buildVoiceLatestTurnModel", () => {
     ] as any);
 
     expect(model.hiddenAssistantText).toBe("Semua berjalan dengan baik.");
-    expect(model.presentableArtifacts).toEqual([]);
+    expect(model.hasRenderableArtifacts).toBe(false);
+    expect(model.renderableArtifacts).toEqual([]);
   });
 
   it("tracks only running current-turn tools for the status row", () => {
@@ -168,6 +173,55 @@ describe("buildVoiceLatestTurnModel", () => {
         messageId: "assistant-1",
       },
     ]);
+  });
+});
+
+describe("getVoiceArtifactGridLayout", () => {
+  it("maps 0 artifacts to sound-bar mode", () => {
+    expect(getVoiceArtifactGridLayout(0)).toEqual({
+      desktopColumns: 1,
+      desktopRows: 0,
+      overflow: false,
+    });
+  });
+
+  it("maps 1, 2, and 3 artifacts to single-row desktop layouts", () => {
+    expect(getVoiceArtifactGridLayout(1)).toEqual({
+      desktopColumns: 1,
+      desktopRows: 1,
+      overflow: false,
+    });
+    expect(getVoiceArtifactGridLayout(2)).toEqual({
+      desktopColumns: 2,
+      desktopRows: 1,
+      overflow: false,
+    });
+    expect(getVoiceArtifactGridLayout(3)).toEqual({
+      desktopColumns: 3,
+      desktopRows: 1,
+      overflow: false,
+    });
+  });
+
+  it("maps 4 to 6 artifacts to a two-row desktop grid", () => {
+    expect(getVoiceArtifactGridLayout(4)).toEqual({
+      desktopColumns: 3,
+      desktopRows: 2,
+      overflow: false,
+    });
+    expect(getVoiceArtifactGridLayout(6)).toEqual({
+      desktopColumns: 3,
+      desktopRows: 2,
+      overflow: false,
+    });
+  });
+
+  it("enables overflow after 6 artifacts while keeping the same grid", () => {
+    expect(getVoiceArtifactGridLayout(7)).toEqual({
+      desktopColumns: 3,
+      desktopRows: 2,
+      overflow: true,
+    });
   });
 });
 

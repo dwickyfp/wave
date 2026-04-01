@@ -17,12 +17,19 @@ import {
   MicIcon,
   MicOffIcon,
   PhoneIcon,
-  SparklesIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
 import type { UseChatHelpers } from "@ai-sdk/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { safe } from "ts-safe";
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
@@ -45,9 +52,11 @@ import { ChatMention } from "app-types/chat";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import Link from "next/link";
 import {
+  type VoiceArtifactGridLayout,
   type VoiceLatestTurnModel,
-  type VoicePresentableArtifact,
+  type VoiceRenderableArtifact,
   buildVoiceLatestTurnModel,
+  getVoiceArtifactGridLayout,
 } from "./chat-bot-voice.utils";
 import { BarChart } from "./tool-invocation/bar-chart";
 import { ImageGeneratorToolInvocation } from "./tool-invocation/image-generator";
@@ -565,7 +574,7 @@ function buildVoiceStreamSignature(turn: VoiceLatestTurnModel) {
   return [
     turn.latestUserMessage?.id ?? "",
     turn.floatingPromptText,
-    ...turn.presentableArtifacts.map((artifact) =>
+    ...turn.renderableArtifacts.map((artifact) =>
       artifact.kind === "tool"
         ? `${artifact.kind}:${artifact.messageId}:${artifact.part.toolCallId}:${artifact.part.state}`
         : artifact.kind === "knowledge-images"
@@ -619,6 +628,13 @@ function VoiceTurnStage({
       : isProcessingTurn
         ? "Thinking"
         : "Ready";
+  const soundBarMode = isAssistantSpeaking
+    ? "speaking"
+    : isUserSpeaking
+      ? "listening"
+      : isProcessingTurn
+        ? "thinking"
+        : "ready";
 
   return (
     <div className="relative flex h-full min-h-0 flex-col pb-4">
@@ -637,26 +653,109 @@ function VoiceTurnStage({
       <div className="min-h-0 flex-1 pt-24 md:pt-28">
         <ScrollArea className="h-full">
           <div className="mx-auto min-h-full w-full max-w-6xl px-1 pb-8 pt-2 md:px-2">
-            {turn.presentableArtifacts.length ? (
-              <VoiceArtifactStack artifacts={turn.presentableArtifacts} />
+            {turn.hasRenderableArtifacts ? (
+              <VoiceArtifactGrid artifacts={turn.renderableArtifacts} />
             ) : (
               <div className="flex min-h-[420px] items-center justify-center">
-                <div className="max-w-sm text-center">
-                  <SparklesIcon className="mx-auto mb-4 size-8 text-amber-300" />
-                  <p className="text-lg font-medium">
-                    The latest artifact will appear here.
-                  </p>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Charts, tables, markdown tables, and images stay centered in
-                    this space.
-                  </p>
-                </div>
+                <VoiceSoundBar mode={soundBarMode} />
               </div>
             )}
             <div ref={bottomAnchorRef} />
           </div>
         </ScrollArea>
       </div>
+    </div>
+  );
+}
+
+type VoiceSoundBarMode = "ready" | "thinking" | "listening" | "speaking";
+
+function VoiceSoundBar({ mode }: { mode: VoiceSoundBarMode }) {
+  const presets: Record<
+    VoiceSoundBarMode,
+    {
+      minScale: number;
+      durationBase: number;
+      barColorClassName: string;
+      glowClassName: string;
+    }
+  > = {
+    ready: {
+      minScale: 0.55,
+      durationBase: 2.8,
+      barColorClassName: "from-white/15 via-white/35 to-white/80",
+      glowClassName: "shadow-[0_0_24px_rgba(255,255,255,0.08)]",
+    },
+    thinking: {
+      minScale: 0.4,
+      durationBase: 1.9,
+      barColorClassName: "from-amber-500/15 via-amber-300/45 to-amber-100/80",
+      glowClassName: "shadow-[0_0_30px_rgba(245,158,11,0.18)]",
+    },
+    listening: {
+      minScale: 0.24,
+      durationBase: 1.2,
+      barColorClassName: "from-sky-500/20 via-cyan-300/55 to-cyan-100/90",
+      glowClassName: "shadow-[0_0_32px_rgba(56,189,248,0.18)]",
+    },
+    speaking: {
+      minScale: 0.18,
+      durationBase: 0.95,
+      barColorClassName:
+        "from-emerald-500/20 via-emerald-300/55 to-emerald-100/90",
+      glowClassName: "shadow-[0_0_34px_rgba(16,185,129,0.2)]",
+    },
+  };
+  const preset = presets[mode];
+  const barHeights = [38, 74, 54, 92, 126, 92, 54, 74, 38];
+
+  return (
+    <div className="flex w-full max-w-3xl items-center justify-center px-6">
+      <div
+        className={cn(
+          "flex items-end gap-2 rounded-full bg-white/[0.02] px-10 py-8 backdrop-blur-[2px]",
+          "md:gap-3 md:px-14 md:py-10",
+          preset.glowClassName,
+        )}
+      >
+        {barHeights.map((height, index) => (
+          <span
+            key={`${mode}-${height}-${index}`}
+            className={cn(
+              "voice-sound-bar__bar inline-flex w-2.5 origin-bottom rounded-full bg-gradient-to-t md:w-3.5",
+              preset.barColorClassName,
+            )}
+            style={
+              {
+                height,
+                animationDelay: `${index * 0.12}s`,
+                animationDuration: `${preset.durationBase + (index % 3) * 0.18}s`,
+                "--voice-bar-min-scale": preset.minScale,
+              } as CSSProperties
+            }
+          />
+        ))}
+      </div>
+      <style jsx>{`
+        .voice-sound-bar__bar {
+          animation-name: voiceSoundBar;
+          animation-iteration-count: infinite;
+          animation-timing-function: ease-in-out;
+          will-change: transform, opacity;
+        }
+
+        @keyframes voiceSoundBar {
+          0%,
+          100% {
+            opacity: 0.4;
+            transform: scaleY(var(--voice-bar-min-scale, 0.4));
+          }
+          50% {
+            opacity: 1;
+            transform: scaleY(1);
+          }
+        }
+      `}</style>
     </div>
   );
 }
@@ -719,16 +818,84 @@ function VoiceStatusStrip({
   );
 }
 
-function VoiceArtifactStack({
+function getVoiceArtifactGridClassName(layout: VoiceArtifactGridLayout) {
+  if (layout.desktopColumns === 1) {
+    return "md:grid-cols-1";
+  }
+
+  if (layout.desktopColumns === 2) {
+    return "md:grid-cols-2";
+  }
+
+  return "md:grid-cols-3";
+}
+
+function VoiceArtifactGrid({
   artifacts,
 }: {
-  artifacts: VoicePresentableArtifact[];
+  artifacts: VoiceRenderableArtifact[];
 }) {
+  const layout = getVoiceArtifactGridLayout(artifacts.length);
+
   return (
-    <div className="space-y-10">
-      {artifacts.map((artifact) => (
-        <VoiceArtifactView key={artifact.id} artifact={artifact} />
-      ))}
+    <div className="flex min-h-[420px] items-start justify-center">
+      <div
+        className={cn(
+          "mx-auto w-full",
+          layout.desktopColumns === 1 ? "max-w-4xl" : "max-w-6xl",
+        )}
+      >
+        <div
+          className={cn(
+            "grid grid-cols-1 gap-4 md:gap-5",
+            getVoiceArtifactGridClassName(layout),
+            layout.overflow && "max-h-[calc(100vh-20rem)] overflow-y-auto pr-1",
+          )}
+        >
+          {artifacts.map((artifact) => (
+            <VoiceArtifactTile
+              key={artifact.id}
+              artifactCount={artifacts.length}
+              artifactKind={artifact.kind}
+            >
+              <VoiceArtifactView artifact={artifact} />
+            </VoiceArtifactTile>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VoiceArtifactTile({
+  artifactCount,
+  artifactKind,
+  children,
+}: {
+  artifactCount: number;
+  artifactKind: VoiceRenderableArtifact["kind"];
+  children: ReactNode;
+}) {
+  const sizeClassName =
+    artifactCount === 1
+      ? "min-h-[420px] md:min-h-[520px]"
+      : artifactCount === 2
+        ? "min-h-[320px] md:min-h-[420px]"
+        : "min-h-[260px] md:min-h-[340px]";
+
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-[2rem] border border-white/10 bg-black/20 backdrop-blur-sm",
+        "shadow-[0_18px_40px_rgba(0,0,0,0.22)]",
+        sizeClassName,
+        artifactCount === 1 && "mx-auto w-full",
+        artifactKind === "image-file" || artifactKind === "image-source-url"
+          ? "p-3 md:p-4"
+          : "p-4 md:p-5",
+      )}
+    >
+      {children}
     </div>
   );
 }
@@ -782,7 +949,7 @@ function VoiceHiddenToolRunner({
 function VoiceArtifactView({
   artifact,
 }: {
-  artifact: VoicePresentableArtifact;
+  artifact: VoiceRenderableArtifact;
 }) {
   switch (artifact.kind) {
     case "tool":

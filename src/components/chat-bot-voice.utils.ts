@@ -10,7 +10,7 @@ export type VoiceTurnToolState = {
   messageId: string;
 };
 
-export type VoicePresentableArtifact =
+export type VoiceRenderableArtifact =
   | {
       kind: "tool";
       id: string;
@@ -52,8 +52,15 @@ export type VoiceLatestTurnModel = {
   floatingPromptText: string;
   assistantMessages: UIMessage[];
   hiddenAssistantText: string;
-  presentableArtifacts: VoicePresentableArtifact[];
+  renderableArtifacts: VoiceRenderableArtifact[];
+  hasRenderableArtifacts: boolean;
   runningToolStates: VoiceTurnToolState[];
+};
+
+export type VoiceArtifactGridLayout = {
+  desktopColumns: 1 | 2 | 3;
+  desktopRows: 0 | 1 | 2;
+  overflow: boolean;
 };
 
 const PRESENTABLE_TOOL_NAMES = new Set<string>([
@@ -153,10 +160,10 @@ function isPresentableToolPart(part: ToolUIPart) {
   );
 }
 
-function buildPresentableArtifacts(
+function buildRenderableArtifacts(
   message: UIMessage,
-): VoicePresentableArtifact[] {
-  const artifacts: VoicePresentableArtifact[] = [];
+): VoiceRenderableArtifact[] {
+  const artifacts: VoiceRenderableArtifact[] = [];
 
   message.parts.forEach((part, index) => {
     if (part.type === "text") {
@@ -237,7 +244,8 @@ export function buildVoiceLatestTurnModel(
       floatingPromptText: "",
       assistantMessages: [],
       hiddenAssistantText: "",
-      presentableArtifacts: [],
+      renderableArtifacts: [],
+      hasRenderableArtifacts: false,
       runningToolStates: [],
     };
   }
@@ -251,8 +259,8 @@ export function buildVoiceLatestTurnModel(
     .reverse()
     .find((message) => getMessageText(message));
 
-  const presentableArtifacts = assistantMessages.flatMap((message) =>
-    buildPresentableArtifacts(message),
+  const renderableArtifacts = assistantMessages.flatMap((message) =>
+    buildRenderableArtifacts(message),
   );
 
   const runningToolStates = Array.from(
@@ -281,7 +289,50 @@ export function buildVoiceLatestTurnModel(
     floatingPromptText: getMessageText(latestUserMessage),
     assistantMessages,
     hiddenAssistantText: getMessageText(latestSummarySource),
-    presentableArtifacts,
+    renderableArtifacts,
+    hasRenderableArtifacts: renderableArtifacts.length > 0,
     runningToolStates,
+  };
+}
+
+export function getVoiceArtifactGridLayout(
+  count: number,
+): VoiceArtifactGridLayout {
+  if (count <= 0) {
+    return {
+      desktopColumns: 1,
+      desktopRows: 0,
+      overflow: false,
+    };
+  }
+
+  if (count === 1) {
+    return {
+      desktopColumns: 1,
+      desktopRows: 1,
+      overflow: false,
+    };
+  }
+
+  if (count === 2) {
+    return {
+      desktopColumns: 2,
+      desktopRows: 1,
+      overflow: false,
+    };
+  }
+
+  if (count === 3) {
+    return {
+      desktopColumns: 3,
+      desktopRows: 1,
+      overflow: false,
+    };
+  }
+
+  return {
+    desktopColumns: 3,
+    desktopRows: 2,
+    overflow: count > 6,
   };
 }
