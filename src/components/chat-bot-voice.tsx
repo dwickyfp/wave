@@ -12,12 +12,15 @@ import { cn, generateUUID, groupBy, isNull } from "lib/utils";
 import {
   AudioLinesIcon,
   ArrowUpRight,
+  CheckIcon,
+  ChevronDown,
   Clock3Icon,
   Loader,
   MicIcon,
   MicOffIcon,
   PhoneIcon,
   TriangleAlertIcon,
+  UserRoundCogIcon,
   XIcon,
 } from "lucide-react";
 import type { UseChatHelpers } from "@ai-sdk/react";
@@ -48,7 +51,9 @@ import { useShallow } from "zustand/shallow";
 import { useTranslations } from "next-intl";
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
 import { useAgent } from "@/hooks/queries/use-agent";
+import { useAgents } from "@/hooks/queries/use-agents";
 import { ChatMention } from "app-types/chat";
+import { AgentSummary } from "app-types/agent";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import Link from "next/link";
 import {
@@ -63,6 +68,16 @@ import { ImageGeneratorToolInvocation } from "./tool-invocation/image-generator"
 import { InteractiveTable } from "./tool-invocation/interactive-table";
 import { LineChart } from "./tool-invocation/line-chart";
 import { PieChart } from "./tool-invocation/pie-chart";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from "ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
@@ -132,6 +147,28 @@ export function ChatBotVoice() {
       startAudio.current?.play().catch(() => {});
     });
   }, [start]);
+
+  const handleSelectVoiceAgent = useCallback(
+    async (nextAgent?: AgentSummary | null) => {
+      const nextAgentId = nextAgent?.id;
+      if ((agentId ?? undefined) === nextAgentId) {
+        return;
+      }
+
+      if (isActive) {
+        await safe(() => stop());
+      }
+
+      appStoreMutate((prev) => ({
+        voiceChat: {
+          ...prev.voiceChat,
+          agentId: nextAgentId,
+          threadId: generateUUID(),
+        },
+      }));
+    },
+    [agentId, appStoreMutate, isActive, stop],
+  );
 
   const endVoiceChat = useCallback(async () => {
     setIsClosing(true);
@@ -440,6 +477,10 @@ export function ChatBotVoice() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <VoiceAgentSelector
+                  selectedAgent={agent}
+                  onSelectAgent={handleSelectVoiceAgent}
+                />
                 <EnabledToolsDropdown
                   align="start"
                   side="bottom"
@@ -771,6 +812,178 @@ function VoiceFloatingPrompt({ text }: { text: string }) {
         {text}
       </p>
     </div>
+  );
+}
+
+function VoiceAgentSelector({
+  selectedAgent,
+  onSelectAgent,
+}: {
+  selectedAgent?: AgentSummary | null;
+  onSelectAgent: (agent?: AgentSummary | null) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const { myAgents, sharedAgents, isLoading } = useAgents({
+    filters: ["all"],
+    syncStore: false,
+  });
+
+  const hasAgents = myAgents.length + sharedAgents.length > 0;
+
+  const renderAgentLabel = (agent?: AgentSummary | null) => {
+    if (!agent) {
+      return "No agent";
+    }
+
+    return agent.name;
+  };
+
+  const handleSelect = async (agent?: AgentSummary | null) => {
+    await Promise.resolve(onSelectAgent(agent));
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="min-w-[172px] justify-between gap-2"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            {selectedAgent ? (
+              <div
+                style={selectedAgent.icon?.style}
+                className="flex size-6 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-background/40"
+              >
+                <Avatar className="size-4">
+                  <AvatarImage src={selectedAgent.icon?.value} />
+                  <AvatarFallback className="text-[10px]">
+                    {selectedAgent.name.slice(0, 1)}
+                  </AvatarFallback>
+                </Avatar>
+              </div>
+            ) : (
+              <div className="flex size-6 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-background/40">
+                <UserRoundCogIcon className="size-3.5 text-muted-foreground" />
+              </div>
+            )}
+            <span className="truncate text-left">
+              {renderAgentLabel(selectedAgent)}
+            </span>
+          </div>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[320px] p-0" align="end">
+        <Command>
+          <CommandInput placeholder="Search agent..." />
+          <CommandList className="max-h-80">
+            <CommandEmpty>
+              {isLoading ? "Loading agents..." : "No agents found."}
+            </CommandEmpty>
+            <CommandGroup heading="Voice Mode">
+              <CommandItem
+                value="no-agent"
+                onSelect={() => void handleSelect(undefined)}
+                className="cursor-pointer"
+              >
+                <CheckIcon
+                  className={cn(
+                    "mr-2 size-3.5",
+                    !selectedAgent ? "opacity-100" : "opacity-0",
+                  )}
+                />
+                <div className="flex min-w-0 items-center gap-2">
+                  <UserRoundCogIcon className="size-3.5 text-muted-foreground" />
+                  <span>No agent</span>
+                </div>
+              </CommandItem>
+            </CommandGroup>
+            {hasAgents ? <CommandSeparator /> : null}
+            {myAgents.length ? (
+              <CommandGroup heading="My Agents">
+                {myAgents.map((agent) => (
+                  <VoiceAgentCommandItem
+                    key={agent.id}
+                    agent={agent}
+                    selected={selectedAgent?.id === agent.id}
+                    onSelect={handleSelect}
+                  />
+                ))}
+              </CommandGroup>
+            ) : null}
+            {myAgents.length && sharedAgents.length ? (
+              <CommandSeparator />
+            ) : null}
+            {sharedAgents.length ? (
+              <CommandGroup heading="Shared Agents">
+                {sharedAgents.map((agent) => (
+                  <VoiceAgentCommandItem
+                    key={agent.id}
+                    agent={agent}
+                    selected={selectedAgent?.id === agent.id}
+                    onSelect={handleSelect}
+                  />
+                ))}
+              </CommandGroup>
+            ) : null}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function VoiceAgentCommandItem({
+  agent,
+  selected,
+  onSelect,
+}: {
+  agent: AgentSummary;
+  selected: boolean;
+  onSelect: (agent: AgentSummary) => void | Promise<void>;
+}) {
+  return (
+    <CommandItem
+      value={`${agent.name} ${agent.userName ?? ""}`}
+      onSelect={() => void onSelect(agent)}
+      className="cursor-pointer"
+    >
+      <CheckIcon
+        className={cn("mr-2 size-3.5", selected ? "opacity-100" : "opacity-0")}
+      />
+      {agent.icon ? (
+        <div
+          style={agent.icon.style}
+          className="mr-2 flex size-6 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-background/40"
+        >
+          <Avatar className="size-4">
+            <AvatarImage src={agent.icon.value} />
+            <AvatarFallback className="text-[10px]">
+              {agent.name.slice(0, 1)}
+            </AvatarFallback>
+          </Avatar>
+        </div>
+      ) : (
+        <div className="mr-2 flex size-6 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-background/40">
+          <UserRoundCogIcon className="size-3.5 text-muted-foreground" />
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm">{agent.name}</p>
+        {agent.description ? (
+          <p className="truncate text-xs text-muted-foreground">
+            {agent.description}
+          </p>
+        ) : agent.userName ? (
+          <p className="truncate text-xs text-muted-foreground">
+            Shared by {agent.userName}
+          </p>
+        ) : null}
+      </div>
+    </CommandItem>
   );
 }
 
