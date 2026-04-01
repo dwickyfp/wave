@@ -304,6 +304,7 @@ export type ChatMention = z.infer<typeof ChatMentionSchema>;
 export const chatApiSchemaRequestBodySchema = z.object({
   id: z.string(),
   message: z.any() as z.ZodType<UIMessage>,
+  responseMode: z.enum(["default", "voice"]).optional(),
   chatModel: z
     .object({
       provider: z.string(),

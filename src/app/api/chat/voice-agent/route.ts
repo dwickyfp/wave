@@ -75,6 +75,7 @@ export async function POST(request: Request) {
     body: JSON.stringify({
       id,
       message,
+      responseMode: "voice",
       mentions: forwardedMentions,
       allowedAppDefaultToolkit,
       allowedMcpServers,

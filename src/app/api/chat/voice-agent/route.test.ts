@@ -92,6 +92,7 @@ describe("voice agent route", () => {
       provider: "openai",
       model: "gpt-4.1",
     });
+    expect(body.responseMode).toBe("voice");
     expect(body.toolChoice).toBe("auto");
     expect(body.mentions[0]).toMatchObject({
       type: "agent",
@@ -136,6 +137,7 @@ describe("voice agent route", () => {
     const [, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
     const body = JSON.parse(String(init?.body));
     expect(body.chatModel).toBeUndefined();
+    expect(body.responseMode).toBe("voice");
   });
 
   it("forwards allowed tool configuration for agentless voice turns", async () => {
@@ -178,6 +180,7 @@ describe("voice agent route", () => {
         tools: ["search"],
       },
     });
+    expect(body.responseMode).toBe("voice");
     expect(body.mentions).toEqual([]);
   });
 });

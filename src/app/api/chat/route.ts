@@ -147,6 +147,18 @@ const KNOWLEDGE_CONTEXT_BUDGET_STAGES = [
   0,
 ];
 
+const VOICE_RESPONSE_STYLE_PROMPT = `
+You are answering inside a live voice call.
+
+- Respond briefly and directly.
+- Do not introduce yourself unless the user explicitly asks who you are.
+- Use one language only, matching the user's latest message language.
+- Do not repeat the same answer in multiple languages.
+- Default to 1-3 short sentences unless the user explicitly asks for detail.
+- When tools are used, summarize only the result that matters to the user.
+- Ask at most one short follow-up question, and only when required to continue.
+`.trim();
+
 type RetrievedKnowledgeGroup = {
   groupId: string;
   groupName: string;
@@ -248,6 +260,7 @@ export async function POST(request: Request) {
     const {
       id,
       message,
+      responseMode = "default",
       chatModel,
       toolChoice,
       allowedAppDefaultToolkit,
@@ -1298,6 +1311,7 @@ export async function POST(request: Request) {
               toolCallUnsupported: !supportToolCall,
               extraPrompts: [
                 learnedPersonalizationPrompt,
+                responseMode === "voice" && VOICE_RESPONSE_STYLE_PROMPT,
                 buildKnowledgeToolCitationSystemPrompt(
                   Object.keys(toolset.knowledgeTools ?? {}).length > 0,
                 ),
