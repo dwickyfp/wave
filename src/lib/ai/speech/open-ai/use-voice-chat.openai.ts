@@ -90,6 +90,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const dataChannel = useRef<RTCDataChannel | null>(null);
   const audioElement = useRef<HTMLAudioElement | null>(null);
   const audioStream = useRef<MediaStream | null>(null);
+  const connectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { setTheme } = useTheme();
   const tracks = useRef<RTCRtpSender[]>([]);
@@ -402,10 +403,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       const sessionToken = session.client_secret.value;
       const realtimeEndpointUrl: string =
         session.realtimeEndpointUrl || "https://api.openai.com/v1/realtime";
-      // proxySdpUrl: server-side proxy for Azure dedicated config (CORS + api-key auth).
-      // When set, the SDP offer is POSTed to our Next.js API instead of directly to Azure.
+      // proxySdpUrl: when set, the SDP offer is POSTed through our Next.js API.
+      // We use this for legacy Azure api-key auth and GA Azure bearer-token forwarding.
       const proxySdpUrl: string | undefined = session.proxySdpUrl;
-      // sdpAuthHeader: only used when NOT proxying (standard OpenAI or GA Azure)
+      // sdpAuthHeader: used for direct SDP exchange or forwarded to our proxy.
       const sdpAuthHeader: string = session.sdpAuthHeader || "Authorization";
       const sdpAuthValue =
         sdpAuthHeader === "Authorization"
@@ -416,6 +417,36 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         audioElement.current = document.createElement("audio");
       }
       audioElement.current.autoplay = true;
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        console.log("voice rtc connection", state);
+        if (
+          state === "failed" ||
+          state === "disconnected" ||
+          state === "closed"
+        ) {
+          if (connectTimeout.current) {
+            clearTimeout(connectTimeout.current);
+            connectTimeout.current = null;
+          }
+          setIsLoading(false);
+          if (state !== "closed") {
+            setError(new Error(`Voice WebRTC connection ${state}.`));
+          }
+        }
+      };
+      pc.oniceconnectionstatechange = () => {
+        const state = pc.iceConnectionState;
+        console.log("voice rtc ice", state);
+        if (state === "failed") {
+          if (connectTimeout.current) {
+            clearTimeout(connectTimeout.current);
+            connectTimeout.current = null;
+          }
+          setIsLoading(false);
+          setError(new Error("Voice WebRTC ICE negotiation failed."));
+        }
+      };
       pc.ontrack = (e) => {
         if (audioElement.current) {
           audioElement.current.srcObject = e.streams[0];
@@ -451,6 +482,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
       });
       dc.addEventListener("open", () => {
+        if (connectTimeout.current) {
+          clearTimeout(connectTimeout.current);
+          connectTimeout.current = null;
+        }
         // Azure Voice Direct can only complete the SDP exchange server-side,
         // so session configuration is pushed once the data channel is ready.
         if (session.pendingSessionUpdate) {
@@ -466,11 +501,19 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         setIsLoading(false);
       });
       dc.addEventListener("close", () => {
+        if (connectTimeout.current) {
+          clearTimeout(connectTimeout.current);
+          connectTimeout.current = null;
+        }
         setIsActive(false);
         setIsListening(false);
         setIsLoading(false);
       });
       dc.addEventListener("error", (errorEvent) => {
+        if (connectTimeout.current) {
+          clearTimeout(connectTimeout.current);
+          connectTimeout.current = null;
+        }
         console.error(errorEvent);
         setError(
           errorEvent instanceof Error
@@ -479,16 +522,21 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         );
         setIsActive(false);
         setIsListening(false);
+        setIsLoading(false);
       });
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
       // If proxySdpUrl is set (Azure dedicated config), POST the SDP through our
-      // server-side proxy so the api-key header is sent server-side (avoids CORS).
-      // Otherwise POST directly to the realtime endpoint with the ephemeral token.
+      // server-side proxy. Otherwise POST directly to the realtime endpoint.
       const sdpFetchUrl = proxySdpUrl ?? realtimeEndpointUrl;
       const sdpFetchHeaders: Record<string, string> = proxySdpUrl
-        ? { "Content-Type": "application/sdp" }
+        ? {
+            "Content-Type": "application/sdp",
+            ...(sessionToken !== "proxy"
+              ? { [sdpAuthHeader]: sdpAuthValue }
+              : {}),
+          }
         : { [sdpAuthHeader]: sdpAuthValue, "Content-Type": "application/sdp" };
 
       const sdpResponse = await fetch(sdpFetchUrl, {
@@ -518,7 +566,24 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       };
       await pc.setRemoteDescription(answer);
       peerConnection.current = pc;
+      connectTimeout.current = setTimeout(() => {
+        if (
+          dataChannel.current?.readyState !== "open" &&
+          pc.connectionState !== "connected"
+        ) {
+          setError(
+            new Error(
+              "Voice connection timed out while waiting for the realtime data channel.",
+            ),
+          );
+          setIsLoading(false);
+        }
+      }, 15000);
     } catch (err) {
+      if (connectTimeout.current) {
+        clearTimeout(connectTimeout.current);
+        connectTimeout.current = null;
+      }
       setError(err instanceof Error ? err : new Error(String(err)));
       setIsActive(false);
       setIsListening(false);
@@ -535,6 +600,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       if (peerConnection.current) {
         peerConnection.current.close();
         peerConnection.current = null;
+      }
+      if (connectTimeout.current) {
+        clearTimeout(connectTimeout.current);
+        connectTimeout.current = null;
       }
       tracks.current = [];
       stopListening();

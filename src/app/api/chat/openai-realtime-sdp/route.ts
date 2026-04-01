@@ -27,9 +27,9 @@ async function azureFetch(url: string, init: RequestInit): Promise<Response> {
  * POST /api/chat/openai-realtime-sdp
  *
  * Server-side proxy for the WebRTC SDP exchange with Azure OpenAI.
- * The browser cannot call Azure directly because:
- *  1. The `api-key` header is blocked by CORS from browser contexts.
- *  2. The Azure endpoint requires server-side authentication.
+ * The browser can delegate the SDP exchange through this route so we can:
+ *  1. Use server-side auth with `api-key` for legacy preview endpoints.
+ *  2. Forward an ephemeral `Authorization` bearer token for GA endpoints.
  *
  * Body: raw SDP offer text (Content-Type: application/sdp)
  * Query params:
@@ -71,6 +71,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const forwardedAuthorization = request.headers.get("authorization");
+
     // Read the API key from the dedicated Azure Voice config in DB
     const azureVoiceConfig = (await settingsRepository.getSetting(
       "voice-chat-azure",
@@ -85,9 +87,11 @@ export async function POST(request: NextRequest) {
       process.env.AZURE_API_KEY ||
       "";
 
-    if (!apiKey) {
+    if (!forwardedAuthorization && !apiKey) {
       return new Response(
-        JSON.stringify({ error: "Azure API key is not configured" }),
+        JSON.stringify({
+          error: "Azure API key or bearer token is not configured",
+        }),
         { status: 500 },
       );
     }
@@ -99,7 +103,9 @@ export async function POST(request: NextRequest) {
       method: "POST",
       body: sdpOffer,
       headers: {
-        "api-key": apiKey,
+        ...(forwardedAuthorization
+          ? { Authorization: forwardedAuthorization }
+          : { "api-key": apiKey }),
         "Content-Type": "application/sdp",
       },
     });

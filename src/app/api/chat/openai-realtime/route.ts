@@ -282,6 +282,8 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      const gaProxySdpUrl = `/api/chat/openai-realtime-sdp?endpoint=${encodeURIComponent(gaRealtimeEndpointUrl)}`;
+
       return Response.json(
         {
           client_secret: {
@@ -289,6 +291,8 @@ export async function POST(request: NextRequest) {
             expires_at: gaData.expires_at ?? 0,
           },
           realtimeEndpointUrl: gaRealtimeEndpointUrl,
+          proxySdpUrl: gaProxySdpUrl,
+          sdpAuthHeader: "Authorization",
           pendingSessionUpdate: {
             tools: bindingTools,
             input_audio_transcription: { model: "whisper-1" },
