@@ -310,7 +310,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           });
           break;
         }
-        case "response.audio_transcript.delta": {
+        case "response.audio_transcript.delta":
+        case "response.output_audio_transcript.delta":
+        case "response.output_text.delta": {
           setIsAssistantSpeaking(true);
           setMessages((prev) => {
             const message = prev.findLast((m) => m.id == event.item_id)!;
@@ -345,7 +347,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           });
           break;
         }
-        case "response.audio_transcript.done": {
+        case "response.audio_transcript.done":
+        case "response.output_audio_transcript.done":
+        case "response.output_text.done": {
           updateUIMessage(event.item_id, (prev) => {
             const textPart = prev.parts.find((p) => p.type == "text");
             if (!textPart) return prev;
@@ -355,6 +359,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
               completed: true,
             };
           });
+          break;
+        }
+        case "output_audio_buffer.started": {
+          setIsAssistantSpeaking(true);
           break;
         }
         case "response.function_call_arguments.done": {
@@ -385,6 +393,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
         case "output_audio_buffer.stopped": {
           setIsAssistantSpeaking(false);
+          break;
+        }
+        case "session.error": {
+          setError(new Error(event.error.message));
           break;
         }
       }
@@ -468,7 +480,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         if (sender) tracks.current.push(sender);
       });
 
-      const dc = pc.createDataChannel("oai-events");
+      const dc = pc.createDataChannel("realtime-channel");
       dataChannel.current = dc;
       dc.addEventListener("message", async (e) => {
         try {

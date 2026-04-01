@@ -222,7 +222,7 @@ export async function POST(request: NextRequest) {
 
     try {
       const gaSessionUrl = `${gaEndpoint}/openai/v1/realtime/client_secrets`;
-      const gaRealtimeEndpointUrl = `${gaEndpoint}/openai/v1/realtime/calls`;
+      const gaRealtimeEndpointUrl = `${gaEndpoint}/openai/v1/realtime/calls?webrtcfilter=on`;
       const gaBody = JSON.stringify({
         session: {
           type: "realtime",
