@@ -181,6 +181,7 @@ describe("getVoiceArtifactGridLayout", () => {
     expect(getVoiceArtifactGridLayout(0)).toEqual({
       desktopColumns: 1,
       desktopRows: 0,
+      density: "feature",
       overflow: false,
     });
   });
@@ -189,29 +190,43 @@ describe("getVoiceArtifactGridLayout", () => {
     expect(getVoiceArtifactGridLayout(1)).toEqual({
       desktopColumns: 1,
       desktopRows: 1,
+      density: "feature",
       overflow: false,
     });
     expect(getVoiceArtifactGridLayout(2)).toEqual({
       desktopColumns: 2,
       desktopRows: 1,
+      density: "split",
       overflow: false,
     });
     expect(getVoiceArtifactGridLayout(3)).toEqual({
       desktopColumns: 3,
       desktopRows: 1,
+      density: "triad",
       overflow: false,
     });
   });
 
-  it("maps 4 to 6 artifacts to a two-row desktop grid", () => {
+  it("maps 4 artifacts to a 2 x 2 desktop dashboard", () => {
     expect(getVoiceArtifactGridLayout(4)).toEqual({
+      desktopColumns: 2,
+      desktopRows: 2,
+      density: "dashboard",
+      overflow: false,
+    });
+  });
+
+  it("maps 5 to 6 artifacts to a 3 x 2 desktop dashboard", () => {
+    expect(getVoiceArtifactGridLayout(5)).toEqual({
       desktopColumns: 3,
       desktopRows: 2,
+      density: "dashboard",
       overflow: false,
     });
     expect(getVoiceArtifactGridLayout(6)).toEqual({
       desktopColumns: 3,
       desktopRows: 2,
+      density: "dashboard",
       overflow: false,
     });
   });
@@ -220,6 +235,7 @@ describe("getVoiceArtifactGridLayout", () => {
     expect(getVoiceArtifactGridLayout(7)).toEqual({
       desktopColumns: 3,
       desktopRows: 2,
+      density: "dashboard",
       overflow: true,
     });
   });

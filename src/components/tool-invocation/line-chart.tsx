@@ -9,7 +9,6 @@ import {
   XAxis,
   YAxis,
   Legend,
-  ResponsiveContainer,
 } from "recharts";
 
 import {
@@ -29,6 +28,7 @@ import {
 import { JsonViewPopup } from "../json-view-popup";
 import { sanitizeCssVariableName } from "./shared.tool-invocation";
 import { generateUniqueKey } from "lib/utils";
+import type { VoiceArtifactTileDensity } from "../chat-bot-voice.utils";
 // LineChart component props interface
 export interface LineChartProps {
   // Chart title (required)
@@ -46,6 +46,7 @@ export interface LineChartProps {
   // Y-axis label (optional)
   yAxisLabel?: string;
   displayVariant?: "default" | "voice-stage";
+  voiceStageDensity?: VoiceArtifactTileDensity;
 }
 
 // Color variable names (chart-1 ~ chart-5)
@@ -64,8 +65,11 @@ export function LineChart(props: LineChartProps) {
     description,
     yAxisLabel,
     displayVariant = "default",
+    voiceStageDensity = "dashboard",
   } = props;
   const isVoiceStage = displayVariant === "voice-stage";
+  const compactVoiceHeader =
+    voiceStageDensity === "triad" || voiceStageDensity === "dashboard";
 
   const deduplicateData = React.useMemo(() => {
     return data.reduce(
@@ -137,61 +141,68 @@ export function LineChart(props: LineChartProps) {
   }, [deduplicateData]);
 
   const chart = (
-    <ChartContainer config={chartConfig}>
-      <ResponsiveContainer width="100%" height="400px">
-        <RechartsLineChart data={chartData}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis
-            dataKey="label"
-            tickLine={false}
-            axisLine={false}
-            tickMargin={8}
+    <ChartContainer
+      config={chartConfig}
+      className={isVoiceStage ? "h-full min-h-0 aspect-auto" : undefined}
+    >
+      <RechartsLineChart data={chartData}>
+        <CartesianGrid strokeDasharray="3 3" />
+        <XAxis
+          dataKey="label"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+        />
+        <YAxis
+          tickLine={false}
+          axisLine={false}
+          tickMargin={10}
+          label={
+            yAxisLabel
+              ? {
+                  value: yAxisLabel,
+                  angle: -90,
+                  position: "insideLeft",
+                }
+              : undefined
+          }
+        />
+        <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
+        <Legend />
+        {seriesNames.map((seriesName, index) => (
+          <Line
+            key={index}
+            type="monotone"
+            name={seriesName}
+            dataKey={sanitizeCssVariableName(seriesName)}
+            stroke={`var(--color-${sanitizeCssVariableName(seriesName)})`}
+            strokeWidth={2}
+            dot={false}
           />
-          <YAxis
-            tickLine={false}
-            axisLine={false}
-            tickMargin={10}
-            label={
-              yAxisLabel
-                ? {
-                    value: yAxisLabel,
-                    angle: -90,
-                    position: "insideLeft",
-                  }
-                : undefined
-            }
-          />
-          <ChartTooltip cursor={false} content={<ChartTooltipContent />} />
-          <Legend />
-          {seriesNames.map((seriesName, index) => (
-            <Line
-              key={index}
-              type="monotone"
-              name={seriesName}
-              dataKey={sanitizeCssVariableName(seriesName)}
-              stroke={`var(--color-${sanitizeCssVariableName(seriesName)})`}
-              strokeWidth={2}
-              dot={false}
-            />
-          ))}
-        </RechartsLineChart>
-      </ResponsiveContainer>
+        ))}
+      </RechartsLineChart>
     </ChartContainer>
   );
 
   if (isVoiceStage) {
     return (
-      <div className="w-full min-w-0 space-y-4">
-        <div className="flex items-start justify-between gap-4">
+      <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
+        <div className="flex shrink-0 items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="text-[0.68rem] font-medium uppercase tracking-[0.26em] text-muted-foreground">
               Line Chart
             </p>
-            <h3 className="mt-2 text-lg font-semibold leading-tight">
+            <h3
+              className={
+                compactVoiceHeader
+                  ? "mt-2 text-base font-semibold leading-tight"
+                  : "mt-2 text-lg font-semibold leading-tight"
+              }
+            >
               {title}
             </h3>
             {description ? (
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                 {description}
               </p>
             ) : null}
@@ -203,7 +214,7 @@ export function LineChart(props: LineChartProps) {
             }}
           />
         </div>
-        <div>{chart}</div>
+        <div className="min-h-0 flex-1 pt-4">{chart}</div>
       </div>
     );
   }

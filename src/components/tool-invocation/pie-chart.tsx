@@ -19,6 +19,7 @@ import {
 
 import { JsonViewPopup } from "../json-view-popup";
 import { sanitizeCssVariableName } from "./shared.tool-invocation";
+import type { VoiceArtifactTileDensity } from "../chat-bot-voice.utils";
 
 // PieChart component props interface
 export interface PieChartProps {
@@ -37,6 +38,7 @@ export interface PieChartProps {
   jsonView?: boolean;
   colors?: string[];
   displayVariant?: "default" | "voice-stage";
+  voiceStageDensity?: VoiceArtifactTileDensity;
 }
 
 // Color variable names (chart-1 ~ chart-5)
@@ -104,8 +106,11 @@ export function PieChart(props: PieChartProps) {
     jsonView = true,
     colors,
     displayVariant = "default",
+    voiceStageDensity = "dashboard",
   } = props;
   const isVoiceStage = displayVariant === "voice-stage";
+  const compactVoiceHeader =
+    voiceStageDensity === "triad" || voiceStageDensity === "dashboard";
   // Calculate total value
   const total = React.useMemo(() => {
     return data.reduce((acc, curr) => acc + curr.value, 0);
@@ -150,7 +155,11 @@ export function PieChart(props: PieChartProps) {
   const chart = (
     <ChartContainer
       config={chartConfig}
-      className="mx-auto aspect-square max-h-[300px]"
+      className={
+        isVoiceStage
+          ? "mx-auto h-full min-h-0 w-full max-w-[420px] aspect-auto"
+          : "mx-auto aspect-square max-h-[300px]"
+      }
     >
       <RechartsPieChart>
         <ChartTooltip
@@ -203,24 +212,32 @@ export function PieChart(props: PieChartProps) {
 
   if (isVoiceStage) {
     return (
-      <div className="w-full min-w-0 space-y-4">
-        <div className="flex items-start justify-between gap-4">
+      <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
+        <div className="flex shrink-0 items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="text-[0.68rem] font-medium uppercase tracking-[0.26em] text-muted-foreground">
               Pie Chart
             </p>
-            <h3 className="mt-2 text-lg font-semibold leading-tight">
+            <h3
+              className={
+                compactVoiceHeader
+                  ? "mt-2 text-base font-semibold leading-tight"
+                  : "mt-2 text-lg font-semibold leading-tight"
+              }
+            >
               {title}
             </h3>
             {description ? (
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                 {description}
               </p>
             ) : null}
           </div>
           {jsonView ? <JsonViewPopup data={props} /> : null}
         </div>
-        <div>{chart}</div>
+        <div className="flex min-h-0 flex-1 items-center justify-center pt-4">
+          {chart}
+        </div>
       </div>
     );
   }

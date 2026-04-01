@@ -9,6 +9,7 @@ import {
   FileSpreadsheet,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { cn } from "lib/utils";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -36,6 +37,7 @@ import {
 } from "@/components/ui/table";
 import { Checkbox } from "ui/checkbox";
 import { JsonViewPopup } from "../json-view-popup";
+import type { VoiceArtifactTileDensity } from "../chat-bot-voice.utils";
 
 // Column configuration interface
 interface Column {
@@ -51,6 +53,7 @@ export interface InteractiveTableProps {
   columns: Column[];
   data: Array<Record<string, any>>;
   displayVariant?: "default" | "voice-stage";
+  voiceStageDensity?: VoiceArtifactTileDensity;
 }
 
 // Sort direction type
@@ -91,8 +94,11 @@ export function InteractiveTable(props: InteractiveTableProps) {
     columns,
     description,
     displayVariant = "default",
+    voiceStageDensity = "dashboard",
   } = props;
   const isVoiceStage = displayVariant === "voice-stage";
+  const compactVoiceHeader =
+    voiceStageDensity === "triad" || voiceStageDensity === "dashboard";
 
   // Fixed settings for simplicity
   const pageSize = 20;
@@ -391,94 +397,114 @@ export function InteractiveTable(props: InteractiveTableProps) {
   );
 
   const tableContent = (
-    <div className="relative min-w-0">
-      <Table>
-        <TableHeader className="bg-secondary border-t">
-          <TableRow>
-            {visibleColumnsArray.map((column, index) => {
-              return (
-                <TableHead
-                  key={column.key}
-                  className={`relative select-none ${index === 0 ? "pl-6" : index === visibleColumnsArray.length - 1 ? "pr-6" : ""} ${
-                    column.type === "number" ||
-                    column.type === "date" ||
-                    column.type === "boolean"
-                      ? "text-center"
-                      : ""
-                  }`}
-                >
-                  {/* Column header with sorting */}
-                  <div
-                    className={`flex items-center gap-2 cursor-pointer ${
-                      column.type === "number" || column.type === "date"
-                        ? "justify-center"
+    <div
+      className={cn(
+        "relative min-w-0",
+        isVoiceStage &&
+          "flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.02]",
+      )}
+    >
+      <div className={cn(isVoiceStage && "min-h-0 flex-1 overflow-auto")}>
+        <Table>
+          <TableHeader
+            className={cn(
+              "bg-secondary border-t",
+              isVoiceStage &&
+                "sticky top-0 z-10 border-b border-white/5 bg-black/90 backdrop-blur supports-[backdrop-filter]:bg-black/75",
+            )}
+          >
+            <TableRow>
+              {visibleColumnsArray.map((column, index) => {
+                return (
+                  <TableHead
+                    key={column.key}
+                    className={`relative select-none ${index === 0 ? "pl-6" : index === visibleColumnsArray.length - 1 ? "pr-6" : ""} ${
+                      column.type === "number" ||
+                      column.type === "date" ||
+                      column.type === "boolean"
+                        ? "text-center"
                         : ""
                     }`}
-                    onClick={() => handleSort(column.key)}
                   >
-                    <span className="hover:text-primary">{column.label}</span>
-
-                    <ArrowDownUp
-                      className={`h-3 w-3 ${
-                        sortColumn === column.key
-                          ? ""
-                          : "text-muted-foreground/30"
-                      }`}
-                    />
-                  </div>
-                </TableHead>
-              );
-            })}
-          </TableRow>
-        </TableHeader>
-
-        <TableBody className="min-h-[24rem]">
-          {paginatedData.length === 0 ? (
-            <TableRow>
-              <TableCell
-                colSpan={visibleColumnsArray.length}
-                className="text-center h-48"
-              >
-                No data found
-              </TableCell>
-            </TableRow>
-          ) : (
-            paginatedData.map((row, index) => {
-              return (
-                <TableRow key={index} className={`border-b!`}>
-                  {visibleColumnsArray.map((column, index) => (
-                    <TableCell
-                      key={column.key}
-                      className={`py-3 ${index === 0 ? "pl-6" : index === visibleColumnsArray.length - 1 ? "pr-6" : ""} ${
+                    {/* Column header with sorting */}
+                    <div
+                      className={`flex items-center gap-2 cursor-pointer ${
                         column.type === "number" || column.type === "date"
-                          ? "text-center"
-                          : column.type == "boolean"
-                            ? "flex items-center justify-center"
-                            : ""
+                          ? "justify-center"
+                          : ""
                       }`}
+                      onClick={() => handleSort(column.key)}
                     >
-                      {column.type == "boolean" ? (
-                        <>
-                          <Checkbox checked={row[column.key]} />
-                        </>
-                      ) : searchTerm && searchable ? (
-                        highlightText(
-                          formatCellValue(row[column.key], column.type),
-                          searchTerm,
-                        )
-                      ) : (
-                        formatCellValue(row[column.key], column.type)
-                      )}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              );
-            })
-          )}
-        </TableBody>
-      </Table>
+                      <span className="hover:text-primary">{column.label}</span>
 
-      <div className="flex items-center justify-between pt-4 px-6">
+                      <ArrowDownUp
+                        className={`h-3 w-3 ${
+                          sortColumn === column.key
+                            ? ""
+                            : "text-muted-foreground/30"
+                        }`}
+                      />
+                    </div>
+                  </TableHead>
+                );
+              })}
+            </TableRow>
+          </TableHeader>
+
+          <TableBody className={cn(!isVoiceStage && "min-h-[24rem]")}>
+            {paginatedData.length === 0 ? (
+              <TableRow>
+                <TableCell
+                  colSpan={visibleColumnsArray.length}
+                  className="text-center h-48"
+                >
+                  No data found
+                </TableCell>
+              </TableRow>
+            ) : (
+              paginatedData.map((row, index) => {
+                return (
+                  <TableRow key={index} className={`border-b!`}>
+                    {visibleColumnsArray.map((column, index) => (
+                      <TableCell
+                        key={column.key}
+                        className={`py-3 ${index === 0 ? "pl-6" : index === visibleColumnsArray.length - 1 ? "pr-6" : ""} ${
+                          column.type === "number" || column.type === "date"
+                            ? "text-center"
+                            : column.type == "boolean"
+                              ? "flex items-center justify-center"
+                              : ""
+                        }`}
+                      >
+                        {column.type == "boolean" ? (
+                          <>
+                            <Checkbox checked={row[column.key]} />
+                          </>
+                        ) : searchTerm && searchable ? (
+                          highlightText(
+                            formatCellValue(row[column.key], column.type),
+                            searchTerm,
+                          )
+                        ) : (
+                          formatCellValue(row[column.key], column.type)
+                        )}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      <div
+        className={cn(
+          "flex items-center justify-between px-6 pt-4",
+          isVoiceStage &&
+            "shrink-0 border-t border-white/5 bg-black/30 px-4 py-3 md:px-5",
+        )}
+      >
         <div className="text-xs text-muted-foreground">
           Total rows: {data.length}
         </div>
@@ -517,25 +543,31 @@ export function InteractiveTable(props: InteractiveTableProps) {
 
   if (isVoiceStage) {
     return (
-      <div className="w-full min-w-0 space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
+        <div className="flex shrink-0 flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <p className="text-[0.68rem] font-medium uppercase tracking-[0.26em] text-muted-foreground">
               Interactive Table
             </p>
-            <h3 className="mt-2 text-lg font-semibold leading-tight">
+            <h3
+              className={
+                compactVoiceHeader
+                  ? "mt-2 text-base font-semibold leading-tight"
+                  : "mt-2 text-lg font-semibold leading-tight"
+              }
+            >
               {title}
             </h3>
             {description ? (
-              <p className="mt-1 text-sm text-muted-foreground">
+              <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
                 {description}
               </p>
             ) : null}
           </div>
           <JsonViewPopup data={props} />
         </div>
-        {toolbar}
-        {tableContent}
+        <div className="shrink-0 pt-4">{toolbar}</div>
+        <div className="min-h-0 flex-1 pt-4">{tableContent}</div>
       </div>
     );
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import type { ChatKnowledgeCitation } from "app-types/chat";
-import { isJson, isString, toAny } from "lib/utils";
+import { cn, isJson, isString, toAny } from "lib/utils";
 import {
   ChevronLeft,
   ChevronRight,
@@ -36,6 +36,7 @@ import {
 } from "ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { PreBlock, SnowflakePreBlock } from "./pre-block";
+import type { VoiceArtifactTileDensity } from "./chat-bot-voice.utils";
 import { appStore } from "@/app/store";
 import { linkifyKnowledgeCitationMarkers } from "lib/chat/knowledge-citations";
 
@@ -164,11 +165,13 @@ const MarkdownTable = memo(
     animate = true,
     knowledgeCitations,
     displayVariant = "default",
+    voiceStageDensity = "dashboard",
   }: {
     node?: any;
     animate?: boolean;
     knowledgeCitations?: ChatKnowledgeCitation[];
     displayVariant?: "default" | "voice-stage";
+    voiceStageDensity?: VoiceArtifactTileDensity;
   }) => {
     const [page, setPage] = useState(1);
     const [exporting, setExporting] = useState(false);
@@ -225,19 +228,21 @@ const MarkdownTable = memo(
     };
 
     const isVoiceStage = displayVariant === "voice-stage";
+    const compactVoiceTable =
+      voiceStageDensity === "triad" || voiceStageDensity === "dashboard";
 
     return (
       <div
         className={
           isVoiceStage
-            ? "my-2 w-full"
+            ? "my-0 flex h-full min-h-0 w-full flex-col"
             : "my-4 overflow-hidden rounded-xl border"
         }
       >
         <div
           className={
             isVoiceStage
-              ? "mb-3 flex items-center justify-end"
+              ? "mb-3 flex shrink-0 items-center justify-end"
               : "flex items-center justify-between border-b bg-muted/20 px-4 py-2.5"
           }
         >
@@ -260,91 +265,108 @@ const MarkdownTable = memo(
           </Button>
         </div>
 
-        <div className="overflow-x-auto">
-          <Table className="table-fixed">
-            <TableHeader>
-              <TableRow>
-                {headerCells.map((th: any, i: number) => (
-                  <TableHead
-                    key={i}
-                    className="whitespace-normal break-words align-top [overflow-wrap:anywhere]"
-                  >
-                    {renderMarkdownChildren(
-                      th.children?.map((c: any, j: number) => (
-                        <Fragment key={j}>
-                          {renderHastNode(c, knowledgeCitations)}
-                        </Fragment>
-                      )),
-                      animate,
-                    )}
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pageRows.map((tr: any, rowIdx: number) => {
-                const cells =
-                  tr.children?.filter((c: any) => c.tagName === "td") || [];
-                return (
-                  <TableRow key={rowIdx}>
-                    {cells.map((td: any, cellIdx: number) => (
-                      <TableCell
-                        key={cellIdx}
-                        className="whitespace-normal break-words align-top [overflow-wrap:anywhere]"
-                      >
-                        {renderMarkdownChildren(
-                          td.children?.map((c: any, j: number) => (
-                            <Fragment key={j}>
-                              {renderHastNode(c, knowledgeCitations)}
-                            </Fragment>
-                          )),
-                          animate,
-                        )}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
-
-        {totalPages > 1 && (
-          <div
-            className={
-              isVoiceStage
-                ? "mt-4 flex items-center justify-between"
-                : "flex items-center justify-between border-t bg-muted/20 px-4 py-2"
-            }
-          >
-            <span className="text-xs text-muted-foreground">
-              {totalRows} rows · Page {page} of {totalPages}
-            </span>
-            <div className="flex items-center gap-0.5">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page === 1}
+        <div
+          className={
+            isVoiceStage
+              ? "flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.5rem] border border-white/10 bg-white/[0.02]"
+              : "overflow-x-auto"
+          }
+        >
+          <div className={isVoiceStage ? "min-h-0 flex-1 overflow-auto" : ""}>
+            <Table className="table-fixed">
+              <TableHeader
+                className={
+                  isVoiceStage
+                    ? "sticky top-0 z-10 bg-black/90 backdrop-blur supports-[backdrop-filter]:bg-black/75"
+                    : undefined
+                }
               >
-                <ChevronLeft className="size-3.5" />
-              </Button>
-              <span className="text-xs px-2 text-muted-foreground">
-                {page} / {totalPages}
-              </span>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7"
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page === totalPages}
-              >
-                <ChevronRight className="size-3.5" />
-              </Button>
-            </div>
+                <TableRow>
+                  {headerCells.map((th: any, i: number) => (
+                    <TableHead
+                      key={i}
+                      className="whitespace-normal break-words align-top [overflow-wrap:anywhere]"
+                    >
+                      {renderMarkdownChildren(
+                        th.children?.map((c: any, j: number) => (
+                          <Fragment key={j}>
+                            {renderHastNode(c, knowledgeCitations)}
+                          </Fragment>
+                        )),
+                        animate,
+                      )}
+                    </TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pageRows.map((tr: any, rowIdx: number) => {
+                  const cells =
+                    tr.children?.filter((c: any) => c.tagName === "td") || [];
+                  return (
+                    <TableRow key={rowIdx}>
+                      {cells.map((td: any, cellIdx: number) => (
+                        <TableCell
+                          key={cellIdx}
+                          className="whitespace-normal break-words align-top [overflow-wrap:anywhere]"
+                        >
+                          {renderMarkdownChildren(
+                            td.children?.map((c: any, j: number) => (
+                              <Fragment key={j}>
+                                {renderHastNode(c, knowledgeCitations)}
+                              </Fragment>
+                            )),
+                            animate,
+                          )}
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           </div>
-        )}
+
+          {totalPages > 1 && (
+            <div
+              className={
+                isVoiceStage
+                  ? cn(
+                      "flex shrink-0 items-center justify-between border-t border-white/5 bg-black/30 px-4 py-3",
+                      compactVoiceTable && "text-xs",
+                    )
+                  : "flex items-center justify-between border-t bg-muted/20 px-4 py-2"
+              }
+            >
+              <span className="text-xs text-muted-foreground">
+                {totalRows} rows · Page {page} of {totalPages}
+              </span>
+              <div className="flex items-center gap-0.5">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                >
+                  <ChevronLeft className="size-3.5" />
+                </Button>
+                <span className="text-xs px-2 text-muted-foreground">
+                  {page} / {totalPages}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                >
+                  <ChevronRight className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     );
   },
@@ -486,6 +508,7 @@ const buildComponents = (
   knowledgeCitations?: ChatKnowledgeCitation[],
   animate = true,
   displayVariant: "default" | "voice-stage" = "default",
+  voiceStageDensity: VoiceArtifactTileDensity = "dashboard",
 ): Partial<Components> => ({
   table: ({ node }) => {
     return (
@@ -495,6 +518,7 @@ const buildComponents = (
           animate={animate}
           knowledgeCitations={knowledgeCitations}
           displayVariant={displayVariant}
+          voiceStageDensity={voiceStageDensity}
         />
       </div>
     );
@@ -678,6 +702,7 @@ const NonMemoizedMarkdown = ({
   children,
   variant,
   displayVariant = "default",
+  voiceStageDensity = "dashboard",
   knowledgeCitations,
   animate = true,
   streaming = false,
@@ -685,6 +710,7 @@ const NonMemoizedMarkdown = ({
   children: string;
   variant?: "snowflake";
   displayVariant?: "default" | "voice-stage";
+  voiceStageDensity?: VoiceArtifactTileDensity;
   knowledgeCitations?: ChatKnowledgeCitation[];
   animate?: boolean;
   streaming?: boolean;
@@ -696,11 +722,27 @@ const NonMemoizedMarkdown = ({
     () =>
       variant === "snowflake"
         ? {
-            ...buildComponents(citationRenderPayload, false, displayVariant),
+            ...buildComponents(
+              citationRenderPayload,
+              false,
+              displayVariant,
+              voiceStageDensity,
+            ),
             ...snowflakeComponents,
           }
-        : buildComponents(citationRenderPayload, animate, displayVariant),
-    [animate, citationRenderPayload, displayVariant, variant],
+        : buildComponents(
+            citationRenderPayload,
+            animate,
+            displayVariant,
+            voiceStageDensity,
+          ),
+    [
+      animate,
+      citationRenderPayload,
+      displayVariant,
+      variant,
+      voiceStageDensity,
+    ],
   );
   const renderedText = useMemo(
     () =>
@@ -736,6 +778,7 @@ export const Markdown = memo(
     prevProps.children === nextProps.children &&
     prevProps.variant === nextProps.variant &&
     prevProps.displayVariant === nextProps.displayVariant &&
+    prevProps.voiceStageDensity === nextProps.voiceStageDensity &&
     prevProps.knowledgeCitations === nextProps.knowledgeCitations &&
     prevProps.animate === nextProps.animate &&
     prevProps.streaming === nextProps.streaming,

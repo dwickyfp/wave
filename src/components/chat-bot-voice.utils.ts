@@ -57,9 +57,16 @@ export type VoiceLatestTurnModel = {
   runningToolStates: VoiceTurnToolState[];
 };
 
+export type VoiceArtifactTileDensity =
+  | "feature"
+  | "split"
+  | "triad"
+  | "dashboard";
+
 export type VoiceArtifactGridLayout = {
   desktopColumns: 1 | 2 | 3;
   desktopRows: 0 | 1 | 2;
+  density: VoiceArtifactTileDensity;
   overflow: boolean;
 };
 
@@ -302,6 +309,7 @@ export function getVoiceArtifactGridLayout(
     return {
       desktopColumns: 1,
       desktopRows: 0,
+      density: "feature",
       overflow: false,
     };
   }
@@ -310,6 +318,7 @@ export function getVoiceArtifactGridLayout(
     return {
       desktopColumns: 1,
       desktopRows: 1,
+      density: "feature",
       overflow: false,
     };
   }
@@ -318,6 +327,7 @@ export function getVoiceArtifactGridLayout(
     return {
       desktopColumns: 2,
       desktopRows: 1,
+      density: "split",
       overflow: false,
     };
   }
@@ -326,6 +336,16 @@ export function getVoiceArtifactGridLayout(
     return {
       desktopColumns: 3,
       desktopRows: 1,
+      density: "triad",
+      overflow: false,
+    };
+  }
+
+  if (count === 4) {
+    return {
+      desktopColumns: 2,
+      desktopRows: 2,
+      density: "dashboard",
       overflow: false,
     };
   }
@@ -333,6 +353,7 @@ export function getVoiceArtifactGridLayout(
   return {
     desktopColumns: 3,
     desktopRows: 2,
+    density: "dashboard",
     overflow: count > 6,
   };
 }

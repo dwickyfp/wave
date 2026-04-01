@@ -460,7 +460,7 @@ export function ChatBotVoice() {
               </div>
               <DrawerTitle className="sr-only">Voice Chat</DrawerTitle>
             </div>
-            <div className="flex-1 min-h-0 mx-auto w-full max-w-6xl px-4 pb-40 md:px-6">
+            <div className="mx-auto flex-1 min-h-0 w-full max-w-[1760px] px-2 pb-40 md:px-4 xl:px-6">
               {error ? (
                 <div className="max-w-3xl mx-auto">
                   <Alert variant={"destructive"}>
@@ -652,7 +652,7 @@ function VoiceTurnStage({
 
       <div className="min-h-0 flex-1 pt-24 md:pt-28">
         <ScrollArea className="h-full">
-          <div className="mx-auto min-h-full w-full max-w-6xl px-1 pb-8 pt-2 md:px-2">
+          <div className="mx-auto min-h-full w-full px-0 pb-10 pt-2">
             {turn.hasRenderableArtifacts ? (
               <VoiceArtifactGrid artifacts={turn.renderableArtifacts} />
             ) : (
@@ -820,14 +820,49 @@ function VoiceStatusStrip({
 
 function getVoiceArtifactGridClassName(layout: VoiceArtifactGridLayout) {
   if (layout.desktopColumns === 1) {
-    return "md:grid-cols-1";
+    return "grid-cols-1";
   }
 
   if (layout.desktopColumns === 2) {
     return "md:grid-cols-2";
   }
 
-  return "md:grid-cols-3";
+  return "md:grid-cols-2 xl:grid-cols-3";
+}
+
+function getVoiceArtifactStageWidthClassName(layout: VoiceArtifactGridLayout) {
+  if (layout.density === "feature") {
+    return "max-w-[1480px]";
+  }
+
+  if (layout.density === "split") {
+    return "max-w-[1640px]";
+  }
+
+  return "max-w-[1760px]";
+}
+
+function getVoiceArtifactTileHeightClassName(
+  layout: VoiceArtifactGridLayout,
+  artifactCount: number,
+) {
+  if (layout.density === "feature") {
+    return "h-[420px] md:h-[560px] xl:h-[640px]";
+  }
+
+  if (layout.density === "split") {
+    return "h-[360px] md:h-[460px] xl:h-[520px]";
+  }
+
+  if (layout.density === "triad") {
+    return "h-[320px] md:h-[360px] xl:h-[420px]";
+  }
+
+  if (artifactCount === 4) {
+    return "h-[320px] md:h-[400px] xl:h-[460px]";
+  }
+
+  return "h-[300px] md:h-[340px] xl:h-[400px]";
 }
 
 function VoiceArtifactGrid({
@@ -842,14 +877,15 @@ function VoiceArtifactGrid({
       <div
         className={cn(
           "mx-auto w-full",
-          layout.desktopColumns === 1 ? "max-w-4xl" : "max-w-6xl",
+          getVoiceArtifactStageWidthClassName(layout),
         )}
       >
         <div
           className={cn(
-            "grid grid-cols-1 gap-4 md:gap-5",
+            "grid grid-cols-1 items-start gap-4 md:gap-5 xl:gap-6",
             getVoiceArtifactGridClassName(layout),
-            layout.overflow && "max-h-[calc(100vh-20rem)] overflow-y-auto pr-1",
+            layout.overflow &&
+              "max-h-[calc(100vh-16.5rem)] overflow-y-auto overscroll-contain pr-1 md:pr-2",
           )}
         >
           {artifacts.map((artifact) => (
@@ -857,8 +893,9 @@ function VoiceArtifactGrid({
               key={artifact.id}
               artifactCount={artifacts.length}
               artifactKind={artifact.kind}
+              layout={layout}
             >
-              <VoiceArtifactView artifact={artifact} />
+              <VoiceArtifactView artifact={artifact} density={layout.density} />
             </VoiceArtifactTile>
           ))}
         </div>
@@ -870,25 +907,20 @@ function VoiceArtifactGrid({
 function VoiceArtifactTile({
   artifactCount,
   artifactKind,
+  layout,
   children,
 }: {
   artifactCount: number;
   artifactKind: VoiceRenderableArtifact["kind"];
+  layout: VoiceArtifactGridLayout;
   children: ReactNode;
 }) {
-  const sizeClassName =
-    artifactCount === 1
-      ? "min-h-[420px] md:min-h-[520px]"
-      : artifactCount === 2
-        ? "min-h-[320px] md:min-h-[420px]"
-        : "min-h-[260px] md:min-h-[340px]";
-
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-[2rem] border border-white/10 bg-black/20 backdrop-blur-sm",
+        "flex min-h-0 flex-col overflow-hidden rounded-[2rem] border border-white/10 bg-black/20 backdrop-blur-sm",
         "shadow-[0_18px_40px_rgba(0,0,0,0.22)]",
-        sizeClassName,
+        getVoiceArtifactTileHeightClassName(layout, artifactCount),
         artifactCount === 1 && "mx-auto w-full",
         artifactKind === "image-file" || artifactKind === "image-source-url"
           ? "p-3 md:p-4"
@@ -948,17 +980,27 @@ function VoiceHiddenToolRunner({
 
 function VoiceArtifactView({
   artifact,
+  density,
 }: {
   artifact: VoiceRenderableArtifact;
+  density: VoiceArtifactGridLayout["density"];
 }) {
   switch (artifact.kind) {
     case "tool":
-      return <VoiceToolArtifact part={artifact.part} />;
+      return <VoiceToolArtifact part={artifact.part} density={density} />;
     case "knowledge-images":
-      return <KnowledgeImageMessagePart images={artifact.images} />;
+      return (
+        <div className="h-full min-h-0 overflow-auto">
+          <KnowledgeImageMessagePart images={artifact.images} />
+        </div>
+      );
     case "markdown-table":
       return (
-        <Markdown animate={false} displayVariant="voice-stage">
+        <Markdown
+          animate={false}
+          displayVariant="voice-stage"
+          voiceStageDensity={density}
+        >
           {artifact.markdown}
         </Markdown>
       );
@@ -979,23 +1021,46 @@ function VoiceArtifactView({
   }
 }
 
-function VoiceToolArtifact({ part }: { part: ToolUIPart }) {
+function VoiceToolArtifact({
+  part,
+  density,
+}: {
+  part: ToolUIPart;
+  density: VoiceArtifactGridLayout["density"];
+}) {
   const toolName = getToolName(part);
 
   switch (toolName) {
     case DefaultToolName.CreateLineChart:
       return (
-        <LineChart {...(part.input as any)} displayVariant="voice-stage" />
+        <LineChart
+          {...(part.input as any)}
+          displayVariant="voice-stage"
+          voiceStageDensity={density}
+        />
       );
     case DefaultToolName.CreateBarChart:
-      return <BarChart {...(part.input as any)} displayVariant="voice-stage" />;
+      return (
+        <BarChart
+          {...(part.input as any)}
+          displayVariant="voice-stage"
+          voiceStageDensity={density}
+        />
+      );
     case DefaultToolName.CreatePieChart:
-      return <PieChart {...(part.input as any)} displayVariant="voice-stage" />;
+      return (
+        <PieChart
+          {...(part.input as any)}
+          displayVariant="voice-stage"
+          voiceStageDensity={density}
+        />
+      );
     case DefaultToolName.CreateTable:
       return (
         <InteractiveTable
           {...(part.input as any)}
           displayVariant="voice-stage"
+          voiceStageDensity={density}
         />
       );
     case ImageToolName:
@@ -1017,12 +1082,12 @@ function VoiceImageArtifact({
   }
 
   return (
-    <div className="w-full overflow-hidden">
+    <div className="flex h-full w-full items-center justify-center overflow-hidden">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
         alt={alt}
-        className="mx-auto h-auto max-h-[70vh] w-auto rounded-[2rem] object-contain"
+        className="mx-auto h-full max-h-full w-full max-w-full rounded-[1.6rem] object-contain"
       />
     </div>
   );
