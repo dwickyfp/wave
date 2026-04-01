@@ -54,9 +54,9 @@ function normalizeAzureVoiceEndpoint(
 function buildVoiceTurnDetection() {
   return {
     type: "server_vad" as const,
-    threshold: 0.5,
-    prefix_padding_ms: 300,
-    silence_duration_ms: 250,
+    threshold: 0.4,
+    prefix_padding_ms: 500,
+    silence_duration_ms: 900,
     create_response: false,
     interrupt_response: false,
   };

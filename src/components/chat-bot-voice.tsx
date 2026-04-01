@@ -1,31 +1,49 @@
 "use client";
 
-import { getStaticToolName, isStaticToolUIPart, TextPart, UIMessage } from "ai";
+import {
+  getStaticToolName,
+  isStaticToolUIPart,
+  type ToolUIPart,
+  type UIMessage,
+} from "ai";
 
 import { useOpenAIVoiceChat as OpenAIVoiceChat } from "lib/ai/speech/open-ai/use-voice-chat.openai";
 import { AppDefaultToolkit, DefaultToolName } from "lib/ai/tools";
 import { cn, generateUUID, groupBy, isNull } from "lib/utils";
 import {
+  AudioLinesIcon,
   ArrowUpRight,
+  BotIcon,
+  CheckCircle2Icon,
+  Clock3Icon,
   Loader,
   MicIcon,
   MicOffIcon,
   PhoneIcon,
+  SparklesIcon,
   TriangleAlertIcon,
+  UserRoundIcon,
   XIcon,
   MessagesSquareIcon,
   MessageSquareMoreIcon,
-  WrenchIcon,
-  ChevronRight,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { safe } from "ts-safe";
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
+import { Badge } from "ui/badge";
 import { Button } from "ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "ui/card";
 
 import { Drawer, DrawerContent, DrawerPortal, DrawerTitle } from "ui/drawer";
 import { MessageLoading } from "ui/message-loading";
+import { ScrollArea } from "ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { PreviewMessage } from "./message";
 
@@ -33,8 +51,6 @@ import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
 import { useShallow } from "zustand/shallow";
 import { useTranslations } from "next-intl";
-import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "ui/dialog";
-import JsonView from "ui/json-view";
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
 import { useAgent } from "@/hooks/queries/use-agent";
 import { ChatMention } from "app-types/chat";
@@ -86,6 +102,7 @@ export function ChatBotVoice() {
     isProcessingTurn,
     isActive,
     isUserSpeaking,
+    liveInputTranscript,
     messages,
     error,
     start,
@@ -458,7 +475,13 @@ export function ChatBotVoice() {
               ) : (
                 <div className="h-full w-full">
                   {useCompactView ? (
-                    <CompactMessageView messages={messages} />
+                    <CompactMessageView
+                      messages={messages}
+                      liveInputTranscript={liveInputTranscript}
+                      isProcessingTurn={isProcessingTurn}
+                      isAssistantSpeaking={isAssistantSpeaking}
+                      isUserSpeaking={isUserSpeaking}
+                    />
                   ) : (
                     <ConversationView
                       messages={messages}
@@ -558,6 +581,10 @@ function ConversationView({
   threadId?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const streamSignature = useMemo(
+    () => buildVoiceStreamSignature(messages),
+    [messages],
+  );
 
   useEffect(() => {
     if (ref.current) {
@@ -566,22 +593,390 @@ function ConversationView({
         behavior: "smooth",
       });
     }
-  }, [messages.length]);
+  }, [streamSignature]);
   return (
-    <div className="select-text w-full overflow-y-auto h-full" ref={ref}>
-      <div className="max-w-4xl mx-auto flex flex-col px-6 gap-6 pb-44 min-h-0 min-w-0">
-        {messages.map((message, index) => (
-          <PreviewMessage
-            key={message.id}
-            readonly
-            message={message}
-            prevMessage={messages[index - 1]}
-            isLoading={isLoading && index === messages.length - 1}
-            isLastMessage={index === messages.length - 1}
-            threadId={threadId}
-            messageIndex={index}
-          />
-        ))}
+    <div className="h-full overflow-y-auto select-text" ref={ref}>
+      <div>
+        <div className="max-w-4xl mx-auto flex flex-col px-6 gap-6 pb-44 min-h-0 min-w-0">
+          {messages.map((message, index) => (
+            <PreviewMessage
+              key={message.id}
+              readonly
+              message={message}
+              prevMessage={messages[index - 1]}
+              isLoading={isLoading && index === messages.length - 1}
+              isLastMessage={index === messages.length - 1}
+              threadId={threadId}
+              messageIndex={index}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function getMessageText(message: UIMessage) {
+  return message.parts
+    .filter(
+      (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
+        part.type === "text",
+    )
+    .map((part) => part.text.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+}
+
+function buildVoiceStreamSignature(
+  messages: UIMessage[],
+  liveInputTranscript = "",
+) {
+  return [
+    liveInputTranscript,
+    ...messages.map((message) =>
+      [
+        message.id,
+        message.role,
+        ...message.parts.map((part) => {
+          if (part.type === "text") {
+            return `text:${part.text}`;
+          }
+          if (isStaticToolUIPart(part)) {
+            return `${getStaticToolName(part)}:${part.state}`;
+          }
+          return part.type;
+        }),
+      ].join("|"),
+    ),
+  ].join("::");
+}
+
+function summarizeToolOutput(part: ToolUIPart) {
+  if (part.state === "output-error") {
+    return part.errorText || "Tool execution failed.";
+  }
+
+  if (part.state !== "output-available") {
+    return "Running...";
+  }
+
+  const output = part.output as unknown;
+  if (typeof output === "string") {
+    return output.slice(0, 180);
+  }
+
+  if (Array.isArray(output)) {
+    return `${output.length} item${output.length === 1 ? "" : "s"} returned`;
+  }
+
+  if (output && typeof output === "object") {
+    const keys = Object.keys(output as Record<string, unknown>);
+    if ("statusMessage" in (output as Record<string, unknown>)) {
+      return String((output as Record<string, unknown>).statusMessage);
+    }
+    if ("result" in (output as Record<string, unknown>)) {
+      return "Completed with structured output";
+    }
+    return keys.length
+      ? `Returned ${keys.slice(0, 4).join(", ")}`
+      : "Completed";
+  }
+
+  return "Completed";
+}
+
+function VoiceCompactCallView({
+  messages,
+  liveInputTranscript,
+  isProcessingTurn,
+  isAssistantSpeaking,
+  isUserSpeaking,
+}: {
+  messages: UIMessage[];
+  liveInputTranscript: string;
+  isProcessingTurn: boolean;
+  isAssistantSpeaking: boolean;
+  isUserSpeaking: boolean;
+}) {
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const streamSignature = useMemo(
+    () => buildVoiceStreamSignature(messages, liveInputTranscript),
+    [messages, liveInputTranscript],
+  );
+
+  const transcriptMessages = useMemo(() => {
+    return messages
+      .filter(
+        (message) => message.role === "user" || message.role === "assistant",
+      )
+      .map((message) => ({
+        id: message.id,
+        role: message.role,
+        text: getMessageText(message),
+      }))
+      .filter((message) => message.text)
+      .slice(-6);
+  }, [messages]);
+
+  const latestAssistantText = useMemo(() => {
+    for (let index = transcriptMessages.length - 1; index >= 0; index -= 1) {
+      if (transcriptMessages[index]?.role === "assistant") {
+        return transcriptMessages[index].text;
+      }
+    }
+    return "";
+  }, [transcriptMessages]);
+
+  const toolActivities = useMemo(() => {
+    return messages
+      .flatMap((message) =>
+        message.parts.filter(isStaticToolUIPart).map((part) => ({
+          id: `${message.id}-${part.toolCallId}`,
+          name: getStaticToolName(part),
+          part: part as ToolUIPart,
+        })),
+      )
+      .slice(-8);
+  }, [messages]);
+
+  useEffect(() => {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTo({
+        top: transcriptRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    }
+  }, [streamSignature]);
+
+  const activeToolCount = toolActivities.filter((activity) =>
+    activity.part.state.startsWith("input"),
+  ).length;
+
+  return (
+    <div className="relative h-full overflow-hidden">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(245,158,11,0.12),transparent_38%),radial-gradient(circle_at_bottom_right,rgba(14,165,233,0.12),transparent_32%)]" />
+      <div className="relative mx-auto grid h-full max-w-6xl gap-6 px-4 pb-40 md:px-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <Card className="min-h-0 gap-0 overflow-hidden border-white/10 bg-gradient-to-br from-card via-card to-amber-500/5 shadow-2xl">
+          <CardHeader className="border-b border-border/60 pb-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-2">
+                <Badge
+                  variant="outline"
+                  className="border-amber-500/30 bg-amber-500/10 text-amber-200"
+                >
+                  <AudioLinesIcon className="size-3.5" />
+                  Live Call
+                </Badge>
+                <CardTitle className="text-xl tracking-tight">
+                  Voice Timeline
+                </CardTitle>
+                <CardDescription>
+                  Live transcript while you speak, then concise assistant
+                  replies and tool progress.
+                </CardDescription>
+              </div>
+              <Badge
+                variant="outline"
+                className={cn(
+                  "border-white/10 bg-white/5",
+                  isAssistantSpeaking &&
+                    "border-sky-400/30 bg-sky-500/10 text-sky-100",
+                  isUserSpeaking &&
+                    "border-amber-400/30 bg-amber-500/10 text-amber-100",
+                )}
+              >
+                {isAssistantSpeaking
+                  ? "Assistant speaking"
+                  : isUserSpeaking
+                    ? "Listening"
+                    : isProcessingTurn
+                      ? "Thinking"
+                      : "Ready"}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="min-h-0 flex-1 px-0">
+            <div
+              ref={transcriptRef}
+              className="h-full overflow-y-auto space-y-4 px-6 pb-6 pt-4"
+            >
+              {!transcriptMessages.length && !liveInputTranscript ? (
+                <div className="flex min-h-[280px] items-center justify-center">
+                  <div className="max-w-md rounded-[2rem] border border-dashed border-border/70 bg-background/40 px-6 py-8 text-center">
+                    <SparklesIcon className="mx-auto mb-4 size-8 text-amber-300" />
+                    <p className="text-lg font-medium">
+                      Start speaking naturally.
+                    </p>
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      The drawer will keep your transcript, stream assistant
+                      text, and show tool activity as it happens.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
+              {transcriptMessages.map((message) => {
+                const isAssistant = message.role === "assistant";
+                const isLatestAssistant =
+                  isAssistant &&
+                  message.id ===
+                    transcriptMessages.findLast(
+                      (entry) => entry.role === "assistant",
+                    )?.id;
+
+                return (
+                  <div
+                    key={message.id}
+                    className={cn(
+                      "max-w-3xl rounded-[2rem] border px-5 py-4 shadow-sm backdrop-blur-sm",
+                      isAssistant
+                        ? "mr-10 border-white/10 bg-white/5"
+                        : "ml-10 border-amber-500/20 bg-amber-500/10",
+                    )}
+                  >
+                    <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+                      {isAssistant ? (
+                        <BotIcon className="size-3.5" />
+                      ) : (
+                        <UserRoundIcon className="size-3.5" />
+                      )}
+                      {isAssistant ? "Assistant" : "You"}
+                    </div>
+                    <p
+                      className={cn(
+                        "whitespace-pre-wrap text-sm leading-7 md:text-base",
+                        isLatestAssistant && "text-lg font-medium md:text-xl",
+                      )}
+                    >
+                      {message.text}
+                    </p>
+                  </div>
+                );
+              })}
+
+              {liveInputTranscript ? (
+                <div className="ml-10 max-w-3xl rounded-[2rem] border border-amber-400/25 bg-amber-500/10 px-5 py-4 shadow-sm backdrop-blur-sm">
+                  <div className="mb-2 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.24em] text-amber-100/80">
+                    <AudioLinesIcon className="size-3.5" />
+                    Live transcript
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm leading-7 text-foreground md:text-base">
+                    {liveInputTranscript}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="grid min-h-0 gap-6 lg:grid-rows-[auto_minmax(0,1fr)]">
+          <Card className="gap-0 overflow-hidden border-white/10 bg-gradient-to-br from-sky-500/10 via-card to-amber-500/10">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-base">Assistant Reply</CardTitle>
+              <CardDescription>
+                Spoken output stays short and focused for voice calls.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {latestAssistantText ? (
+                <p className="line-clamp-6 whitespace-pre-wrap text-base leading-7">
+                  {latestAssistantText}
+                </p>
+              ) : isProcessingTurn ? (
+                <div className="py-2">
+                  <MessageLoading className="text-muted-foreground" />
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  The next assistant reply will appear here as it streams.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="min-h-0 gap-0 overflow-hidden border-white/10 bg-card/95 backdrop-blur">
+            <CardHeader className="border-b border-border/60 pb-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <CardTitle className="text-base">Tool Activity</CardTitle>
+                  <CardDescription>
+                    Live execution view for charts, tables, workflows, and
+                    external actions.
+                  </CardDescription>
+                </div>
+                <Badge variant="outline" className="border-white/10 bg-white/5">
+                  {activeToolCount > 0
+                    ? `${activeToolCount} running`
+                    : `${toolActivities.length} recent`}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="min-h-0 flex-1 px-0">
+              <ScrollArea className="h-full">
+                <div className="space-y-3 px-6 pb-6 pt-4">
+                  {toolActivities.length ? (
+                    toolActivities.map((activity) => {
+                      const isRunning = activity.part.state.startsWith("input");
+                      const isError = activity.part.state === "output-error";
+
+                      return (
+                        <div
+                          key={activity.id}
+                          className={cn(
+                            "rounded-2xl border px-4 py-3 shadow-sm",
+                            isRunning
+                              ? "border-amber-500/25 bg-amber-500/10"
+                              : isError
+                                ? "border-destructive/25 bg-destructive/10"
+                                : "border-sky-500/20 bg-sky-500/10",
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="truncate text-sm font-semibold">
+                              {activity.name}
+                            </p>
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "border-current/20 bg-background/40",
+                                isRunning &&
+                                  "text-amber-200 border-amber-300/20",
+                                !isRunning &&
+                                  !isError &&
+                                  "text-sky-100 border-sky-300/20",
+                                isError && "text-red-100 border-red-300/20",
+                              )}
+                            >
+                              {isRunning ? (
+                                <Clock3Icon className="size-3.5" />
+                              ) : (
+                                <CheckCircle2Icon className="size-3.5" />
+                              )}
+                              {isRunning
+                                ? "Running"
+                                : isError
+                                  ? "Failed"
+                                  : "Done"}
+                            </Badge>
+                          </div>
+                          <p className="mt-2 line-clamp-3 text-sm leading-6 text-muted-foreground">
+                            {summarizeToolOutput(activity.part)}
+                          </p>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-border/70 bg-background/30 px-4 py-6 text-sm text-muted-foreground">
+                      Tool activity will show up here as the voice agent runs
+                      workflows, charts, tables, or MCP actions.
+                    </div>
+                  )}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );
@@ -589,98 +984,24 @@ function ConversationView({
 
 function CompactMessageView({
   messages,
+  liveInputTranscript,
+  isProcessingTurn,
+  isAssistantSpeaking,
+  isUserSpeaking,
 }: {
   messages: UIMessage[];
+  liveInputTranscript: string;
+  isProcessingTurn: boolean;
+  isAssistantSpeaking: boolean;
+  isUserSpeaking: boolean;
 }) {
-  const { toolParts, textPart } = useMemo(() => {
-    const toolParts = messages
-      .filter((msg) => msg.parts.some(isStaticToolUIPart))
-      .map((msg) => msg.parts.find(isStaticToolUIPart));
-
-    const textPart = messages.findLast((msg) => msg.role === "assistant")
-      ?.parts[0] as TextPart;
-    return { toolParts, textPart };
-  }, [messages]);
-
   return (
-    <div className="relative w-full h-full overflow-hidden">
-      <div className="absolute bottom-6 max-h-[80vh] overflow-y-auto left-6 z-10 flex-col gap-2 hidden md:flex">
-        {toolParts.map((toolPart, index) => {
-          const isExecuting = toolPart?.state.startsWith("input");
-          if (!toolPart) return null;
-          return (
-            <Dialog key={index}>
-              <DialogTrigger asChild>
-                <div className="animate-in slide-in-from-bottom-2 fade-in duration-3000 max-w-xs w-full">
-                  <Button
-                    variant={"outline"}
-                    size={"icon"}
-                    className="w-full bg-card flex items-center gap-2 px-2 text-xs text-muted-foreground"
-                  >
-                    <WrenchIcon className="size-3.5" />
-                    <span className="text-sm font-bold min-w-0 truncate mr-auto">
-                      {getStaticToolName(toolPart)}
-                    </span>
-                    {isExecuting ? (
-                      <Loader className="size-3.5 animate-spin" />
-                    ) : (
-                      <ChevronRight className="size-3.5" />
-                    )}
-                  </Button>
-                </div>
-              </DialogTrigger>
-              <DialogContent className="z-50 md:max-w-2xl! max-h-[80vh] overflow-y-auto p-8">
-                <DialogTitle>{getStaticToolName(toolPart)}</DialogTitle>
-                <div className="flex flex-row gap-4 text-sm ">
-                  <div className="w-1/2 min-w-0 flex flex-col">
-                    <div className="flex items-center gap-2 mb-2 pt-2 pb-1 z-10">
-                      <h5 className="text-muted-foreground text-sm font-medium">
-                        Inputs
-                      </h5>
-                    </div>
-                    <JsonView data={toolPart.input} />
-                  </div>
-
-                  <div className="w-1/2 min-w-0 pl-4 flex flex-col">
-                    <div className="flex items-center gap-2 mb-4 pt-2 pb-1  z-10">
-                      <h5 className="text-muted-foreground text-sm font-medium">
-                        Outputs
-                      </h5>
-                    </div>
-                    <JsonView
-                      data={
-                        toolPart.state === "output-available"
-                          ? toolPart.output
-                          : toolPart.state == "output-error"
-                            ? toolPart.errorText
-                            : {}
-                      }
-                    />
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-          );
-        })}
-      </div>
-
-      {/* Current Message - Prominent */}
-      {textPart && (
-        <div className="w-full mx-auto h-full max-h-[80vh] overflow-y-auto px-4 lg:max-w-4xl flex-1 flex items-center">
-          <div className="animate-in fade-in-50 duration-1000">
-            <p className="text-2xl md:text-3xl lg:text-4xl font-semibold leading-tight tracking-wide">
-              {textPart.text?.split(" ").map((word, wordIndex) => (
-                <span
-                  key={wordIndex}
-                  className="animate-in fade-in duration-5000"
-                >
-                  {word}{" "}
-                </span>
-              ))}
-            </p>
-          </div>
-        </div>
-      )}
-    </div>
+    <VoiceCompactCallView
+      messages={messages}
+      liveInputTranscript={liveInputTranscript}
+      isProcessingTurn={isProcessingTurn}
+      isAssistantSpeaking={isAssistantSpeaking}
+      isUserSpeaking={isUserSpeaking}
+    />
   );
 }

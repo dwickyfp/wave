@@ -251,6 +251,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const [isListening, setIsListening] = useState(false);
   const [isSessionLoading, setIsSessionLoading] = useState(false);
   const [isSynthesizingSpeech, setIsSynthesizingSpeech] = useState(false);
+  const [liveInputTranscript, setLiveInputTranscript] = useState("");
   const [error, setError] = useState<Error | null>(null);
 
   const latestOptionsRef = useRef(props);
@@ -673,6 +674,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     id: threadId ?? "voice-chat-pending",
     transport,
     generateId: generateUUID,
+    experimental_throttle: 32,
     onFinish: ({ message, isAbort }) => {
       if (isAbort) {
         void finishAgentTurn();
@@ -726,6 +728,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         );
         await finishAgentTurn(false);
       });
+      setLiveInputTranscript("");
     },
     [finishAgentTurn, sendMessage, setListeningState],
   );
@@ -766,6 +769,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         case "input_audio_buffer.speech_started": {
           if (!turnLockedRef.current) {
             setIsUserSpeaking(true);
+            setLiveInputTranscript("");
+          }
+          break;
+        }
+        case "conversation.item.input_audio_transcription.delta": {
+          if (!turnLockedRef.current) {
+            setLiveInputTranscript((current) => `${current}${event.delta}`);
           }
           break;
         }
@@ -1327,6 +1337,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       setIsSynthesizingSpeech(false);
       setIsAssistantSpeaking(false);
       setIsUserSpeaking(false);
+      setLiveInputTranscript("");
     } catch (stopError) {
       setError(
         stopError instanceof Error ? stopError : new Error(String(stopError)),
@@ -1366,6 +1377,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     isLoading: isSessionLoading,
     isProcessingTurn:
       status === "submitted" || status === "streaming" || isSynthesizingSpeech,
+    liveInputTranscript,
     error,
     messages,
     start,

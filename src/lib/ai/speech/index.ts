@@ -10,6 +10,7 @@ export interface VoiceChatSession {
   isAssistantSpeaking: boolean;
   isLoading: boolean;
   isProcessingTurn: boolean;
+  liveInputTranscript: string;
   messages: UIMessage[];
   error: Error | null;
   start: () => Promise<void>;
