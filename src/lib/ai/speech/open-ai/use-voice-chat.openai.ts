@@ -29,6 +29,57 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 
 const VOICE_AUDIO_SAMPLE_RATE = 24_000;
 const VOICE_TTS_TIMEOUT_MS = 30_000;
+const VOICE_RESUME_LISTENING_DELAY_MS = 1_500;
+const VOICE_ECHO_GUARD_MAX_MS = 15_000;
+
+function normalizeSpeechForEchoGuard(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function estimateSpeechDurationMs(text: string) {
+  const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+
+  return Math.min(
+    VOICE_ECHO_GUARD_MAX_MS,
+    Math.max(4_000, wordCount * 350 + VOICE_RESUME_LISTENING_DELAY_MS),
+  );
+}
+
+function isLikelyEchoTranscript(transcript: string, assistantText: string) {
+  const normalizedTranscript = normalizeSpeechForEchoGuard(transcript);
+  const normalizedAssistant = normalizeSpeechForEchoGuard(assistantText);
+
+  if (!normalizedTranscript || !normalizedAssistant) {
+    return false;
+  }
+
+  if (
+    normalizedAssistant.includes(normalizedTranscript) ||
+    normalizedTranscript.includes(normalizedAssistant)
+  ) {
+    return true;
+  }
+
+  const transcriptWords = Array.from(
+    new Set(normalizedTranscript.split(" ").filter((word) => word.length > 2)),
+  );
+  if (transcriptWords.length < 4) {
+    return false;
+  }
+
+  const assistantWords = new Set(
+    normalizedAssistant.split(" ").filter((word) => word.length > 2),
+  );
+  const overlapCount = transcriptWords.filter((word) =>
+    assistantWords.has(word),
+  ).length;
+
+  return overlapCount / transcriptWords.length >= 0.7;
+}
 
 function getVoiceIceServers(): RTCIceServer[] {
   const configuredJson = process.env.NEXT_PUBLIC_VOICE_ICE_SERVERS_JSON?.trim();
@@ -210,8 +261,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const fallbackAttemptedRef = useRef(false);
   const connectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const speechTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resumeListeningTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
   const turnLockedRef = useRef(false);
   const autoResumeListeningRef = useRef(false);
+  const lastAssistantSpeechRef = useRef("");
+  const assistantEchoGuardUntilRef = useRef(0);
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const dataChannel = useRef<RTCDataChannel | null>(null);
   const webSocket = useRef<WebSocket | null>(null);
@@ -249,10 +305,32 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     }
     if (!audioStream.current) {
       audioStream.current = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+        },
       });
     }
     return audioStream.current;
+  }, []);
+
+  const getPlaybackResumeDelayMs = useCallback(() => {
+    if (
+      transportRef.current === "websocket" &&
+      outputAudioContext.current &&
+      outputAudioTime.current > 0
+    ) {
+      const remainingMs = Math.max(
+        0,
+        (outputAudioTime.current - outputAudioContext.current.currentTime) *
+          1000,
+      );
+      return remainingMs + VOICE_RESUME_LISTENING_DELAY_MS;
+    }
+
+    return VOICE_RESUME_LISTENING_DELAY_MS;
   }, []);
 
   const stopWebSocketAudioCapture = useCallback(async () => {
@@ -435,10 +513,17 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   );
 
   const finishAgentTurn = useCallback(
-    async (resumeListening = autoResumeListeningRef.current) => {
+    async (
+      resumeListening = autoResumeListeningRef.current,
+      resumeDelayMs = 0,
+    ) => {
       if (speechTimeout.current) {
         clearTimeout(speechTimeout.current);
         speechTimeout.current = null;
+      }
+      if (resumeListeningTimeoutRef.current) {
+        clearTimeout(resumeListeningTimeoutRef.current);
+        resumeListeningTimeoutRef.current = null;
       }
 
       turnLockedRef.current = false;
@@ -447,17 +532,31 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       setIsAssistantSpeaking(false);
 
       if (resumeListening && isActiveRef.current) {
-        await setListeningState({
-          enabled: true,
-          commitBuffer: false,
-          releaseStream: false,
-        }).catch((resumeError) => {
-          setError(
-            resumeError instanceof Error
-              ? resumeError
-              : new Error(String(resumeError)),
-          );
-        });
+        const resumeListeningNow = () =>
+          setListeningState({
+            enabled: true,
+            commitBuffer: false,
+            releaseStream: false,
+          }).catch((resumeError) => {
+            setError(
+              resumeError instanceof Error
+                ? resumeError
+                : new Error(String(resumeError)),
+            );
+          });
+
+        if (resumeDelayMs > 0) {
+          resumeListeningTimeoutRef.current = setTimeout(() => {
+            resumeListeningTimeoutRef.current = null;
+            if (!isActiveRef.current) {
+              return;
+            }
+            void resumeListeningNow();
+          }, resumeDelayMs);
+          return;
+        }
+
+        await resumeListeningNow();
       }
     },
     [setListeningState],
@@ -476,6 +575,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         return;
       }
 
+      lastAssistantSpeechRef.current = speechText;
+      assistantEchoGuardUntilRef.current =
+        Date.now() + estimateSpeechDurationMs(speechText);
       setIsSynthesizingSpeech(true);
       speechTimeout.current = setTimeout(() => {
         void finishAgentTurn();
@@ -670,6 +772,15 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         case "conversation.item.input_audio_transcription.completed": {
           setIsUserSpeaking(false);
           if (event.transcript?.trim()) {
+            if (
+              Date.now() <= assistantEchoGuardUntilRef.current &&
+              isLikelyEchoTranscript(
+                event.transcript,
+                lastAssistantSpeechRef.current,
+              )
+            ) {
+              break;
+            }
             void sendVoiceTurn(event.transcript);
           }
           break;
@@ -688,7 +799,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         case "response.audio.done":
         case "response.output_audio.done":
         case "output_audio_buffer.stopped": {
-          void finishAgentTurn();
+          void finishAgentTurn(
+            autoResumeListeningRef.current,
+            getPlaybackResumeDelayMs(),
+          );
           break;
         }
         case "input_audio_buffer.speech_stopped": {
@@ -696,9 +810,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           break;
         }
         case "response.done": {
-          if (isSynthesizingSpeech) {
-            void finishAgentTurn();
-          }
           break;
         }
         case "session.error":
@@ -712,7 +823,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     },
     [
       finishAgentTurn,
-      isSynthesizingSpeech,
+      getPlaybackResumeDelayMs,
       playWebSocketAudioDelta,
       sendVoiceTurn,
     ],
@@ -1170,6 +1281,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       if (speechTimeout.current) {
         clearTimeout(speechTimeout.current);
         speechTimeout.current = null;
+      }
+      if (resumeListeningTimeoutRef.current) {
+        clearTimeout(resumeListeningTimeoutRef.current);
+        resumeListeningTimeoutRef.current = null;
       }
       stopChatResponse();
       transportRef.current = null;
