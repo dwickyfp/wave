@@ -509,16 +509,19 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       if (!response.ok) {
         const rawError = await response.text();
+        let parsedMessage: string | null = null;
         try {
           const parsedError = JSON.parse(rawError);
-          const message =
+          parsedMessage =
             typeof parsedError?.error === "string"
               ? parsedError.error
               : parsedError?.error?.message || rawError;
-          throw new Error(message);
         } catch {
-          throw new Error(rawError);
+          parsedMessage = null;
         }
+        throw new Error(
+          parsedMessage || rawError || "Voice session bootstrap failed.",
+        );
       }
       const session = await response.json();
       if (session.error) {
