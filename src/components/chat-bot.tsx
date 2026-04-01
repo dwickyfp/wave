@@ -3,7 +3,7 @@
 import { appStore } from "@/app/store";
 import { useChat } from "@ai-sdk/react";
 import clsx from "clsx";
-import { cn, createDebounce, generateUUID, truncateString } from "lib/utils";
+import { cn, createDebounce, generateUUID } from "lib/utils";
 import {
   startTransition,
   useCallback,
@@ -46,6 +46,7 @@ import {
   applyFinalizedAssistantText,
   stripKnowledgeCitationLinks,
 } from "lib/chat/knowledge-citations";
+import { resolveThreadTitleFinishAction } from "lib/chat/thread-title-finish";
 import { Shortcuts, isShortcutEvent } from "lib/keyboard-shortcuts";
 import { ArrowDown, FilePlus, Loader } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -189,29 +190,15 @@ export default function ChatBot({
       }
 
       setIsCompactingContext(false);
-      const prevThread = appStore
-        .getState()
-        .threadList.find((value) => value.id === threadId);
-      const isNewThread =
-        !prevThread?.title &&
-        normalizedMessages.filter(
-          (v) => v.role === "user" || v.role === "assistant",
-        ).length < 3;
-      if (isNewThread) {
-        const part = normalizedMessages
-          .slice(0, 2)
-          .flatMap((m) =>
-            m.parts
-              .filter((v) => v.type === "text")
-              .map(
-                (p) =>
-                  `${m.role}: ${truncateString((p as TextUIPart).text, 500)}`,
-              ),
-          );
-        if (part.length > 0) {
-          generateTitle(part.join("\n\n"));
-        }
-      } else if (appStore.getState().threadList[0]?.id !== threadId) {
+      const titleAction = resolveThreadTitleFinishAction({
+        threadId,
+        messages: normalizedMessages,
+        threadList: appStore.getState().threadList,
+      });
+
+      if (titleAction.type === "generate") {
+        generateTitle(titleAction.prompt);
+      } else if (titleAction.type === "refresh-list") {
         mutate("/api/thread");
       }
     },

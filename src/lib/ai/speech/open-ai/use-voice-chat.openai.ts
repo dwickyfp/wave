@@ -1,5 +1,7 @@
 "use client";
 
+import { appStore } from "@/app/store";
+import { useGenerateThreadTitle } from "@/hooks/queries/use-generate-thread-title";
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
@@ -10,8 +12,10 @@ import {
   isTranscriptCompatibleWithLanguage,
   pickVoiceLanguageHint,
 } from "lib/ai/speech/voice-language";
+import { resolveThreadTitleFinishAction } from "lib/chat/thread-title-finish";
 import { generateUUID } from "lib/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { mutate } from "swr";
 import { VoiceChatOptions, VoiceChatSession } from "..";
 import {
   OpenAIRealtimeServerEvent,
@@ -277,6 +281,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     threadId,
     transcriptionLanguage,
   } = props || {};
+  const generateTitle = useGenerateThreadTitle({
+    threadId: threadId ?? "voice-chat-pending",
+  });
 
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
@@ -749,6 +756,21 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       if (isAbort) {
         void finishAgentTurn();
         return;
+      }
+
+      const currentThreadId = threadIdRef.current;
+      if (currentThreadId) {
+        const titleAction = resolveThreadTitleFinishAction({
+          threadId: currentThreadId,
+          messages: finishedMessages,
+          threadList: appStore.getState().threadList,
+        });
+
+        if (titleAction.type === "generate") {
+          generateTitle(titleAction.prompt);
+        } else if (titleAction.type === "refresh-list") {
+          mutate("/api/thread");
+        }
       }
 
       if (

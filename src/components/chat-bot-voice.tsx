@@ -678,8 +678,8 @@ function VoiceTurnStage({
       />
 
       <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <Card className="border-white/10 bg-background/50 shadow-sm">
-          <CardHeader className="pb-3">
+        <Card className="gap-0 border-white/10 bg-background/50 shadow-sm">
+          <CardHeader className="pb-2">
             <CardTitle className="text-sm tracking-wide text-muted-foreground">
               You asked
             </CardTitle>
@@ -697,8 +697,8 @@ function VoiceTurnStage({
           </CardContent>
         </Card>
 
-        <Card className="border-white/10 bg-gradient-to-br from-card via-card to-sky-500/10 shadow-lg">
-          <CardHeader className="pb-3">
+        <Card className="gap-0 border-white/10 bg-gradient-to-br from-card via-card to-sky-500/10 shadow-lg">
+          <CardHeader className="pb-2">
             <CardTitle className="text-sm tracking-wide text-muted-foreground">
               Assistant
             </CardTitle>
