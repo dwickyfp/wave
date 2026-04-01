@@ -487,7 +487,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           conversation: "none",
           input: [],
           instructions: buildSpeechInstructions(speechText),
-          modalities: ["audio"],
+          output_modalities: ["audio"],
         },
       });
     },
