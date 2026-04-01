@@ -77,11 +77,7 @@ const createUIMessage = (m: {
 };
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
-  const {
-    model = "gpt-4o-realtime-preview",
-    voice = OPENAI_VOICE.Ash,
-    provider = "openai",
-  } = props || {};
+  const { model, voice = OPENAI_VOICE.Ash, provider = "openai" } = props || {};
 
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
@@ -137,8 +133,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
   const createSession =
     useCallback(async (): Promise<OpenAIRealtimeSession> => {
+      const params = new URLSearchParams({ voice });
+      if (model) params.set("model", model);
       const response = await fetch(
-        `/api/chat/openai-realtime?model=${model}&voice=${voice}`,
+        `/api/chat/openai-realtime?${params.toString()}`,
         {
           method: "POST",
           headers: {

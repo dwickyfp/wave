@@ -40,18 +40,33 @@ export async function POST(request: NextRequest) {
       voice,
       mentions,
       agentId,
-      provider = "openai",
-      model,
+      provider: clientProvider = "openai",
+      model: clientModel,
     } = (await request.json()) as {
-      model?: string;
       voice: string;
+      model?: string;
       agentId?: string;
       mentions: ChatMention[];
       provider?: "openai" | "azure";
     };
 
+    // ── Read DB voice-chat-model (set via Emma Model Setup) ───────────────────
+    const voiceChatModelSetting = (await settingsRepository.getSetting(
+      "voice-chat-model",
+    )) as { provider?: string; model?: string } | null;
+
+    // DB-configured provider wins over the client default ("openai");
+    // explicit client choices (azure) still take precedence.
+    const resolvedProvider: "openai" | "azure" =
+      clientProvider === "azure"
+        ? "azure"
+        : ((voiceChatModelSetting?.provider as
+            | "openai"
+            | "azure"
+            | undefined) ?? clientProvider);
+
     // ── Early key validation ─────────────────────────────────────────────────
-    if (provider === "azure") {
+    if (resolvedProvider === "azure") {
       const azureCheck = await settingsRepository.getProviderByName("azure");
       const hasKey = !!(azureCheck?.apiKey || process.env.AZURE_API_KEY);
       if (!hasKey) {
@@ -122,12 +137,9 @@ export async function POST(request: NextRequest) {
 
     const bindingTools = [...openAITools, ...DEFAULT_VOICE_TOOLS];
 
-    const voiceChatModelSetting = (await settingsRepository.getSetting(
-      "voice-chat-model",
-    )) as { provider?: string; model?: string } | null;
-
+    // Model: DB setting is authoritative; client-sent value is a hint/fallback only
     const resolvedModel =
-      model || voiceChatModelSetting?.model || "gpt-4o-realtime-preview";
+      voiceChatModelSetting?.model || clientModel || "gpt-4o-realtime-preview";
     const resolvedVoice = voice || "alloy";
 
     const sessionBody = JSON.stringify({
@@ -139,7 +151,7 @@ export async function POST(request: NextRequest) {
     });
 
     // ── Provider-specific: create session ────────────────────────────────────
-    if (provider === "azure") {
+    if (resolvedProvider === "azure") {
       const azureProviderConfig =
         await settingsRepository.getProviderByName("azure");
 

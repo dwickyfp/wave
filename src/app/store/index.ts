@@ -165,6 +165,14 @@ export const appStore = create<AppState & AppDispatch>()(
           ...initialState.voiceChat,
           ...state.voiceChat,
           isOpen: false,
+          options: {
+            ...initialState.voiceChat.options,
+            ...state.voiceChat?.options,
+            providerOptions: {
+              // Only persist voice persona; model comes from Emma Model Setup (DB)
+              voice: state.voiceChat?.options?.providerOptions?.voice,
+            },
+          },
         },
       }),
     },
