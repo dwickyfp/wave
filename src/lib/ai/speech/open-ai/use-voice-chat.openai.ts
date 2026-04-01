@@ -729,7 +729,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   );
 
   const startWebSocketFallback = useCallback(
-    async (session: OpenAIRealtimeSession, reason: string) => {
+    async (session: OpenAIRealtimeSession, _reason: string) => {
       if (fallbackAttemptedRef.current || !session.websocketEndpointUrl) {
         throw new Error("Voice WebSocket fallback is not available.");
       }
@@ -749,7 +749,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
       setError(null);
       setIsLoading(true);
-      console.warn("voice rtc fallback to websocket", reason);
 
       await ensureAudioStream();
 
@@ -833,7 +832,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       webSocket.current?.close();
       webSocket.current = null;
       const session = await createSession();
-      console.log({ session });
       const sessionToken = session.client_secret.value;
       const realtimeEndpointUrl: string =
         session.realtimeEndpointUrl || "https://api.openai.com/v1/realtime";
@@ -857,8 +855,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
       audioElement.current.autoplay = true;
       pc.onconnectionstatechange = () => {
+        if (
+          transportRef.current === "websocket" ||
+          peerConnection.current !== pc
+        ) {
+          return;
+        }
         const state = pc.connectionState;
-        console.log("voice rtc connection", state);
         if (
           state === "failed" ||
           state === "disconnected" ||
@@ -893,8 +896,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
       };
       pc.oniceconnectionstatechange = () => {
+        if (
+          transportRef.current === "websocket" ||
+          peerConnection.current !== pc
+        ) {
+          return;
+        }
         const state = pc.iceConnectionState;
-        console.log("voice rtc ice", state);
         if (state === "failed") {
           if (connectTimeout.current) {
             clearTimeout(connectTimeout.current);
@@ -918,21 +926,23 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
       };
       pc.onicecandidate = (event) => {
-        if (!event.candidate) {
-          console.log("voice rtc candidate", "end-of-candidates");
+        if (
+          transportRef.current === "websocket" ||
+          peerConnection.current !== pc
+        ) {
           return;
         }
-
-        const candidate = event.candidate.candidate;
-        const typeMatch = candidate.match(/\btyp\s+([a-z]+)/i);
-        console.log("voice rtc candidate", typeMatch?.[1] || "unknown");
+        if (!event.candidate) {
+          return;
+        }
       };
-      pc.onicecandidateerror = (event) => {
-        console.error("voice rtc candidate error", {
-          errorCode: event.errorCode,
-          errorText: event.errorText,
-          url: event.url,
-        });
+      pc.onicecandidateerror = () => {
+        if (
+          transportRef.current === "websocket" ||
+          peerConnection.current !== pc
+        ) {
+          return;
+        }
       };
       pc.ontrack = (e) => {
         if (audioElement.current) {
@@ -1001,7 +1011,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           clearTimeout(connectTimeout.current);
           connectTimeout.current = null;
         }
-        console.error(errorEvent);
         setError(
           errorEvent instanceof Error
             ? errorEvent
@@ -1061,12 +1070,17 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       transportRef.current = "webrtc";
       connectTimeout.current = setTimeout(() => {
         if (
+          transportRef.current === "websocket" ||
+          peerConnection.current !== pc
+        ) {
+          return;
+        }
+        if (
           dataChannel.current?.readyState !== "open" &&
           pc.connectionState !== "connected"
         ) {
           getVoiceRtcDiagnostics(pc)
             .then((diagnostics) => {
-              console.error("voice rtc diagnostics", diagnostics);
               const hasReachableCandidateHint =
                 diagnostics.gatheredCandidateTypes.includes("srflx") ||
                 diagnostics.gatheredCandidateTypes.includes("relay");
