@@ -102,6 +102,27 @@ function buildGaVoiceSessionConfig({ voice }: { voice: string }) {
   };
 }
 
+function buildGaClientSecretRequest({
+  voice,
+  deploymentName,
+}: {
+  voice: string;
+  deploymentName: string;
+}) {
+  return {
+    session: {
+      type: "realtime",
+      model: deploymentName,
+      instructions: TRANSPORT_ONLY_INSTRUCTIONS,
+      audio: {
+        output: {
+          voice,
+        },
+      },
+    },
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession();
@@ -227,12 +248,12 @@ export async function POST(request: NextRequest) {
     try {
       const gaSessionUrl = `${gaEndpoint}/openai/v1/realtime/client_secrets`;
       const gaRealtimeEndpointUrl = `${gaEndpoint}/openai/v1/realtime/calls?webrtcfilter=on`;
-      const gaBody = JSON.stringify({
-        session: {
-          ...gaSessionConfig,
-          model: deploymentName,
-        },
-      });
+      const gaBody = JSON.stringify(
+        buildGaClientSecretRequest({
+          voice: resolvedVoice,
+          deploymentName,
+        }),
+      );
 
       if (gaEndpoint !== resolvedEndpoint) {
         logger.info(

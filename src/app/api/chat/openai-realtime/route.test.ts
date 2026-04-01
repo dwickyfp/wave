@@ -108,24 +108,11 @@ describe("openai realtime route", () => {
 
     const gaBody = JSON.parse(String(init.body));
     expect(gaBody.session.model).toBe("gpt-realtime-1.5");
-    expect(gaBody.session.output_modalities).toEqual(["text", "audio"]);
     expect(gaBody.session.audio.output).toEqual({
       voice: "ash",
-      format: {
-        type: "audio/pcm",
-        rate: 24000,
-      },
     });
-    expect(gaBody.session.audio.input).toMatchObject({
-      transcription: {
-        model: "whisper-1",
-      },
-      turn_detection: {
-        type: "server_vad",
-        create_response: false,
-        interrupt_response: false,
-      },
-    });
+    expect(gaBody.session.output_modalities).toBeUndefined();
+    expect(gaBody.session.audio.input).toBeUndefined();
 
     await expect(response.json()).resolves.toMatchObject({
       client_secret: {
