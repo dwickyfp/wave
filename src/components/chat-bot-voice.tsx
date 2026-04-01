@@ -1,11 +1,12 @@
 "use client";
 
-import { getStaticToolName, isStaticToolUIPart, TextPart } from "ai";
-import { DEFAULT_VOICE_TOOLS, UIMessageWithCompleted } from "lib/ai/speech";
+import { getStaticToolName, isStaticToolUIPart, TextPart, UIMessage } from "ai";
 
 import { useOpenAIVoiceChat as OpenAIVoiceChat } from "lib/ai/speech/open-ai/use-voice-chat.openai";
-import { cn, groupBy, isNull } from "lib/utils";
+import { AppDefaultToolkit, DefaultToolName } from "lib/ai/tools";
+import { cn, generateUUID, groupBy, isNull } from "lib/utils";
 import {
+  ArrowUpRight,
   Loader,
   MicIcon,
   MicOffIcon,
@@ -26,7 +27,7 @@ import { Button } from "ui/button";
 import { Drawer, DrawerContent, DrawerPortal, DrawerTitle } from "ui/drawer";
 import { MessageLoading } from "ui/message-loading";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
-import { ToolMessagePart } from "./message-parts";
+import { PreviewMessage } from "./message";
 
 import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
@@ -38,29 +39,27 @@ import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
 import { useAgent } from "@/hooks/queries/use-agent";
 import { ChatMention } from "app-types/chat";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
-
-const prependTools: EnabledTools[] = [
-  {
-    groupName: "Browser",
-    tools: DEFAULT_VOICE_TOOLS.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-    })),
-  },
-];
+import Link from "next/link";
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
-  const [agentId, appStoreMutate, voiceChat, allowedMcpServers, mcpList] =
-    appStore(
-      useShallow((state) => [
-        state.voiceChat.agentId,
-        state.mutate,
-        state.voiceChat,
-        state.allowedMcpServers,
-        state.mcpList,
-      ]),
-    );
+  const [
+    agentId,
+    appStoreMutate,
+    voiceChat,
+    allowedMcpServers,
+    allowedAppDefaultToolkit,
+    mcpList,
+  ] = appStore(
+    useShallow((state) => [
+      state.voiceChat.agentId,
+      state.mutate,
+      state.voiceChat,
+      state.allowedMcpServers,
+      state.allowedAppDefaultToolkit,
+      state.mcpList,
+    ]),
+  );
 
   const { agent } = useAgent(agentId);
 
@@ -68,39 +67,23 @@ export function ChatBotVoice() {
   const startAudio = useRef<HTMLAudioElement>(null);
   const [useCompactView, setUseCompactView] = useState(true);
 
-  const toolMentions = useMemo<ChatMention[]>(() => {
+  const voiceMentions = useMemo<ChatMention[]>(() => {
     if (!agentId) {
-      if (!allowedMcpServers) return [];
-      return mcpList
-        .filter((v) => {
-          return (
-            v.id in allowedMcpServers && allowedMcpServers[v.id]?.tools?.length
-          );
-        })
-        .flatMap((v) => {
-          const tools = allowedMcpServers[v.id].tools;
-          return tools.map((tool) => {
-            const toolInfo = v.toolInfo.find((t) => t.name === tool);
-            const mention: ChatMention = {
-              type: "mcpTool",
-              serverName: v.name,
-              serverId: v.id,
-              name: tool,
-              description: toolInfo?.description ?? "",
-            };
-            return mention;
-          });
-        });
+      return [];
     }
+
     return (
-      agent?.instructions.mentions?.filter((v) => v.type === "mcpTool") ?? []
+      agent?.instructions.mentions?.filter(
+        (mention) => mention.type !== "agent",
+      ) ?? []
     );
-  }, [agentId, agent, mcpList, allowedMcpServers]);
+  }, [agentId, agent]);
 
   const {
     isListening,
     isAssistantSpeaking,
     isLoading,
+    isProcessingTurn,
     isActive,
     isUserSpeaking,
     messages,
@@ -110,8 +93,11 @@ export function ChatBotVoice() {
     stop,
     stopListening,
   } = OpenAIVoiceChat({
-    toolMentions,
+    mentions: voiceMentions,
     agentId,
+    allowedMcpServers,
+    allowedAppDefaultToolkit,
+    threadId: voiceChat.threadId,
     voice: voiceChat.options.voice,
   });
 
@@ -131,7 +117,9 @@ export function ChatBotVoice() {
     appStoreMutate({
       voiceChat: {
         ...voiceChat,
+        agentId: undefined,
         isOpen: false,
+        threadId: undefined,
       },
     });
   }, [appStoreMutate, stop, voiceChat]);
@@ -143,6 +131,9 @@ export function ChatBotVoice() {
           {t("VoiceChat.preparing")}
         </p>
       );
+    }
+    if (isProcessingTurn) {
+      return <MessageLoading className="text-muted-foreground" />;
     }
     if (!isActive)
       return (
@@ -178,31 +169,128 @@ export function ChatBotVoice() {
     isUserSpeaking,
     isActive,
     isLoading,
+    isProcessingTurn,
     isListening,
     messages.length,
     useCompactView,
   ]);
 
-  const mcpTools = useMemo<EnabledTools[]>(() => {
-    const mcpMentions = toolMentions.filter(
-      (v) => v.type === "mcpTool",
-    ) as Extract<ChatMention, { type: "mcpTool" }>[];
-
-    const groupByServer = groupBy(mcpMentions, "serverName");
-    return Object.entries(groupByServer).map(([serverName, tools]) => {
-      return {
-        groupName: serverName,
-        tools: tools.map((v) => ({
-          name: v.name,
-          description: v.description,
-        })),
-      };
-    });
-  }, [toolMentions]);
-
   const tools = useMemo<EnabledTools[]>(() => {
-    return [...prependTools, ...mcpTools];
-  }, [prependTools, mcpTools]);
+    const mentionDrivenTools = (() => {
+      if (!voiceMentions.length) {
+        return [];
+      }
+
+      const mentionGroups: EnabledTools[] = [];
+      const mcpMentions = voiceMentions.filter(
+        (mention) => mention.type === "mcpTool",
+      ) as Extract<ChatMention, { type: "mcpTool" }>[];
+      const workflowMentions = voiceMentions.filter(
+        (mention) => mention.type === "workflow",
+      ) as Extract<ChatMention, { type: "workflow" }>[];
+      const defaultToolMentions = voiceMentions.filter(
+        (mention) => mention.type === "defaultTool",
+      ) as Extract<ChatMention, { type: "defaultTool" }>[];
+
+      if (mcpMentions.length) {
+        const mcpGroups = groupBy(mcpMentions, "serverName");
+        mentionGroups.push(
+          ...Object.entries(mcpGroups).map(([serverName, tools]) => ({
+            groupName: serverName || "MCP Tools",
+            tools: tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+            })),
+          })),
+        );
+      }
+
+      if (workflowMentions.length) {
+        mentionGroups.push({
+          groupName: "Workflows",
+          tools: workflowMentions.map((workflow) => ({
+            name: workflow.name,
+            description: workflow.description ?? "",
+          })),
+        });
+      }
+
+      if (defaultToolMentions.length) {
+        mentionGroups.push({
+          groupName: "App Tools",
+          tools: defaultToolMentions.map((tool) => ({
+            name: tool.label,
+            description: tool.description ?? "",
+          })),
+        });
+      }
+
+      return mentionGroups;
+    })();
+
+    if (mentionDrivenTools.length) {
+      return mentionDrivenTools;
+    }
+
+    const defaultToolGroups: Record<AppDefaultToolkit, EnabledTools> = {
+      [AppDefaultToolkit.Visualization]: {
+        groupName: "Visualization",
+        tools: [
+          { name: DefaultToolName.CreatePieChart },
+          { name: DefaultToolName.CreateBarChart },
+          { name: DefaultToolName.CreateLineChart },
+          { name: DefaultToolName.CreateTable },
+        ],
+      },
+      [AppDefaultToolkit.WebSearch]: {
+        groupName: "Web Search",
+        tools: [
+          { name: DefaultToolName.WebSearch },
+          { name: DefaultToolName.WebContent },
+        ],
+      },
+      [AppDefaultToolkit.Http]: {
+        groupName: "HTTP",
+        tools: [{ name: DefaultToolName.Http }],
+      },
+      [AppDefaultToolkit.Code]: {
+        groupName: "Code",
+        tools: [
+          { name: DefaultToolName.JavascriptExecution },
+          { name: DefaultToolName.PythonExecution },
+        ],
+      },
+    };
+
+    const configuredDefaultTools = (allowedAppDefaultToolkit ?? [])
+      .map((toolkit) => defaultToolGroups[toolkit])
+      .filter(Boolean);
+
+    const configuredMcpTools = mcpList
+      .filter(
+        (server) =>
+          server.id in (allowedMcpServers ?? {}) &&
+          allowedMcpServers?.[server.id]?.tools?.length,
+      )
+      .map((server) => {
+        const configuredTools = allowedMcpServers?.[server.id]?.tools ?? [];
+
+        return {
+          groupName: server.name,
+          tools: configuredTools.map((toolName) => {
+            const toolInfo = server.toolInfo.find(
+              (tool) => tool.name === toolName,
+            );
+            return {
+              name: toolName,
+              description: toolInfo?.description ?? "",
+            };
+          }),
+        };
+      });
+
+    return [...configuredDefaultTools, ...configuredMcpTools];
+  }, [allowedAppDefaultToolkit, allowedMcpServers, mcpList, voiceMentions]);
 
   useEffect(() => {
     return () => {
@@ -221,15 +309,30 @@ export function ChatBotVoice() {
   }, [voiceChat.isOpen]);
 
   useEffect(() => {
-    if (!voiceChat.isOpen && !isNull(voiceChat.agentId)) {
+    if (
+      !voiceChat.isOpen &&
+      (!isNull(voiceChat.agentId) || !isNull(voiceChat.threadId))
+    ) {
       appStoreMutate((prev) => ({
         voiceChat: {
           ...prev.voiceChat,
           agentId: undefined,
+          threadId: undefined,
         },
       }));
     }
-  }, [voiceChat.isOpen]);
+  }, [appStoreMutate, voiceChat.agentId, voiceChat.isOpen, voiceChat.threadId]);
+
+  useEffect(() => {
+    if (voiceChat.isOpen && !voiceChat.threadId) {
+      appStoreMutate((prev) => ({
+        voiceChat: {
+          ...prev.voiceChat,
+          threadId: generateUUID(),
+        },
+      }));
+    }
+  }, [appStoreMutate, voiceChat.isOpen, voiceChat.threadId]);
 
   useEffect(() => {
     if (error && isActive) {
@@ -251,6 +354,7 @@ export function ChatBotVoice() {
             ...prev.voiceChat,
             isOpen: true,
             agentId: undefined,
+            threadId: generateUUID(),
           },
         }));
       }
@@ -319,6 +423,18 @@ export function ChatBotVoice() {
               </Tooltip>
 
               <EnabledToolsDropdown align="start" side="bottom" tools={tools} />
+              {voiceChat.threadId ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button asChild variant={"secondary"} size={"icon"}>
+                      <Link href={`/chat/${voiceChat.threadId}`}>
+                        <ArrowUpRight className="size-4" />
+                      </Link>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Open thread</TooltipContent>
+                </Tooltip>
+              ) : null}
               <DrawerTitle className="sr-only">Voice Chat</DrawerTitle>
             </div>
             <div className="flex-1 min-h-0 mx-auto w-full">
@@ -344,7 +460,11 @@ export function ChatBotVoice() {
                   {useCompactView ? (
                     <CompactMessageView messages={messages} />
                   ) : (
-                    <ConversationView messages={messages} />
+                    <ConversationView
+                      messages={messages}
+                      isLoading={isProcessingTurn}
+                      threadId={voiceChat.threadId}
+                    />
                   )}
                 </div>
               )}
@@ -359,7 +479,7 @@ export function ChatBotVoice() {
                   <Button
                     variant={"secondary"}
                     size={"icon"}
-                    disabled={isClosing || isLoading}
+                    disabled={isClosing || isLoading || isProcessingTurn}
                     onClick={() => {
                       if (!isActive) {
                         startWithSound();
@@ -430,7 +550,13 @@ export function ChatBotVoice() {
 
 function ConversationView({
   messages,
-}: { messages: UIMessageWithCompleted[] }) {
+  isLoading,
+  threadId,
+}: {
+  messages: UIMessage[];
+  isLoading: boolean;
+  threadId?: string;
+}) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -444,68 +570,17 @@ function ConversationView({
   return (
     <div className="select-text w-full overflow-y-auto h-full" ref={ref}>
       <div className="max-w-4xl mx-auto flex flex-col px-6 gap-6 pb-44 min-h-0 min-w-0">
-        {messages.map((message) => (
-          <div
+        {messages.map((message, index) => (
+          <PreviewMessage
             key={message.id}
-            className={cn(
-              "flex px-4 py-3",
-              message.role == "user" &&
-                "ml-auto max-w-2xl text-foreground rounded-2xl w-fit bg-input/40",
-            )}
-          >
-            {!message.completed ? (
-              <MessageLoading
-                className={cn(
-                  message.role == "user"
-                    ? "text-muted-foreground"
-                    : "text-foreground",
-                )}
-              />
-            ) : (
-              message.parts.map((part, index) => {
-                if (part.type === "text") {
-                  if (!part.text) {
-                    return (
-                      <MessageLoading
-                        key={index}
-                        className={cn(
-                          message.role == "user"
-                            ? "text-muted-foreground"
-                            : "text-foreground",
-                        )}
-                      />
-                    );
-                  }
-                  return (
-                    <p key={index}>
-                      {(part.text || "...")
-                        ?.trim()
-                        .split(" ")
-                        .map((word, wordIndex) => (
-                          <span
-                            key={wordIndex}
-                            className="animate-in fade-in duration-3000"
-                          >
-                            {word}{" "}
-                          </span>
-                        ))}
-                    </p>
-                  );
-                } else if (isStaticToolUIPart(part)) {
-                  return (
-                    <ToolMessagePart
-                      key={index}
-                      part={part}
-                      showActions={false}
-                      messageId={message.id}
-                      isLast={part.state.startsWith("input")}
-                    />
-                  );
-                }
-                return <p key={index}>{part.type} unknown part</p>;
-              })
-            )}
-          </div>
+            readonly
+            message={message}
+            prevMessage={messages[index - 1]}
+            isLoading={isLoading && index === messages.length - 1}
+            isLastMessage={index === messages.length - 1}
+            threadId={threadId}
+            messageIndex={index}
+          />
         ))}
       </div>
     </div>
@@ -515,7 +590,7 @@ function ConversationView({
 function CompactMessageView({
   messages,
 }: {
-  messages: UIMessageWithCompleted[];
+  messages: UIMessage[];
 }) {
   const { toolParts, textPart } = useMemo(() => {
     const toolParts = messages

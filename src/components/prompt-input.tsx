@@ -28,6 +28,7 @@ import {
 } from "app-types/chat";
 import dynamic from "next/dynamic";
 import { ToolModeDropdown } from "./tool-mode-dropdown";
+import { generateUUID } from "lib/utils";
 
 import { ToolSelectDropdown } from "./tool-select-dropdown";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
@@ -746,6 +747,7 @@ export default function PromptInput({
                               ...state.voiceChat,
                               isOpen: true,
                               agentId: undefined,
+                              threadId: generateUUID(),
                             },
                           }));
                         }}

@@ -256,24 +256,15 @@ export async function POST(request: Request) {
       mentions = [],
       attachments = [],
     } = chatApiSchemaRequestBodySchema.parse(json);
-
-    const dbModelResult = await getDbModel(chatModel!);
-    if (!dbModelResult) {
-      await releaseChatConcurrencyLease();
-      return Response.json(
-        {
-          message: `Model "${chatModel?.model}" is not configured. Please set it up in Settings → AI Providers.`,
-        },
-        { status: 503 },
-      );
-    }
-    const model = dbModelResult.model;
+    let dbModelResult: Awaited<ReturnType<typeof getDbModel>> | null = null;
     const attachUsageCost = (usage: ChatUsage): ChatUsage => ({
       ...usage,
-      ...buildUsageCostSnapshot(usage, {
-        inputTokenPricePer1MUsd: dbModelResult.inputTokenPricePer1MUsd,
-        outputTokenPricePer1MUsd: dbModelResult.outputTokenPricePer1MUsd,
-      }),
+      ...(dbModelResult
+        ? buildUsageCostSnapshot(usage, {
+            inputTokenPricePer1MUsd: dbModelResult.inputTokenPricePer1MUsd,
+            outputTokenPricePer1MUsd: dbModelResult.outputTokenPricePer1MUsd,
+          })
+        : {}),
     });
 
     let thread;
@@ -325,8 +316,6 @@ export async function POST(request: Request) {
       }).catch(() => {});
     }
     messages.push(message);
-
-    const supportToolCall = dbModelResult.supportsTools;
 
     const agentId = (
       mentions.find((m) => m.type === "agent") as Extract<
@@ -809,6 +798,30 @@ export async function POST(request: Request) {
         consumeSseStream: consumeStream,
       });
     }
+
+    if (!chatModel) {
+      await releaseChatConcurrencyLease();
+      return Response.json(
+        {
+          message:
+            "A chat model is required for this conversation. Configure one in Settings → AI Providers.",
+        },
+        { status: 400 },
+      );
+    }
+
+    dbModelResult = await getDbModel(chatModel);
+    if (!dbModelResult) {
+      await releaseChatConcurrencyLease();
+      return Response.json(
+        {
+          message: `Model "${chatModel.model}" is not configured. Please set it up in Settings → AI Providers.`,
+        },
+        { status: 503 },
+      );
+    }
+    const model = dbModelResult.model;
+    const supportToolCall = dbModelResult.supportsTools;
 
     const requestMentions = [...mentions];
     const agentMentions = [...(agent?.instructions?.mentions ?? [])];

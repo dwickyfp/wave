@@ -64,6 +64,7 @@ export interface AppState {
   voiceChat: {
     isOpen: boolean;
     agentId?: string;
+    threadId?: string;
     options: {
       voice?: string;
     };
@@ -155,8 +156,9 @@ export const appStore = create<AppState & AppDispatch>()(
         toolPresets: state.toolPresets || initialState.toolPresets,
         voiceChat: {
           ...initialState.voiceChat,
-          ...state.voiceChat,
           isOpen: false,
+          agentId: undefined,
+          threadId: undefined,
           options: {
             ...initialState.voiceChat.options,
             ...state.voiceChat?.options,

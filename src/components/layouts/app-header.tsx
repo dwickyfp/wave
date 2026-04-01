@@ -22,6 +22,7 @@ import { useTranslations } from "next-intl";
 import { TextShimmer } from "ui/text-shimmer";
 import { buildReturnUrl } from "lib/admin/navigation-utils";
 import { BackButton } from "@/components/layouts/back-button";
+import { generateUUID } from "lib/utils";
 
 export function AppHeader() {
   const t = useTranslations();
@@ -131,6 +132,7 @@ export function AppHeader() {
                       ...state.voiceChat,
                       isOpen: true,
                       agentId: undefined,
+                      threadId: generateUUID(),
                     },
                   }));
                 }}

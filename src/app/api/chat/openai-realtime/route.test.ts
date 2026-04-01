@@ -4,32 +4,12 @@ vi.mock("auth/server", () => ({
   getSession: vi.fn(),
 }));
 
-vi.mock("../shared.chat", () => ({
-  filterMcpServerCustomizations: vi.fn((_tools, customizations) => {
-    return customizations;
-  }),
-  loadMcpTools: vi.fn(),
-  mergeSystemPrompt: vi.fn((...parts: Array<string | undefined>) => {
-    return parts.filter(Boolean).join("\n\n");
-  }),
-}));
-
-vi.mock("lib/ai/prompts", () => ({
-  buildMcpServerCustomizationsSystemPrompt: vi.fn(() => "mcp-customizations"),
-  buildSpeechSystemPrompt: vi.fn(() => "speech-system"),
-}));
-
-vi.mock("lib/ai/agent/personalization", () => ({
-  resolveAgentPersonalizationPrompt: vi.fn(() => "personalization"),
-}));
-
 vi.mock("../actions", () => ({
   rememberAgentAction: vi.fn(),
-  rememberMcpServerCustomizationsAction: vi.fn(),
 }));
 
-vi.mock("lib/user/server", () => ({
-  getUserPreferences: vi.fn(),
+vi.mock("lib/ai/speech/voice-agent-model", () => ({
+  resolveVoiceAgentChatModel: vi.fn(),
 }));
 
 vi.mock("lib/logger", () => ({
@@ -50,10 +30,10 @@ vi.mock("lib/db/repository", () => ({
 }));
 
 const { getSession } = await import("auth/server");
-const { loadMcpTools } = await import("../shared.chat");
-const { rememberAgentAction, rememberMcpServerCustomizationsAction } =
-  await import("../actions");
-const { getUserPreferences } = await import("lib/user/server");
+const { rememberAgentAction } = await import("../actions");
+const { resolveVoiceAgentChatModel } = await import(
+  "lib/ai/speech/voice-agent-model"
+);
 const { settingsRepository } = await import("lib/db/repository");
 const { POST } = await import("./route");
 
@@ -70,15 +50,16 @@ describe("openai realtime route", () => {
       },
     } as any);
     vi.mocked(rememberAgentAction).mockResolvedValue(undefined);
-    vi.mocked(rememberMcpServerCustomizationsAction).mockResolvedValue({});
-    vi.mocked(loadMcpTools).mockResolvedValue({});
-    vi.mocked(getUserPreferences).mockResolvedValue(null);
+    vi.mocked(resolveVoiceAgentChatModel).mockResolvedValue({
+      provider: "openai",
+      model: "gpt-4.1",
+    });
     vi.mocked(settingsRepository.getProviderByName).mockResolvedValue({
       apiKey: "provider-api-key",
     } as any);
   });
 
-  it("configures GA realtime sessions for audio output", async () => {
+  it("configures GA realtime sessions for transport-only audio input/output", async () => {
     vi.mocked(settingsRepository.getSetting).mockResolvedValue({
       baseUrl: "https://voice-resource.cognitiveservices.azure.com/",
       deploymentName: "gpt-realtime-1.5",
@@ -113,6 +94,7 @@ describe("openai realtime route", () => {
     );
 
     expect(response.status).toBe(200);
+    expect(resolveVoiceAgentChatModel).toHaveBeenCalledOnce();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -126,7 +108,7 @@ describe("openai realtime route", () => {
 
     const gaBody = JSON.parse(String(init.body));
     expect(gaBody.session.model).toBe("gpt-realtime-1.5");
-    expect(gaBody.session.output_modalities).toEqual(["audio"]);
+    expect(gaBody.session.output_modalities).toEqual(["text", "audio"]);
     expect(gaBody.session.audio.output).toEqual({
       voice: "ash",
       format: {
@@ -140,7 +122,8 @@ describe("openai realtime route", () => {
       },
       turn_detection: {
         type: "server_vad",
-        create_response: true,
+        create_response: false,
+        interrupt_response: false,
       },
     });
 
@@ -150,26 +133,12 @@ describe("openai realtime route", () => {
         expires_at: 1234,
       },
       pendingSessionUpdate: {
-        type: "realtime",
-        output_modalities: ["audio"],
-        audio: {
-          output: {
-            voice: "ash",
-            format: {
-              type: "audio/pcm",
-              rate: 24000,
-            },
-          },
-        },
+        instructions:
+          "You are Emma's realtime voice transport. Transcribe the user's speech accurately. Do not create responses automatically. Only speak when the client explicitly asks you to generate audio output.",
       },
       websocketSessionUpdate: {
-        audio: {
-          input: {
-            transcription: {
-              model: "whisper-1",
-            },
-          },
-        },
+        instructions:
+          "You are Emma's realtime voice transport. Transcribe the user's speech accurately. Do not create responses automatically. Only speak when the client explicitly asks you to generate audio output.",
       },
     });
   });
@@ -204,32 +173,24 @@ describe("openai realtime route", () => {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({
+          voice: "ash",
+        }),
       }) as any,
     );
 
     expect(response.status).toBe(200);
-
     await expect(response.json()).resolves.toMatchObject({
       client_secret: {
         value: "proxy",
-        expires_at: 0,
       },
+      proxySdpUrl:
+        "/api/chat/openai-realtime-sdp?endpoint=https%3A%2F%2Fvoice-resource.openai.azure.com%2Fopenai%2Frealtime%3Fapi-version%3D2024-10-01-preview%26deployment%3Dmy-realtime-preview",
       pendingSessionUpdate: {
-        modalities: ["text", "audio"],
-        voice: "alloy",
-        input_audio_format: "pcm16",
-        output_audio_format: "pcm16",
-        input_audio_transcription: {
-          model: "whisper-1",
-        },
         turn_detection: {
-          type: "server_vad",
-          create_response: true,
+          create_response: false,
+          interrupt_response: false,
         },
-      },
-      websocketSessionUpdate: {
-        modalities: ["text", "audio"],
       },
     });
   });

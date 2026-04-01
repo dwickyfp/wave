@@ -115,6 +115,19 @@ export type OpenAIRealtimeServerEvent =
       arguments: string;
     }
   | {
+      type: "response.done";
+      event_id: string;
+      response: {
+        metadata?: Record<string, unknown>;
+      };
+    }
+  | {
+      type: "error" | "invalid_request_error";
+      error: {
+        message: string;
+      };
+    }
+  | {
       type: "session.error";
       error: {
         message: string;

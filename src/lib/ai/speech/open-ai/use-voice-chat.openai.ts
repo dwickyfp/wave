@@ -1,23 +1,14 @@
 "use client";
 
-import { TextPart, ToolUIPart } from "ai";
+import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport, type UIMessage } from "ai";
 import { generateUUID } from "lib/utils";
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  DEFAULT_VOICE_TOOLS,
-  UIMessageWithCompleted,
-  VoiceChatOptions,
-  VoiceChatSession,
-} from "..";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { VoiceChatOptions, VoiceChatSession } from "..";
 import {
   OpenAIRealtimeServerEvent,
   OpenAIRealtimeSession,
 } from "./openai-realtime-event";
-
-import { callMcpToolByServerNameAction } from "@/app/api/mcp/actions";
-import { appStore } from "@/app/store";
-import { extractMCPToolId } from "lib/ai/mcp/mcp-tool-id";
-import { useTheme } from "next-themes";
 
 export const OPENAI_VOICE = {
   Alloy: "alloy",
@@ -35,6 +26,9 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
     urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"],
   },
 ];
+
+const VOICE_AUDIO_SAMPLE_RATE = 24_000;
+const VOICE_TTS_TIMEOUT_MS = 30_000;
 
 function getVoiceIceServers(): RTCIceServer[] {
   const configuredJson = process.env.NEXT_PUBLIC_VOICE_ICE_SERVERS_JSON?.trim();
@@ -64,8 +58,6 @@ function getVoiceIceServers(): RTCIceServer[] {
 
   return [{ urls: configuredServers }];
 }
-
-const VOICE_AUDIO_SAMPLE_RATE = 24_000;
 
 function floatTo16BitPCM(samples: Float32Array) {
   const output = new Int16Array(samples.length);
@@ -138,17 +130,6 @@ async function getVoiceRtcDiagnostics(pc: RTCPeerConnection) {
     }
   }
 
-  const localCandidate = selectedPair?.localCandidateId
-    ? (stats.get(selectedPair.localCandidateId) as
-        | (RTCStats & { candidateType?: string; protocol?: string })
-        | undefined)
-    : undefined;
-  const remoteCandidate = selectedPair?.remoteCandidateId
-    ? (stats.get(selectedPair.remoteCandidateId) as
-        | (RTCStats & { candidateType?: string; protocol?: string })
-        | undefined)
-    : undefined;
-
   const gatheredCandidateTypes = new Set<string>();
   for (const stat of stats.values()) {
     if (stat.type === "local-candidate" || stat.type === "remote-candidate") {
@@ -164,122 +145,101 @@ async function getVoiceRtcDiagnostics(pc: RTCPeerConnection) {
     iceConnectionState: pc.iceConnectionState,
     iceGatheringState: pc.iceGatheringState,
     selectedPairState: selectedPair?.state,
-    localCandidateType: localCandidate?.candidateType,
-    remoteCandidateType: remoteCandidate?.candidateType,
-    localProtocol: localCandidate?.protocol,
-    remoteProtocol: remoteCandidate?.protocol,
     gatheredCandidateTypes: Array.from(gatheredCandidateTypes),
   };
 }
 
-type Content =
-  | {
-      type: "text";
-      text: string;
-    }
-  | {
-      type: "tool-invocation";
-      name: string;
-      arguments: any;
-      state: "call" | "result";
-      toolCallId: string;
-      result?: any;
-    };
+function createEmptyAudioTrack(): MediaStreamTrack {
+  const audioContext = new AudioContext();
+  const destination = audioContext.createMediaStreamDestination();
+  return destination.stream.getAudioTracks()[0];
+}
 
-const createUIPart = (content: Content): TextPart | ToolUIPart => {
-  if (content.type == "tool-invocation") {
-    const part: ToolUIPart = {
-      type: `tool-${content.name}`,
-      input: content.arguments,
-      state: "output-available",
-      toolCallId: content.toolCallId,
-      output: content.result,
-    };
-    return part;
-  }
-  return {
-    type: "text",
-    text: content.text,
-  };
-};
+function stripMarkdownForSpeech(text: string) {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/^\|/gm, "")
+    .replace(/\|$/gm, "")
+    .replace(/\|/g, ", ")
+    .replace(/^\s*[-:,\s]+\s*$/gm, " ")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s+/gm, "")
+    .replace(/\*\*/g, "")
+    .replace(/__/g, "")
+    .replace(/~~/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-const createUIMessage = (m: {
-  id?: string;
-  role: "user" | "assistant";
-  content: Content;
-  completed?: boolean;
-}): UIMessageWithCompleted => {
-  const id = m.id ?? generateUUID();
-  return {
-    id,
-    role: m.role,
-    parts: [createUIPart(m.content)],
-    completed: m.completed ?? false,
-  };
-};
+function getAssistantSpeechText(message: UIMessage) {
+  const rawText = message.parts
+    .filter(
+      (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
+        part.type === "text",
+    )
+    .map((part) => part.text || "")
+    .join("\n\n");
+
+  const speechText = stripMarkdownForSpeech(rawText);
+  return speechText.slice(0, 12_000).trim();
+}
+
+function buildSpeechInstructions(text: string) {
+  return `Say exactly the following text out loud. Do not add, remove, or paraphrase anything.\n\n${text}`;
+}
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
-  const { voice = OPENAI_VOICE.Ash } = props || {};
+  const { voice = OPENAI_VOICE.Ash, threadId } = props || {};
 
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isSessionLoading, setIsSessionLoading] = useState(false);
+  const [isSynthesizingSpeech, setIsSynthesizingSpeech] = useState(false);
   const [error, setError] = useState<Error | null>(null);
-  const [messages, setMessages] = useState<UIMessageWithCompleted[]>([]);
+
+  const latestOptionsRef = useRef(props);
+  const threadIdRef = useRef(threadId);
+  const isListeningRef = useRef(false);
+  const isActiveRef = useRef(false);
+  const transportRef = useRef<"webrtc" | "websocket" | null>(null);
+  const fallbackAttemptedRef = useRef(false);
+  const connectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speechTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const turnLockedRef = useRef(false);
+  const autoResumeListeningRef = useRef(false);
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const dataChannel = useRef<RTCDataChannel | null>(null);
   const webSocket = useRef<WebSocket | null>(null);
   const audioElement = useRef<HTMLAudioElement | null>(null);
   const audioStream = useRef<MediaStream | null>(null);
-  const connectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const transportRef = useRef<"webrtc" | "websocket" | null>(null);
-  const fallbackAttemptedRef = useRef(false);
+  const tracks = useRef<RTCRtpSender[]>([]);
   const inputAudioContext = useRef<AudioContext | null>(null);
   const inputAudioSource = useRef<MediaStreamAudioSourceNode | null>(null);
   const inputAudioProcessor = useRef<ScriptProcessorNode | null>(null);
   const inputAudioSilenceGain = useRef<GainNode | null>(null);
   const outputAudioContext = useRef<AudioContext | null>(null);
   const outputAudioTime = useRef(0);
-  const isListeningRef = useRef(false);
 
-  const { setTheme } = useTheme();
-  const tracks = useRef<RTCRtpSender[]>([]);
+  useEffect(() => {
+    latestOptionsRef.current = props;
+  }, [props]);
+
+  useEffect(() => {
+    threadIdRef.current = threadId;
+  }, [threadId]);
 
   useEffect(() => {
     isListeningRef.current = isListening;
   }, [isListening]);
 
-  const waitForIceGatheringComplete = useCallback(
-    (pc: RTCPeerConnection, timeoutMs = 4000) =>
-      new Promise<void>((resolve) => {
-        if (pc.iceGatheringState === "complete") {
-          resolve();
-          return;
-        }
-
-        const timeout = window.setTimeout(() => {
-          cleanup();
-          resolve();
-        }, timeoutMs);
-
-        const handleStateChange = () => {
-          if (pc.iceGatheringState === "complete") {
-            cleanup();
-            resolve();
-          }
-        };
-
-        const cleanup = () => {
-          window.clearTimeout(timeout);
-          pc.removeEventListener("icegatheringstatechange", handleStateChange);
-        };
-
-        pc.addEventListener("icegatheringstatechange", handleStateChange);
-      }),
-    [],
-  );
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
 
   const ensureAudioStream = useCallback(async () => {
     if (!navigator?.mediaDevices?.getUserMedia) {
@@ -415,55 +375,125 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     }
   }, []);
 
-  const startListening = useCallback(async () => {
-    try {
-      const stream = await ensureAudioStream();
-      if (
-        transportRef.current === "websocket" &&
-        webSocket.current?.readyState === WebSocket.OPEN
-      ) {
-        await startWebSocketAudioCapture(webSocket.current);
+  const setListeningState = useCallback(
+    async ({
+      enabled,
+      commitBuffer,
+      releaseStream,
+    }: {
+      enabled: boolean;
+      commitBuffer: boolean;
+      releaseStream: boolean;
+    }) => {
+      if (enabled) {
+        const stream = await ensureAudioStream();
+        if (
+          transportRef.current === "websocket" &&
+          webSocket.current?.readyState === WebSocket.OPEN
+        ) {
+          await startWebSocketAudioCapture(webSocket.current);
+        }
+        if (tracks.current.length) {
+          const micTrack = stream.getAudioTracks()[0];
+          tracks.current.forEach((sender) => {
+            sender.replaceTrack(micTrack);
+          });
+        }
+        isListeningRef.current = true;
+        setIsListening(true);
+        return;
       }
-      if (tracks.current.length) {
-        const micTrack = stream.getAudioTracks()[0];
-        tracks.current.forEach((sender) => {
-          sender.replaceTrack(micTrack);
-        });
-      }
-      isListeningRef.current = true;
-      setIsListening(true);
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
-    }
-  }, [ensureAudioStream, startWebSocketAudioCapture]);
 
-  const stopListening = useCallback(async () => {
-    try {
       if (
+        commitBuffer &&
         transportRef.current === "websocket" &&
         webSocket.current?.readyState === WebSocket.OPEN
       ) {
         webSocket.current.send(
           JSON.stringify({ type: "input_audio_buffer.commit" }),
         );
-        await stopWebSocketAudioCapture();
       }
-      if (audioStream.current) {
+
+      await stopWebSocketAudioCapture();
+
+      if (releaseStream && audioStream.current) {
         audioStream.current.getTracks().forEach((track) => track.stop());
         audioStream.current = null;
       }
+
       if (tracks.current.length) {
         const placeholderTrack = createEmptyAudioTrack();
         tracks.current.forEach((sender) => {
           sender.replaceTrack(placeholderTrack);
         });
       }
+
       isListeningRef.current = false;
       setIsListening(false);
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
-    }
-  }, [stopWebSocketAudioCapture]);
+    },
+    [ensureAudioStream, startWebSocketAudioCapture, stopWebSocketAudioCapture],
+  );
+
+  const finishAgentTurn = useCallback(
+    async (resumeListening = autoResumeListeningRef.current) => {
+      if (speechTimeout.current) {
+        clearTimeout(speechTimeout.current);
+        speechTimeout.current = null;
+      }
+
+      turnLockedRef.current = false;
+      autoResumeListeningRef.current = false;
+      setIsSynthesizingSpeech(false);
+      setIsAssistantSpeaking(false);
+
+      if (resumeListening && isActiveRef.current) {
+        await setListeningState({
+          enabled: true,
+          commitBuffer: false,
+          releaseStream: false,
+        }).catch((resumeError) => {
+          setError(
+            resumeError instanceof Error
+              ? resumeError
+              : new Error(String(resumeError)),
+          );
+        });
+      }
+    },
+    [setListeningState],
+  );
+
+  const speakAssistantText = useCallback(
+    async (text: string) => {
+      const speechText = getAssistantSpeechText({
+        id: "",
+        role: "assistant",
+        parts: [{ type: "text", text }],
+      } as UIMessage);
+
+      if (!speechText || !transportRef.current) {
+        await finishAgentTurn();
+        return;
+      }
+
+      setIsSynthesizingSpeech(true);
+      speechTimeout.current = setTimeout(() => {
+        void finishAgentTurn();
+      }, VOICE_TTS_TIMEOUT_MS);
+
+      sendRealtimeEvent({
+        type: "response.create",
+        response: {
+          conversation: "none",
+          input: [],
+          instructions: buildSpeechInstructions(speechText),
+          modalities: ["text", "audio"],
+          output_modalities: ["text", "audio"],
+        },
+      });
+    },
+    [finishAgentTurn, sendRealtimeEvent],
+  );
 
   const createSession =
     useCallback(async (): Promise<OpenAIRealtimeSession> => {
@@ -474,8 +504,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         },
         body: JSON.stringify({
           voice,
-          agentId: props?.agentId,
-          mentions: props?.toolMentions,
+          agentId: latestOptionsRef.current?.agentId,
         }),
       });
       if (!response.ok) {
@@ -501,196 +530,146 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
 
       return session;
-    }, [voice, props?.toolMentions, props?.agentId]);
+    }, [voice]);
 
-  const updateUIMessage = useCallback(
-    (
-      id: string,
-      action:
-        | Partial<UIMessageWithCompleted>
-        | ((
-            message: UIMessageWithCompleted,
-          ) => Partial<UIMessageWithCompleted>),
-    ) => {
-      setMessages((prev) => {
-        if (prev.length) {
-          const lastMessage = prev.find((m) => m.id == id);
-          if (!lastMessage) return prev;
-          const nextMessage =
-            typeof action === "function" ? action(lastMessage) : action;
-          if (lastMessage == nextMessage) return prev;
-          return prev.map((m) => (m.id == id ? { ...m, ...nextMessage } : m));
-        }
-        return prev;
-      });
-    },
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport<UIMessage>({
+        api: "/api/chat/voice-agent",
+        prepareSendMessagesRequest: ({ messages, id }) => {
+          const lastMessage = messages.at(-1);
+          if (!lastMessage) {
+            throw new Error("Voice agent turn is missing the user message.");
+          }
+
+          return {
+            body: {
+              id,
+              message: lastMessage,
+              agentId: latestOptionsRef.current?.agentId,
+              mentions: latestOptionsRef.current?.mentions,
+              allowedMcpServers: latestOptionsRef.current?.allowedMcpServers,
+              allowedAppDefaultToolkit:
+                latestOptionsRef.current?.allowedAppDefaultToolkit,
+            },
+          };
+        },
+      }),
     [],
   );
 
-  const clientFunctionCall = useCallback(
-    async ({
-      callId,
-      toolName,
-      args,
-      id,
-    }: { callId: string; toolName: string; args: string; id: string }) => {
-      let toolResult: any = "success";
-      stopListening();
-      const toolArgs = JSON.parse(args);
-      if (DEFAULT_VOICE_TOOLS.some((t) => t.name === toolName)) {
-        switch (toolName) {
-          case "changeBrowserTheme":
-            setTheme(toolArgs?.theme);
-            break;
-          case "endConversation":
-            await stop();
-            setError(null);
-            setMessages([]);
-            appStore.setState((prev) => ({
-              voiceChat: {
-                ...prev.voiceChat,
-                agentId: undefined,
-                isOpen: false,
-              },
-            }));
-            break;
-        }
-      } else {
-        const toolId = extractMCPToolId(toolName);
-
-        toolResult = await callMcpToolByServerNameAction(
-          toolId.serverName,
-          toolId.toolName,
-          toolArgs,
-        );
+  const {
+    messages,
+    status,
+    sendMessage,
+    setMessages,
+    stop: stopChatResponse,
+    error: chatError,
+  } = useChat<UIMessage>({
+    id: threadId ?? "voice-chat-pending",
+    transport,
+    generateId: generateUUID,
+    onFinish: ({ message, isAbort }) => {
+      if (isAbort) {
+        void finishAgentTurn();
+        return;
       }
-      startListening();
-      const resultText = JSON.stringify(toolResult).trim();
 
-      const event = {
-        type: "conversation.item.create",
-        previous_item_id: id,
-        item: {
-          type: "function_call_output",
-          call_id: callId,
-          output: resultText.slice(0, 15000),
-        },
-      };
-      updateUIMessage(id, (prev) => {
-        const prevPart = prev.parts.find((p) => p.type == `tool-${toolName}`);
-        if (!prevPart) return prev;
-        const part: ToolUIPart = {
-          state: "output-available",
-          output: toolResult,
-          toolCallId: callId,
-          input: toolArgs,
-          type: `tool-${toolName}`,
-        };
-        return {
-          parts: [part],
-        };
-      });
-      sendRealtimeEvent(event);
-      sendRealtimeEvent({ type: "response.create" });
+      const speechText = getAssistantSpeechText(message);
+      if (!speechText) {
+        void finishAgentTurn();
+        return;
+      }
+
+      void speakAssistantText(speechText);
     },
-    [
-      sendRealtimeEvent,
-      startListening,
-      stopListening,
-      setTheme,
-      updateUIMessage,
-    ],
+  });
+
+  const sendVoiceTurn = useCallback(
+    async (transcript: string) => {
+      const userText = transcript.trim();
+      if (!userText || turnLockedRef.current) {
+        return;
+      }
+
+      if (!threadIdRef.current) {
+        setError(
+          new Error(
+            "Voice chat thread is not initialized. Close and reopen the voice drawer.",
+          ),
+        );
+        return;
+      }
+
+      turnLockedRef.current = true;
+      autoResumeListeningRef.current = isListeningRef.current;
+      setError(null);
+
+      await setListeningState({
+        enabled: false,
+        commitBuffer: false,
+        releaseStream: false,
+      });
+
+      await Promise.resolve(
+        sendMessage({
+          role: "user",
+          parts: [{ type: "text", text: userText }],
+        }),
+      ).catch(async (sendError) => {
+        setError(
+          sendError instanceof Error ? sendError : new Error(String(sendError)),
+        );
+        await finishAgentTurn(false);
+      });
+    },
+    [finishAgentTurn, sendMessage, setListeningState],
+  );
+
+  const waitForIceGatheringComplete = useCallback(
+    (pc: RTCPeerConnection, timeoutMs = 4000) =>
+      new Promise<void>((resolve) => {
+        if (pc.iceGatheringState === "complete") {
+          resolve();
+          return;
+        }
+
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          resolve();
+        }, timeoutMs);
+
+        const handleStateChange = () => {
+          if (pc.iceGatheringState === "complete") {
+            cleanup();
+            resolve();
+          }
+        };
+
+        const cleanup = () => {
+          window.clearTimeout(timeout);
+          pc.removeEventListener("icegatheringstatechange", handleStateChange);
+        };
+
+        pc.addEventListener("icegatheringstatechange", handleStateChange);
+      }),
+    [],
   );
 
   const handleServerEvent = useCallback(
     (event: OpenAIRealtimeServerEvent) => {
       switch (event.type) {
         case "input_audio_buffer.speech_started": {
-          const message = createUIMessage({
-            role: "user",
-            id: event.item_id,
-            content: {
-              type: "text",
-              text: "",
-            },
-          });
-          setIsUserSpeaking(true);
-          setMessages((prev) => [...prev, message]);
-          break;
-        }
-        case "input_audio_buffer.committed": {
-          updateUIMessage(event.item_id, {
-            parts: [
-              {
-                type: "text",
-                text: "",
-              },
-            ],
-            completed: true,
-          });
+          if (!turnLockedRef.current) {
+            setIsUserSpeaking(true);
+          }
           break;
         }
         case "conversation.item.input_audio_transcription.completed": {
-          updateUIMessage(event.item_id, {
-            parts: [
-              {
-                type: "text",
-                text: event.transcript || "...speaking",
-              },
-            ],
-            completed: true,
-          });
-          break;
-        }
-        case "response.audio_transcript.delta":
-        case "response.output_audio_transcript.delta":
-        case "response.output_text.delta": {
-          setIsAssistantSpeaking(true);
-          setMessages((prev) => {
-            const message = prev.findLast((m) => m.id == event.item_id)!;
-            if (message) {
-              return prev.map((m) =>
-                m.id == event.item_id
-                  ? {
-                      ...m,
-                      parts: [
-                        {
-                          type: "text",
-                          text:
-                            (message.parts[0] as TextPart).text! + event.delta,
-                        },
-                      ],
-                    }
-                  : m,
-              );
-            }
-            return [
-              ...prev,
-              createUIMessage({
-                role: "assistant",
-                id: event.item_id,
-                content: {
-                  type: "text",
-                  text: event.delta,
-                },
-                completed: true,
-              }),
-            ];
-          });
-          break;
-        }
-        case "response.audio_transcript.done":
-        case "response.output_audio_transcript.done":
-        case "response.output_text.done": {
-          updateUIMessage(event.item_id, (prev) => {
-            const textPart = prev.parts.find((p) => p.type == "text");
-            if (!textPart) return prev;
-            (textPart as TextPart).text = event.transcript || "";
-            return {
-              ...prev,
-              completed: true,
-            };
-          });
+          setIsUserSpeaking(false);
+          if (event.transcript?.trim()) {
+            void sendVoiceTurn(event.transcript);
+          }
           break;
         }
         case "response.audio.delta":
@@ -700,56 +679,45 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           });
           break;
         }
-        case "response.audio.done":
-        case "response.output_audio.done": {
-          setIsAssistantSpeaking(false);
-          break;
-        }
         case "output_audio_buffer.started": {
           setIsAssistantSpeaking(true);
           break;
         }
-        case "response.function_call_arguments.done": {
-          const message = createUIMessage({
-            role: "assistant",
-            id: event.item_id,
-            content: {
-              type: "tool-invocation",
-              name: event.name,
-              arguments: JSON.parse(event.arguments),
-              state: "call",
-              toolCallId: event.call_id,
-            },
-            completed: true,
-          });
-          setMessages((prev) => [...prev, message]);
-          clientFunctionCall({
-            callId: event.call_id,
-            toolName: event.name,
-            args: event.arguments,
-            id: event.item_id,
-          });
+        case "response.audio.done":
+        case "response.output_audio.done":
+        case "output_audio_buffer.stopped": {
+          void finishAgentTurn();
           break;
         }
         case "input_audio_buffer.speech_stopped": {
           setIsUserSpeaking(false);
           break;
         }
-        case "output_audio_buffer.stopped": {
-          setIsAssistantSpeaking(false);
+        case "response.done": {
+          if (isSynthesizingSpeech) {
+            void finishAgentTurn();
+          }
           break;
         }
-        case "session.error": {
+        case "session.error":
+        case "error":
+        case "invalid_request_error": {
           setError(new Error(event.error.message));
+          void finishAgentTurn(false);
           break;
         }
       }
     },
-    [clientFunctionCall, playWebSocketAudioDelta, updateUIMessage],
+    [
+      finishAgentTurn,
+      isSynthesizingSpeech,
+      playWebSocketAudioDelta,
+      sendVoiceTurn,
+    ],
   );
 
   const startWebSocketFallback = useCallback(
-    async (session: OpenAIRealtimeSession, _reason: string) => {
+    async (session: OpenAIRealtimeSession) => {
       if (fallbackAttemptedRef.current || !session.websocketEndpointUrl) {
         throw new Error("Voice WebSocket fallback is not available.");
       }
@@ -768,7 +736,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       tracks.current = [];
 
       setError(null);
-      setIsLoading(true);
+      setIsSessionLoading(true);
 
       await ensureAudioStream();
 
@@ -779,36 +747,22 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         socket.addEventListener("open", async () => {
           try {
             await startWebSocketAudioCapture(socket);
-            const baseSessionUpdate =
-              session.websocketSessionUpdate || session.pendingSessionUpdate;
-            const websocketSessionUpdate =
-              baseSessionUpdate?.audio || baseSessionUpdate?.output_modalities
-                ? baseSessionUpdate
-                : {
-                    ...baseSessionUpdate,
-                    input_audio_format: "pcm16",
-                    output_audio_format: "pcm16",
-                    turn_detection: {
-                      type: "server_vad",
-                      threshold: 0.5,
-                      prefix_padding_ms: 300,
-                      silence_duration_ms: 250,
-                      create_response: true,
-                    },
-                  };
             socket.send(
               JSON.stringify({
                 type: "session.update",
-                session: websocketSessionUpdate,
+                session:
+                  session.websocketSessionUpdate ||
+                  session.pendingSessionUpdate,
               }),
             );
             setIsActive(true);
+            setIsSessionLoading(false);
+            isActiveRef.current = true;
             isListeningRef.current = true;
             setIsListening(true);
-            setIsLoading(false);
             resolve();
-          } catch (error) {
-            reject(error);
+          } catch (socketError) {
+            reject(socketError);
           }
         });
 
@@ -818,8 +772,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
               messageEvent.data,
             ) as OpenAIRealtimeServerEvent;
             handleServerEvent(event);
-          } catch (error) {
-            console.error("voice websocket message parse error", error);
+          } catch (socketError) {
+            console.error("voice websocket message parse error", socketError);
           }
         });
 
@@ -829,11 +783,12 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
         socket.addEventListener("close", () => {
           webSocket.current = null;
-          stopWebSocketAudioCapture().catch(() => {});
+          void stopWebSocketAudioCapture();
           setIsActive(false);
+          isActiveRef.current = false;
           isListeningRef.current = false;
           setIsListening(false);
-          setIsLoading(false);
+          setIsSessionLoading(false);
         });
       });
     },
@@ -846,10 +801,20 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   );
 
   const start = useCallback(async () => {
-    if (isActive || isLoading) return;
-    setIsLoading(true);
+    if (isActive || isSessionLoading) return;
+    if (!threadIdRef.current) {
+      setError(
+        new Error(
+          "Voice chat thread is not initialized. Close and reopen the voice drawer.",
+        ),
+      );
+      return;
+    }
+
+    setIsSessionLoading(true);
     setError(null);
     setMessages([]);
+
     try {
       fallbackAttemptedRef.current = false;
       transportRef.current = null;
@@ -859,10 +824,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       const sessionToken = session.client_secret.value;
       const realtimeEndpointUrl: string =
         session.realtimeEndpointUrl || "https://api.openai.com/v1/realtime";
-      // proxySdpUrl: when set, the SDP offer is POSTed through our Next.js API.
-      // We use this for legacy Azure api-key auth and GA Azure bearer-token forwarding.
       const proxySdpUrl: string | undefined = session.proxySdpUrl;
-      // sdpAuthHeader: used for direct SDP exchange or forwarded to our proxy.
       const sdpAuthHeader: string = session.sdpAuthHeader || "Authorization";
       const sdpAuthValue =
         sdpAuthHeader === "Authorization"
@@ -872,7 +834,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         iceServers: getVoiceIceServers(),
         iceCandidatePoolSize: 4,
       });
+
       ensureAudioElement();
+
       pc.onconnectionstatechange = () => {
         if (
           transportRef.current === "websocket" ||
@@ -895,11 +859,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             session.websocketEndpointUrl &&
             !fallbackAttemptedRef.current
           ) {
-            startWebSocketFallback(
-              session,
-              `webrtc connection state ${state}`,
-            ).catch((fallbackError) => {
-              setIsLoading(false);
+            startWebSocketFallback(session).catch((fallbackError) => {
+              setIsSessionLoading(false);
               setError(
                 fallbackError instanceof Error
                   ? fallbackError
@@ -908,12 +869,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             });
             return;
           }
-          setIsLoading(false);
+          setIsSessionLoading(false);
           if (state !== "closed") {
             setError(new Error(`Voice WebRTC connection ${state}.`));
           }
         }
       };
+
       pc.oniceconnectionstatechange = () => {
         if (
           transportRef.current === "websocket" ||
@@ -928,76 +890,49 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             connectTimeout.current = null;
           }
           if (session.websocketEndpointUrl && !fallbackAttemptedRef.current) {
-            startWebSocketFallback(session, "webrtc ice failed").catch(
-              (fallbackError) => {
-                setIsLoading(false);
-                setError(
-                  fallbackError instanceof Error
-                    ? fallbackError
-                    : new Error(String(fallbackError)),
-                );
-              },
-            );
+            startWebSocketFallback(session).catch((fallbackError) => {
+              setIsSessionLoading(false);
+              setError(
+                fallbackError instanceof Error
+                  ? fallbackError
+                  : new Error(String(fallbackError)),
+              );
+            });
             return;
           }
-          setIsLoading(false);
+          setIsSessionLoading(false);
           setError(new Error("Voice WebRTC ICE negotiation failed."));
         }
       };
-      pc.onicecandidate = (event) => {
-        if (
-          transportRef.current === "websocket" ||
-          peerConnection.current !== pc
-        ) {
-          return;
-        }
-        if (!event.candidate) {
-          return;
-        }
+
+      pc.ontrack = (event) => {
+        const element = ensureAudioElement();
+        element.srcObject = event.streams[0];
+        resumeAudioElementPlayback().catch(() => {});
       };
-      pc.onicecandidateerror = () => {
-        if (
-          transportRef.current === "websocket" ||
-          peerConnection.current !== pc
-        ) {
-          return;
-        }
-      };
-      pc.ontrack = (e) => {
-        if (audioElement.current) {
-          audioElement.current.srcObject =
-            e.streams[0] ?? new MediaStream([e.track]);
-          resumeAudioElementPlayback().catch((playbackError) => {
-            console.error("voice webrtc playback error", playbackError);
-          });
-        }
-      };
+
       if (!audioStream.current) {
-        if (!navigator?.mediaDevices?.getUserMedia) {
-          throw new Error(
-            "Microphone access is not available. Voice chat requires a secure connection (HTTPS or localhost).",
-          );
-        }
-        audioStream.current = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        });
+        await ensureAudioStream();
       }
+
       tracks.current = [];
-      audioStream.current.getTracks().forEach((track) => {
+      audioStream.current?.getTracks().forEach((track) => {
         const sender = pc.addTrack(track, audioStream.current!);
         if (sender) tracks.current.push(sender);
       });
 
       const dc = pc.createDataChannel("realtime-channel");
       dataChannel.current = dc;
-      dc.addEventListener("message", async (e) => {
+      dc.addEventListener("message", async (messageEvent) => {
         try {
-          const event = JSON.parse(e.data) as OpenAIRealtimeServerEvent;
+          const event = JSON.parse(
+            messageEvent.data,
+          ) as OpenAIRealtimeServerEvent;
           handleServerEvent(event);
-        } catch (err) {
+        } catch (channelError) {
           console.error({
-            data: e.data,
-            error: err,
+            data: messageEvent.data,
+            error: channelError,
           });
         }
       });
@@ -1006,8 +941,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           clearTimeout(connectTimeout.current);
           connectTimeout.current = null;
         }
-        // Azure Voice Direct can only complete the SDP exchange server-side,
-        // so session configuration is pushed once the data channel is ready.
         if (session.pendingSessionUpdate) {
           dc.send(
             JSON.stringify({
@@ -1017,8 +950,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           );
         }
         setIsActive(true);
+        isActiveRef.current = true;
         setIsListening(true);
-        setIsLoading(false);
+        isListeningRef.current = true;
+        setIsSessionLoading(false);
       });
       dc.addEventListener("close", () => {
         if (connectTimeout.current) {
@@ -1026,8 +961,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           connectTimeout.current = null;
         }
         setIsActive(false);
+        isActiveRef.current = false;
         setIsListening(false);
-        setIsLoading(false);
+        isListeningRef.current = false;
+        setIsSessionLoading(false);
       });
       dc.addEventListener("error", (errorEvent) => {
         if (connectTimeout.current) {
@@ -1040,9 +977,12 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             : new Error(String(errorEvent)),
         );
         setIsActive(false);
+        isActiveRef.current = false;
         setIsListening(false);
-        setIsLoading(false);
+        isListeningRef.current = false;
+        setIsSessionLoading(false);
       });
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGatheringComplete(pc);
@@ -1051,8 +991,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         throw new Error("Voice WebRTC local SDP was not created.");
       }
 
-      // If proxySdpUrl is set (Azure dedicated config), POST the SDP through our
-      // server-side proxy. Otherwise POST directly to the realtime endpoint.
       const sdpFetchUrl = proxySdpUrl ?? realtimeEndpointUrl;
       const sdpFetchHeaders: Record<string, string> = proxySdpUrl
         ? {
@@ -1070,27 +1008,27 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       const sdpResponseText = await sdpResponse.text();
       if (!sdpResponse.ok) {
-        // Parse a JSON error body if present, else surface the raw text
         let errorMessage = `WebRTC SDP exchange failed (${sdpResponse.status})`;
         try {
           const errorBody = JSON.parse(sdpResponseText);
-          const msg =
+          const message =
             errorBody?.error?.message ||
             errorBody?.message ||
             JSON.stringify(errorBody);
-          errorMessage = `WebRTC SDP exchange failed: ${msg}`;
+          errorMessage = `WebRTC SDP exchange failed: ${message}`;
         } catch {
           if (sdpResponseText) errorMessage += `: ${sdpResponseText}`;
         }
         throw new Error(errorMessage);
       }
-      const answer: RTCSessionDescriptionInit = {
+
+      await pc.setRemoteDescription({
         type: "answer",
         sdp: sdpResponseText,
-      };
-      await pc.setRemoteDescription(answer);
+      });
       peerConnection.current = pc;
       transportRef.current = "webrtc";
+
       connectTimeout.current = setTimeout(() => {
         if (
           transportRef.current === "websocket" ||
@@ -1112,16 +1050,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
                 session.websocketEndpointUrl &&
                 !fallbackAttemptedRef.current
               ) {
-                startWebSocketFallback(
-                  session,
-                  `webrtc timeout (${diagnostics.gatheredCandidateTypes.join(",") || "no-candidates"})`,
-                ).catch((fallbackError) => {
+                startWebSocketFallback(session).catch((fallbackError) => {
                   setError(
                     fallbackError instanceof Error
                       ? fallbackError
                       : new Error(String(fallbackError)),
                   );
-                  setIsLoading(false);
+                  setIsSessionLoading(false);
                 });
                 return;
               }
@@ -1133,23 +1068,21 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
                     : "Voice WebRTC could not establish a public candidate pair. Configure TURN/STUN via NEXT_PUBLIC_VOICE_ICE_SERVERS_JSON.",
                 ),
               );
-              setIsLoading(false);
+              setIsSessionLoading(false);
             })
             .catch(() => {
               if (
                 session.websocketEndpointUrl &&
                 !fallbackAttemptedRef.current
               ) {
-                startWebSocketFallback(session, "webrtc timeout").catch(
-                  (fallbackError) => {
-                    setError(
-                      fallbackError instanceof Error
-                        ? fallbackError
-                        : new Error(String(fallbackError)),
-                    );
-                    setIsLoading(false);
-                  },
-                );
+                startWebSocketFallback(session).catch((fallbackError) => {
+                  setError(
+                    fallbackError instanceof Error
+                      ? fallbackError
+                      : new Error(String(fallbackError)),
+                  );
+                  setIsSessionLoading(false);
+                });
                 return;
               }
               setError(
@@ -1157,34 +1090,86 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
                   "Voice connection timed out while waiting for the realtime data channel.",
                 ),
               );
-              setIsLoading(false);
+              setIsSessionLoading(false);
             });
         }
-      }, 20000);
-    } catch (err) {
+      }, 20_000);
+    } catch (startError) {
       if (connectTimeout.current) {
         clearTimeout(connectTimeout.current);
         connectTimeout.current = null;
       }
-      setError(err instanceof Error ? err : new Error(String(err)));
+      setError(
+        startError instanceof Error
+          ? startError
+          : new Error(String(startError)),
+      );
       setIsActive(false);
+      isActiveRef.current = false;
       setIsListening(false);
-      setIsLoading(false);
+      isListeningRef.current = false;
+      setIsSessionLoading(false);
     }
   }, [
-    isActive,
-    isLoading,
     createSession,
     ensureAudioElement,
+    ensureAudioStream,
     handleServerEvent,
+    isActive,
+    isSessionLoading,
     resumeAudioElementPlayback,
+    setMessages,
     startWebSocketFallback,
-    voice,
     waitForIceGatheringComplete,
   ]);
 
+  const startListening = useCallback(async () => {
+    if (turnLockedRef.current || isSynthesizingSpeech || status !== "ready") {
+      return;
+    }
+
+    try {
+      autoResumeListeningRef.current = false;
+      await setListeningState({
+        enabled: true,
+        commitBuffer: false,
+        releaseStream: false,
+      });
+    } catch (listenError) {
+      setError(
+        listenError instanceof Error
+          ? listenError
+          : new Error(String(listenError)),
+      );
+    }
+  }, [isSynthesizingSpeech, setListeningState, status]);
+
+  const stopListening = useCallback(async () => {
+    try {
+      autoResumeListeningRef.current = false;
+      await setListeningState({
+        enabled: false,
+        commitBuffer: true,
+        releaseStream: true,
+      });
+    } catch (listenError) {
+      setError(
+        listenError instanceof Error
+          ? listenError
+          : new Error(String(listenError)),
+      );
+    }
+  }, [setListeningState]);
+
   const stop = useCallback(async () => {
     try {
+      autoResumeListeningRef.current = false;
+      turnLockedRef.current = false;
+      if (speechTimeout.current) {
+        clearTimeout(speechTimeout.current);
+        speechTimeout.current = null;
+      }
+      stopChatResponse();
       transportRef.current = null;
       if (webSocket.current) {
         webSocket.current.close();
@@ -1211,35 +1196,59 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         audioElement.current.pause();
         audioElement.current.srcObject = null;
       }
+      if (audioStream.current) {
+        audioStream.current.getTracks().forEach((track) => track.stop());
+        audioStream.current = null;
+      }
       outputAudioTime.current = 0;
       tracks.current = [];
-      stopListening();
       setIsActive(false);
+      isActiveRef.current = false;
       setIsListening(false);
-      setIsLoading(false);
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
+      isListeningRef.current = false;
+      setIsSessionLoading(false);
+      setIsSynthesizingSpeech(false);
+      setIsAssistantSpeaking(false);
+      setIsUserSpeaking(false);
+    } catch (stopError) {
+      setError(
+        stopError instanceof Error ? stopError : new Error(String(stopError)),
+      );
     }
-  }, [stopListening, stopWebSocketAudioCapture]);
+  }, [stopChatResponse, stopWebSocketAudioCapture]);
+
+  useEffect(() => {
+    if (!chatError) {
+      return;
+    }
+    setError(
+      chatError instanceof Error ? chatError : new Error(String(chatError)),
+    );
+    void finishAgentTurn(false);
+  }, [chatError, finishAgentTurn]);
+
+  useEffect(() => {
+    if (!threadId) {
+      setMessages([]);
+      return;
+    }
+    setMessages([]);
+  }, [setMessages, threadId]);
 
   useEffect(() => {
     return () => {
-      stop();
+      void stop();
     };
   }, [stop]);
-
-  function createEmptyAudioTrack(): MediaStreamTrack {
-    const audioContext = new AudioContext();
-    const destination = audioContext.createMediaStreamDestination();
-    return destination.stream.getAudioTracks()[0];
-  }
 
   return {
     isActive,
     isUserSpeaking,
     isAssistantSpeaking,
     isListening,
-    isLoading,
+    isLoading: isSessionLoading,
+    isProcessingTurn:
+      status === "submitted" || status === "streaming" || isSynthesizingSpeech,
     error,
     messages,
     start,

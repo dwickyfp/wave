@@ -40,6 +40,7 @@ const IMAGE_NEIGHBOR_CONTEXT_KEY =
   "/api/settings/knowledge-image-neighbor-context-enabled";
 const JUDGE_MODEL_KEY = "/api/settings/evaluation-judge-model";
 const EMBEDDING_MODEL_KEY = "/api/settings/self-learning-embedding-model";
+const VOICE_AGENT_MODEL_KEY = "/api/settings/voice-agent-model";
 const VOICE_CHAT_AZURE_KEY = "/api/settings/voice-chat-azure";
 
 type VoiceChatAzureConfig = {
@@ -87,13 +88,19 @@ function getConfiguredValue(
 function buildProviders(
   providers: LlmProviderConfig[] | undefined,
   modelType: "llm" | "embedding",
+  options?: {
+    toolCapableOnly?: boolean;
+  },
 ) {
   return (providers ?? [])
     .filter(
       (provider) =>
         provider.enabled &&
         provider.models.some(
-          (model) => model.modelType === modelType && model.enabled,
+          (model) =>
+            model.modelType === modelType &&
+            model.enabled &&
+            (!options?.toolCapableOnly || model.supportsTools),
         ),
     )
     .map((provider) => ({
@@ -101,7 +108,12 @@ function buildProviders(
       displayName: provider.displayName,
       hasAPIKey: !!provider.apiKeyMasked,
       models: provider.models
-        .filter((model) => model.modelType === modelType && model.enabled)
+        .filter(
+          (model) =>
+            model.modelType === modelType &&
+            model.enabled &&
+            (!options?.toolCapableOnly || model.supportsTools),
+        )
         .map((model) => ({
           uiName: model.uiName,
           apiName: model.apiName,
@@ -187,6 +199,10 @@ export function EmmaModelSettingsButton() {
       EMBEDDING_MODEL_KEY,
       fetcher,
     );
+  const { data: voiceAgentModelConfig } = useSWR<ContextXModelConfig>(
+    VOICE_AGENT_MODEL_KEY,
+    fetcher,
+  );
   const { data: voiceChatAzureConfig } = useSWR<VoiceChatAzureConfig | null>(
     VOICE_CHAT_AZURE_KEY,
     fetcher,
@@ -199,6 +215,7 @@ export function EmmaModelSettingsButton() {
     useState(true);
   const [judgeValue, setJudgeValue] = useState(NONE_VALUE);
   const [embeddingValue, setEmbeddingValue] = useState(NONE_VALUE);
+  const [voiceAgentModelValue, setVoiceAgentModelValue] = useState(NONE_VALUE);
   const [azureVoice, setAzureVoice] =
     useState<VoiceChatAzureConfig>(EMPTY_AZURE_VOICE);
 
@@ -227,11 +244,18 @@ export function EmmaModelSettingsButton() {
   }, [embeddingConfig]);
 
   useEffect(() => {
+    setVoiceAgentModelValue(getConfiguredValue(voiceAgentModelConfig));
+  }, [voiceAgentModelConfig]);
+
+  useEffect(() => {
     if (voiceChatAzureConfig) setAzureVoice(voiceChatAzureConfig);
     else setAzureVoice(EMPTY_AZURE_VOICE);
   }, [voiceChatAzureConfig]);
 
   const llmProviders = buildProviders(providers, "llm");
+  const toolCapableLlmProviders = buildProviders(providers, "llm", {
+    toolCapableOnly: true,
+  });
   const embeddingProviders = buildProviders(providers, "embedding");
 
   const currentParseValue = getConfiguredValue(parseConfig);
@@ -241,6 +265,7 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabledConfig ?? true;
   const currentJudgeValue = getConfiguredValue(judgeConfig);
   const currentEmbeddingValue = getConfiguredValue(embeddingConfig);
+  const currentVoiceAgentModelValue = getConfiguredValue(voiceAgentModelConfig);
   const currentAzureVoice = voiceChatAzureConfig ?? EMPTY_AZURE_VOICE;
   const isAzureVoiceConfigured = !!(
     voiceChatAzureConfig?.baseUrl && voiceChatAzureConfig?.deploymentName
@@ -255,6 +280,7 @@ export function EmmaModelSettingsButton() {
     imageConfig,
     judgeConfig,
     embeddingConfig,
+    voiceAgentModelConfig,
     isAzureVoiceConfigured || null,
   ].filter(Boolean).length;
   const isLoading =
@@ -264,6 +290,7 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabledConfig === undefined ||
     judgeConfig === undefined ||
     embeddingConfig === undefined ||
+    voiceAgentModelConfig === undefined ||
     voiceChatAzureConfig === undefined;
   const isDirty =
     parseValue !== currentParseValue ||
@@ -272,6 +299,7 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabled !== currentImageNeighborContextEnabled ||
     judgeValue !== currentJudgeValue ||
     embeddingValue !== currentEmbeddingValue ||
+    voiceAgentModelValue !== currentVoiceAgentModelValue ||
     azureVoice.baseUrl !== currentAzureVoice.baseUrl ||
     azureVoice.apiVersion !== currentAzureVoice.apiVersion ||
     azureVoice.deploymentName !== currentAzureVoice.deploymentName ||
@@ -354,6 +382,12 @@ export function EmmaModelSettingsButton() {
         kind: "model" as const,
       },
       {
+        label: "Default voice agent",
+        url: VOICE_AGENT_MODEL_KEY,
+        value: voiceAgentModelValue,
+        kind: "model" as const,
+      },
+      {
         label: "Azure voice",
         url: VOICE_CHAT_AZURE_KEY,
         value: azureVoice,
@@ -391,6 +425,7 @@ export function EmmaModelSettingsButton() {
       swrMutate(IMAGE_NEIGHBOR_CONTEXT_KEY),
       swrMutate(JUDGE_MODEL_KEY),
       swrMutate(EMBEDDING_MODEL_KEY),
+      swrMutate(VOICE_AGENT_MODEL_KEY),
       swrMutate(VOICE_CHAT_AZURE_KEY),
     ]);
 
@@ -433,7 +468,7 @@ export function EmmaModelSettingsButton() {
             Emma Models
           </span>
           <span className="text-muted-foreground text-xs">
-            {configuredCount}/6 configured
+            {configuredCount}/7 configured
           </span>
         </Button>
       </PopoverTrigger>
@@ -520,6 +555,15 @@ export function EmmaModelSettingsButton() {
               providers={embeddingProviders}
               placeholder="Select embedding model"
               icon={Database}
+            />
+            <SettingCard
+              title="Default Voice Agent"
+              description="Fallback model for voice-agent turns when the selected agent does not define its own MCP model."
+              value={voiceAgentModelValue}
+              onValueChange={setVoiceAgentModelValue}
+              providers={toolCapableLlmProviders}
+              placeholder="Select default voice agent model"
+              icon={Mic2}
             />
             <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
               <div className="flex items-start gap-3">

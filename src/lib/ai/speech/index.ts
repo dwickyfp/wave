@@ -1,7 +1,7 @@
 import { UIMessage } from "ai";
 import { ChatMention } from "app-types/chat";
-
-export type UIMessageWithCompleted = UIMessage & { completed: boolean };
+import { AllowedMCPServer } from "app-types/mcp";
+import { AppDefaultToolkit } from "lib/ai/tools";
 
 export interface VoiceChatSession {
   isActive: boolean;
@@ -9,7 +9,8 @@ export interface VoiceChatSession {
   isUserSpeaking: boolean;
   isAssistantSpeaking: boolean;
   isLoading: boolean;
-  messages: UIMessageWithCompleted[];
+  isProcessingTurn: boolean;
+  messages: UIMessage[];
   error: Error | null;
   start: () => Promise<void>;
   stop: () => Promise<void>;
@@ -18,40 +19,14 @@ export interface VoiceChatSession {
 }
 
 export type VoiceChatOptions = {
-  toolMentions?: ChatMention[];
+  mentions?: ChatMention[];
+  allowedMcpServers?: Record<string, AllowedMCPServer>;
+  allowedAppDefaultToolkit?: AppDefaultToolkit[];
   agentId?: string;
+  threadId?: string;
   voice?: string;
 };
 
 export type VoiceChatHook = (props?: {
   [key: string]: any;
 }) => VoiceChatSession;
-
-export const DEFAULT_VOICE_TOOLS = [
-  {
-    type: "function",
-    name: "changeBrowserTheme",
-    description: "Change the browser theme",
-    parameters: {
-      type: "object",
-      properties: {
-        theme: {
-          type: "string",
-          enum: ["light", "dark"],
-        },
-      },
-      required: ["theme"],
-    },
-  },
-  {
-    type: "function",
-    name: "endConversation",
-    description:
-      "End the current voice conversation, similar to hanging up a call. This tool should be invoked when the user clearly expresses a desire to finish, exit, or end the dialogue.",
-    parameters: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-  },
-];

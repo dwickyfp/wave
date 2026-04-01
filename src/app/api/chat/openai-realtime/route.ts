@@ -1,28 +1,10 @@
-import { VercelAIMcpTool } from "app-types/mcp";
 import { getSession } from "auth/server";
-import { resolveAgentPersonalizationPrompt } from "lib/ai/agent/personalization";
-import {
-  buildMcpServerCustomizationsSystemPrompt,
-  buildSpeechSystemPrompt,
-} from "lib/ai/prompts";
 import { NextRequest } from "next/server";
-import {
-  filterMcpServerCustomizations,
-  loadMcpTools,
-  mergeSystemPrompt,
-} from "../shared.chat";
-
-import { ChatMention } from "app-types/chat";
 import { colorize } from "consola/utils";
-import { DEFAULT_VOICE_TOOLS } from "lib/ai/speech";
+import { resolveVoiceAgentChatModel } from "lib/ai/speech/voice-agent-model";
 import { settingsRepository } from "lib/db/repository";
 import globalLogger from "lib/logger";
-import { getUserPreferences } from "lib/user/server";
-import { safe } from "ts-safe";
-import {
-  rememberAgentAction,
-  rememberMcpServerCustomizationsAction,
-} from "../actions";
+import { rememberAgentAction } from "../actions";
 
 const logger = globalLogger.withDefaults({
   message: colorize("blackBright", `OpenAI Realtime API: `),
@@ -75,24 +57,19 @@ function buildVoiceTurnDetection() {
     threshold: 0.5,
     prefix_padding_ms: 300,
     silence_duration_ms: 250,
-    create_response: true,
+    create_response: false,
+    interrupt_response: false,
   };
 }
 
-function buildLegacyVoiceSessionConfig({
-  voice,
-  instructions,
-  tools,
-}: {
-  voice: string;
-  instructions: string;
-  tools: unknown[];
-}) {
+const TRANSPORT_ONLY_INSTRUCTIONS =
+  "You are Emma's realtime voice transport. Transcribe the user's speech accurately. Do not create responses automatically. Only speak when the client explicitly asks you to generate audio output.";
+
+function buildLegacyVoiceSessionConfig({ voice }: { voice: string }) {
   return {
     modalities: ["text", "audio"],
     voice,
-    instructions,
-    tools,
+    instructions: TRANSPORT_ONLY_INSTRUCTIONS,
     input_audio_format: "pcm16",
     output_audio_format: "pcm16",
     input_audio_transcription: { model: "whisper-1" },
@@ -100,20 +77,11 @@ function buildLegacyVoiceSessionConfig({
   };
 }
 
-function buildGaVoiceSessionConfig({
-  voice,
-  instructions,
-  tools,
-}: {
-  voice: string;
-  instructions: string;
-  tools: unknown[];
-}) {
+function buildGaVoiceSessionConfig({ voice }: { voice: string }) {
   return {
     type: "realtime",
-    instructions,
-    tools,
-    output_modalities: ["audio"],
+    instructions: TRANSPORT_ONLY_INSTRUCTIONS,
+    output_modalities: ["text", "audio"],
     audio: {
       input: {
         transcription: { model: "whisper-1" },
@@ -142,77 +110,35 @@ export async function POST(request: NextRequest) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const {
-      voice,
-      mentions = [],
-      agentId,
-    } = (await request.json()) as {
+    const { voice, agentId } = (await request.json()) as {
       voice?: string;
       agentId?: string;
-      mentions?: ChatMention[];
     };
 
-    // ── Shared: agent, MCP tools, system prompt ──────────────────────────────
     const agent = await rememberAgentAction(agentId, session.user.id);
+
+    if (agentId && !agent) {
+      return new Response(
+        JSON.stringify({
+          error:
+            "The selected agent is unavailable. Re-open voice chat from a valid agent.",
+        }),
+        { status: 404 },
+      );
+    }
+
+    await resolveVoiceAgentChatModel({ agent }).catch((error: Error) => {
+      throw error;
+    });
 
     agentId && logger.info(`[${agentId}] Agent: ${agent?.name}`);
 
-    const enabledMentions = agent ? agent.instructions.mentions : mentions;
-
-    const allowedMcpTools = await loadMcpTools({
-      mentions: enabledMentions,
-      userId: session.user.id,
-    });
-
-    const toolNames = Object.keys(allowedMcpTools ?? {});
-    if (toolNames.length > 0) {
-      logger.info(`${toolNames.length} tools found`);
-    } else {
-      logger.info(`No tools found`);
-    }
-
-    const userPreferences = await getUserPreferences(session.user.id);
-    const learnedPersonalizationPrompt =
-      await resolveAgentPersonalizationPrompt({
-        surface: "platform_chat",
-        platformUserId: session.user.id,
-        agent,
-      });
-
-    const mcpServerCustomizations = await safe()
-      .map(() => {
-        if (Object.keys(allowedMcpTools ?? {}).length === 0)
-          throw new Error("No tools found");
-        return rememberMcpServerCustomizationsAction(session.user.id);
-      })
-      .map((v) => filterMcpServerCustomizations(allowedMcpTools!, v))
-      .orElse({});
-
-    const openAITools = Object.entries(allowedMcpTools ?? {}).map(
-      ([name, tool]) => vercelAIToolToOpenAITool(tool, name),
-    );
-
-    const systemPrompt = mergeSystemPrompt(
-      buildSpeechSystemPrompt(
-        session.user,
-        userPreferences ?? undefined,
-        agent,
-      ),
-      learnedPersonalizationPrompt,
-      buildMcpServerCustomizationsSystemPrompt(mcpServerCustomizations),
-    );
-
-    const bindingTools = [...openAITools, ...DEFAULT_VOICE_TOOLS];
     const resolvedVoice = voice || "alloy";
     const legacySessionConfig = buildLegacyVoiceSessionConfig({
       voice: resolvedVoice,
-      instructions: systemPrompt,
-      tools: bindingTools,
     });
     const gaSessionConfig = buildGaVoiceSessionConfig({
       voice: resolvedVoice,
-      instructions: systemPrompt,
-      tools: bindingTools,
     });
     const azureVoiceConfig = (await settingsRepository.getSetting(
       "voice-chat-azure",
@@ -384,17 +310,4 @@ export async function POST(request: NextRequest) {
       status: 500,
     });
   }
-}
-
-function vercelAIToolToOpenAITool(tool: VercelAIMcpTool, name: string) {
-  return {
-    name,
-    type: "function",
-    description: tool.description,
-    parameters: (tool.inputSchema as any).jsonSchema ?? {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-  };
 }
