@@ -1,6 +1,6 @@
 "use client";
 
-import { getToolName, type ToolUIPart } from "ai";
+import { getToolName, isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
 
 import { useOpenAIVoiceChat as OpenAIVoiceChat } from "lib/ai/speech/open-ai/use-voice-chat.openai";
 import {
@@ -21,6 +21,7 @@ import {
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
+import type { UseChatHelpers } from "@ai-sdk/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { safe } from "ts-safe";
@@ -32,7 +33,7 @@ import { Drawer, DrawerContent, DrawerPortal, DrawerTitle } from "ui/drawer";
 import { MessageLoading } from "ui/message-loading";
 import { ScrollArea } from "ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
-import { KnowledgeImageMessagePart } from "./message-parts";
+import { KnowledgeImageMessagePart, ToolMessagePart } from "./message-parts";
 import { Markdown } from "./markdown";
 import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
@@ -99,6 +100,7 @@ export function ChatBotVoice() {
     isActive,
     isUserSpeaking,
     messages,
+    addToolResult,
     error,
     start,
     startListening,
@@ -475,6 +477,10 @@ export function ChatBotVoice() {
                   isUserSpeaking={isUserSpeaking}
                 />
               )}
+              <VoiceHiddenToolRunner
+                messages={latestTurn.assistantMessages}
+                addToolResult={addToolResult}
+              />
             </div>
             <div className="relative w-full p-6 flex items-center justify-center gap-4">
               <div className="text-sm text-muted-foreground absolute -top-5 left-0 w-full justify-center flex items-center">
@@ -722,6 +728,52 @@ function VoiceArtifactStack({
     <div className="space-y-10">
       {artifacts.map((artifact) => (
         <VoiceArtifactView key={artifact.id} artifact={artifact} />
+      ))}
+    </div>
+  );
+}
+
+function VoiceHiddenToolRunner({
+  messages,
+  addToolResult,
+}: {
+  messages: UIMessage[];
+  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
+}) {
+  const pendingParts = useMemo(
+    () =>
+      messages.flatMap((message) =>
+        message.parts
+          .filter(isToolUIPart)
+          .filter(
+            (part) =>
+              !part.providerExecuted && !part.state.startsWith("output"),
+          )
+          .map((part) => ({
+            messageId: message.id,
+            part: part as ToolUIPart,
+          })),
+      ),
+    [messages],
+  );
+
+  if (!pendingParts.length) {
+    return null;
+  }
+
+  return (
+    <div className="sr-only" aria-hidden="true">
+      {pendingParts.map(({ messageId, part }) => (
+        <ToolMessagePart
+          key={`${messageId}-${part.toolCallId}`}
+          part={part}
+          messageId={messageId}
+          showActions={false}
+          readonly
+          isLast
+          isManualToolInvocation={false}
+          addToolResult={addToolResult}
+        />
       ))}
     </div>
   );

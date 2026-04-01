@@ -5,6 +5,7 @@ import { useGenerateThreadTitle } from "@/hooks/queries/use-generate-thread-titl
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
+  isToolUIPart,
   lastAssistantMessageIsCompleteWithToolCalls,
   type UIMessage,
 } from "ai";
@@ -273,6 +274,34 @@ function isLikelyGhostTranscript(text: string) {
   }
 
   return new Set(words).size <= 1;
+}
+
+function hasPendingVoiceToolCalls(messages: UIMessage[]) {
+  const lastMessage = messages.at(-1);
+
+  if (!lastMessage || lastMessage.role !== "assistant") {
+    return false;
+  }
+
+  const lastStepStartIndex = lastMessage.parts.reduce(
+    (lastIndex, part, index) => {
+      return part.type === "step-start" ? index : lastIndex;
+    },
+    -1,
+  );
+
+  const lastStepToolInvocations = lastMessage.parts
+    .slice(lastStepStartIndex + 1)
+    .filter(isToolUIPart)
+    .filter((part) => !part.providerExecuted);
+
+  return (
+    lastStepToolInvocations.length > 0 &&
+    lastStepToolInvocations.some(
+      (part) =>
+        part.state !== "output-available" && part.state !== "output-error",
+    )
+  );
 }
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
@@ -773,6 +802,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
       }
 
+      if (hasPendingVoiceToolCalls(finishedMessages)) {
+        return;
+      }
+
       if (
         lastAssistantMessageIsCompleteWithToolCalls({
           messages: finishedMessages,
@@ -790,6 +823,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       void speakAssistantText(speechText);
     },
   });
+  const hasPendingToolCalls = useMemo(
+    () => hasPendingVoiceToolCalls(messages),
+    [messages],
+  );
 
   const sendVoiceTurn = useCallback(
     async (transcript: string) => {
@@ -1513,7 +1550,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     isListening,
     isLoading: isSessionLoading,
     isProcessingTurn:
-      status === "submitted" || status === "streaming" || isSynthesizingSpeech,
+      status === "submitted" ||
+      status === "streaming" ||
+      isSynthesizingSpeech ||
+      hasPendingToolCalls,
     liveInputTranscript,
     error,
     messages,
