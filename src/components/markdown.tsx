@@ -163,10 +163,12 @@ const MarkdownTable = memo(
     node,
     animate = true,
     knowledgeCitations,
+    displayVariant = "default",
   }: {
     node?: any;
     animate?: boolean;
     knowledgeCitations?: ChatKnowledgeCitation[];
+    displayVariant?: "default" | "voice-stage";
   }) => {
     const [page, setPage] = useState(1);
     const [exporting, setExporting] = useState(false);
@@ -222,15 +224,34 @@ const MarkdownTable = memo(
       }
     };
 
+    const isVoiceStage = displayVariant === "voice-stage";
+
     return (
-      <div className="my-4 border rounded-xl overflow-hidden">
-        {/* Header bar */}
-        <div className="flex items-center justify-between px-4 py-2.5 border-b bg-muted/20">
-          <span className="text-sm font-medium">List Data</span>
+      <div
+        className={
+          isVoiceStage
+            ? "my-2 w-full"
+            : "my-4 overflow-hidden rounded-xl border"
+        }
+      >
+        <div
+          className={
+            isVoiceStage
+              ? "mb-3 flex items-center justify-end"
+              : "flex items-center justify-between border-b bg-muted/20 px-4 py-2.5"
+          }
+        >
+          {!isVoiceStage ? (
+            <span className="text-sm font-medium">List Data</span>
+          ) : null}
           <Button
-            variant="outline"
+            variant={isVoiceStage ? "ghost" : "outline"}
             size="sm"
-            className="h-7 text-xs gap-1.5"
+            className={
+              isVoiceStage
+                ? "h-7 text-[11px] text-muted-foreground"
+                : "h-7 gap-1.5 text-xs"
+            }
             onClick={exportToExcel}
             disabled={exporting}
           >
@@ -239,7 +260,6 @@ const MarkdownTable = memo(
           </Button>
         </div>
 
-        {/* Table */}
         <div className="overflow-x-auto">
           <Table className="table-fixed">
             <TableHeader>
@@ -289,9 +309,14 @@ const MarkdownTable = memo(
           </Table>
         </div>
 
-        {/* Pagination */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-2 border-t bg-muted/20">
+          <div
+            className={
+              isVoiceStage
+                ? "mt-4 flex items-center justify-between"
+                : "flex items-center justify-between border-t bg-muted/20 px-4 py-2"
+            }
+          >
             <span className="text-xs text-muted-foreground">
               {totalRows} rows · Page {page} of {totalPages}
             </span>
@@ -460,6 +485,7 @@ function CitationLink({
 const buildComponents = (
   knowledgeCitations?: ChatKnowledgeCitation[],
   animate = true,
+  displayVariant: "default" | "voice-stage" = "default",
 ): Partial<Components> => ({
   table: ({ node }) => {
     return (
@@ -468,6 +494,7 @@ const buildComponents = (
           node={node}
           animate={animate}
           knowledgeCitations={knowledgeCitations}
+          displayVariant={displayVariant}
         />
       </div>
     );
@@ -650,12 +677,14 @@ const snowflakeComponents: Partial<Components> = {
 const NonMemoizedMarkdown = ({
   children,
   variant,
+  displayVariant = "default",
   knowledgeCitations,
   animate = true,
   streaming = false,
 }: {
   children: string;
   variant?: "snowflake";
+  displayVariant?: "default" | "voice-stage";
   knowledgeCitations?: ChatKnowledgeCitation[];
   animate?: boolean;
   streaming?: boolean;
@@ -667,11 +696,11 @@ const NonMemoizedMarkdown = ({
     () =>
       variant === "snowflake"
         ? {
-            ...buildComponents(citationRenderPayload, false),
+            ...buildComponents(citationRenderPayload, false, displayVariant),
             ...snowflakeComponents,
           }
-        : buildComponents(citationRenderPayload, animate),
-    [animate, citationRenderPayload, variant],
+        : buildComponents(citationRenderPayload, animate, displayVariant),
+    [animate, citationRenderPayload, displayVariant, variant],
   );
   const renderedText = useMemo(
     () =>
@@ -706,6 +735,7 @@ export const Markdown = memo(
   (prevProps, nextProps) =>
     prevProps.children === nextProps.children &&
     prevProps.variant === nextProps.variant &&
+    prevProps.displayVariant === nextProps.displayVariant &&
     prevProps.knowledgeCitations === nextProps.knowledgeCitations &&
     prevProps.animate === nextProps.animate &&
     prevProps.streaming === nextProps.streaming,

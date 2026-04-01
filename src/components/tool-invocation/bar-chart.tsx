@@ -44,6 +44,7 @@ export interface BarChartProps {
   description?: string;
   // Y-axis label (optional)
   yAxisLabel?: string;
+  displayVariant?: "default" | "voice-stage";
 }
 
 // Color variable names (chart-1 ~ chart-5)
@@ -56,7 +57,14 @@ const chartColors = [
 ];
 
 export function BarChart(props: BarChartProps) {
-  const { title, data, description, yAxisLabel } = props;
+  const {
+    title,
+    data,
+    description,
+    yAxisLabel,
+    displayVariant = "default",
+  } = props;
+  const isVoiceStage = displayVariant === "voice-stage";
 
   const deduplicateData = React.useMemo(() => {
     return data.reduce(
@@ -126,9 +134,82 @@ export function BarChart(props: BarChartProps) {
     });
   }, [deduplicateData]);
 
+  const chart = (
+    <ChartContainer config={chartConfig}>
+      <ResponsiveContainer width="100%" height="400px">
+        <RechartsBarChart data={chartData}>
+          <CartesianGrid vertical={false} />
+          <XAxis
+            dataKey="name"
+            tickLine={false}
+            tickMargin={10}
+            axisLine={false}
+          />
+          <YAxis
+            tickLine={false}
+            axisLine={false}
+            tickMargin={10}
+            label={
+              yAxisLabel
+                ? {
+                    value: yAxisLabel,
+                    angle: -90,
+                    position: "insideLeft",
+                  }
+                : undefined
+            }
+          />
+          <ChartTooltip
+            cursor={false}
+            content={<ChartTooltipContent indicator="dashed" />}
+          />
+          {seriesNames.map((seriesName, index) => {
+            return (
+              <Bar
+                key={index}
+                dataKey={sanitizeCssVariableName(seriesName)}
+                fill={`var(--color-${sanitizeCssVariableName(seriesName)})`}
+                radius={4}
+              />
+            );
+          })}
+        </RechartsBarChart>
+      </ResponsiveContainer>
+    </ChartContainer>
+  );
+
+  if (isVoiceStage) {
+    return (
+      <div className="w-full min-w-0 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[0.68rem] font-medium uppercase tracking-[0.26em] text-muted-foreground">
+              Bar Chart
+            </p>
+            <h3 className="mt-2 text-lg font-semibold leading-tight">
+              {title}
+            </h3>
+            {description ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {description}
+              </p>
+            ) : null}
+          </div>
+          <JsonViewPopup
+            data={{
+              ...props,
+              data: deduplicateData,
+            }}
+          />
+        </div>
+        <div>{chart}</div>
+      </div>
+    );
+  }
+
   return (
     <Card className="bg-card">
-      <CardHeader className="flex flex-col gap-2 relative">
+      <CardHeader className="relative flex flex-col gap-2">
         <CardTitle className="flex items-center">
           Bar Chart - {title}
           <div className="absolute right-4 top-0">
@@ -143,49 +224,7 @@ export function BarChart(props: BarChartProps) {
         {description && <CardDescription>{description}</CardDescription>}
       </CardHeader>
       <CardContent>
-        <div>
-          <ChartContainer config={chartConfig}>
-            <ResponsiveContainer width="100%" height="400px">
-              <RechartsBarChart data={chartData}>
-                <CartesianGrid vertical={false} />
-                <XAxis
-                  dataKey="name"
-                  tickLine={false}
-                  tickMargin={10}
-                  axisLine={false}
-                />
-                <YAxis
-                  tickLine={false}
-                  axisLine={false}
-                  tickMargin={10}
-                  label={
-                    yAxisLabel
-                      ? {
-                          value: yAxisLabel,
-                          angle: -90,
-                          position: "insideLeft",
-                        }
-                      : undefined
-                  }
-                />
-                <ChartTooltip
-                  cursor={false}
-                  content={<ChartTooltipContent indicator="dashed" />}
-                />
-                {seriesNames.map((seriesName, index) => {
-                  return (
-                    <Bar
-                      key={index}
-                      dataKey={sanitizeCssVariableName(seriesName)}
-                      fill={`var(--color-${sanitizeCssVariableName(seriesName)})`}
-                      radius={4}
-                    />
-                  );
-                })}
-              </RechartsBarChart>
-            </ResponsiveContainer>
-          </ChartContainer>
-        </div>
+        <div>{chart}</div>
       </CardContent>
     </Card>
   );

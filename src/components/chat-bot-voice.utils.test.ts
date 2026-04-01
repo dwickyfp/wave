@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildVoiceLatestTurnModel } from "./chat-bot-voice.utils";
+import {
+  buildVoiceLatestTurnModel,
+  extractMarkdownTableBlocks,
+} from "./chat-bot-voice.utils";
 
 describe("buildVoiceLatestTurnModel", () => {
-  it("keeps only the latest user turn in the voice drawer model", () => {
+  it("keeps only the latest turn and exposes the prompt as floating text", () => {
     const model = buildVoiceLatestTurnModel([
       {
         id: "user-1",
@@ -22,60 +25,60 @@ describe("buildVoiceLatestTurnModel", () => {
       {
         id: "assistant-2",
         role: "assistant",
-        parts: [{ type: "text", text: "Preparing chart..." }],
-      },
-      {
-        id: "assistant-3",
-        role: "assistant",
         parts: [{ type: "text", text: "Here is the latest chart." }],
       },
     ] as any);
 
-    expect(model.latestUserText).toBe("show me a line chart");
-    expect(model.assistantSummaryText).toBe("Here is the latest chart.");
+    expect(model.floatingPromptText).toBe("show me a line chart");
+    expect(model.hiddenAssistantText).toBe("Here is the latest chart.");
     expect(model.assistantMessages.map((message) => message.id)).toEqual([
       "assistant-2",
-      "assistant-3",
     ]);
   });
 
-  it("uses only the latest meaningful assistant text from the current turn", () => {
+  it("promotes markdown tables while keeping prose hidden from the center stage", () => {
     const model = buildVoiceLatestTurnModel([
       {
         id: "user-1",
         role: "user",
-        parts: [{ type: "text", text: "old request" }],
+        parts: [{ type: "text", text: "show sales table" }],
       },
       {
         id: "assistant-1",
         role: "assistant",
-        parts: [{ type: "text", text: "old answer should stay hidden" }],
-      },
-      {
-        id: "user-2",
-        role: "user",
-        parts: [{ type: "text", text: "buatkan chart" }],
-      },
-      {
-        id: "assistant-2",
-        role: "assistant",
-        parts: [{ type: "text", text: "Baik, saya proses." }],
-      },
-      {
-        id: "assistant-3",
-        role: "assistant",
-        parts: [{ type: "text", text: "Ini line chart terbaru." }],
+        parts: [
+          {
+            type: "text",
+            text: [
+              "Berikut datanya.",
+              "",
+              "| Bulan | Nilai |",
+              "| --- | --- |",
+              "| Jan | 10 |",
+              "| Feb | 20 |",
+            ].join("\n"),
+          },
+        ],
       },
     ] as any);
 
-    expect(model.assistantSummaryText).toBe("Ini line chart terbaru.");
-    expect(model.assistantSummaryText).not.toContain(
-      "old answer should stay hidden",
-    );
-    expect(model.assistantSummaryText).not.toContain("Baik, saya proses.");
+    expect(model.hiddenAssistantText).toContain("Berikut datanya.");
+    expect(model.presentableArtifacts).toEqual([
+      {
+        kind: "markdown-table",
+        id: "assistant-1-markdown-table-0-0",
+        messageId: "assistant-1",
+        markdown: [
+          "| Bulan | Nilai |",
+          "| --- | --- |",
+          "| Jan | 10 |",
+          "| Feb | 20 |",
+        ].join("\n"),
+      },
+    ]);
   });
 
-  it("collects only current-turn artifact entries and keeps artifact order", () => {
+  it("keeps only current-turn presentable tool outputs in the center stage", () => {
     const model = buildVoiceLatestTurnModel([
       {
         id: "user-1",
@@ -86,7 +89,6 @@ describe("buildVoiceLatestTurnModel", () => {
         id: "assistant-1",
         role: "assistant",
         parts: [
-          { type: "text", text: "Working on it." },
           {
             type: "tool-createLineChart",
             toolCallId: "chart-1",
@@ -94,36 +96,40 @@ describe("buildVoiceLatestTurnModel", () => {
             input: { title: "Sales trend", data: [] },
             output: { ok: true },
           },
+          {
+            type: "tool-pythonExecution",
+            toolCallId: "tool-2",
+            state: "output-available",
+            input: { code: "print('hi')" },
+            output: { text: "hi" },
+          },
         ],
-      },
-      {
-        id: "assistant-2",
-        role: "assistant",
-        parts: [{ type: "text", text: "Done." }],
-        metadata: {
-          knowledgeImages: [
-            {
-              groupId: "group-1",
-              groupName: "Docs",
-              documentId: "doc-1",
-              documentName: "Guide",
-              imageId: "image-1",
-              label: "Preview",
-              description: "Image preview",
-              assetUrl: "/image-1.png",
-            },
-          ],
-        },
       },
     ] as any);
 
-    expect(model.artifactEntries).toHaveLength(2);
-    expect(model.artifactEntries[0]?.message.id).toBe("assistant-1");
-    expect(model.artifactEntries[0]?.parts).toMatchObject([
-      { type: "tool-createLineChart", toolCallId: "chart-1" },
-    ]);
-    expect(model.artifactEntries[1]?.message.id).toBe("assistant-2");
-    expect(model.artifactEntries[1]?.knowledgeImages).toHaveLength(1);
+    expect(model.presentableArtifacts).toHaveLength(1);
+    expect(model.presentableArtifacts[0]).toMatchObject({
+      kind: "tool",
+      messageId: "assistant-1",
+    });
+  });
+
+  it("shows no center artifact for prose-only assistant replies", () => {
+    const model = buildVoiceLatestTurnModel([
+      {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "what happened" }],
+      },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "Semua berjalan dengan baik." }],
+      },
+    ] as any);
+
+    expect(model.hiddenAssistantText).toBe("Semua berjalan dengan baik.");
+    expect(model.presentableArtifacts).toEqual([]);
   });
 
   it("tracks only running current-turn tools for the status row", () => {
@@ -161,6 +167,29 @@ describe("buildVoiceLatestTurnModel", () => {
         state: "input-available",
         messageId: "assistant-1",
       },
+    ]);
+  });
+});
+
+describe("extractMarkdownTableBlocks", () => {
+  it("extracts only markdown tables and skips fenced code blocks", () => {
+    const blocks = extractMarkdownTableBlocks(
+      [
+        "Intro",
+        "",
+        "| Nama | Nilai |",
+        "| --- | --- |",
+        "| A | 1 |",
+        "",
+        "```md",
+        "| fake | table |",
+        "| --- | --- |",
+        "```",
+      ].join("\n"),
+    );
+
+    expect(blocks).toEqual([
+      ["| Nama | Nilai |", "| --- | --- |", "| A | 1 |"].join("\n"),
     ]);
   });
 });

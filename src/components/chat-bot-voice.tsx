@@ -1,9 +1,13 @@
 "use client";
 
-import { getToolName, isToolUIPart, type ToolUIPart, type UIMessage } from "ai";
+import { getToolName, type ToolUIPart } from "ai";
 
 import { useOpenAIVoiceChat as OpenAIVoiceChat } from "lib/ai/speech/open-ai/use-voice-chat.openai";
-import { AppDefaultToolkit, DefaultToolName } from "lib/ai/tools";
+import {
+  AppDefaultToolkit,
+  DefaultToolName,
+  ImageToolName,
+} from "lib/ai/tools";
 import { cn, generateUUID, groupBy, isNull } from "lib/utils";
 import {
   AudioLinesIcon,
@@ -17,38 +21,18 @@ import {
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
-import type { UseChatHelpers } from "@ai-sdk/react";
-import {
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { safe } from "ts-safe";
 import { Alert, AlertDescription, AlertTitle } from "ui/alert";
 import { Badge } from "ui/badge";
 import { Button } from "ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "ui/card";
 
 import { Drawer, DrawerContent, DrawerPortal, DrawerTitle } from "ui/drawer";
 import { MessageLoading } from "ui/message-loading";
 import { ScrollArea } from "ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
-import {
-  FileMessagePart,
-  KnowledgeImageMessagePart,
-  SourceUrlMessagePart,
-  ToolMessagePart,
-} from "./message-parts";
+import { KnowledgeImageMessagePart } from "./message-parts";
 import { Markdown } from "./markdown";
 import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
@@ -60,12 +44,15 @@ import { ChatMention } from "app-types/chat";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import Link from "next/link";
 import {
-  type VoiceArtifactEntry,
   type VoiceLatestTurnModel,
+  type VoicePresentableArtifact,
   buildVoiceLatestTurnModel,
 } from "./chat-bot-voice.utils";
-import { buildRenderGroups } from "./message-render-groups";
-import { ParallelSubAgentsGroup } from "./tool-invocation/parallel-subagents-group";
+import { BarChart } from "./tool-invocation/bar-chart";
+import { ImageGeneratorToolInvocation } from "./tool-invocation/image-generator";
+import { InteractiveTable } from "./tool-invocation/interactive-table";
+import { LineChart } from "./tool-invocation/line-chart";
+import { PieChart } from "./tool-invocation/pie-chart";
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
@@ -112,7 +99,6 @@ export function ChatBotVoice() {
     isActive,
     isUserSpeaking,
     messages,
-    addToolResult,
     error,
     start,
     startListening,
@@ -487,7 +473,6 @@ export function ChatBotVoice() {
                   isProcessingTurn={isProcessingTurn}
                   isAssistantSpeaking={isAssistantSpeaking}
                   isUserSpeaking={isUserSpeaking}
-                  addToolResult={addToolResult}
                 />
               )}
             </div>
@@ -573,28 +558,15 @@ export function ChatBotVoice() {
 function buildVoiceStreamSignature(turn: VoiceLatestTurnModel) {
   return [
     turn.latestUserMessage?.id ?? "",
-    turn.latestUserText,
-    turn.assistantSummaryText,
-    ...turn.artifactEntries.map((entry) =>
-      [
-        entry.message.id,
-        ...entry.parts.map((part) => {
-          if (part.type === "text") {
-            return `text:${part.text}`;
-          }
-          if (isToolUIPart(part)) {
-            return `${getToolName(part)}:${part.toolCallId}:${part.state}`;
-          }
-          if (part.type === "file") {
-            return `file:${part.filename ?? part.url ?? ""}`;
-          }
-          if ((part as { type?: string }).type === "source-url") {
-            return `source:${(part as { url?: string }).url ?? ""}`;
-          }
-          return part.type;
-        }),
-        ...entry.knowledgeImages.map((image) => image.imageId),
-      ].join("|"),
+    turn.floatingPromptText,
+    ...turn.presentableArtifacts.map((artifact) =>
+      artifact.kind === "tool"
+        ? `${artifact.kind}:${artifact.messageId}:${artifact.part.toolCallId}:${artifact.part.state}`
+        : artifact.kind === "knowledge-images"
+          ? `${artifact.kind}:${artifact.messageId}:${artifact.images.map((image) => image.imageId).join(",")}`
+          : artifact.kind === "markdown-table"
+            ? `${artifact.kind}:${artifact.messageId}:${artifact.markdown}`
+            : `${artifact.kind}:${artifact.messageId}:${artifact.part.url}`,
     ),
     ...turn.runningToolStates.map((tool) => `${tool.id}:${tool.state}`),
   ].join("::");
@@ -610,42 +582,16 @@ function formatToolTitle(name: string) {
     .trim();
 }
 
-function getToolStatusLabel(part: ToolUIPart) {
-  if (part.state === "output-error") {
-    return "Failed";
-  }
-
-  if (part.state.startsWith("output")) {
-    return "Ready";
-  }
-
-  return "Running";
-}
-
-function getToolStateTone(part: ToolUIPart) {
-  if (part.state === "output-error") {
-    return "border-destructive/20 bg-destructive/10 text-destructive";
-  }
-
-  if (part.state.startsWith("output")) {
-    return "border-emerald-500/20 bg-emerald-500/10 text-emerald-200";
-  }
-
-  return "border-amber-400/25 bg-amber-500/10 text-amber-100";
-}
-
 function VoiceTurnStage({
   turn,
   isProcessingTurn,
   isAssistantSpeaking,
   isUserSpeaking,
-  addToolResult,
 }: {
   turn: VoiceLatestTurnModel;
   isProcessingTurn: boolean;
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
-  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
 }) {
   const bottomAnchorRef = useRef<HTMLDivElement>(null);
   const streamSignature = useMemo(
@@ -669,100 +615,56 @@ function VoiceTurnStage({
         : "Ready";
 
   return (
-    <div className="flex h-full flex-col gap-5 pb-4">
-      <VoiceStatusStrip
-        callStateLabel={callStateLabel}
-        isAssistantSpeaking={isAssistantSpeaking}
-        isUserSpeaking={isUserSpeaking}
-        runningToolStates={turn.runningToolStates}
-      />
-
-      <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <Card className="gap-0 border-white/10 bg-background/50 shadow-sm">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm tracking-wide text-muted-foreground">
-              You asked
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            {turn.latestUserText ? (
-              <p className="whitespace-pre-wrap text-sm leading-7 text-foreground">
-                {turn.latestUserText}
-              </p>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Start speaking and the latest request will appear here.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="gap-0 border-white/10 bg-gradient-to-br from-card via-card to-sky-500/10 shadow-lg">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm tracking-wide text-muted-foreground">
-              Assistant
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            {turn.assistantSummaryText ? (
-              <div className="text-base leading-7 md:text-lg">
-                <Markdown animate={false}>{turn.assistantSummaryText}</Markdown>
-              </div>
-            ) : isProcessingTurn ? (
-              <MessageLoading className="text-muted-foreground" />
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                The latest assistant answer will stay focused here.
-              </p>
-            )}
-          </CardContent>
-        </Card>
+    <div className="relative flex h-full min-h-0 flex-col pb-4">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-col gap-4 px-1 md:px-2">
+        <div className="pointer-events-auto flex justify-start">
+          <VoiceStatusStrip
+            callStateLabel={callStateLabel}
+            isAssistantSpeaking={isAssistantSpeaking}
+            isUserSpeaking={isUserSpeaking}
+            runningToolStates={turn.runningToolStates}
+          />
+        </div>
+        <VoiceFloatingPrompt text={turn.floatingPromptText} />
       </div>
 
-      <Card className="flex min-h-0 flex-1 flex-col overflow-hidden border-white/10 bg-card/95 shadow-xl backdrop-blur">
-        <CardHeader className="border-b border-border/60 pb-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle className="text-base">Latest Result</CardTitle>
-              <CardDescription>
-                Charts, tables, images, code outputs, and tool progress from the
-                latest turn.
-              </CardDescription>
-            </div>
-            <Badge variant="outline" className="border-white/10 bg-white/5">
-              {turn.artifactEntries.length
-                ? `${turn.artifactEntries.length} item${turn.artifactEntries.length === 1 ? "" : "s"}`
-                : "No artifacts"}
-            </Badge>
-          </div>
-        </CardHeader>
-        <CardContent className="min-h-0 flex-1 px-0">
-          <ScrollArea className="h-full">
-            <div className="space-y-6 px-5 pb-6 pt-5">
-              {!turn.artifactEntries.length ? (
-                <div className="flex min-h-[260px] items-center justify-center">
-                  <div className="max-w-md rounded-[2rem] border border-dashed border-border/70 bg-background/40 px-6 py-8 text-center">
-                    <SparklesIcon className="mx-auto mb-4 size-8 text-amber-300" />
-                    <p className="text-lg font-medium">
-                      Latest turn results appear here.
-                    </p>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      Visual outputs and tool results from the current voice
-                      turn will stay focused in this stage.
-                    </p>
-                  </div>
+      <div className="min-h-0 flex-1 pt-24 md:pt-28">
+        <ScrollArea className="h-full">
+          <div className="mx-auto min-h-full w-full max-w-6xl px-1 pb-8 pt-2 md:px-2">
+            {turn.presentableArtifacts.length ? (
+              <VoiceArtifactStack artifacts={turn.presentableArtifacts} />
+            ) : (
+              <div className="flex min-h-[420px] items-center justify-center">
+                <div className="max-w-sm text-center">
+                  <SparklesIcon className="mx-auto mb-4 size-8 text-amber-300" />
+                  <p className="text-lg font-medium">
+                    The latest artifact will appear here.
+                  </p>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Charts, tables, markdown tables, and images stay centered in
+                    this space.
+                  </p>
                 </div>
-              ) : (
-                <VoiceArtifactStack
-                  entries={turn.artifactEntries}
-                  addToolResult={addToolResult}
-                />
-              )}
-              <div ref={bottomAnchorRef} />
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
+              </div>
+            )}
+            <div ref={bottomAnchorRef} />
+          </div>
+        </ScrollArea>
+      </div>
+    </div>
+  );
+}
+
+function VoiceFloatingPrompt({ text }: { text: string }) {
+  if (!text) {
+    return null;
+  }
+
+  return (
+    <div className="flex justify-center px-4">
+      <p className="max-w-3xl text-center text-sm font-medium leading-6 text-foreground/90 line-clamp-2 drop-shadow-sm">
+        {text}
+      </p>
     </div>
   );
 }
@@ -812,201 +714,97 @@ function VoiceStatusStrip({
 }
 
 function VoiceArtifactStack({
-  entries,
-  addToolResult,
+  artifacts,
 }: {
-  entries: VoiceArtifactEntry[];
-  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
+  artifacts: VoicePresentableArtifact[];
 }) {
   return (
-    <div className="space-y-5">
-      {entries.map((entry) => (
-        <VoiceArtifactEntryView
-          key={entry.message.id}
-          entry={entry}
-          addToolResult={addToolResult}
-        />
+    <div className="space-y-10">
+      {artifacts.map((artifact) => (
+        <VoiceArtifactView key={artifact.id} artifact={artifact} />
       ))}
     </div>
   );
 }
 
-function VoiceArtifactEntryView({
-  entry,
-  addToolResult,
+function VoiceArtifactView({
+  artifact,
 }: {
-  entry: VoiceArtifactEntry;
-  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
+  artifact: VoicePresentableArtifact;
 }) {
-  const renderGroups = useMemo(
-    () => buildRenderGroups(entry.parts, entry.knowledgeImages),
-    [entry.knowledgeImages, entry.parts],
-  );
+  switch (artifact.kind) {
+    case "tool":
+      return <VoiceToolArtifact part={artifact.part} />;
+    case "knowledge-images":
+      return <KnowledgeImageMessagePart images={artifact.images} />;
+    case "markdown-table":
+      return (
+        <Markdown animate={false} displayVariant="voice-stage">
+          {artifact.markdown}
+        </Markdown>
+      );
+    case "image-file":
+      return (
+        <VoiceImageArtifact
+          alt={artifact.part.filename || "Voice attachment"}
+          src={artifact.part.url}
+        />
+      );
+    case "image-source-url":
+      return (
+        <VoiceImageArtifact
+          alt={artifact.part.title || "Voice attachment"}
+          src={artifact.part.url}
+        />
+      );
+  }
+}
 
-  if (!renderGroups.length) {
+function VoiceToolArtifact({ part }: { part: ToolUIPart }) {
+  const toolName = getToolName(part);
+
+  switch (toolName) {
+    case DefaultToolName.CreateLineChart:
+      return (
+        <LineChart {...(part.input as any)} displayVariant="voice-stage" />
+      );
+    case DefaultToolName.CreateBarChart:
+      return <BarChart {...(part.input as any)} displayVariant="voice-stage" />;
+    case DefaultToolName.CreatePieChart:
+      return <PieChart {...(part.input as any)} displayVariant="voice-stage" />;
+    case DefaultToolName.CreateTable:
+      return (
+        <InteractiveTable
+          {...(part.input as any)}
+          displayVariant="voice-stage"
+        />
+      );
+    case ImageToolName:
+      return <ImageGeneratorToolInvocation part={part} />;
+    default:
+      return null;
+  }
+}
+
+function VoiceImageArtifact({
+  alt,
+  src,
+}: {
+  alt: string;
+  src?: string;
+}) {
+  if (!src) {
     return null;
   }
 
   return (
-    <div className="space-y-4">
-      {renderGroups.map((group, groupIndex) => {
-        if (group.type === "knowledge-images") {
-          return (
-            <VoiceArtifactShell
-              key={`${entry.message.id}-images-${groupIndex}`}
-              title="Related Images"
-              statusLabel={`${group.images.length} image${group.images.length === 1 ? "" : "s"}`}
-            >
-              <KnowledgeImageMessagePart images={group.images} />
-            </VoiceArtifactShell>
-          );
-        }
-
-        if (group.type === "parallel-subagents") {
-          return (
-            <VoiceArtifactShell
-              key={`${entry.message.id}-parallel-${group.startIndex}`}
-              title="Parallel Agents"
-              statusLabel={`${group.parts.length} running`}
-            >
-              <ParallelSubAgentsGroup parts={group.parts} />
-            </VoiceArtifactShell>
-          );
-        }
-
-        const { part, index } = group;
-        if (part.type === "reasoning" || part.type === "step-start") {
-          return null;
-        }
-
-        if (isToolUIPart(part)) {
-          return (
-            <VoiceToolArtifact
-              key={`${entry.message.id}-tool-${part.toolCallId}-${index}`}
-              part={part as ToolUIPart}
-              message={entry.message}
-              addToolResult={addToolResult}
-            />
-          );
-        }
-
-        if (part.type === "text") {
-          return null;
-        }
-
-        if (part.type === "file") {
-          return (
-            <VoiceArtifactShell
-              key={`${entry.message.id}-file-${index}`}
-              title="Attachment"
-              statusLabel={part.filename ?? "File"}
-            >
-              <FileMessagePart part={part} isUserMessage={false} />
-            </VoiceArtifactShell>
-          );
-        }
-
-        if ((part as { type?: string }).type === "source-url") {
-          return (
-            <VoiceArtifactShell
-              key={`${entry.message.id}-source-${index}`}
-              title="Reference"
-              statusLabel="Attachment"
-            >
-              <SourceUrlMessagePart
-                part={
-                  part as { type: "source-url"; url: string; title?: string }
-                }
-                isUserMessage={false}
-              />
-            </VoiceArtifactShell>
-          );
-        }
-
-        return (
-          <VoiceArtifactShell
-            key={`${entry.message.id}-${part.type}-${index}`}
-            title="Assistant Output"
-            statusLabel={part.type}
-          >
-            <VoiceGenericArtifact part={part} />
-          </VoiceArtifactShell>
-        );
-      })}
+    <div className="w-full overflow-hidden">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={alt}
+        className="mx-auto h-auto max-h-[70vh] w-auto rounded-[2rem] object-contain"
+      />
     </div>
-  );
-}
-
-function VoiceArtifactShell({
-  title,
-  statusLabel,
-  children,
-}: {
-  title: string;
-  statusLabel?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="rounded-[2rem] border border-white/10 bg-background/45 p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
-          {title}
-        </p>
-        {statusLabel ? (
-          <Badge variant="outline" className="border-white/10 bg-white/5">
-            {statusLabel}
-          </Badge>
-        ) : null}
-      </div>
-      <div className="min-w-0">{children}</div>
-    </div>
-  );
-}
-
-function VoiceGenericArtifact({
-  part,
-}: {
-  part: Exclude<UIMessage["parts"][number], ToolUIPart>;
-}) {
-  return (
-    <pre className="overflow-x-auto rounded-2xl border border-white/10 bg-black/20 p-4 text-xs leading-6 text-muted-foreground">
-      {JSON.stringify(part, null, 2)}
-    </pre>
-  );
-}
-
-function VoiceToolArtifact({
-  part,
-  message,
-  addToolResult,
-}: {
-  part: ToolUIPart;
-  message: UIMessage;
-  addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
-}) {
-  const rawToolName = getToolName(part);
-
-  return (
-    <VoiceArtifactShell
-      title={formatToolTitle(rawToolName)}
-      statusLabel={getToolStatusLabel(part)}
-    >
-      <div
-        className={cn(
-          "min-w-0 rounded-[1.5rem] border p-3",
-          getToolStateTone(part),
-        )}
-      >
-        <ToolMessagePart
-          part={part}
-          messageId={message.id}
-          showActions={false}
-          readonly
-          isLast={!part.state.startsWith("output")}
-          isManualToolInvocation={false}
-          addToolResult={addToolResult}
-        />
-      </div>
-    </VoiceArtifactShell>
   );
 }

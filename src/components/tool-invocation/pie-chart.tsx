@@ -36,6 +36,7 @@ export interface PieChartProps {
   prefix?: string;
   jsonView?: boolean;
   colors?: string[];
+  displayVariant?: "default" | "voice-stage";
 }
 
 // Color variable names (chart-1 ~ chart-5)
@@ -102,7 +103,9 @@ export function PieChart(props: PieChartProps) {
     prefix,
     jsonView = true,
     colors,
+    displayVariant = "default",
   } = props;
+  const isVoiceStage = displayVariant === "voice-stage";
   // Calculate total value
   const total = React.useMemo(() => {
     return data.reduce((acc, curr) => acc + curr.value, 0);
@@ -144,9 +147,87 @@ export function PieChart(props: PieChartProps) {
     }));
   }, [data]);
 
+  const chart = (
+    <ChartContainer
+      config={chartConfig}
+      className="mx-auto aspect-square max-h-[300px]"
+    >
+      <RechartsPieChart>
+        <ChartTooltip
+          cursor={false}
+          content={<ChartTooltipContent hideLabel />}
+        />
+        <Pie
+          data={chartData}
+          dataKey="value"
+          nameKey="name"
+          innerRadius={60}
+          paddingAngle={2}
+          strokeWidth={5}
+        >
+          <Label
+            content={({ viewBox }) => {
+              if (viewBox && "cx" in viewBox && "cy" in viewBox) {
+                return (
+                  <text
+                    x={viewBox.cx}
+                    y={viewBox.cy}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                  >
+                    <tspan
+                      x={viewBox.cx}
+                      y={viewBox.cy}
+                      className="fill-foreground text-3xl font-bold"
+                    >
+                      {formatLargeNumber(total)}
+                    </tspan>
+                    {unit && (
+                      <tspan
+                        x={viewBox.cx}
+                        y={(viewBox.cy || 0) + 24}
+                        className="fill-muted-foreground"
+                      >
+                        {unit}
+                      </tspan>
+                    )}
+                  </text>
+                );
+              }
+            }}
+          />
+        </Pie>
+      </RechartsPieChart>
+    </ChartContainer>
+  );
+
+  if (isVoiceStage) {
+    return (
+      <div className="w-full min-w-0 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-[0.68rem] font-medium uppercase tracking-[0.26em] text-muted-foreground">
+              Pie Chart
+            </p>
+            <h3 className="mt-2 text-lg font-semibold leading-tight">
+              {title}
+            </h3>
+            {description ? (
+              <p className="mt-1 text-sm text-muted-foreground">
+                {description}
+              </p>
+            ) : null}
+          </div>
+          {jsonView ? <JsonViewPopup data={props} /> : null}
+        </div>
+        <div>{chart}</div>
+      </div>
+    );
+  }
+
   return (
     <Card className="flex flex-col bg-card">
-      <CardHeader className="items-center pb-0 flex flex-col gap-2 relative">
+      <CardHeader className="relative flex flex-col items-center gap-2 pb-0">
         <CardTitle className="flex items-center">
           {prefix ?? "Pie Chart - "}
           {title}
@@ -158,59 +239,7 @@ export function PieChart(props: PieChartProps) {
         </CardTitle>
         {description && <CardDescription>{description}</CardDescription>}
       </CardHeader>
-      <CardContent className="flex-1 pb-0">
-        <ChartContainer
-          config={chartConfig}
-          className="mx-auto aspect-square max-h-[300px]"
-        >
-          <RechartsPieChart>
-            <ChartTooltip
-              cursor={false}
-              content={<ChartTooltipContent hideLabel />}
-            />
-            <Pie
-              data={chartData}
-              dataKey="value"
-              nameKey="name"
-              innerRadius={60}
-              paddingAngle={2}
-              strokeWidth={5}
-            >
-              <Label
-                content={({ viewBox }) => {
-                  if (viewBox && "cx" in viewBox && "cy" in viewBox) {
-                    return (
-                      <text
-                        x={viewBox.cx}
-                        y={viewBox.cy}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                      >
-                        <tspan
-                          x={viewBox.cx}
-                          y={viewBox.cy}
-                          className="fill-foreground text-3xl font-bold"
-                        >
-                          {formatLargeNumber(total)}
-                        </tspan>
-                        {unit && (
-                          <tspan
-                            x={viewBox.cx}
-                            y={(viewBox.cy || 0) + 24}
-                            className="fill-muted-foreground"
-                          >
-                            {unit}
-                          </tspan>
-                        )}
-                      </text>
-                    );
-                  }
-                }}
-              />
-            </Pie>
-          </RechartsPieChart>
-        </ChartContainer>
-      </CardContent>
+      <CardContent className="flex-1 pb-0">{chart}</CardContent>
     </Card>
   );
 }
