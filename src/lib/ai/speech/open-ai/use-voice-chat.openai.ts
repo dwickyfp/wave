@@ -96,6 +96,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
   const startListening = useCallback(async () => {
     try {
+      if (!navigator?.mediaDevices?.getUserMedia) {
+        throw new Error(
+          "Microphone access is not available. Voice chat requires a secure connection (HTTPS or localhost).",
+        );
+      }
       if (!audioStream.current) {
         audioStream.current = await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -390,6 +395,15 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       const sessionToken = session.client_secret.value;
       const realtimeEndpointUrl: string =
         session.realtimeEndpointUrl || "https://api.openai.com/v1/realtime";
+      // proxySdpUrl: server-side proxy for Azure dedicated config (CORS + api-key auth).
+      // When set, the SDP offer is POSTed to our Next.js API instead of directly to Azure.
+      const proxySdpUrl: string | undefined = session.proxySdpUrl;
+      // sdpAuthHeader: only used when NOT proxying (standard OpenAI or GA Azure)
+      const sdpAuthHeader: string = session.sdpAuthHeader || "Authorization";
+      const sdpAuthValue =
+        sdpAuthHeader === "Authorization"
+          ? `Bearer ${sessionToken}`
+          : sessionToken;
       const pc = new RTCPeerConnection();
       if (!audioElement.current) {
         audioElement.current = document.createElement("audio");
@@ -401,6 +415,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
       };
       if (!audioStream.current) {
+        if (!navigator?.mediaDevices?.getUserMedia) {
+          throw new Error(
+            "Microphone access is not available. Voice chat requires a secure connection (HTTPS or localhost).",
+          );
+        }
         audioStream.current = await navigator.mediaDevices.getUserMedia({
           audio: true,
         });
@@ -425,6 +444,17 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
       });
       dc.addEventListener("open", () => {
+        // For GA Azure protocol, tools and transcription config must be sent
+        // via session.update after the data channel opens (can't be set in
+        // the client_secrets POST body).
+        if (session.pendingSessionUpdate) {
+          dc.send(
+            JSON.stringify({
+              type: "session.update",
+              session: session.pendingSessionUpdate,
+            }),
+          );
+        }
         setIsActive(true);
         setIsListening(true);
         setIsLoading(false);
@@ -446,17 +476,39 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      const sdpResponse = await fetch(realtimeEndpointUrl, {
+
+      // If proxySdpUrl is set (Azure dedicated config), POST the SDP through our
+      // server-side proxy so the api-key header is sent server-side (avoids CORS).
+      // Otherwise POST directly to the realtime endpoint with the ephemeral token.
+      const sdpFetchUrl = proxySdpUrl ?? realtimeEndpointUrl;
+      const sdpFetchHeaders: Record<string, string> = proxySdpUrl
+        ? { "Content-Type": "application/sdp" }
+        : { [sdpAuthHeader]: sdpAuthValue, "Content-Type": "application/sdp" };
+
+      const sdpResponse = await fetch(sdpFetchUrl, {
         method: "POST",
         body: offer.sdp,
-        headers: {
-          Authorization: `Bearer ${sessionToken}`,
-          "Content-Type": "application/sdp",
-        },
+        headers: sdpFetchHeaders,
       });
+      const sdpResponseText = await sdpResponse.text();
+      if (!sdpResponse.ok) {
+        // Parse a JSON error body if present, else surface the raw text
+        let errorMessage = `WebRTC SDP exchange failed (${sdpResponse.status})`;
+        try {
+          const errorBody = JSON.parse(sdpResponseText);
+          const msg =
+            errorBody?.error?.message ||
+            errorBody?.message ||
+            JSON.stringify(errorBody);
+          errorMessage = `WebRTC SDP exchange failed: ${msg}`;
+        } catch {
+          if (sdpResponseText) errorMessage += `: ${sdpResponseText}`;
+        }
+        throw new Error(errorMessage);
+      }
       const answer: RTCSessionDescriptionInit = {
         type: "answer",
-        sdp: await sdpResponse.text(),
+        sdp: sdpResponseText,
       };
       await pc.setRemoteDescription(answer);
       peerConnection.current = pc;

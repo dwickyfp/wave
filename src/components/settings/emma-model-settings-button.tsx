@@ -18,6 +18,8 @@ import {
   Mic2,
   SlidersHorizontal,
 } from "lucide-react";
+import { Input } from "ui/input";
+import { Label } from "ui/label";
 import { toast } from "sonner";
 import { Button } from "ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
@@ -39,6 +41,21 @@ const IMAGE_NEIGHBOR_CONTEXT_KEY =
 const JUDGE_MODEL_KEY = "/api/settings/evaluation-judge-model";
 const EMBEDDING_MODEL_KEY = "/api/settings/self-learning-embedding-model";
 const VOICE_CHAT_MODEL_KEY = "/api/settings/voice-chat-model";
+const VOICE_CHAT_AZURE_KEY = "/api/settings/voice-chat-azure";
+
+type VoiceChatAzureConfig = {
+  baseUrl: string;
+  apiVersion: string;
+  deploymentName: string;
+  apiKey: string;
+};
+
+const EMPTY_AZURE_VOICE: VoiceChatAzureConfig = {
+  baseUrl: "",
+  apiVersion: "",
+  deploymentName: "",
+  apiKey: "",
+};
 
 type ContextXModelConfig = {
   provider: string;
@@ -175,6 +192,10 @@ export function EmmaModelSettingsButton() {
     VOICE_CHAT_MODEL_KEY,
     fetcher,
   );
+  const { data: voiceChatAzureConfig } = useSWR<VoiceChatAzureConfig | null>(
+    VOICE_CHAT_AZURE_KEY,
+    fetcher,
+  );
 
   const [parseValue, setParseValue] = useState(NONE_VALUE);
   const [contextValue, setContextValue] = useState(NONE_VALUE);
@@ -184,6 +205,8 @@ export function EmmaModelSettingsButton() {
   const [judgeValue, setJudgeValue] = useState(NONE_VALUE);
   const [embeddingValue, setEmbeddingValue] = useState(NONE_VALUE);
   const [voiceChatValue, setVoiceChatValue] = useState(NONE_VALUE);
+  const [azureVoice, setAzureVoice] =
+    useState<VoiceChatAzureConfig>(EMPTY_AZURE_VOICE);
 
   useEffect(() => {
     setParseValue(getConfiguredValue(parseConfig));
@@ -213,6 +236,11 @@ export function EmmaModelSettingsButton() {
     setVoiceChatValue(getConfiguredValue(voiceChatConfig));
   }, [voiceChatConfig]);
 
+  useEffect(() => {
+    if (voiceChatAzureConfig) setAzureVoice(voiceChatAzureConfig);
+    else setAzureVoice(EMPTY_AZURE_VOICE);
+  }, [voiceChatAzureConfig]);
+
   const llmProviders = buildProviders(providers, "llm");
   const embeddingProviders = buildProviders(providers, "embedding");
 
@@ -224,6 +252,10 @@ export function EmmaModelSettingsButton() {
   const currentJudgeValue = getConfiguredValue(judgeConfig);
   const currentEmbeddingValue = getConfiguredValue(embeddingConfig);
   const currentVoiceChatValue = getConfiguredValue(voiceChatConfig);
+  const currentAzureVoice = voiceChatAzureConfig ?? EMPTY_AZURE_VOICE;
+  const isAzureVoiceConfigured = !!(
+    voiceChatAzureConfig?.baseUrl && voiceChatAzureConfig?.deploymentName
+  );
 
   const configuredCount = [
     parseConfig,
@@ -232,6 +264,7 @@ export function EmmaModelSettingsButton() {
     judgeConfig,
     embeddingConfig,
     voiceChatConfig,
+    isAzureVoiceConfigured || null,
   ].filter(Boolean).length;
   const isLoading =
     parseConfig === undefined ||
@@ -240,7 +273,8 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabledConfig === undefined ||
     judgeConfig === undefined ||
     embeddingConfig === undefined ||
-    voiceChatConfig === undefined;
+    voiceChatConfig === undefined ||
+    voiceChatAzureConfig === undefined;
   const isDirty =
     parseValue !== currentParseValue ||
     contextValue !== currentContextValue ||
@@ -248,7 +282,14 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabled !== currentImageNeighborContextEnabled ||
     judgeValue !== currentJudgeValue ||
     embeddingValue !== currentEmbeddingValue ||
-    voiceChatValue !== currentVoiceChatValue;
+    voiceChatValue !== currentVoiceChatValue ||
+    azureVoice.baseUrl !== currentAzureVoice.baseUrl ||
+    azureVoice.apiVersion !== currentAzureVoice.apiVersion ||
+    azureVoice.deploymentName !== currentAzureVoice.deploymentName ||
+    // Only flag dirty if the user actually typed in the key field (not if it's masked)
+    (!!azureVoice.apiKey &&
+      !azureVoice.apiKey.includes("•") &&
+      azureVoice.apiKey !== currentAzureVoice.apiKey);
 
   async function saveSetting(url: string, value: string) {
     const parsed = parseModelValue(value);
@@ -332,14 +373,35 @@ export function EmmaModelSettingsButton() {
         value: voiceChatValue,
         kind: "model" as const,
       },
+      {
+        label: "Azure voice",
+        url: VOICE_CHAT_AZURE_KEY,
+        value: azureVoice,
+        kind: "azure-voice" as const,
+      },
     ];
 
     const results = await Promise.allSettled(
-      tasks.map((task) =>
-        task.kind === "boolean"
-          ? saveBooleanSetting(task.url, task.value as boolean)
-          : saveSetting(task.url, task.value as string),
-      ),
+      tasks.map((task) => {
+        if (task.kind === "boolean")
+          return saveBooleanSetting(task.url, task.value as boolean);
+        if (task.kind === "azure-voice") {
+          const v = task.value as VoiceChatAzureConfig;
+          const isEmpty =
+            !v.baseUrl && !v.apiVersion && !v.deploymentName && !v.apiKey;
+          return fetch(task.url, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: isEmpty ? "null" : JSON.stringify(v),
+          }).then(async (res) => {
+            if (!res.ok) {
+              const d = await res.json().catch(() => ({ error: "Failed" }));
+              throw new Error(d.error || "Failed to save Azure voice config");
+            }
+          });
+        }
+        return saveSetting(task.url, task.value as string);
+      }),
     );
 
     await Promise.all([
@@ -350,6 +412,7 @@ export function EmmaModelSettingsButton() {
       swrMutate(JUDGE_MODEL_KEY),
       swrMutate(EMBEDDING_MODEL_KEY),
       swrMutate(VOICE_CHAT_MODEL_KEY),
+      swrMutate(VOICE_CHAT_AZURE_KEY),
     ]);
 
     const failedLabels = tasks
@@ -487,6 +550,86 @@ export function EmmaModelSettingsButton() {
               placeholder="Select voice chat model"
               icon={Mic2}
             />
+
+            {/* Azure Voice dedicated config */}
+            <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-md border border-border/70 bg-background p-2">
+                  <Mic2 className="size-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm">
+                    Azure Voice (Direct)
+                  </div>
+                  <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+                    Direct Azure OpenAI Realtime endpoint. Overrides the
+                    provider settings above for voice calls when configured.
+                    Leave blank to use the Azure provider settings instead.
+                  </p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="col-span-2 space-y-1">
+                  <Label className="text-xs">Base URL</Label>
+                  <Input
+                    className="h-7 text-xs font-mono"
+                    placeholder="https://your-resource.openai.azure.com"
+                    value={azureVoice.baseUrl}
+                    onChange={(e) =>
+                      setAzureVoice((v) => ({ ...v, baseUrl: e.target.value }))
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Deployment Name</Label>
+                  <Input
+                    className="h-7 text-xs font-mono"
+                    placeholder="gpt-realtime-1.5"
+                    value={azureVoice.deploymentName}
+                    onChange={(e) =>
+                      setAzureVoice((v) => ({
+                        ...v,
+                        deploymentName: e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">API Version</Label>
+                  <Input
+                    className="h-7 text-xs font-mono"
+                    placeholder="2024-10-01-preview"
+                    value={azureVoice.apiVersion}
+                    onChange={(e) =>
+                      setAzureVoice((v) => ({
+                        ...v,
+                        apiVersion: e.target.value,
+                      }))
+                    }
+                  />
+                </div>
+                <div className="col-span-2 space-y-1">
+                  <Label className="text-xs">API Key</Label>
+                  <Input
+                    className="h-7 text-xs font-mono"
+                    type="password"
+                    placeholder="API key"
+                    value={azureVoice.apiKey}
+                    onChange={(e) =>
+                      setAzureVoice((v) => ({ ...v, apiKey: e.target.value }))
+                    }
+                  />
+                </div>
+              </div>
+              <p className="text-muted-foreground text-xs">
+                Current:{" "}
+                <span className="font-mono">
+                  {isAzureVoiceConfigured
+                    ? `${voiceChatAzureConfig?.baseUrl}/…/${voiceChatAzureConfig?.deploymentName}`
+                    : "Not configured"}
+                </span>
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center justify-between gap-3 border-border/60 border-t pt-2">
