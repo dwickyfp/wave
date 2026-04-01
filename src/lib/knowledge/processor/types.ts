@@ -38,6 +38,10 @@ export type ProcessedDocumentPage = {
   qualityScore: number;
   extractionMode: "raw" | "normalized" | "refined";
   repairReason?: string | null;
+  parseFallbackUsed?: boolean;
+  parseWindowCount?: number;
+  parseFailedWindowCount?: number;
+  parseError?: string | null;
 };
 
 export type ProcessedDocumentImageKind = "embedded" | "region";

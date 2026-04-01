@@ -48,7 +48,12 @@ export type DocumentFileType =
   | "html"
   | "json"
   | "eml"
-  | "code";
+  | "code"
+  | "png"
+  | "jpg"
+  | "jpeg"
+  | "gif"
+  | "webp";
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type UsageSource = "chat" | "agent" | "mcp";
 export type KnowledgeChunkEmbeddingKind =
@@ -73,12 +78,165 @@ export type KnowledgeRelationType =
   | "derives"
   | "contradicts"
   | "related";
+export type KnowledgeRetrievalAxisKind =
+  | "period"
+  | "version"
+  | "effective_at"
+  | "jurisdiction"
+  | "region"
+  | "language"
+  | "custom";
 export type KnowledgeDocumentProcessingStage =
   | "extracting"
   | "parsing"
   | "materializing"
   | "embedding"
   | "finalizing";
+
+export interface KnowledgeRetrievalAxis {
+  kind: KnowledgeRetrievalAxisKind;
+  key: string;
+  label: string;
+  value?: string | null;
+  confidence?: number | null;
+}
+
+export interface KnowledgeDocumentContext {
+  documentId?: string | null;
+  documentName?: string | null;
+  canonicalTitle?: string | null;
+  baseTitle?: string | null;
+}
+
+export interface KnowledgeSourceContext {
+  libraryId?: string | null;
+  libraryVersion?: string | null;
+  sourcePath?: string | null;
+  sheetName?: string | null;
+  sourceGroupName?: string | null;
+}
+
+export interface KnowledgeLocationContext {
+  sectionId?: string | null;
+  headingPath?: string | null;
+  noteNumber?: string | null;
+  noteTitle?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  chunkIndex?: number | null;
+}
+
+export interface KnowledgeDisplayContext {
+  documentLabel?: string | null;
+  variantLabel?: string | null;
+  topicLabel?: string | null;
+  locationLabel?: string | null;
+}
+
+export interface KnowledgeSectionSummaryContinuation {
+  partIndex: number;
+  partCount: number;
+  usesPrevPart: boolean;
+  usesNextPart: boolean;
+}
+
+export interface KnowledgeSectionSummaryCoverageFlags {
+  hasTable: boolean;
+  hasDenseNumbers: boolean;
+  hasResearchResults: boolean;
+  hasContinuation: boolean;
+}
+
+export interface KnowledgeSectionValueDigestItem {
+  kind:
+    | "numeric_sentence"
+    | "list_item"
+    | "table_value"
+    | "image_value"
+    | "research_result"
+    | "chart_value";
+  text: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+}
+
+export interface KnowledgeSectionTableDigest {
+  source: "markdown" | "image";
+  title?: string | null;
+  headers?: string[] | null;
+  rows?: string[][] | null;
+  summary?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+}
+
+export interface KnowledgeSectionSummaryData {
+  logicalSectionKey: string;
+  partSummary: string;
+  logicalSectionSummary: string;
+  continuation: KnowledgeSectionSummaryContinuation;
+  valueDigest: KnowledgeSectionValueDigestItem[];
+  tableDigest: KnowledgeSectionTableDigest[];
+  coverageFlags: KnowledgeSectionSummaryCoverageFlags;
+}
+
+export interface KnowledgeTemporalHints {
+  effectiveAt?: string | null;
+  expiresAt?: string | null;
+  freshnessLabel?: string | null;
+}
+
+export interface KnowledgeMatchedTopic {
+  topicLabel: string;
+  relevanceScore: number;
+  evidenceCount: number;
+}
+
+export interface KnowledgeEvidenceItem {
+  id: string;
+  documentId: string;
+  documentName: string;
+  topicKey: string;
+  excerpt: string;
+  relevanceScore: number;
+  documentContext: KnowledgeDocumentContext;
+  sourceContext: KnowledgeSourceContext;
+  locationContext: KnowledgeLocationContext;
+  temporalHints?: KnowledgeTemporalHints | null;
+  display: KnowledgeDisplayContext;
+}
+
+export interface KnowledgeQueryAnalysis {
+  intent: "lookup" | "compare";
+  explicitAxes: KnowledgeRetrievalAxis[];
+  requestedTopics: string[];
+}
+
+export interface KnowledgeComparisonVariant {
+  variantLabel: string;
+  axisValueKey?: string | null;
+  axisValueLabel?: string | null;
+  documentIds: string[];
+  documentNames: string[];
+  evidenceItemIds: string[];
+}
+
+export interface KnowledgeComparisonGroup {
+  familyLabel: string;
+  topicLabel: string;
+  axisKind: KnowledgeRetrievalAxisKind;
+  variants: KnowledgeComparisonVariant[];
+}
+
+export interface KnowledgeRetrievalEnvelope<TDoc = unknown> {
+  groupId?: string;
+  groupName: string;
+  query?: string;
+  docs: TDoc[];
+  queryAnalysis: KnowledgeQueryAnalysis;
+  comparisonGroups: KnowledgeComparisonGroup[];
+  evidenceItems: KnowledgeEvidenceItem[];
+}
 
 export interface KnowledgeDocumentProcessingState {
   stage: KnowledgeDocumentProcessingStage;
@@ -93,11 +251,6 @@ export type KnowledgeChunkMetadata = {
   headings?: string[];
   headingPath?: string;
   canonicalTitle?: string;
-  issuerName?: string;
-  issuerTicker?: string;
-  reportType?: string;
-  fiscalYear?: number;
-  periodEnd?: string;
   noteNumber?: string;
   noteTitle?: string;
   noteSubsection?: string;
@@ -127,11 +280,11 @@ export type KnowledgeChunkMetadata = {
   language?: string;
   entityIds?: string[];
   entityTerms?: string[];
-  temporalHints?: {
-    effectiveAt?: string | null;
-    expiresAt?: string | null;
-    freshnessLabel?: string | null;
-  } | null;
+  temporalHints?: KnowledgeTemporalHints | null;
+  documentContext?: KnowledgeDocumentContext | null;
+  sourceContext?: KnowledgeSourceContext | null;
+  locationContext?: KnowledgeLocationContext | null;
+  display?: KnowledgeDisplayContext | null;
 };
 
 export type KnowledgeImageChartData = {
@@ -282,6 +435,7 @@ export interface KnowledgeSection {
   partCount: number;
   content: string;
   summary: string;
+  summaryData?: KnowledgeSectionSummaryData | null;
   tokenCount: number;
   pageStart?: number | null;
   pageEnd?: number | null;
@@ -449,6 +603,57 @@ export interface KnowledgeDocumentVersionSummary {
   updatedAt: Date;
   canRollback: boolean;
   rollbackBlockedReason?: string | null;
+}
+
+export interface KnowledgeDocumentSummaryOutlineItem {
+  logicalSectionKey: string;
+  sectionId: string;
+  heading: string;
+  headingPath: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  summary: string;
+  hasContinuation: boolean;
+}
+
+export interface KnowledgeDocumentSummarySectionRef {
+  logicalSectionKey: string;
+  sectionId: string;
+  heading: string;
+  headingPath: string;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  summary: string;
+  valueDigest: KnowledgeSectionValueDigestItem[];
+  coverageFlags: KnowledgeSectionSummaryCoverageFlags;
+}
+
+export interface KnowledgeDocumentSummaryValueItem
+  extends KnowledgeSectionValueDigestItem {
+  logicalSectionKey: string;
+  sectionId: string;
+  sectionHeading: string;
+}
+
+export interface RetrievedKnowledgeCitation {
+  versionId?: string | null;
+  sectionId?: string | null;
+  sectionHeading?: string | null;
+  pageStart?: number | null;
+  pageEnd?: number | null;
+  excerpt: string;
+  relevanceScore: number;
+}
+
+export interface KnowledgeDocumentSummaryResult {
+  documentId: string;
+  documentName: string;
+  versionId?: string | null;
+  outline: KnowledgeDocumentSummaryOutlineItem[];
+  summary: string;
+  valueDigest: KnowledgeDocumentSummaryValueItem[];
+  sectionRefs: KnowledgeDocumentSummarySectionRef[];
+  citations: RetrievedKnowledgeCitation[];
 }
 
 export interface KnowledgeDocumentVersionContent {
@@ -794,6 +999,7 @@ export interface KnowledgeRepository {
     sections: Array<Omit<KnowledgeSection, "createdAt">>,
   ): Promise<void>;
   deleteSectionsByDocumentId(documentId: string): Promise<void>;
+  getSectionsByDocumentId(documentId: string): Promise<KnowledgeSection[]>;
   getSectionsByIds(ids: string[]): Promise<KnowledgeSection[]>;
   getRelatedSections(sectionIds: string[]): Promise<KnowledgeSection[]>;
   findSectionsByStructuredFilters(input: {

@@ -58,8 +58,13 @@ vi.mock("./embedder", () => ({
   embedSingleText: vi.fn(async () => [0.1, 0.2, 0.3]),
 }));
 
-const { queryKnowledge, queryKnowledgeAsDocs, scoreRetrievedImageCandidate } =
-  await import("./retriever");
+const {
+  formatDocsAsText,
+  queryKnowledge,
+  queryKnowledgeAsDocs,
+  queryKnowledgeStructured,
+  scoreRetrievedImageCandidate,
+} = await import("./retriever");
 const { knowledgeRepository, settingsRepository, selfLearningRepository } =
   await import("lib/db/repository");
 
@@ -94,6 +99,125 @@ function makeChunkHit(overrides: Partial<any> = {}) {
     score: 0.91,
     ...overrides,
   };
+}
+
+function makeVariantIdentity(input: {
+  familyKey: string;
+  familyLabel: string;
+  variantKey: string;
+  variantLabel: string;
+  axisKind: "period" | "version" | "effective_at";
+  axisValue: string;
+}) {
+  const temporalHints =
+    input.axisKind === "effective_at"
+      ? {
+          effectiveAt: input.axisValue,
+          expiresAt: null,
+          freshnessLabel: null,
+        }
+      : null;
+
+  return {
+    baseTitle: input.familyLabel,
+    familyLabel: input.familyLabel,
+    variantLabel: input.variantLabel,
+    libraryId: input.familyLabel,
+    libraryVersion: input.axisKind === "version" ? input.axisValue : null,
+    temporalHints,
+  };
+}
+
+function makeDocumentMetadataRow(input: {
+  documentId: string;
+  name: string;
+  identity: ReturnType<typeof makeVariantIdentity>;
+}) {
+  return {
+    documentId: input.documentId,
+    groupId: "group-1",
+    name: input.name,
+    description: null,
+    metadata: {
+      sectionGraphVersion: 1,
+      documentContext: {
+        documentId: input.documentId,
+        documentName: input.name,
+        canonicalTitle: input.name,
+        baseTitle: input.identity.baseTitle,
+      },
+      sourceContext: {
+        libraryId: input.identity.libraryId,
+        libraryVersion: input.identity.libraryVersion,
+        sourcePath: null,
+        sheetName: null,
+        sourceGroupName: "Docs",
+      },
+      temporalHints: input.identity.temporalHints,
+      display: {
+        documentLabel: input.name,
+        variantLabel: input.identity.variantLabel,
+        topicLabel: null,
+        locationLabel: null,
+      },
+    },
+    activeVersionId: `${input.documentId}-version-1`,
+    updatedAt: new Date("2026-02-01T00:00:00Z"),
+  };
+}
+
+function makeSectionRow(input: {
+  id: string;
+  documentId: string;
+  heading: string;
+  headingPath: string;
+  content: string;
+  noteNumber?: string | null;
+  noteTitle?: string | null;
+  pageStart?: number;
+  pageEnd?: number;
+}) {
+  return {
+    id: input.id,
+    documentId: input.documentId,
+    groupId: "group-1",
+    parentSectionId: null,
+    prevSectionId: null,
+    nextSectionId: null,
+    heading: input.heading,
+    headingPath: input.headingPath,
+    level: 2,
+    partIndex: 0,
+    partCount: 1,
+    content: input.content,
+    summary: `${input.heading} summary.`,
+    tokenCount: 120,
+    pageStart: input.pageStart ?? 1,
+    pageEnd: input.pageEnd ?? input.pageStart ?? 1,
+    noteNumber: input.noteNumber ?? null,
+    noteTitle: input.noteTitle ?? null,
+    noteSubsection: null,
+    continued: false,
+    createdAt: new Date("2026-02-01T00:00:00Z"),
+  };
+}
+
+function mockChunkSearchResults(hits: any[]) {
+  const filterHits = (documentIds?: string[]) =>
+    documentIds?.length
+      ? hits.filter((hit) =>
+          documentIds.includes(hit.documentId ?? hit.chunk?.documentId),
+        )
+      : hits;
+
+  vi.mocked(knowledgeRepository.vectorSearch).mockImplementation(
+    async (_groupId, _embedding, _limit, filters) =>
+      filterHits(filters?.documentIds),
+  );
+  vi.mocked(knowledgeRepository.fullTextSearch).mockImplementation(
+    async (_groupId, _query, _limit, filters) =>
+      filterHits(filters?.documentIds),
+  );
 }
 
 function mockRollout(
@@ -460,44 +584,43 @@ describe("queryKnowledgeAsDocs", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("hard-filters explicit issuer queries to matching documents", async () => {
-    vi.mocked(
-      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
-    ).mockResolvedValue([{ documentId: "doc-1", score: 1 }]);
+  it("returns hits across multiple documents when diversity is needed", async () => {
     vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
       makeChunkHit({
         documentId: "doc-1",
         chunk: {
           documentId: "doc-1",
-          metadata: {
-            headingPath: "Financial Statements > Note 14",
-            section: "Note 14",
-            issuerTicker: "BBCA",
-            issuerName: "PT Bank Central Asia Tbk",
-          },
+          id: "chunk-1",
+          metadata: { headingPath: "Guide > Authentication" },
         },
+        score: 0.92,
+      }),
+      makeChunkHit({
+        documentId: "doc-2",
+        chunk: {
+          documentId: "doc-2",
+          id: "chunk-3",
+          metadata: { headingPath: "Guide > Authorization" },
+        },
+        score: 0.88,
+        documentName: "Guide 2",
       }),
     ]);
 
-    const results = await queryKnowledge(group, "BBCA marketable securities", {
-      topN: 3,
-    });
+    const results = await queryKnowledge(
+      group,
+      "authentication authorization",
+      {
+        topN: 2,
+      },
+    );
 
-    expect(
-      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
-    ).toHaveBeenCalledWith("group-1", {
-      issuer: null,
-      ticker: "BBCA",
-      limit: expect.any(Number),
-    });
-    expect(results).toHaveLength(1);
-    expect(results[0]?.documentId).toBe("doc-1");
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.documentId)).toContain("doc-1");
+    expect(results.map((r) => r.documentId)).toContain("doc-2");
   });
 
   it("uses structured section filters for exact page queries", async () => {
-    vi.mocked(
-      knowledgeRepository.findDocumentIdsByRetrievalIdentity,
-    ).mockResolvedValue([{ documentId: "doc-1", score: 1 }]);
     vi.mocked(
       knowledgeRepository.findSectionsByStructuredFilters,
     ).mockResolvedValue([
@@ -1705,5 +1828,611 @@ describe("queryKnowledgeAsDocs", () => {
     });
 
     expect(relevantScore).toBeGreaterThan(unrelatedScore);
+  });
+
+  it("groups same-family quarterly financial statements by period instead of flattening them", async () => {
+    const q1Identity = makeVariantIdentity({
+      familyKey: "finance:bank-abc",
+      familyLabel: "Bank ABC · Financial Statements",
+      variantKey: "finance:bank-abc:q1-2025",
+      variantLabel: "Q1 2025",
+      axisKind: "period",
+      axisValue: "Q1 2025",
+    });
+    const q2Identity = makeVariantIdentity({
+      familyKey: "finance:bank-abc",
+      familyLabel: "Bank ABC · Financial Statements",
+      variantKey: "finance:bank-abc:q2-2025",
+      variantLabel: "Q2 2025",
+      axisKind: "period",
+      axisValue: "Q2 2025",
+    });
+    const q3Identity = makeVariantIdentity({
+      familyKey: "finance:bank-abc",
+      familyLabel: "Bank ABC · Financial Statements",
+      variantKey: "finance:bank-abc:q3-2025",
+      variantLabel: "Q3 2025",
+      axisKind: "period",
+      axisValue: "Q3 2025",
+    });
+    const q4Identity = makeVariantIdentity({
+      familyKey: "finance:bank-abc",
+      familyLabel: "Bank ABC · Financial Statements",
+      variantKey: "finance:bank-abc:q4-2025",
+      variantLabel: "Q4 2025",
+      axisKind: "period",
+      axisValue: "Q4 2025",
+    });
+
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-q1", score: 0.95 },
+      { documentId: "doc-q2", score: 0.94 },
+      { documentId: "doc-q3", score: 0.93 },
+      { documentId: "doc-q4", score: 0.92 },
+    ]);
+    mockChunkSearchResults([
+      makeChunkHit({
+        documentId: "doc-q1",
+        documentName: "Bank ABC Q1",
+        score: 0.95,
+        chunk: {
+          id: "chunk-q1",
+          documentId: "doc-q1",
+          sectionId: "section-q1",
+          content: "Profit for Q1 2025 was 10.",
+          metadata: {
+            headingPath: "Financial Statements > Profit",
+            section: "Profit",
+            noteNumber: "24",
+            noteTitle: "Profit",
+          },
+        },
+      }),
+      makeChunkHit({
+        documentId: "doc-q2",
+        documentName: "Bank ABC Q2",
+        score: 0.94,
+        chunk: {
+          id: "chunk-q2",
+          documentId: "doc-q2",
+          sectionId: "section-q2",
+          content: "Profit for Q2 2025 was 12.",
+          metadata: {
+            headingPath: "Financial Statements > Profit",
+            section: "Profit",
+            noteNumber: "24",
+            noteTitle: "Profit",
+          },
+        },
+      }),
+      makeChunkHit({
+        documentId: "doc-q3",
+        documentName: "Bank ABC Q3",
+        score: 0.93,
+        chunk: {
+          id: "chunk-q3",
+          documentId: "doc-q3",
+          sectionId: "section-q3",
+          content: "Profit for Q3 2025 was 14.",
+          metadata: {
+            headingPath: "Financial Statements > Profit",
+            section: "Profit",
+            noteNumber: "24",
+            noteTitle: "Profit",
+          },
+        },
+      }),
+      makeChunkHit({
+        documentId: "doc-q4",
+        documentName: "Bank ABC Q4",
+        score: 0.92,
+        chunk: {
+          id: "chunk-q4",
+          documentId: "doc-q4",
+          sectionId: "section-q4",
+          content: "Profit for Q4 2025 was 16.",
+          metadata: {
+            headingPath: "Financial Statements > Profit",
+            section: "Profit",
+            noteNumber: "24",
+            noteTitle: "Profit",
+          },
+        },
+      }),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      makeDocumentMetadataRow({
+        documentId: "doc-q1",
+        name: "Bank ABC Financial Statements Q1 2025",
+        identity: q1Identity,
+      }),
+      makeDocumentMetadataRow({
+        documentId: "doc-q2",
+        name: "Bank ABC Financial Statements Q2 2025",
+        identity: q2Identity,
+      }),
+      makeDocumentMetadataRow({
+        documentId: "doc-q3",
+        name: "Bank ABC Financial Statements Q3 2025",
+        identity: q3Identity,
+      }),
+      makeDocumentMetadataRow({
+        documentId: "doc-q4",
+        name: "Bank ABC Financial Statements Q4 2025",
+        identity: q4Identity,
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      makeSectionRow({
+        id: "section-q1",
+        documentId: "doc-q1",
+        heading: "Profit",
+        headingPath: "Financial Statements > Profit",
+        content: "Profit for Q1 2025 was 10.",
+        noteNumber: "24",
+        noteTitle: "Profit",
+        pageStart: 10,
+      }),
+      makeSectionRow({
+        id: "section-q2",
+        documentId: "doc-q2",
+        heading: "Profit",
+        headingPath: "Financial Statements > Profit",
+        content: "Profit for Q2 2025 was 12.",
+        noteNumber: "24",
+        noteTitle: "Profit",
+        pageStart: 11,
+      }),
+      makeSectionRow({
+        id: "section-q3",
+        documentId: "doc-q3",
+        heading: "Profit",
+        headingPath: "Financial Statements > Profit",
+        content: "Profit for Q3 2025 was 14.",
+        noteNumber: "24",
+        noteTitle: "Profit",
+        pageStart: 12,
+      }),
+      makeSectionRow({
+        id: "section-q4",
+        documentId: "doc-q4",
+        heading: "Profit",
+        headingPath: "Financial Statements > Profit",
+        content: "Profit for Q4 2025 was 16.",
+        noteNumber: "24",
+        noteTitle: "Profit",
+        pageStart: 13,
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+
+    const envelope = await queryKnowledgeStructured(
+      group,
+      "what about profit in q1, q2, q3, q4 for bank abc",
+      { tokens: 5000 },
+    );
+
+    expect(envelope.queryAnalysis.intent).toBe("compare");
+    expect(envelope.comparisonGroups).toHaveLength(1);
+    expect(envelope.comparisonGroups[0]?.axisKind).toBe("period");
+    expect(
+      envelope.comparisonGroups[0]?.variants.map(
+        (variant) => variant.variantLabel,
+      ),
+    ).toEqual(["Q1 2025", "Q2 2025", "Q3 2025", "Q4 2025"]);
+
+    const formatted = formatDocsAsText(
+      group.name,
+      envelope.docs,
+      "what about profit in q1, q2, q3, q4 for bank abc",
+    );
+    expect(formatted).toContain("## Comparison");
+    expect(formatted).toContain("Q1 2025");
+    expect(formatted).toContain("Q4 2025");
+  });
+
+  it("groups versioned docs by version when headings are identical", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-v1", score: 0.95 },
+      { documentId: "doc-v2", score: 0.94 },
+      { documentId: "doc-v3", score: 0.93 },
+    ]);
+    mockChunkSearchResults([
+      makeChunkHit({
+        documentId: "doc-v1",
+        documentName: "Auth Guide v1",
+        chunk: {
+          id: "chunk-v1",
+          documentId: "doc-v1",
+          sectionId: "section-v1",
+          content: "Authentication setup in v1 uses API keys.",
+          metadata: {
+            headingPath: "Guide > Authentication",
+            section: "Authentication",
+          },
+        },
+      }),
+      makeChunkHit({
+        documentId: "doc-v2",
+        documentName: "Auth Guide v2",
+        chunk: {
+          id: "chunk-v2",
+          documentId: "doc-v2",
+          sectionId: "section-v2",
+          content: "Authentication setup in v2 uses PAT tokens.",
+          metadata: {
+            headingPath: "Guide > Authentication",
+            section: "Authentication",
+          },
+        },
+      }),
+      makeChunkHit({
+        documentId: "doc-v3",
+        documentName: "Auth Guide v3",
+        chunk: {
+          id: "chunk-v3",
+          documentId: "doc-v3",
+          sectionId: "section-v3",
+          content: "Authentication setup in v3 uses OAuth.",
+          metadata: {
+            headingPath: "Guide > Authentication",
+            section: "Authentication",
+          },
+        },
+      }),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      makeDocumentMetadataRow({
+        documentId: "doc-v1",
+        name: "Auth Guide v1",
+        identity: makeVariantIdentity({
+          familyKey: "docs:auth-guide",
+          familyLabel: "Auth Guide",
+          variantKey: "docs:auth-guide:v1",
+          variantLabel: "v1",
+          axisKind: "version",
+          axisValue: "v1",
+        }),
+      }),
+      makeDocumentMetadataRow({
+        documentId: "doc-v2",
+        name: "Auth Guide v2",
+        identity: makeVariantIdentity({
+          familyKey: "docs:auth-guide",
+          familyLabel: "Auth Guide",
+          variantKey: "docs:auth-guide:v2",
+          variantLabel: "v2",
+          axisKind: "version",
+          axisValue: "v2",
+        }),
+      }),
+      makeDocumentMetadataRow({
+        documentId: "doc-v3",
+        name: "Auth Guide v3",
+        identity: makeVariantIdentity({
+          familyKey: "docs:auth-guide",
+          familyLabel: "Auth Guide",
+          variantKey: "docs:auth-guide:v3",
+          variantLabel: "v3",
+          axisKind: "version",
+          axisValue: "v3",
+        }),
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      makeSectionRow({
+        id: "section-v1",
+        documentId: "doc-v1",
+        heading: "Authentication",
+        headingPath: "Guide > Authentication",
+        content: "Authentication setup in v1 uses API keys.",
+      }),
+      makeSectionRow({
+        id: "section-v2",
+        documentId: "doc-v2",
+        heading: "Authentication",
+        headingPath: "Guide > Authentication",
+        content: "Authentication setup in v2 uses PAT tokens.",
+      }),
+      makeSectionRow({
+        id: "section-v3",
+        documentId: "doc-v3",
+        heading: "Authentication",
+        headingPath: "Guide > Authentication",
+        content: "Authentication setup in v3 uses OAuth.",
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+
+    const envelope = await queryKnowledgeStructured(
+      group,
+      "compare authentication setup in v1, v2, and v3",
+      { tokens: 5000 },
+    );
+
+    expect(envelope.queryAnalysis.intent).toBe("compare");
+    expect(envelope.comparisonGroups[0]?.axisKind).toBe("version");
+    expect(
+      envelope.comparisonGroups[0]?.variants.map(
+        (variant) => variant.variantLabel,
+      ),
+    ).toEqual(["v1", "v2", "v3"]);
+  });
+
+  it("groups effective-dated regulations by effective date", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-jan", score: 0.94 },
+      { documentId: "doc-mar", score: 0.93 },
+    ]);
+    mockChunkSearchResults([
+      makeChunkHit({
+        documentId: "doc-jan",
+        documentName: "Policy Effective 1 January 2025",
+        chunk: {
+          id: "chunk-jan",
+          documentId: "doc-jan",
+          sectionId: "section-jan",
+          content: "Pasal 3 effective 1 January 2025 requires disclosure A.",
+          metadata: {
+            headingPath: "Policy > Pasal 3",
+            section: "Pasal 3",
+          },
+        },
+      }),
+      makeChunkHit({
+        documentId: "doc-mar",
+        documentName: "Policy Effective 1 March 2025",
+        chunk: {
+          id: "chunk-mar",
+          documentId: "doc-mar",
+          sectionId: "section-mar",
+          content: "Pasal 3 effective 1 March 2025 requires disclosure B.",
+          metadata: {
+            headingPath: "Policy > Pasal 3",
+            section: "Pasal 3",
+          },
+        },
+      }),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      makeDocumentMetadataRow({
+        documentId: "doc-jan",
+        name: "Policy Effective 1 January 2025",
+        identity: makeVariantIdentity({
+          familyKey: "reg:policy-pasal-3",
+          familyLabel: "Policy Pasal 3",
+          variantKey: "reg:policy-pasal-3:jan-2025",
+          variantLabel: "1 January 2025",
+          axisKind: "effective_at",
+          axisValue: "1 January 2025",
+        }),
+      }),
+      makeDocumentMetadataRow({
+        documentId: "doc-mar",
+        name: "Policy Effective 1 March 2025",
+        identity: makeVariantIdentity({
+          familyKey: "reg:policy-pasal-3",
+          familyLabel: "Policy Pasal 3",
+          variantKey: "reg:policy-pasal-3:mar-2025",
+          variantLabel: "1 March 2025",
+          axisKind: "effective_at",
+          axisValue: "1 March 2025",
+        }),
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      makeSectionRow({
+        id: "section-jan",
+        documentId: "doc-jan",
+        heading: "Pasal 3",
+        headingPath: "Policy > Pasal 3",
+        content: "Pasal 3 effective 1 January 2025 requires disclosure A.",
+      }),
+      makeSectionRow({
+        id: "section-mar",
+        documentId: "doc-mar",
+        heading: "Pasal 3",
+        headingPath: "Policy > Pasal 3",
+        content: "Pasal 3 effective 1 March 2025 requires disclosure B.",
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+
+    const envelope = await queryKnowledgeStructured(
+      group,
+      "compare pasal 3 effective 1 january 2025 and 1 march 2025",
+      { tokens: 5000 },
+    );
+
+    expect(envelope.queryAnalysis.intent).toBe("compare");
+    expect(envelope.comparisonGroups[0]?.axisKind).toBe("effective_at");
+    expect(
+      envelope.comparisonGroups[0]?.variants.map(
+        (variant) => variant.variantLabel,
+      ),
+    ).toEqual(["1 January 2025", "1 March 2025"]);
+  });
+
+  it("supports section-level period overrides inside a single document", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-1", score: 0.95 },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({
+        chunk: {
+          id: "chunk-q1",
+          sectionId: "section-q1",
+          content: "Profit for Q1 2025 was 10.",
+          metadata: {
+            headingPath: "Notes > Profit",
+            section: "Profit",
+            noteNumber: "24",
+            noteTitle: "Profit",
+          },
+        },
+      }),
+      makeChunkHit({
+        chunk: {
+          id: "chunk-q2",
+          sectionId: "section-q2",
+          content: "Profit for Q2 2025 was 12.",
+          metadata: {
+            headingPath: "Notes > Profit",
+            section: "Profit",
+            noteNumber: "24",
+            noteTitle: "Profit",
+          },
+        },
+        score: 0.89,
+      }),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      makeDocumentMetadataRow({
+        documentId: "doc-1",
+        name: "Bank ABC Consolidated Financial Statements",
+        identity: makeVariantIdentity({
+          familyKey: "finance:bank-abc",
+          familyLabel: "Bank ABC · Financial Statements",
+          variantKey: "finance:bank-abc:default",
+          variantLabel: "Bank ABC",
+          axisKind: "period",
+          axisValue: "Q0 2025",
+        }),
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      makeSectionRow({
+        id: "section-q1",
+        documentId: "doc-1",
+        heading: "Profit",
+        headingPath: "Notes > Profit",
+        content: "Profit for Q1 2025 was 10.",
+        noteNumber: "24",
+        noteTitle: "Profit",
+      }),
+      makeSectionRow({
+        id: "section-q2",
+        documentId: "doc-1",
+        heading: "Profit",
+        headingPath: "Notes > Profit",
+        content: "Profit for Q2 2025 was 12.",
+        noteNumber: "24",
+        noteTitle: "Profit",
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+
+    const envelope = await queryKnowledgeStructured(
+      group,
+      "compare q1 and q2 profit for bank abc",
+      { tokens: 5000 },
+    );
+
+    expect(envelope.comparisonGroups).toHaveLength(1);
+    expect(
+      envelope.comparisonGroups[0]?.variants.map(
+        (variant) => variant.variantLabel,
+      ),
+    ).toEqual(["Q1 2025", "Q2 2025"]);
+  });
+
+  it("does not force compare mode for heterogeneous documents", async () => {
+    vi.mocked(knowledgeRepository.searchDocumentMetadata).mockResolvedValue([
+      { documentId: "doc-auth", score: 0.95 },
+      { documentId: "doc-tax", score: 0.94 },
+    ]);
+    vi.mocked(knowledgeRepository.vectorSearch).mockResolvedValue([
+      makeChunkHit({
+        documentId: "doc-auth",
+        documentName: "Authentication Guide",
+        chunk: {
+          id: "chunk-auth",
+          documentId: "doc-auth",
+          sectionId: "section-auth",
+          content: "Authentication setup uses passkeys.",
+          metadata: {
+            headingPath: "Guide > Authentication",
+            section: "Authentication",
+          },
+        },
+      }),
+      makeChunkHit({
+        documentId: "doc-tax",
+        documentName: "Tax Guide",
+        chunk: {
+          id: "chunk-tax",
+          documentId: "doc-tax",
+          sectionId: "section-tax",
+          content: "Tax handling is defined elsewhere.",
+          metadata: {
+            headingPath: "Guide > Tax",
+            section: "Tax",
+          },
+        },
+      }),
+    ]);
+    vi.mocked(
+      knowledgeRepository.getDocumentMetadataByIdsAcrossGroups,
+    ).mockResolvedValue([
+      makeDocumentMetadataRow({
+        documentId: "doc-auth",
+        name: "Authentication Guide",
+        identity: makeVariantIdentity({
+          familyKey: "guide:auth",
+          familyLabel: "Authentication Guide",
+          variantKey: "guide:auth:default",
+          variantLabel: "Authentication Guide",
+          axisKind: "version",
+          axisValue: "v1",
+        }),
+      }),
+      makeDocumentMetadataRow({
+        documentId: "doc-tax",
+        name: "Tax Guide",
+        identity: makeVariantIdentity({
+          familyKey: "guide:tax",
+          familyLabel: "Tax Guide",
+          variantKey: "guide:tax:default",
+          variantLabel: "Tax Guide",
+          axisKind: "version",
+          axisValue: "v1",
+        }),
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getSectionsByIds).mockResolvedValue([
+      makeSectionRow({
+        id: "section-auth",
+        documentId: "doc-auth",
+        heading: "Authentication",
+        headingPath: "Guide > Authentication",
+        content: "Authentication setup uses passkeys.",
+      }),
+      makeSectionRow({
+        id: "section-tax",
+        documentId: "doc-tax",
+        heading: "Tax",
+        headingPath: "Guide > Tax",
+        content: "Tax handling is defined elsewhere.",
+      }),
+    ]);
+    vi.mocked(knowledgeRepository.getRelatedSections).mockResolvedValue([]);
+
+    const envelope = await queryKnowledgeStructured(group, "auth setup", {
+      tokens: 5000,
+    });
+
+    expect(envelope.queryAnalysis.intent).toBe("lookup");
+    expect(envelope.comparisonGroups).toEqual([]);
+    expect(
+      formatDocsAsText(group.name, envelope.docs, "auth setup"),
+    ).not.toContain("## Comparison");
   });
 });

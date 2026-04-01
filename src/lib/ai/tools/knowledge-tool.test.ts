@@ -3,14 +3,81 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("server-only", () => ({}));
 
 vi.mock("lib/knowledge/retriever", () => ({
-  queryKnowledgeAsDocs: vi.fn(async () => []),
-  formatDocsAsText: vi.fn(() => "formatted knowledge"),
+  queryKnowledgeStructured: vi.fn(async (_group, query) => ({
+    groupName: "Product Docs",
+    query,
+    docs: [],
+    queryAnalysis: {
+      intent: "lookup",
+      explicitAxes: [],
+      requestedTopics: [],
+    },
+    comparisonGroups: [],
+    evidenceItems: [],
+  })),
+  formatKnowledgeRetrievalEnvelopeAsText: vi.fn(() => "formatted knowledge"),
+}));
+
+vi.mock("lib/knowledge/document-summary", () => ({
+  resolveKnowledgeDocumentByName: vi.fn(async () => ({
+    status: "resolved",
+    document: { id: "doc-summary-1", name: "Annual Report 2025" },
+  })),
+  summarizeKnowledgeDocumentById: vi.fn(async () => ({
+    documentId: "doc-summary-1",
+    documentName: "Annual Report 2025",
+    versionId: "version-1",
+    outline: [],
+    summary: "Annual Report 2025 summary.",
+    valueDigest: [
+      {
+        kind: "numeric_sentence",
+        text: "Revenue 120.5",
+        logicalSectionKey: "Report > Results::::",
+        sectionId: "section-1",
+        sectionHeading: "Report > Results",
+      },
+    ],
+    sectionRefs: [],
+    citations: [
+      {
+        sectionId: "section-1",
+        sectionHeading: "Report > Results",
+        pageStart: 10,
+        pageEnd: 10,
+        excerpt: "Revenue 120.5",
+        relevanceScore: 0.92,
+      },
+    ],
+  })),
+  formatKnowledgeDocumentSummaryAsText: vi.fn(
+    () => "formatted document summary",
+  ),
 }));
 
 const { createKnowledgeDocsTool } = await import("./knowledge-tool");
-const { queryKnowledgeAsDocs, formatDocsAsText } = await import(
-  "lib/knowledge/retriever"
-);
+const { queryKnowledgeStructured, formatKnowledgeRetrievalEnvelopeAsText } =
+  await import("lib/knowledge/retriever");
+const {
+  resolveKnowledgeDocumentByName,
+  summarizeKnowledgeDocumentById,
+  formatKnowledgeDocumentSummaryAsText,
+} = await import("lib/knowledge/document-summary");
+
+function makeEnvelope(docs: any[] = [], query = "test query") {
+  return {
+    groupName: "Product Docs",
+    query,
+    docs,
+    queryAnalysis: {
+      intent: "lookup" as const,
+      explicitAxes: [],
+      requestedTopics: [],
+    },
+    comparisonGroups: [],
+    evidenceItems: docs.flatMap((doc) => doc.evidenceItems ?? []),
+  };
+}
 
 function expectKnowledgeToolResult<T>(
   result: T | AsyncIterable<unknown> | undefined,
@@ -61,7 +128,7 @@ describe("knowledge-tool", () => {
       messages: [],
     } as any);
 
-    expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
+    expect(queryKnowledgeStructured).toHaveBeenCalledWith(
       expect.objectContaining({ id: "group-1" }),
       "how to sign in",
       expect.objectContaining({
@@ -70,7 +137,7 @@ describe("knowledge-tool", () => {
         resultMode: "section-first",
       }),
     );
-    expect(formatDocsAsText).toHaveBeenCalled();
+    expect(formatKnowledgeRetrievalEnvelopeAsText).toHaveBeenCalled();
     expect(result).toMatchObject({
       source: "attached_agent_knowledge",
       groupId: "group-1",
@@ -80,6 +147,8 @@ describe("knowledge-tool", () => {
       citations: [],
       evidencePack: null,
       hasResults: false,
+      comparisonGroups: [],
+      evidenceItems: [],
     });
   });
 
@@ -115,7 +184,7 @@ describe("knowledge-tool", () => {
       { toolCallId: "call-2", messages: [] } as any,
     );
 
-    expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
+    expect(queryKnowledgeStructured).toHaveBeenCalledWith(
       expect.anything(),
       "read everything",
       expect.objectContaining({
@@ -125,7 +194,68 @@ describe("knowledge-tool", () => {
     );
   });
 
-  it("passes structured issuer and page filters through to retrieval", async () => {
+  it("uses document-summary mode for value-preserving document summaries", async () => {
+    const tool = createKnowledgeDocsTool({
+      id: "group-1",
+      name: "Product Docs",
+      userId: "user-1",
+      visibility: "private",
+      purpose: "default",
+      isSystemManaged: false,
+      embeddingModel: "embed",
+      embeddingProvider: "openai",
+      rerankingModel: null,
+      rerankingProvider: null,
+      parsingModel: null,
+      parsingProvider: null,
+      parseMode: "auto",
+      parseRepairPolicy: "section-safe-reorder",
+      contextMode: "deterministic",
+      imageMode: "auto",
+      lazyRefinementEnabled: true,
+      retrievalThreshold: 0,
+      mcpEnabled: false,
+      documentCount: 1,
+      chunkCount: 10,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const raw = await tool.execute?.(
+      {
+        query: "summarize the annual report",
+        mode: "document-summary",
+        document: "Annual Report 2025",
+      },
+      { toolCallId: "call-summary", messages: [] } as any,
+    );
+    const result = expectKnowledgeToolResult(raw);
+
+    expect(resolveKnowledgeDocumentByName).toHaveBeenCalledWith({
+      groupId: "group-1",
+      document: "Annual Report 2025",
+    });
+    expect(summarizeKnowledgeDocumentById).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentId: "doc-summary-1",
+        tokens: 5000,
+      }),
+    );
+    expect(formatKnowledgeDocumentSummaryAsText).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      hasResults: true,
+      contextText: "formatted document summary",
+      citations: [
+        expect.objectContaining({
+          documentId: "doc-summary-1",
+          documentName: "Annual Report 2025",
+          sectionHeading: "Report > Results",
+        }),
+      ],
+    });
+  });
+
+  it("passes page filter through to retrieval", async () => {
     const tool = createKnowledgeDocsTool({
       id: "group-1",
       name: "Product Docs",
@@ -154,21 +284,17 @@ describe("knowledge-tool", () => {
 
     await tool.execute?.(
       {
-        query: "BBCA halaman 100",
-        ticker: "BBCA",
+        query: "annual report page 100",
         page: 100,
-        strictEntityMatch: true,
       },
       { toolCallId: "call-structured", messages: [] } as any,
     );
 
-    expect(queryKnowledgeAsDocs).toHaveBeenCalledWith(
+    expect(queryKnowledgeStructured).toHaveBeenCalledWith(
       expect.anything(),
-      "BBCA halaman 100",
+      "annual report page 100",
       expect.objectContaining({
-        ticker: "BBCA",
         page: 100,
-        strictEntityMatch: true,
       }),
     );
   });
@@ -203,7 +329,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "how to sign in") as any,
+    );
     const onRetrieved = vi.fn();
     const tool = createKnowledgeDocsTool(
       {
@@ -239,13 +367,18 @@ describe("knowledge-tool", () => {
       messages: [],
     } as any);
 
-    expect(onRetrieved).toHaveBeenCalledWith({
-      groupId: "group-1",
-      groupName: "Product Docs",
-      query: "how to sign in",
-      docs,
-      contextText: "formatted knowledge",
-    });
+    expect(onRetrieved).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupId: "group-1",
+        groupName: "Product Docs",
+        query: "how to sign in",
+        docs,
+        contextText: "formatted knowledge",
+        queryAnalysis: expect.objectContaining({ intent: "lookup" }),
+        comparisonGroups: [],
+        evidenceItems: [],
+      }),
+    );
   });
 
   it("returns stable citation payload from the callback for the model to cite", async () => {
@@ -271,7 +404,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "is vape taxed?") as any,
+    );
 
     const tool = createKnowledgeDocsTool(
       {
@@ -367,7 +502,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "is vape taxed?") as any,
+    );
 
     const tool = createKnowledgeDocsTool({
       id: "group-1",
@@ -460,7 +597,9 @@ describe("knowledge-tool", () => {
         ],
       },
     ];
-    vi.mocked(queryKnowledgeAsDocs).mockResolvedValue(docs as any);
+    vi.mocked(queryKnowledgeStructured).mockResolvedValue(
+      makeEnvelope(docs as any, "show me the sign-in UI") as any,
+    );
 
     const tool = createKnowledgeDocsTool({
       id: "group-1",

@@ -95,8 +95,8 @@ import {
   mergeChatKnowledgeMetadata,
 } from "lib/chat/knowledge-sources";
 import {
-  formatDocsAsText,
-  queryKnowledgeAsDocs,
+  formatKnowledgeRetrievalEnvelopeAsText,
+  queryKnowledgeStructured,
 } from "lib/knowledge/retriever";
 import type { DocRetrievalResult } from "lib/knowledge/retriever";
 import {
@@ -1171,7 +1171,7 @@ export async function POST(request: Request) {
                       knowledgeMentionGroups.length - index,
                     );
 
-                    const docs = await queryKnowledgeAsDocs(
+                    const envelope = await queryKnowledgeStructured(
                       group,
                       userQueryText,
                       {
@@ -1187,17 +1187,15 @@ export async function POST(request: Request) {
                       return null;
                     });
 
-                    if (docs && docs.length > 0) {
+                    if (envelope && envelope.docs.length > 0) {
+                      const docs = envelope.docs;
                       retrievedGroups.push({
                         groupId: group.id,
                         groupName: group.name,
                         docs,
                       });
-                      const formatted = formatDocsAsText(
-                        group.name,
-                        docs,
-                        userQueryText,
-                      );
+                      const formatted =
+                        formatKnowledgeRetrievalEnvelopeAsText(envelope);
                       contexts.push(formatted);
                       sources.push(
                         ...buildChatKnowledgeSources({

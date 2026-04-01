@@ -4,7 +4,6 @@ import {
   matchFinancialNoteHeading,
   matchFinancialSubsection,
   type FinancialStatementClassification,
-  type RetrievalIdentity,
 } from "./financial-statement";
 import { parsePageMarker } from "./page-markers";
 
@@ -75,11 +74,6 @@ export interface KnowledgeSectionNode {
   pageStart?: number;
   pageEnd?: number;
   canonicalTitle?: string;
-  issuerName?: string;
-  issuerTicker?: string;
-  reportType?: string;
-  fiscalYear?: number;
-  periodEnd?: string;
   noteNumber?: string;
   noteTitle?: string;
   noteSubsection?: string;
@@ -770,7 +764,7 @@ export function buildKnowledgeSectionGraph(
   documentId: string,
   groupId: string,
   options: {
-    retrievalIdentity?: RetrievalIdentity | null;
+    canonicalTitle?: string | null;
     classification?: FinancialStatementClassification | null;
   } = {},
 ): KnowledgeSectionNode[] {
@@ -819,12 +813,7 @@ export function buildKnowledgeSectionGraph(
         includeHeadingInChunkContent: base.includeHeadingInChunkContent,
         pageStart: base.pageStart,
         pageEnd: base.pageEnd,
-        canonicalTitle: options.retrievalIdentity?.canonicalTitle,
-        issuerName: options.retrievalIdentity?.issuerName ?? undefined,
-        issuerTicker: options.retrievalIdentity?.issuerTicker ?? undefined,
-        reportType: options.retrievalIdentity?.reportType ?? undefined,
-        fiscalYear: options.retrievalIdentity?.fiscalYear ?? undefined,
-        periodEnd: options.retrievalIdentity?.periodEnd ?? undefined,
+        canonicalTitle: options.canonicalTitle ?? undefined,
         noteNumber: base.noteNumber,
         noteTitle: base.noteTitle,
         noteSubsection: base.noteSubsection,

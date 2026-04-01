@@ -11,6 +11,7 @@ import {
   PaginatedChatThreads,
   ChatThreadListItem,
 } from "app-types/chat";
+import { sanitizeThreadTitle } from "lib/chat/thread-title";
 import globalLogger from "logger";
 
 import { pgDb as db } from "../db.pg";
@@ -65,10 +66,12 @@ export const pgChatRepository: ChatRepository = {
   insertThread: async (
     thread: Omit<ChatThread, "createdAt">,
   ): Promise<ChatThread> => {
+    const title = sanitizeThreadTitle(thread.title);
+
     const [result] = await db
       .insert(ChatThreadTable)
       .values({
-        title: thread.title,
+        title,
         userId: thread.userId,
         id: thread.id,
         snowflakeThreadId: thread.snowflakeThreadId ?? null,
@@ -296,7 +299,8 @@ export const pgChatRepository: ChatRepository = {
     // Record<string,unknown> is NOT processed by Drizzle — it silently ignores
     // keys it cannot type-check against the table schema.
     const set: Partial<typeof ChatThreadTable.$inferInsert> = {};
-    if (thread.title !== undefined) set.title = thread.title;
+    if (thread.title !== undefined)
+      set.title = sanitizeThreadTitle(thread.title);
     if (thread.snowflakeThreadId !== undefined)
       set.snowflakeThreadId = thread.snowflakeThreadId;
     if (thread.snowflakeParentMessageId !== undefined)
@@ -316,13 +320,18 @@ export const pgChatRepository: ChatRepository = {
   upsertThread: async (
     thread: Omit<ChatThread, "createdAt">,
   ): Promise<ChatThread> => {
+    const title = sanitizeThreadTitle(thread.title);
+
     const [result] = await db
       .insert(ChatThreadTable)
-      .values(thread)
+      .values({
+        ...thread,
+        title,
+      })
       .onConflictDoUpdate({
         target: [ChatThreadTable.id],
         set: {
-          title: thread.title,
+          title,
           snowflakeThreadId: thread.snowflakeThreadId ?? null,
           snowflakeParentMessageId: thread.snowflakeParentMessageId ?? null,
           a2aAgentId: thread.a2aAgentId ?? null,

@@ -27,7 +27,7 @@ export type OpenAIRealtimeSession = {
 export type OpenAIRealtimeClientEvent =
   | {
       type: "session.update";
-      data: Partial<OpenAIRealtimeSession>;
+      session: Partial<OpenAIRealtimeSession>;
     }
   | {
       type: "conversation.item.create";
@@ -51,6 +51,7 @@ export type OpenAIRealtimeServerEvent =
         | "input_audio_buffer.speech_started"
         | "input_audio_buffer.speech_stopped"
         | "input_audio_buffer.committed"
+        | "output_audio_buffer.started"
         | "output_audio_buffer.stopped";
       event_id: string;
       item_id: string;
@@ -70,7 +71,11 @@ export type OpenAIRealtimeServerEvent =
       delta: string;
     }
   | {
-      type: "response.audio_transcript.delta";
+      type:
+        | "response.audio.delta"
+        | "response.audio_transcript.delta"
+        | "response.output_audio_transcript.delta"
+        | "response.output_text.delta";
       event_id: string;
       response_id: string;
       item_id: string;
@@ -79,7 +84,10 @@ export type OpenAIRealtimeServerEvent =
       delta: string;
     }
   | {
-      type: "response.audio_transcript.done";
+      type:
+        | "response.audio_transcript.done"
+        | "response.output_audio_transcript.done"
+        | "response.output_text.done";
       event_id: string;
       response_id: string;
       item_id: string;
@@ -104,4 +112,10 @@ export type OpenAIRealtimeServerEvent =
       name: string;
       call_id: string;
       arguments: string;
+    }
+  | {
+      type: "session.error";
+      error: {
+        message: string;
+      };
     };

@@ -3,18 +3,13 @@
 import { getStaticToolName, isStaticToolUIPart, TextPart } from "ai";
 import { DEFAULT_VOICE_TOOLS, UIMessageWithCompleted } from "lib/ai/speech";
 
-import {
-  OPENAI_VOICE,
-  useOpenAIVoiceChat as OpenAIVoiceChat,
-} from "lib/ai/speech/open-ai/use-voice-chat.openai";
+import { useOpenAIVoiceChat as OpenAIVoiceChat } from "lib/ai/speech/open-ai/use-voice-chat.openai";
 import { cn, groupBy, isNull } from "lib/utils";
 import {
-  CheckIcon,
   Loader,
   MicIcon,
   MicOffIcon,
   PhoneIcon,
-  Settings2Icon,
   TriangleAlertIcon,
   XIcon,
   MessagesSquareIcon,
@@ -29,20 +24,7 @@ import { Alert, AlertDescription, AlertTitle } from "ui/alert";
 import { Button } from "ui/button";
 
 import { Drawer, DrawerContent, DrawerPortal, DrawerTitle } from "ui/drawer";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from "ui/dropdown-menu";
-import { GeminiIcon } from "ui/gemini-icon";
 import { MessageLoading } from "ui/message-loading";
-import { OpenAIIcon } from "ui/openai-icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { ToolMessagePart } from "./message-parts";
 
@@ -69,23 +51,16 @@ const prependTools: EnabledTools[] = [
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
-  const [
-    agentId,
-    appStoreMutate,
-    voiceChat,
-    model,
-    allowedMcpServers,
-    mcpList,
-  ] = appStore(
-    useShallow((state) => [
-      state.voiceChat.agentId,
-      state.mutate,
-      state.voiceChat,
-      state.chatModel,
-      state.allowedMcpServers,
-      state.mcpList,
-    ]),
-  );
+  const [agentId, appStoreMutate, voiceChat, allowedMcpServers, mcpList] =
+    appStore(
+      useShallow((state) => [
+        state.voiceChat.agentId,
+        state.mutate,
+        state.voiceChat,
+        state.allowedMcpServers,
+        state.mcpList,
+      ]),
+    );
 
   const { agent } = useAgent(agentId);
 
@@ -137,7 +112,7 @@ export function ChatBotVoice() {
   } = OpenAIVoiceChat({
     toolMentions,
     agentId,
-    ...voiceChat.options.providerOptions,
+    voice: voiceChat.options.voice,
   });
 
   const startWithSound = useCallback(() => {
@@ -159,7 +134,7 @@ export function ChatBotVoice() {
         isOpen: false,
       },
     });
-  }, [messages, model]);
+  }, [appStoreMutate, stop, voiceChat]);
 
   const statusMessage = useMemo(() => {
     if (isLoading) {
@@ -344,84 +319,7 @@ export function ChatBotVoice() {
               </Tooltip>
 
               <EnabledToolsDropdown align="start" side="bottom" tools={tools} />
-
-              <DrawerTitle className="ml-auto">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant={"ghost"} size={"icon"}>
-                      <Settings2Icon className="text-foreground size-5" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent
-                    side="left"
-                    className="min-w-40"
-                    align="start"
-                  >
-                    <DropdownMenuGroup className="cursor-pointer">
-                      <DropdownMenuSub>
-                        <DropdownMenuSubTrigger
-                          className="flex items-center gap-2 cursor-pointer"
-                          icon=""
-                        >
-                          <OpenAIIcon className="size-3.5 stroke-none fill-foreground" />
-                          Open AI
-                        </DropdownMenuSubTrigger>
-                        <DropdownMenuPortal>
-                          <DropdownMenuSubContent>
-                            {Object.entries(OPENAI_VOICE).map(
-                              ([key, value]) => (
-                                <DropdownMenuItem
-                                  className="cursor-pointer flex items-center justify-between"
-                                  onClick={() =>
-                                    appStoreMutate({
-                                      voiceChat: {
-                                        ...voiceChat,
-                                        options: {
-                                          provider: "openai",
-                                          providerOptions: {
-                                            voice: value,
-                                          },
-                                        },
-                                      },
-                                    })
-                                  }
-                                  key={key}
-                                >
-                                  {key}
-
-                                  {value ===
-                                    voiceChat.options.providerOptions
-                                      ?.voice && (
-                                    <CheckIcon className="size-3.5" />
-                                  )}
-                                </DropdownMenuItem>
-                              ),
-                            )}
-                          </DropdownMenuSubContent>
-                        </DropdownMenuPortal>
-                      </DropdownMenuSub>
-                      <DropdownMenuSub>
-                        <DropdownMenuSub>
-                          <DropdownMenuSubTrigger
-                            className="flex items-center gap-2 text-muted-foreground"
-                            icon=""
-                          >
-                            <GeminiIcon className="size-3.5" />
-                            Gemini
-                          </DropdownMenuSubTrigger>
-                          <DropdownMenuPortal>
-                            <DropdownMenuSubContent>
-                              <div className="text-xs text-muted-foreground p-6">
-                                Not Implemented Yet
-                              </div>
-                            </DropdownMenuSubContent>
-                          </DropdownMenuPortal>
-                        </DropdownMenuSub>
-                      </DropdownMenuSub>
-                    </DropdownMenuGroup>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </DrawerTitle>
+              <DrawerTitle className="sr-only">Voice Chat</DrawerTitle>
             </div>
             <div className="flex-1 min-h-0 mx-auto w-full">
               {error ? (

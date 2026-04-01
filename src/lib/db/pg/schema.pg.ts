@@ -61,7 +61,10 @@ import {
   ChatMention,
   ChatMetadata,
 } from "app-types/chat";
-import { KnowledgePurpose } from "app-types/knowledge";
+import {
+  KnowledgePurpose,
+  type KnowledgeSectionSummaryData,
+} from "app-types/knowledge";
 import { PilotBrowser } from "app-types/pilot";
 import {
   SelfLearningAuditAction,
@@ -1072,6 +1075,11 @@ export const KnowledgeDocumentTable = pgTable(
         "json",
         "eml",
         "code",
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "webp",
       ],
     }).notNull(),
     fileSize: bigint("file_size", { mode: "number" }),
@@ -1188,6 +1196,7 @@ export const KnowledgeSectionTable = pgTable(
     partCount: integer("part_count").notNull().default(1),
     content: text("content").notNull(),
     summary: text("summary").notNull(),
+    summaryData: json("summary_data").$type<KnowledgeSectionSummaryData>(),
     tokenCount: integer("token_count").notNull().default(0),
     pageStart: integer("page_start"),
     pageEnd: integer("page_end"),
@@ -1418,6 +1427,7 @@ export const KnowledgeSectionVersionTable = pgTable(
     partCount: integer("part_count").notNull().default(1),
     content: text("content").notNull(),
     summary: text("summary").notNull(),
+    summaryData: json("summary_data").$type<KnowledgeSectionSummaryData>(),
     tokenCount: integer("token_count").notNull().default(0),
     pageStart: integer("page_start"),
     pageEnd: integer("page_end"),

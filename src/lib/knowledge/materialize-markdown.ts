@@ -4,30 +4,33 @@ import type {
   KnowledgeDocument,
   KnowledgeDocumentImage,
   KnowledgeGroup,
+  KnowledgeSectionSummaryData,
 } from "app-types/knowledge";
 import { generateUUID } from "lib/utils";
 import { chunkKnowledgeSections } from "./chunker";
 import { enrichChunksWithContext } from "./context-enricher";
-import {
-  buildTemporalHints,
-  detectChunkLanguage,
-  resolveContentKind,
-} from "./content-routing";
+import { detectChunkLanguage, resolveContentKind } from "./content-routing";
 import { buildDocumentImageEmbeddingText } from "./document-images";
 import {
+  buildKnowledgeBaseTitle,
+  buildKnowledgeDisplayContext,
+  buildKnowledgeLocationLabel,
+  buildKnowledgeTopicLabel,
+  buildKnowledgeVariantLabel,
   buildDocumentMetadataEmbeddingText,
-  buildDocumentRetrievalIdentity,
+  buildDocumentCanonicalTitle,
+  deriveKnowledgeTemporalHints,
   extractAutoDocumentMetadata,
   generateDocumentMetadata,
 } from "./document-metadata";
 import { buildEntityEmbeddingText, extractKnowledgeEntities } from "./entities";
 import { embedSingleTextWithUsage, embedTextsWithUsage } from "./embedder";
 import { normalizeStructuredMarkdown } from "./markdown-structurer";
-import { classifyFinancialStatementDocument } from "./financial-statement";
 import {
   buildKnowledgeSectionGraph,
   SECTION_GRAPH_VERSION,
 } from "./section-graph";
+import { buildKnowledgeSectionSummaryData } from "./section-summary-data";
 import type {
   ProcessedDocumentImage,
   ProcessedDocumentPage,
@@ -41,6 +44,7 @@ type SectionGraphSection = ReturnType<
 
 export type MaterializedKnowledgeSection = SectionGraphSection & {
   embedding?: number[] | null;
+  summaryData?: KnowledgeSectionSummaryData | null;
 };
 
 export type MaterializedKnowledgeChunk = {
@@ -91,6 +95,19 @@ export type MaterializedDocumentState = {
   resolvedDescription?: string | null;
 };
 
+type EmbeddingWarning = {
+  stage: string;
+  message: string;
+};
+
+const PRIMARY_CHUNK_EMBEDDING_STAGES = new Set([
+  "legacy_chunk",
+  "content_chunk",
+  "context_chunk",
+  "identity_chunk",
+  "entity_chunk",
+]);
+
 type MaterializationInput = {
   documentId: string;
   groupId: string;
@@ -121,20 +138,28 @@ function formatSectionPageSpan(section: {
   return `Pages ${start}-${end}`;
 }
 
-function buildSectionEmbeddingText(section: SectionGraphSection): string {
+function buildSectionEmbeddingText(
+  section: SectionGraphSection & {
+    summaryData?: KnowledgeSectionSummaryData | null;
+  },
+): string {
   const excerpt = section.content.trim().slice(0, 1200);
   return [
     section.canonicalTitle ? `Document: ${section.canonicalTitle}` : "",
-    section.issuerName ? `Issuer: ${section.issuerName}` : "",
-    section.issuerTicker ? `Ticker: ${section.issuerTicker}` : "",
-    section.reportType ? `Report type: ${section.reportType}` : "",
-    section.fiscalYear ? `Fiscal year: ${section.fiscalYear}` : "",
     `Section path: ${section.headingPath}`,
     section.noteNumber
       ? `Note: ${section.noteSubsection ? `${section.noteNumber}.${section.noteSubsection}` : section.noteNumber}`
       : "",
     section.noteTitle ? `Note title: ${section.noteTitle}` : "",
     section.summary ? `Summary: ${section.summary}` : "",
+    section.summaryData?.logicalSectionSummary
+      ? `Logical summary: ${section.summaryData.logicalSectionSummary}`
+      : "",
+    section.summaryData?.valueDigest?.length
+      ? `Value digest: ${section.summaryData.valueDigest
+          .map((item) => item.text)
+          .join("; ")}`
+      : "",
     excerpt ? `Excerpt: ${excerpt}` : "",
     formatSectionPageSpan(section),
   ]
@@ -148,15 +173,23 @@ function buildChunkIdentityText(chunk: {
   metadata?: KnowledgeChunkMetadata | null;
 }): string {
   const metadata = chunk.metadata ?? null;
+  const display = metadata?.display ?? null;
+  const documentContext = metadata?.documentContext ?? null;
+  const sourceContext = metadata?.sourceContext ?? null;
   return [
-    metadata?.canonicalTitle ? `Document: ${metadata.canonicalTitle}` : "",
+    display?.documentLabel || documentContext?.canonicalTitle
+      ? `Document: ${display?.documentLabel ?? documentContext?.canonicalTitle}`
+      : "",
+    display?.variantLabel ? `Variant: ${display.variantLabel}` : "",
+    display?.topicLabel ? `Topic: ${display.topicLabel}` : "",
+    display?.locationLabel ? `Location: ${display.locationLabel}` : "",
     metadata?.headingPath ? `Section path: ${metadata.headingPath}` : "",
     metadata?.sectionTitle ? `Section title: ${metadata.sectionTitle}` : "",
-    metadata?.issuerName ? `Issuer: ${metadata.issuerName}` : "",
-    metadata?.issuerTicker ? `Ticker: ${metadata.issuerTicker}` : "",
-    metadata?.libraryId ? `Library: ${metadata.libraryId}` : "",
-    metadata?.libraryVersion
-      ? `Library version: ${metadata.libraryVersion}`
+    sourceContext?.libraryId || metadata?.libraryId
+      ? `Library: ${sourceContext?.libraryId ?? metadata?.libraryId}`
+      : "",
+    sourceContext?.libraryVersion || metadata?.libraryVersion
+      ? `Library version: ${sourceContext?.libraryVersion ?? metadata?.libraryVersion}`
       : "",
     metadata?.contentKind ? `Content kind: ${metadata.contentKind}` : "",
     metadata?.language ? `Language: ${metadata.language}` : "",
@@ -171,6 +204,52 @@ function buildChunkIdentityText(chunk: {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function getEmbeddingErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
+function hasUsableEmbedding(embedding: number[] | null | undefined): boolean {
+  return (
+    Array.isArray(embedding) &&
+    embedding.length > 0 &&
+    embedding.every((value) => Number.isFinite(value))
+  );
+}
+
+async function embedTextsSafely(input: {
+  label: string;
+  documentId: string;
+  texts: string[];
+  provider: string;
+  model: string;
+  warnings: EmbeddingWarning[];
+}): Promise<{ embeddings: number[][]; usageTokens: number }> {
+  if (input.texts.length === 0) {
+    return {
+      embeddings: [],
+      usageTokens: 0,
+    };
+  }
+
+  try {
+    return await embedTextsWithUsage(input.texts, input.provider, input.model);
+  } catch (error) {
+    input.warnings.push({
+      stage: input.label,
+      message: getEmbeddingErrorMessage(error),
+    });
+    console.warn(
+      `[ContextX] ${input.label} embedding failed for document ${input.documentId}:`,
+      error,
+    );
+    return {
+      embeddings: [],
+      usageTokens: 0,
+    };
+  }
 }
 
 export async function materializeDocumentMarkdown({
@@ -201,32 +280,72 @@ export async function materializeDocumentMarkdown({
           pageCount: inputPages?.length ?? null,
           modelConfig: contextModel,
         });
-  const retrievalIdentity = buildDocumentRetrievalIdentity({
+  const retrievalCanonicalTitle = buildDocumentCanonicalTitle({
     markdown,
     fallbackTitle: generatedMeta.title || autoMeta.title || documentTitle,
-    originalFilename: doc.originalFilename,
-    pageCount: inputPages?.length ?? null,
-  });
-  const classification = classifyFinancialStatementDocument({
-    markdown,
-    pageCount: inputPages?.length ?? undefined,
-    filename: doc.originalFilename,
   });
   const resolvedTitle = doc.titleManual
     ? doc.name
-    : generatedMeta.title || retrievalIdentity.canonicalTitle || autoMeta.title;
+    : generatedMeta.title || retrievalCanonicalTitle || autoMeta.title;
   const resolvedDescription = doc.descriptionManual
     ? (doc.description ?? null)
     : (generatedMeta.description ?? autoMeta.description);
   const contentKind = resolveContentKind(doc.fileType);
-  const sections = buildKnowledgeSectionGraph(markdown, documentId, groupId, {
-    retrievalIdentity,
-    classification,
+  const canonicalTitle =
+    retrievalCanonicalTitle || resolvedTitle || documentTitle;
+  const documentTemporalHints = deriveKnowledgeTemporalHints({
+    title: canonicalTitle,
+    originalFilename: doc.originalFilename,
+    sourceUrl: doc.sourceUrl,
+    content: markdown,
+  });
+  const documentContext = {
+    documentId,
+    documentName: resolvedTitle || documentTitle,
+    canonicalTitle,
+    baseTitle: buildKnowledgeBaseTitle(canonicalTitle),
+  };
+  const documentDisplay = buildKnowledgeDisplayContext({
+    documentLabel: canonicalTitle,
+    variantLabel: buildKnowledgeVariantLabel({
+      title: canonicalTitle,
+      originalFilename: doc.originalFilename,
+      sourceUrl: doc.sourceUrl,
+      temporalHints: documentTemporalHints,
+    }),
+  });
+  const documentSourceContext = {
+    libraryId: null,
+    libraryVersion: null,
+    sourcePath: doc.sourceUrl ?? doc.originalFilename ?? null,
+    sheetName: null,
+    sourceGroupName: group.name,
+  };
+  const rawSections = buildKnowledgeSectionGraph(
+    markdown,
+    documentId,
+    groupId,
+    {
+      canonicalTitle: resolvedTitle,
+    },
+  );
+  const summaryDataBySectionId = buildKnowledgeSectionSummaryData(
+    rawSections,
+    inputImages ?? [],
+  );
+  const sections = rawSections.map((section) => {
+    const summaryData = summaryDataBySectionId.get(section.id) ?? null;
+    return {
+      ...section,
+      summary: summaryData?.partSummary ?? section.summary,
+      summaryData,
+    };
   });
   let metadataTokens = 0;
   let imageTokens = 0;
   let sectionTokens = 0;
   let chunkTokens = 0;
+  const embeddingWarnings: EmbeddingWarning[] = [];
 
   let metadataEmbedding: number[] | undefined;
   if (DOC_META_VECTOR_ENABLED) {
@@ -235,7 +354,6 @@ export async function materializeDocumentMarkdown({
       description: resolvedDescription,
       originalFilename: doc.originalFilename,
       sourceUrl: doc.sourceUrl,
-      retrievalIdentity,
     });
     if (metadataText) {
       try {
@@ -248,6 +366,10 @@ export async function materializeDocumentMarkdown({
         metadataEmbedding = result.embedding;
         metadataTokens = result.usageTokens;
       } catch (err) {
+        embeddingWarnings.push({
+          stage: "document_metadata",
+          message: getEmbeddingErrorMessage(err),
+        });
         console.warn(
           `[ContextX] Metadata embedding failed for document ${documentId}:`,
           err,
@@ -259,17 +381,24 @@ export async function materializeDocumentMarkdown({
   const metadata = {
     ...(doc.metadata ?? {}),
     sectionGraphVersion: SECTION_GRAPH_VERSION,
-    retrievalIdentity,
     generatedMetadata: {
       title: generatedMeta.title,
       description: generatedMeta.description ?? null,
     },
+    documentContext,
+    sourceContext: documentSourceContext,
+    temporalHints: documentTemporalHints,
+    display: documentDisplay,
     pageStates: (inputPages ?? []).map((page) => ({
       pageNumber: page.pageNumber,
       fingerprint: page.fingerprint,
       qualityScore: page.qualityScore,
       extractionMode: page.extractionMode,
       repairReason: page.repairReason ?? null,
+      parseFallbackUsed: page.parseFallbackUsed ?? false,
+      parseWindowCount: page.parseWindowCount ?? null,
+      parseFailedWindowCount: page.parseFailedWindowCount ?? null,
+      parseError: page.parseError ?? null,
     })),
   };
   const existingIngestUsage =
@@ -287,6 +416,10 @@ export async function materializeDocumentMarkdown({
       sectionEmbeddings = result.embeddings;
       sectionTokens = result.usageTokens;
     } catch (err) {
+      embeddingWarnings.push({
+        stage: "section",
+        message: getEmbeddingErrorMessage(err),
+      });
       console.warn(
         `[ContextX] Section embedding failed for document ${documentId}:`,
         err,
@@ -313,6 +446,10 @@ export async function materializeDocumentMarkdown({
       imageEmbeddings = result.embeddings;
       imageTokens = result.usageTokens;
     } catch (err) {
+      embeddingWarnings.push({
+        stage: "image",
+        message: getEmbeddingErrorMessage(err),
+      });
       console.warn(
         `[ContextX] Image embedding failed for document ${documentId}:`,
         err,
@@ -327,22 +464,86 @@ export async function materializeDocumentMarkdown({
       originalFilename: doc.originalFilename,
       content: section.content,
     });
+    const sectionTemporalHints =
+      deriveKnowledgeTemporalHints({
+        title: canonicalTitle,
+        originalFilename: doc.originalFilename,
+        sourceUrl: section.sourcePath ?? doc.sourceUrl,
+        content: section.content,
+      }) ?? documentTemporalHints;
+    const topicLabel = buildKnowledgeTopicLabel({
+      headingPath: section.headingPath,
+      sectionTitle: section.heading,
+      noteNumber: section.noteNumber ?? null,
+      noteSubsection: section.noteSubsection ?? null,
+      noteTitle: section.noteTitle ?? null,
+      sourcePath: section.sourcePath ?? null,
+    });
+    const locationLabel = buildKnowledgeLocationLabel({
+      headingPath: section.headingPath,
+      noteNumber: section.noteNumber ?? null,
+      noteSubsection: section.noteSubsection ?? null,
+      noteTitle: section.noteTitle ?? null,
+      pageStart: section.pageStart ?? null,
+      pageEnd: section.pageEnd ?? null,
+    });
+    const variantLabel =
+      buildKnowledgeVariantLabel({
+        title: [canonicalTitle, section.headingPath].filter(Boolean).join("\n"),
+        originalFilename: doc.originalFilename,
+        sourceUrl: section.sourcePath ?? doc.sourceUrl,
+        libraryVersion: section.libraryVersion ?? null,
+        temporalHints: sectionTemporalHints,
+        fallback: documentDisplay.variantLabel ?? null,
+      }) ?? documentDisplay.variantLabel;
+    const sourceContext = {
+      libraryId: section.libraryId ?? null,
+      libraryVersion: section.libraryVersion ?? null,
+      sourcePath:
+        section.sourcePath ?? doc.sourceUrl ?? doc.originalFilename ?? null,
+      sheetName: null,
+      sourceGroupName: group.name,
+    };
+    const locationContext = {
+      sectionId: section.id,
+      headingPath: section.headingPath,
+      noteNumber: section.noteSubsection
+        ? `${section.noteNumber ?? ""}.${section.noteSubsection}`
+        : (section.noteNumber ?? null),
+      noteTitle: section.noteTitle ?? null,
+      pageStart: section.pageStart ?? null,
+      pageEnd: section.pageEnd ?? null,
+      chunkIndex: null,
+    };
+    const display = buildKnowledgeDisplayContext({
+      documentLabel: documentDisplay.documentLabel ?? canonicalTitle,
+      variantLabel,
+      topicLabel,
+      locationLabel,
+    });
+    const sectionMetadata: KnowledgeChunkMetadata = {
+      canonicalTitle: section.canonicalTitle,
+      section: section.heading,
+      sectionTitle: section.heading,
+      headingPath: section.headingPath,
+      libraryId: section.libraryId,
+      libraryVersion: section.libraryVersion,
+      noteTitle: section.noteTitle ?? undefined,
+      noteNumber: section.noteNumber ?? undefined,
+      noteSubsection: section.noteSubsection ?? undefined,
+      sourcePath: section.sourcePath ?? undefined,
+      pageStart: section.pageStart ?? undefined,
+      pageEnd: section.pageEnd ?? undefined,
+      documentContext,
+      sourceContext,
+      locationContext,
+      display,
+      temporalHints: sectionTemporalHints,
+    };
     const entityTerms = extractKnowledgeEntities({
       headingPath: section.headingPath,
       content: section.content,
-      metadata: {
-        canonicalTitle: section.canonicalTitle,
-        issuerName: section.issuerName,
-        issuerTicker: section.issuerTicker,
-        section: section.heading,
-        sectionTitle: section.heading,
-        headingPath: section.headingPath,
-        libraryId: section.libraryId,
-        libraryVersion: section.libraryVersion,
-        noteTitle: section.noteTitle ?? undefined,
-        noteNumber: section.noteNumber ?? undefined,
-        noteSubsection: section.noteSubsection ?? undefined,
-      },
+      metadata: sectionMetadata,
     }).map((entity) => entity.canonicalName);
 
     return {
@@ -350,11 +551,11 @@ export async function materializeDocumentMarkdown({
       contentKind,
       ...(language ? { language } : {}),
       entityTerms,
-      temporalHints: buildTemporalHints({
-        periodEnd: section.periodEnd ?? null,
-        freshnessLabel:
-          section.fiscalYear != null ? `FY ${section.fiscalYear}` : null,
-      }),
+      documentContext,
+      sourceContext,
+      locationContext,
+      display,
+      temporalHints: sectionTemporalHints,
     };
   });
   const chunks = chunkKnowledgeSections(
@@ -421,6 +622,7 @@ export async function materializeDocumentMarkdown({
       embeddingUsage,
       metadata: {
         ...metadata,
+        ...(embeddingWarnings.length > 0 ? { embeddingWarnings } : {}),
         ingestUsage: {
           ...existingIngestUsage,
           embedding: embeddingUsage,
@@ -472,33 +674,56 @@ export async function materializeDocumentMarkdown({
     identityEmbeddingResult,
     entityEmbeddingResult,
   ] = await Promise.all([
-    embedTextsWithUsage(
-      enrichedChunks.map((chunk) => chunk.embeddingText),
-      group.embeddingProvider,
-      group.embeddingModel,
-    ),
-    embedTextsWithUsage(
-      contentTexts,
-      group.embeddingProvider,
-      group.embeddingModel,
-    ),
-    embedTextsWithUsage(
-      contextTexts,
-      group.embeddingProvider,
-      group.embeddingModel,
-    ),
-    embedTextsWithUsage(
-      identityTexts,
-      group.embeddingProvider,
-      group.embeddingModel,
-    ),
-    embedTextsWithUsage(
-      entityTexts,
-      group.embeddingProvider,
-      group.embeddingModel,
-    ),
+    embedTextsSafely({
+      label: "legacy_chunk",
+      documentId,
+      texts: enrichedChunks.map((chunk) => chunk.embeddingText),
+      provider: group.embeddingProvider,
+      model: group.embeddingModel,
+      warnings: embeddingWarnings,
+    }),
+    embedTextsSafely({
+      label: "content_chunk",
+      documentId,
+      texts: contentTexts,
+      provider: group.embeddingProvider,
+      model: group.embeddingModel,
+      warnings: embeddingWarnings,
+    }),
+    embedTextsSafely({
+      label: "context_chunk",
+      documentId,
+      texts: contextTexts,
+      provider: group.embeddingProvider,
+      model: group.embeddingModel,
+      warnings: embeddingWarnings,
+    }),
+    embedTextsSafely({
+      label: "identity_chunk",
+      documentId,
+      texts: identityTexts,
+      provider: group.embeddingProvider,
+      model: group.embeddingModel,
+      warnings: embeddingWarnings,
+    }),
+    embedTextsSafely({
+      label: "entity_chunk",
+      documentId,
+      texts: entityTexts,
+      provider: group.embeddingProvider,
+      model: group.embeddingModel,
+      warnings: embeddingWarnings,
+    }),
   ]);
-  const embeddings = legacyEmbeddingResult.embeddings;
+  const embeddings = enrichedChunks.map(
+    (_, index) =>
+      legacyEmbeddingResult.embeddings[index] ??
+      contentEmbeddingResult.embeddings[index] ??
+      contextEmbeddingResult.embeddings[index] ??
+      identityEmbeddingResult.embeddings[index] ??
+      entityEmbeddingResult.embeddings[index] ??
+      [],
+  );
   const contentEmbeddings = contentEmbeddingResult.embeddings;
   const contextEmbeddings = contextEmbeddingResult.embeddings;
   const identityEmbeddings = identityEmbeddingResult.embeddings;
@@ -509,6 +734,24 @@ export async function materializeDocumentMarkdown({
     contextEmbeddingResult.usageTokens +
     identityEmbeddingResult.usageTokens +
     entityEmbeddingResult.usageTokens;
+
+  const missingChunkEmbeddingCount = embeddings.filter(
+    (embedding) => !hasUsableEmbedding(embedding),
+  ).length;
+  if (missingChunkEmbeddingCount > 0) {
+    const chunkWarnings = embeddingWarnings.filter((warning) =>
+      PRIMARY_CHUNK_EMBEDDING_STAGES.has(warning.stage),
+    );
+    const detail =
+      chunkWarnings.length > 0
+        ? ` Failed stages: ${chunkWarnings
+            .map((warning) => `${warning.stage}: ${warning.message}`)
+            .join("; ")}`
+        : "";
+    throw new Error(
+      `Chunk embeddings unavailable for ${missingChunkEmbeddingCount} of ${enrichedChunks.length} chunk(s) using ${group.embeddingProvider}/${group.embeddingModel}.${detail}`,
+    );
+  }
 
   const totalTokens = enrichedChunks.reduce((sum, chunk) => {
     return sum + chunk.tokenCount;
@@ -583,6 +826,7 @@ export async function materializeDocumentMarkdown({
     embeddingUsage,
     metadata: {
       ...metadata,
+      ...(embeddingWarnings.length > 0 ? { embeddingWarnings } : {}),
       ingestUsage: {
         ...existingIngestUsage,
         embedding: embeddingUsage,

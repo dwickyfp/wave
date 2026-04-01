@@ -15,8 +15,10 @@ Critical rules:
 - Generate a concise title based on the first user message
 - Title must be under 80 characters (absolutely no more than 80 characters)
 - Summarize only the core content clearly
-- Do not use quotes, colons, or special characters
-- Use the same language as the user's message`;
+- Return plain text only
+- Do not use markdown, headings, bullets, numbering, quotes, colons, or symbols
+- Use the same language as the user's message
+- Return only the title text with no extra commentary`;
 
 export const buildAgentGenerationPrompt = (toolNames: string[]) => {
   const toolsList = toolNames.map((name) => `- ${name}`).join("\n");
@@ -208,7 +210,19 @@ You can assist with:
 - Analysis and problem-solving across various domains
 - Using available tools and resources to complete tasks
 - Adapting communication to user preferences and context
-</general_capabilities>`;
+</general_capabilities>
+
+<output_format_rules>
+- Use \`mermaid\` only for valid Mermaid DSL diagrams (flowchart, sequenceDiagram, gantt, xychart-beta, etc.)
+- Use a \`vegalite\` code block to render charts and visualisations. The block must contain a single, complete, valid JSON object. Required fields:
+  - "$schema": "https://vega.github.io/schema/vega-lite/v6.json"
+  - "data": { "values": [ ... ] }  ← inline the data rows directly
+  - "mark": one of "bar" | "line" | "point" | "area" | "arc" | "rect" | "rule" | "tick" | "boxplot"
+  - "encoding": channel definitions (x, y, color, size, …) each with "field", "type" ("quantitative" | "ordinal" | "nominal" | "temporal"), and optional "title"
+  - Optionally add "title", "width", "height", "layer", "facet", "description"
+  - Never truncate or abbreviate the JSON — always emit the full, syntactically valid object
+- Use \`json\` code blocks for raw JSON data that is not a chart spec
+</output_format_rules>`;
 
   // Communication preferences
   const displayName = userPreferences?.displayName || user?.name;
@@ -236,8 +250,6 @@ ${userPreferences.responseStyleExample}
 
 - When using tools, briefly mention which tool you'll use with natural phrases
 - Examples: "I'll search for that information", "Let me check the weather", "I'll run some calculations"
-- Use \`mermaid\` only for valid Mermaid DSL diagrams
-- Use \`vegalite\` or \`json\` code blocks for structured chart specs or raw JSON data
 </communication_preferences>`;
   }
 
@@ -471,11 +483,12 @@ export function buildKnowledgeToolCitationSystemPrompt(
   return `
 <knowledge_tool_citation_instructions>
 If you use any attached knowledge tool named like get_docs_*:
-1. Read the tool result's contextText, citations, and evidencePack fields together.
+1. Read the tool result's queryAnalysis, comparisonGroups, evidenceItems, contextText, citations, and evidencePack fields together.
 2. Treat citations[].number as the only valid inline citation ids for facts grounded in that tool result.
-3. Cite every knowledge-backed sentence or bullet from that tool result with inline markers like "[4]".
-4. Do not invent, renumber, or omit citation ids from knowledge tool results.
-5. Answers based on get_docs_* tool results are invalid without inline citations.
+3. If comparisonGroups or evidenceItems are present, use them to keep variants/periods/versions separated instead of merging them mentally.
+4. Cite every knowledge-backed sentence or bullet from that tool result with inline markers like "[4]".
+5. Do not invent, renumber, or omit citation ids from knowledge tool results.
+6. Answers based on get_docs_* tool results are invalid without inline citations.
 </knowledge_tool_citation_instructions>`.trim();
 }
 

@@ -8,6 +8,7 @@ import { cn } from "lib/utils";
 import {
   FileIcon,
   FileTextIcon,
+  ImageIcon,
   LinkIcon,
   Loader2Icon,
   RefreshCwIcon,
@@ -30,6 +31,11 @@ const FILE_ICONS: Record<string, React.FC<{ className?: string }>> = {
   txt: FileTextIcon,
   md: FileTextIcon,
   html: FileTextIcon,
+  png: ImageIcon,
+  jpg: ImageIcon,
+  jpeg: ImageIcon,
+  gif: ImageIcon,
+  webp: ImageIcon,
 };
 
 const STATUS_COLORS: Record<string, string> = {

@@ -3,7 +3,7 @@ import "load-env";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { knowledgeRepository } from "lib/db/repository";
-import { queryKnowledgeAsDocs } from "lib/knowledge/retriever";
+import { queryKnowledgeStructured } from "lib/knowledge/retriever";
 
 const FixtureSchema = z.object({
   query: z.string().min(1),
@@ -11,6 +11,7 @@ const FixtureSchema = z.object({
   expectedDocumentNames: z.array(z.string()).default([]),
   expectedSectionHeadings: z.array(z.string()).default([]),
   expectedPages: z.array(z.number().int()).default([]),
+  expectedVariantLabels: z.array(z.string()).default([]),
 });
 
 const FixtureFileSchema = z.object({
@@ -57,16 +58,18 @@ const rows: Array<{
   recallAt5: number;
   reciprocalRank: number;
   exactCitationHit: number;
+  variantSeparation: number;
 }> = [];
 
 for (const fixture of file.fixtures) {
-  const docs = await queryKnowledgeAsDocs(group, fixture.query, {
+  const envelope = await queryKnowledgeStructured(group, fixture.query, {
     userId: file.userId ?? null,
     source: file.source,
     tokens: 8000,
     maxDocs: 5,
     resultMode: "section-first",
   });
+  const docs = envelope.docs;
 
   const rankedIds = docs.map((doc) => doc.documentId);
   const rankedNames = docs.map((doc) => doc.documentName.toLowerCase());
@@ -90,6 +93,22 @@ for (const fixture of file.fixtures) {
           )
         ? 1
         : 0;
+  const expectedVariantSet = new Set(
+    fixture.expectedVariantLabels.map((label) => label.toLowerCase()),
+  );
+  const actualVariantSet = new Set(
+    envelope.comparisonGroups.flatMap((group) =>
+      group.variants.map((variant) => variant.variantLabel.toLowerCase()),
+    ),
+  );
+  const variantSeparation =
+    expectedVariantSet.size === 0
+      ? 1
+      : Array.from(expectedVariantSet).every((label) =>
+            actualVariantSet.has(label),
+          )
+        ? 1
+        : 0;
 
   rows.push({
     query: fixture.query,
@@ -99,6 +118,7 @@ for (const fixture of file.fixtures) {
       expectedDocKeys,
     ),
     exactCitationHit,
+    variantSeparation,
   });
 }
 
@@ -116,6 +136,9 @@ console.info(
       recallAt5: average(rows.map((row) => row.recallAt5)),
       mrr: average(rows.map((row) => row.reciprocalRank)),
       citationPageAccuracy: average(rows.map((row) => row.exactCitationHit)),
+      variantSeparationAccuracy: average(
+        rows.map((row) => row.variantSeparation),
+      ),
       rows,
     },
     null,

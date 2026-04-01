@@ -3,11 +3,14 @@ import { embedMany, embed } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAzure } from "@ai-sdk/azure";
 import { createCohere } from "@ai-sdk/cohere";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createOllama } from "ollama-ai-provider-v2";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { CacheKeys } from "lib/cache/cache-keys";
 import { serverCache } from "lib/cache";
 import { settingsRepository } from "lib/db/repository";
+import { normalizeWhitespaceArtifacts } from "./text-cleaning";
 import { EmbeddingModel } from "ai";
 import type { ProviderSettings } from "app-types/settings";
 
@@ -110,6 +113,18 @@ function readSetting(
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function readSettingBoolean(
+  settings: ProviderSettings | null | undefined,
+  key: string,
+): boolean | null {
+  const value = settings?.[key];
+  return typeof value === "boolean" ? value : null;
+}
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
 function readPositiveIntEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -202,12 +217,35 @@ function parseRetryDelayMs(error: unknown, attempt: number): number {
 }
 
 function isRetriableEmbeddingError(error: unknown): boolean {
+  const anyError = error as any;
   const message = getErrorMessage(error).toLowerCase();
+  const statusCode = Number(
+    anyError?.statusCode ??
+      anyError?.response?.status ??
+      anyError?.cause?.statusCode ??
+      NaN,
+  );
+
   return (
+    statusCode === 408 ||
+    statusCode === 409 ||
+    statusCode === 423 ||
+    statusCode === 429 ||
+    statusCode === 500 ||
+    statusCode === 502 ||
+    statusCode === 503 ||
+    statusCode === 504 ||
     message.includes("ratelimitreached") ||
     message.includes("rate limit") ||
     message.includes("too many requests") ||
     message.includes("retry after") ||
+    message.includes("no successful provider responses") ||
+    message.includes("socket hang up") ||
+    message.includes("econnreset") ||
+    message.includes("bad gateway") ||
+    message.includes("gateway timeout") ||
+    message.includes("internal server error") ||
+    message.includes("service unavailable") ||
     message.includes("temporarily unavailable") ||
     message.includes("timeout") ||
     message.includes("timed out") ||
@@ -245,7 +283,7 @@ async function runEmbeddingCallWithRetry<T>(
 
       const delayMs = parseRetryDelayMs(error, attempt);
       console.warn(
-        `[ContextX] Embedding rate limited for ${provider}/${modelName}; retrying in ${Math.ceil(delayMs / 1000)}s (attempt ${attempt}/${maxAttempts})`,
+        `[ContextX] Embedding request failed for ${provider}/${modelName}; retrying in ${Math.ceil(delayMs / 1000)}s (attempt ${attempt}/${maxAttempts})`,
       );
       safeRelease();
       await sleep(delayMs);
@@ -272,7 +310,7 @@ function createEmbeddingModel(
           apiKey: key,
           ...(baseUrl ? { baseURL: baseUrl } : {}),
         });
-        return p.embedding(modelApiName);
+        return p.textEmbeddingModel(modelApiName);
       }
       case "cohere": {
         const key = apiKey || process.env.COHERE_API_KEY;
@@ -280,13 +318,19 @@ function createEmbeddingModel(
         const p = createCohere({ apiKey: key });
         return p.textEmbeddingModel(modelApiName);
       }
+      case "google": {
+        const key = apiKey || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+        if (!key) return null;
+        const p = createGoogleGenerativeAI({ apiKey: key });
+        return p.textEmbeddingModel(modelApiName as any);
+      }
       case "ollama": {
         const url =
           baseUrl ||
           process.env.OLLAMA_BASE_URL ||
           "http://localhost:11434/api";
         const p = createOllama({ baseURL: url });
-        return p.embedding(modelApiName);
+        return p.textEmbeddingModel(modelApiName);
       }
       case "openrouter": {
         const key = apiKey || process.env.OPENROUTER_API_KEY;
@@ -310,6 +354,10 @@ function createEmbeddingModel(
           null;
         const configuredApiVersion =
           readSetting(settings, "apiVersion") || null;
+        const useDeploymentBasedUrls = readSettingBoolean(
+          settings,
+          "useDeploymentBasedUrls",
+        );
         const p = createAzure({
           apiKey: key,
           ...(configuredBaseUrl ? { baseURL: configuredBaseUrl } : {}),
@@ -317,11 +365,41 @@ function createEmbeddingModel(
             ? { resourceName: configuredResourceName }
             : {}),
           ...(configuredApiVersion ? { apiVersion: configuredApiVersion } : {}),
+          ...(useDeploymentBasedUrls !== null
+            ? { useDeploymentBasedUrls }
+            : {}),
         });
-        return p.embedding(modelApiName);
+        return p.textEmbeddingModel(modelApiName);
+      }
+      case "snowflake": {
+        const key = apiKey || process.env.SNOWFLAKE_API_KEY;
+        if (!key) return null;
+        const accountId = baseUrl || process.env.SNOWFLAKE_ACCOUNT_ID;
+        if (!accountId) return null;
+        const p = createOpenAICompatible({
+          name: "snowflake",
+          apiKey: key,
+          baseURL: `https://${accountId}.snowflakecomputing.com/api/v2/cortex/v1`,
+        });
+        return p.textEmbeddingModel(modelApiName as any);
+      }
+      case "openai-compatible": {
+        if (!baseUrl) return null;
+        const key = apiKey || "";
+        const p = createOpenAICompatible({
+          name: provider,
+          apiKey: key,
+          baseURL: baseUrl,
+        });
+        return p.textEmbeddingModel(modelApiName as any);
       }
       default:
-        return null;
+        if (!baseUrl || !isHttpUrl(baseUrl)) return null;
+        return createOpenAICompatible({
+          name: provider,
+          apiKey: apiKey || "",
+          baseURL: baseUrl,
+        }).textEmbeddingModel(modelApiName as any);
     }
   } catch {
     return null;
@@ -360,11 +438,7 @@ async function getEmbeddingModelFromDb(
 function preprocessForEmbedding(text: string): string {
   const MAX_EMBEDDING_CHARS = 30_000; // ~8K tokens safety limit
 
-  let processed = text
-    // Normalize unicode
-    .normalize("NFC")
-    // Remove zero-width chars
-    .replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "")
+  let processed = normalizeWhitespaceArtifacts(text)
     // Collapse excessive whitespace
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")

@@ -29,8 +29,8 @@ describe("group-config", () => {
       chunkSize: 1024,
       chunkOverlapPercent: 12,
       parseMode: "always",
-      contextMode: "always-llm",
-      imageMode: "always",
+      contextMode: "auto-llm",
+      imageMode: "auto",
     });
   });
 

@@ -30,8 +30,8 @@ import { Button } from "ui/button";
 import JsonView from "ui/json-view";
 import { Textarea } from "ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
-import { Markdown } from "./markdown";
 import { KnowledgeImageGallery } from "./knowledge-image-gallery";
+import { Markdown } from "./markdown";
 import { MessageEditor } from "./message-editor";
 
 import {
@@ -66,28 +66,28 @@ import {
   VercelAIWorkflowToolStreamingResultTag,
 } from "app-types/workflow";
 import { DefaultToolName, ImageToolName } from "lib/ai/tools";
+import {
+  buildKnowledgeSourcesFromCitations,
+  getMessageKnowledgeCitations,
+  stripKnowledgeCitationLinks,
+} from "lib/chat/knowledge-citations";
 import equal from "lib/equal";
 import {
   Shortcut,
   getShortcutKeyList,
   isShortcutEvent,
 } from "lib/keyboard-shortcuts";
-import {
-  buildKnowledgeSourcesFromCitations,
-  getMessageKnowledgeCitations,
-  stripKnowledgeCitationLinks,
-} from "lib/chat/knowledge-citations";
 import { Avatar, AvatarFallback, AvatarImage } from "ui/avatar";
 import { TextShimmer } from "ui/text-shimmer";
 
 import { appStore } from "@/app/store";
+import { tokenizeUserMessageMentions } from "@/lib/chat/user-message-mentions";
 import { BACKGROUND_COLORS, EMOJI_DATA } from "lib/const";
 import { notify } from "lib/notify";
 import dynamic from "next/dynamic";
 import { ModelProviderIcon } from "ui/model-provider-icon";
-import { WorkflowInvocation } from "./tool-invocation/workflow-invocation";
-import { tokenizeUserMessageMentions } from "@/lib/chat/user-message-mentions";
 import { KnowledgeSourcesBadge } from "./knowledge-sources-badge";
+import { WorkflowInvocation } from "./tool-invocation/workflow-invocation";
 
 type MessagePart = UIMessage["parts"][number];
 type TextMessagePart = Extract<MessagePart, { type: "text" }>;
@@ -1314,7 +1314,7 @@ export const ToolMessagePart = memo(
     }, [isWorkflowTool, isCompleted, result, isLast]);
 
     return (
-      <div className="group w-full">
+      <div className="group w-full min-w-0">
         {CustomToolComponent ? (
           CustomToolComponent
         ) : (

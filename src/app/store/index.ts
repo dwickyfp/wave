@@ -65,8 +65,7 @@ export interface AppState {
     isOpen: boolean;
     agentId?: string;
     options: {
-      provider: string;
-      providerOptions?: Record<string, any>;
+      voice?: string;
     };
   };
   pendingThreadMention?: ChatMention;
@@ -124,10 +123,7 @@ const initialState: AppState = {
   voiceChat: {
     isOpen: false,
     options: {
-      provider: "openai",
-      providerOptions: {
-        model: OPENAI_VOICE["Alloy"],
-      },
+      voice: OPENAI_VOICE["Ash"],
     },
   },
   pendingThreadMention: undefined,
@@ -161,6 +157,10 @@ export const appStore = create<AppState & AppDispatch>()(
           ...initialState.voiceChat,
           ...state.voiceChat,
           isOpen: false,
+          options: {
+            ...initialState.voiceChat.options,
+            ...state.voiceChat?.options,
+          },
         },
       }),
     },

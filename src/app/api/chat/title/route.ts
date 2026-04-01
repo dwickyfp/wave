@@ -2,6 +2,7 @@ import { smoothStream, streamText } from "ai";
 
 import { getDbModel } from "lib/ai/provider-factory";
 import { CREATE_THREAD_TITLE_PROMPT } from "lib/ai/prompts";
+import { sanitizeThreadTitle } from "lib/chat/thread-title";
 import globalLogger from "logger";
 import { ChatModel } from "app-types/chat";
 import { chatRepository } from "lib/db/repository";
@@ -49,10 +50,13 @@ export async function POST(request: Request) {
       prompt: message,
       abortSignal: request.signal,
       onFinish: (ctx) => {
+        const title = sanitizeThreadTitle(ctx.text);
+        if (!title) return;
+
         chatRepository
           .upsertThread({
             id: threadId,
-            title: ctx.text,
+            title,
             userId: session.user.id,
           })
           .catch((err) => logger.error(err));

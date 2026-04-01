@@ -5,6 +5,7 @@ import { processXlsx } from "./xlsx-processor";
 import { processJson } from "./json-processor";
 import { processEml } from "./eml-processor";
 import { processCode } from "./code-processor";
+import { processImageFile } from "./image-file-processor";
 import { processPptx } from "./pptx-processor";
 import { processUrl, processHtml } from "./url-processor";
 import type { DocumentProcessingOptions, ProcessedDocument } from "./types";
@@ -35,6 +36,12 @@ export async function processDocument(
           options.originalFilename ?? options.documentTitle ?? null,
         ),
       };
+    case "png":
+    case "jpg":
+    case "jpeg":
+    case "gif":
+    case "webp":
+      return processImageFile(fileType, input as Buffer, options);
     case "url":
       return processUrl(input as string, options);
     case "html":
