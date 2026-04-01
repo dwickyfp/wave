@@ -30,6 +30,26 @@ export const OPENAI_VOICE = {
   Ash: "ash",
 };
 
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  {
+    urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"],
+  },
+];
+
+function getVoiceIceServers(): RTCIceServer[] {
+  const configuredServers = process.env.NEXT_PUBLIC_VOICE_ICE_SERVERS?.split(
+    ",",
+  )
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (!configuredServers?.length) {
+    return DEFAULT_ICE_SERVERS;
+  }
+
+  return [{ urls: configuredServers }];
+}
+
 type Content =
   | {
       type: "text";
@@ -454,7 +474,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         sdpAuthHeader === "Authorization"
           ? `Bearer ${sessionToken}`
           : sessionToken;
-      const pc = new RTCPeerConnection();
+      const pc = new RTCPeerConnection({
+        iceServers: getVoiceIceServers(),
+        iceCandidatePoolSize: 4,
+      });
       if (!audioElement.current) {
         audioElement.current = document.createElement("audio");
         audioElement.current.style.display = "none";
@@ -490,6 +513,16 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           setIsLoading(false);
           setError(new Error("Voice WebRTC ICE negotiation failed."));
         }
+      };
+      pc.onicecandidate = (event) => {
+        if (!event.candidate) {
+          console.log("voice rtc candidate", "end-of-candidates");
+          return;
+        }
+
+        const candidate = event.candidate.candidate;
+        const typeMatch = candidate.match(/\btyp\s+([a-z]+)/i);
+        console.log("voice rtc candidate", typeMatch?.[1] || "unknown");
       };
       pc.ontrack = (e) => {
         if (audioElement.current) {
