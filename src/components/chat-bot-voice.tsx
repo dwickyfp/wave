@@ -30,8 +30,6 @@ import { ToolMessagePart } from "./message-parts";
 
 import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
-import useSWR from "swr";
-import { fetcher } from "lib/utils";
 import { useShallow } from "zustand/shallow";
 import { useTranslations } from "next-intl";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "ui/dialog";
@@ -53,30 +51,18 @@ const prependTools: EnabledTools[] = [
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
-  const [
-    agentId,
-    appStoreMutate,
-    voiceChat,
-    model,
-    allowedMcpServers,
-    mcpList,
-  ] = appStore(
-    useShallow((state) => [
-      state.voiceChat.agentId,
-      state.mutate,
-      state.voiceChat,
-      state.chatModel,
-      state.allowedMcpServers,
-      state.mcpList,
-    ]),
-  );
+  const [agentId, appStoreMutate, voiceChat, allowedMcpServers, mcpList] =
+    appStore(
+      useShallow((state) => [
+        state.voiceChat.agentId,
+        state.mutate,
+        state.voiceChat,
+        state.allowedMcpServers,
+        state.mcpList,
+      ]),
+    );
 
   const { agent } = useAgent(agentId);
-
-  const { data: voiceChatModelSetting } = useSWR<{
-    provider?: string;
-    model?: string;
-  } | null>("/api/settings/voice-chat-model", fetcher);
 
   const [isClosing, setIsClosing] = useState(false);
   const startAudio = useRef<HTMLAudioElement>(null);
@@ -126,9 +112,7 @@ export function ChatBotVoice() {
   } = OpenAIVoiceChat({
     toolMentions,
     agentId,
-    provider: voiceChat.options.provider,
-    model: voiceChatModelSetting?.model,
-    ...voiceChat.options.providerOptions,
+    voice: voiceChat.options.voice,
   });
 
   const startWithSound = useCallback(() => {
@@ -150,7 +134,7 @@ export function ChatBotVoice() {
         isOpen: false,
       },
     });
-  }, [messages, model]);
+  }, [appStoreMutate, stop, voiceChat]);
 
   const statusMessage = useMemo(() => {
     if (isLoading) {

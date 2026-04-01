@@ -65,11 +65,7 @@ export interface AppState {
     isOpen: boolean;
     agentId?: string;
     options: {
-      provider: "openai" | "azure";
-      providerOptions?: {
-        voice?: string;
-        model?: string;
-      };
+      voice?: string;
     };
   };
   pendingThreadMention?: ChatMention;
@@ -127,11 +123,7 @@ const initialState: AppState = {
   voiceChat: {
     isOpen: false,
     options: {
-      provider: "openai",
-      providerOptions: {
-        voice: OPENAI_VOICE["Ash"],
-        model: "gpt-4o-realtime-preview",
-      },
+      voice: OPENAI_VOICE["Ash"],
     },
   },
   pendingThreadMention: undefined,
@@ -168,10 +160,6 @@ export const appStore = create<AppState & AppDispatch>()(
           options: {
             ...initialState.voiceChat.options,
             ...state.voiceChat?.options,
-            providerOptions: {
-              // Only persist voice persona; model comes from Emma Model Setup (DB)
-              voice: state.voiceChat?.options?.providerOptions?.voice,
-            },
           },
         },
       }),

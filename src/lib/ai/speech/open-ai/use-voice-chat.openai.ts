@@ -77,7 +77,7 @@ const createUIMessage = (m: {
 };
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
-  const { model, voice = OPENAI_VOICE.Ash, provider = "openai" } = props || {};
+  const { voice = OPENAI_VOICE.Ash } = props || {};
 
   const [isUserSpeaking, setIsUserSpeaking] = useState(false);
   const [isAssistantSpeaking, setIsAssistantSpeaking] = useState(false);
@@ -138,34 +138,41 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
   const createSession =
     useCallback(async (): Promise<OpenAIRealtimeSession> => {
-      const params = new URLSearchParams({ voice });
-      if (model) params.set("model", model);
-      const response = await fetch(
-        `/api/chat/openai-realtime?${params.toString()}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model,
-            voice,
-            provider,
-            agentId: props?.agentId,
-            mentions: props?.toolMentions,
-          }),
+      const response = await fetch("/api/chat/openai-realtime", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
-      );
-      if (response.status !== 200) {
-        throw new Error(await response.text());
+        body: JSON.stringify({
+          voice,
+          agentId: props?.agentId,
+          mentions: props?.toolMentions,
+        }),
+      });
+      if (!response.ok) {
+        const rawError = await response.text();
+        try {
+          const parsedError = JSON.parse(rawError);
+          const message =
+            typeof parsedError?.error === "string"
+              ? parsedError.error
+              : parsedError?.error?.message || rawError;
+          throw new Error(message);
+        } catch {
+          throw new Error(rawError);
+        }
       }
       const session = await response.json();
       if (session.error) {
-        throw new Error(session.error.message);
+        throw new Error(
+          typeof session.error === "string"
+            ? session.error
+            : session.error.message || JSON.stringify(session.error),
+        );
       }
 
       return session;
-    }, [model, voice, provider, props?.toolMentions, props?.agentId]);
+    }, [voice, props?.toolMentions, props?.agentId]);
 
   const updateUIMessage = useCallback(
     (
@@ -444,9 +451,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
       });
       dc.addEventListener("open", () => {
-        // For GA Azure protocol, tools and transcription config must be sent
-        // via session.update after the data channel opens (can't be set in
-        // the client_secrets POST body).
+        // Azure Voice Direct can only complete the SDP exchange server-side,
+        // so session configuration is pushed once the data channel is ready.
         if (session.pendingSessionUpdate) {
           dc.send(
             JSON.stringify({

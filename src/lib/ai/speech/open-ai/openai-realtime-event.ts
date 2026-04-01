@@ -27,7 +27,7 @@ export type OpenAIRealtimeSession = {
 export type OpenAIRealtimeClientEvent =
   | {
       type: "session.update";
-      data: Partial<OpenAIRealtimeSession>;
+      session: Partial<OpenAIRealtimeSession>;
     }
   | {
       type: "conversation.item.create";

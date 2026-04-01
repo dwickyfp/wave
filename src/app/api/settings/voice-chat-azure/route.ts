@@ -9,7 +9,7 @@ export const VoiceChatAzureSchema = z.object({
   baseUrl: z.string().url("Must be a valid URL"),
   apiVersion: z.string().min(1, "API version is required"),
   deploymentName: z.string().min(1, "Deployment name is required"),
-  apiKey: z.string().min(1, "API key is required"),
+  apiKey: z.string(),
 });
 
 export type VoiceChatAzureConfig = z.infer<typeof VoiceChatAzureSchema>;

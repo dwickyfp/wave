@@ -40,7 +40,6 @@ const IMAGE_NEIGHBOR_CONTEXT_KEY =
   "/api/settings/knowledge-image-neighbor-context-enabled";
 const JUDGE_MODEL_KEY = "/api/settings/evaluation-judge-model";
 const EMBEDDING_MODEL_KEY = "/api/settings/self-learning-embedding-model";
-const VOICE_CHAT_MODEL_KEY = "/api/settings/voice-chat-model";
 const VOICE_CHAT_AZURE_KEY = "/api/settings/voice-chat-azure";
 
 type VoiceChatAzureConfig = {
@@ -188,10 +187,6 @@ export function EmmaModelSettingsButton() {
       EMBEDDING_MODEL_KEY,
       fetcher,
     );
-  const { data: voiceChatConfig } = useSWR<ContextXModelConfig>(
-    VOICE_CHAT_MODEL_KEY,
-    fetcher,
-  );
   const { data: voiceChatAzureConfig } = useSWR<VoiceChatAzureConfig | null>(
     VOICE_CHAT_AZURE_KEY,
     fetcher,
@@ -204,7 +199,6 @@ export function EmmaModelSettingsButton() {
     useState(true);
   const [judgeValue, setJudgeValue] = useState(NONE_VALUE);
   const [embeddingValue, setEmbeddingValue] = useState(NONE_VALUE);
-  const [voiceChatValue, setVoiceChatValue] = useState(NONE_VALUE);
   const [azureVoice, setAzureVoice] =
     useState<VoiceChatAzureConfig>(EMPTY_AZURE_VOICE);
 
@@ -233,10 +227,6 @@ export function EmmaModelSettingsButton() {
   }, [embeddingConfig]);
 
   useEffect(() => {
-    setVoiceChatValue(getConfiguredValue(voiceChatConfig));
-  }, [voiceChatConfig]);
-
-  useEffect(() => {
     if (voiceChatAzureConfig) setAzureVoice(voiceChatAzureConfig);
     else setAzureVoice(EMPTY_AZURE_VOICE);
   }, [voiceChatAzureConfig]);
@@ -251,11 +241,13 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabledConfig ?? true;
   const currentJudgeValue = getConfiguredValue(judgeConfig);
   const currentEmbeddingValue = getConfiguredValue(embeddingConfig);
-  const currentVoiceChatValue = getConfiguredValue(voiceChatConfig);
   const currentAzureVoice = voiceChatAzureConfig ?? EMPTY_AZURE_VOICE;
   const isAzureVoiceConfigured = !!(
     voiceChatAzureConfig?.baseUrl && voiceChatAzureConfig?.deploymentName
   );
+  const isAzureVoiceApiKeyDirty =
+    !azureVoice.apiKey.includes("•") &&
+    azureVoice.apiKey !== currentAzureVoice.apiKey;
 
   const configuredCount = [
     parseConfig,
@@ -263,7 +255,6 @@ export function EmmaModelSettingsButton() {
     imageConfig,
     judgeConfig,
     embeddingConfig,
-    voiceChatConfig,
     isAzureVoiceConfigured || null,
   ].filter(Boolean).length;
   const isLoading =
@@ -273,7 +264,6 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabledConfig === undefined ||
     judgeConfig === undefined ||
     embeddingConfig === undefined ||
-    voiceChatConfig === undefined ||
     voiceChatAzureConfig === undefined;
   const isDirty =
     parseValue !== currentParseValue ||
@@ -282,14 +272,10 @@ export function EmmaModelSettingsButton() {
     imageNeighborContextEnabled !== currentImageNeighborContextEnabled ||
     judgeValue !== currentJudgeValue ||
     embeddingValue !== currentEmbeddingValue ||
-    voiceChatValue !== currentVoiceChatValue ||
     azureVoice.baseUrl !== currentAzureVoice.baseUrl ||
     azureVoice.apiVersion !== currentAzureVoice.apiVersion ||
     azureVoice.deploymentName !== currentAzureVoice.deploymentName ||
-    // Only flag dirty if the user actually typed in the key field (not if it's masked)
-    (!!azureVoice.apiKey &&
-      !azureVoice.apiKey.includes("•") &&
-      azureVoice.apiKey !== currentAzureVoice.apiKey);
+    isAzureVoiceApiKeyDirty;
 
   async function saveSetting(url: string, value: string) {
     const parsed = parseModelValue(value);
@@ -368,12 +354,6 @@ export function EmmaModelSettingsButton() {
         kind: "model" as const,
       },
       {
-        label: "Voice chat",
-        url: VOICE_CHAT_MODEL_KEY,
-        value: voiceChatValue,
-        kind: "model" as const,
-      },
-      {
         label: "Azure voice",
         url: VOICE_CHAT_AZURE_KEY,
         value: azureVoice,
@@ -411,7 +391,6 @@ export function EmmaModelSettingsButton() {
       swrMutate(IMAGE_NEIGHBOR_CONTEXT_KEY),
       swrMutate(JUDGE_MODEL_KEY),
       swrMutate(EMBEDDING_MODEL_KEY),
-      swrMutate(VOICE_CHAT_MODEL_KEY),
       swrMutate(VOICE_CHAT_AZURE_KEY),
     ]);
 
@@ -464,7 +443,8 @@ export function EmmaModelSettingsButton() {
             <h4 className="font-medium text-sm">Emma Model Setup</h4>
             <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
               Configure knowledge parsing, chunk context, image analysis,
-              evaluation, and self-learning embeddings in one place.
+              evaluation, self-learning embeddings, and Azure voice in one
+              place.
             </p>
           </div>
 
@@ -541,17 +521,6 @@ export function EmmaModelSettingsButton() {
               placeholder="Select embedding model"
               icon={Database}
             />
-            <SettingCard
-              title="Voice Chat"
-              description="Default model used for real-time voice chat sessions. Should be a Realtime-capable model (e.g. gpt-4o-realtime-preview)."
-              value={voiceChatValue}
-              onValueChange={setVoiceChatValue}
-              providers={llmProviders}
-              placeholder="Select voice chat model"
-              icon={Mic2}
-            />
-
-            {/* Azure Voice dedicated config */}
             <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 rounded-md border border-border/70 bg-background p-2">
@@ -562,9 +531,9 @@ export function EmmaModelSettingsButton() {
                     Azure Voice (Direct)
                   </div>
                   <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
-                    Direct Azure OpenAI Realtime endpoint. Overrides the
-                    provider settings above for voice calls when configured.
-                    Leave blank to use the Azure provider settings instead.
+                    Every voice drawer call uses this Azure OpenAI Realtime
+                    endpoint. Leave the API key blank to reuse the Azure
+                    provider API key.
                   </p>
                 </div>
               </div>
@@ -635,7 +604,8 @@ export function EmmaModelSettingsButton() {
           <div className="flex items-center justify-between gap-3 border-border/60 border-t pt-2">
             <p className="text-muted-foreground text-xs">
               Set any selector to{" "}
-              <span className="font-medium">Not configured</span> to clear it.
+              <span className="font-medium">Not configured</span> to clear it.{" "}
+              Clear the Azure Voice fields to disable voice.
             </p>
             <Button
               size="sm"
