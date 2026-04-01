@@ -380,7 +380,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     outputAudioTime.current = startAt + buffer.duration;
   }, []);
 
-  const ensureAudioElementPlayback = useCallback(async () => {
+  const ensureAudioElement = useCallback(() => {
     if (!audioElement.current) {
       audioElement.current = document.createElement("audio");
       audioElement.current.style.display = "none";
@@ -388,11 +388,15 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       audioElement.current.setAttribute("playsinline", "true");
       document.body.appendChild(audioElement.current);
     }
-
-    if (audioElement.current.paused) {
-      await audioElement.current.play();
-    }
+    return audioElement.current;
   }, []);
+
+  const resumeAudioElementPlayback = useCallback(async () => {
+    const element = ensureAudioElement();
+    if (element.paused && element.srcObject) {
+      await element.play();
+    }
+  }, [ensureAudioElement]);
 
   const sendRealtimeEvent = useCallback((event: object) => {
     const payload = JSON.stringify(event);
@@ -868,7 +872,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         iceServers: getVoiceIceServers(),
         iceCandidatePoolSize: 4,
       });
-      await ensureAudioElementPlayback().catch(() => {});
+      ensureAudioElement();
       pc.onconnectionstatechange = () => {
         if (
           transportRef.current === "websocket" ||
@@ -963,7 +967,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         if (audioElement.current) {
           audioElement.current.srcObject =
             e.streams[0] ?? new MediaStream([e.track]);
-          ensureAudioElementPlayback().catch((playbackError) => {
+          resumeAudioElementPlayback().catch((playbackError) => {
             console.error("voice webrtc playback error", playbackError);
           });
         }
@@ -1171,8 +1175,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     isActive,
     isLoading,
     createSession,
-    ensureAudioElementPlayback,
+    ensureAudioElement,
     handleServerEvent,
+    resumeAudioElementPlayback,
     startWebSocketFallback,
     voice,
     waitForIceGatheringComplete,
