@@ -95,6 +95,36 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const { setTheme } = useTheme();
   const tracks = useRef<RTCRtpSender[]>([]);
 
+  const waitForIceGatheringComplete = useCallback(
+    (pc: RTCPeerConnection, timeoutMs = 4000) =>
+      new Promise<void>((resolve) => {
+        if (pc.iceGatheringState === "complete") {
+          resolve();
+          return;
+        }
+
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          resolve();
+        }, timeoutMs);
+
+        const handleStateChange = () => {
+          if (pc.iceGatheringState === "complete") {
+            cleanup();
+            resolve();
+          }
+        };
+
+        const cleanup = () => {
+          window.clearTimeout(timeout);
+          pc.removeEventListener("icegatheringstatechange", handleStateChange);
+        };
+
+        pc.addEventListener("icegatheringstatechange", handleStateChange);
+      }),
+    [],
+  );
+
   const startListening = useCallback(async () => {
     try {
       if (!navigator?.mediaDevices?.getUserMedia) {
@@ -427,6 +457,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       const pc = new RTCPeerConnection();
       if (!audioElement.current) {
         audioElement.current = document.createElement("audio");
+        audioElement.current.style.display = "none";
+        document.body.appendChild(audioElement.current);
       }
       audioElement.current.autoplay = true;
       pc.onconnectionstatechange = () => {
@@ -538,6 +570,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      await waitForIceGatheringComplete(pc);
+      const localSdp = pc.localDescription?.sdp;
+      if (!localSdp) {
+        throw new Error("Voice WebRTC local SDP was not created.");
+      }
 
       // If proxySdpUrl is set (Azure dedicated config), POST the SDP through our
       // server-side proxy. Otherwise POST directly to the realtime endpoint.
@@ -553,7 +590,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
       const sdpResponse = await fetch(sdpFetchUrl, {
         method: "POST",
-        body: offer.sdp,
+        body: localSdp,
         headers: sdpFetchHeaders,
       });
       const sdpResponseText = await sdpResponse.text();
@@ -601,7 +638,14 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       setIsListening(false);
       setIsLoading(false);
     }
-  }, [isActive, isLoading, createSession, handleServerEvent, voice]);
+  }, [
+    isActive,
+    isLoading,
+    createSession,
+    handleServerEvent,
+    voice,
+    waitForIceGatheringComplete,
+  ]);
 
   const stop = useCallback(async () => {
     try {
