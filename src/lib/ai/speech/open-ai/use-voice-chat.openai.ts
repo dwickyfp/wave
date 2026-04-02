@@ -39,6 +39,10 @@ import {
 } from "./voice-turn-tts";
 import { getVoiceInputBufferAction } from "./voice-input-buffer";
 import { buildSpeechInstructions } from "./voice-speech-instructions";
+import {
+  buildRealtimeResponseKey,
+  shouldHandleRealtimeTtsCompletion,
+} from "./voice-tts-response";
 
 export const OPENAI_VOICE = {
   Alloy: "alloy",
@@ -121,6 +125,9 @@ const VOICE_AUTO_RESUME_TRANSCRIPT_GRACE_MS = 2_600;
 const VOICE_SHORT_TRANSCRIPT_MAX_CHARS = 16;
 const VOICE_SHORT_TRANSCRIPT_MAX_WORDS = 2;
 const VOICE_SHORT_TRANSCRIPT_MAX_DURATION_MS = 900;
+const VOICE_TTS_EXACT_ROUTE = "/api/chat/voice-tts";
+
+type ExactVoiceTtsResult = "played" | "fallback" | "aborted";
 
 function estimateSpeechDurationMs(text: string) {
   const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
@@ -322,6 +329,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const dataChannel = useRef<RTCDataChannel | null>(null);
   const webSocket = useRef<WebSocket | null>(null);
   const audioElement = useRef<HTMLAudioElement | null>(null);
+  const ttsAudioElement = useRef<HTMLAudioElement | null>(null);
   const audioStream = useRef<MediaStream | null>(null);
   const tracks = useRef<RTCRtpSender[]>([]);
   const inputAudioContext = useRef<AudioContext | null>(null);
@@ -333,6 +341,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const outputAudioTime = useRef(0);
   const voiceTurnTtsStateRef = useRef(createVoiceTurnTtsState());
   const ttsRequestInFlightRef = useRef(false);
+  const exactTtsModeRef = useRef<"auto" | "exact" | "realtime">("auto");
+  const exactTtsAbortControllerRef = useRef<AbortController | null>(null);
+  const activeExactTtsObjectUrlRef = useRef<string | null>(null);
+  const activeTtsResponseKeyRef = useRef<string | null>(null);
+  const lastHandledTtsResponseKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     latestOptionsRef.current = props;
@@ -487,12 +500,40 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     return audioElement.current;
   }, []);
 
+  const ensureTtsAudioElement = useCallback(() => {
+    if (!ttsAudioElement.current) {
+      ttsAudioElement.current = document.createElement("audio");
+      ttsAudioElement.current.style.display = "none";
+      ttsAudioElement.current.autoplay = false;
+      ttsAudioElement.current.preload = "auto";
+      ttsAudioElement.current.setAttribute("playsinline", "true");
+      document.body.appendChild(ttsAudioElement.current);
+    }
+    return ttsAudioElement.current;
+  }, []);
+
   const resumeAudioElementPlayback = useCallback(async () => {
     const element = ensureAudioElement();
     if (element.paused && element.srcObject) {
       await element.play();
     }
   }, [ensureAudioElement]);
+
+  const cleanupExactTtsPlayback = useCallback(() => {
+    exactTtsAbortControllerRef.current?.abort();
+    exactTtsAbortControllerRef.current = null;
+
+    if (activeExactTtsObjectUrlRef.current) {
+      URL.revokeObjectURL(activeExactTtsObjectUrlRef.current);
+      activeExactTtsObjectUrlRef.current = null;
+    }
+
+    if (ttsAudioElement.current) {
+      ttsAudioElement.current.pause();
+      ttsAudioElement.current.removeAttribute("src");
+      ttsAudioElement.current.load();
+    }
+  }, []);
 
   const sendRealtimeEvent = useCallback((event: object) => {
     const payload = JSON.stringify(event);
@@ -596,6 +637,151 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     );
   }, []);
 
+  const playExactSpeechChunk = useCallback(
+    async (text: string): Promise<ExactVoiceTtsResult> => {
+      const controller = new AbortController();
+      exactTtsAbortControllerRef.current = controller;
+
+      let response: Response;
+      try {
+        response = await fetch(VOICE_TTS_EXACT_ROUTE, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            text,
+            voice,
+          }),
+          signal: controller.signal,
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          if (exactTtsAbortControllerRef.current === controller) {
+            exactTtsAbortControllerRef.current = null;
+          }
+          return "aborted";
+        }
+
+        console.warn("voice exact tts request failed", error);
+        if (exactTtsAbortControllerRef.current === controller) {
+          exactTtsAbortControllerRef.current = null;
+        }
+        return "fallback";
+      }
+
+      if (!response.ok) {
+        const errorMessage = await response.text().catch(() => "");
+        console.warn("voice exact tts unavailable", {
+          status: response.status,
+          error: errorMessage,
+        });
+        if (exactTtsAbortControllerRef.current === controller) {
+          exactTtsAbortControllerRef.current = null;
+        }
+        return "fallback";
+      }
+
+      const audioBlob = await response.blob();
+      if (controller.signal.aborted) {
+        if (exactTtsAbortControllerRef.current === controller) {
+          exactTtsAbortControllerRef.current = null;
+        }
+        return "aborted";
+      }
+
+      const element = ensureTtsAudioElement();
+      const objectUrl = URL.createObjectURL(audioBlob);
+      activeExactTtsObjectUrlRef.current = objectUrl;
+      element.srcObject = null;
+      element.src = objectUrl;
+      element.currentTime = 0;
+      setIsAssistantSpeaking(true);
+
+      return new Promise<ExactVoiceTtsResult>((resolve, reject) => {
+        const cleanupListeners = () => {
+          element.onended = null;
+          element.onerror = null;
+          controller.signal.removeEventListener("abort", handleAbort);
+          if (exactTtsAbortControllerRef.current === controller) {
+            exactTtsAbortControllerRef.current = null;
+          }
+        };
+
+        const handleAbort = () => {
+          cleanupListeners();
+          setIsAssistantSpeaking(false);
+
+          if (activeExactTtsObjectUrlRef.current === objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            activeExactTtsObjectUrlRef.current = null;
+          }
+
+          element.pause();
+          element.removeAttribute("src");
+          element.load();
+          resolve("aborted");
+        };
+
+        element.onended = () => {
+          cleanupListeners();
+          setIsAssistantSpeaking(false);
+
+          if (activeExactTtsObjectUrlRef.current === objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            activeExactTtsObjectUrlRef.current = null;
+          }
+
+          element.removeAttribute("src");
+          element.load();
+          resolve("played");
+        };
+
+        element.onerror = () => {
+          cleanupListeners();
+          setIsAssistantSpeaking(false);
+
+          if (activeExactTtsObjectUrlRef.current === objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            activeExactTtsObjectUrlRef.current = null;
+          }
+
+          element.removeAttribute("src");
+          element.load();
+          reject(new Error("Voice audio playback failed."));
+        };
+
+        element.play().catch((playbackError) => {
+          cleanupListeners();
+          setIsAssistantSpeaking(false);
+
+          if (activeExactTtsObjectUrlRef.current === objectUrl) {
+            URL.revokeObjectURL(objectUrl);
+            activeExactTtsObjectUrlRef.current = null;
+          }
+
+          element.removeAttribute("src");
+          element.load();
+
+          if (
+            playbackError instanceof DOMException &&
+            playbackError.name === "AbortError"
+          ) {
+            resolve("aborted");
+            return;
+          }
+
+          console.warn("voice exact tts playback failed", playbackError);
+          resolve("fallback");
+        });
+        controller.signal.addEventListener("abort", handleAbort, {
+          once: true,
+        });
+      });
+    },
+    [ensureTtsAudioElement, voice],
+  );
+
   const finishAgentTurn = useCallback(
     async (
       resumeListening = autoResumeListeningRef.current,
@@ -611,6 +797,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       autoResumeListeningRef.current = false;
       voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
       ttsRequestInFlightRef.current = false;
+      cleanupExactTtsPlayback();
+      activeTtsResponseKeyRef.current = null;
+      lastHandledTtsResponseKeyRef.current = null;
       setIsSynthesizingSpeech(false);
       setIsAssistantSpeaking(false);
 
@@ -646,7 +835,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         await resumeListeningNow();
       }
     },
-    [clearSpeechTimeout, setListeningState],
+    [clearSpeechTimeout, cleanupExactTtsPlayback, setListeningState],
   );
 
   const pumpVoiceTurnTts = useCallback(
@@ -676,6 +865,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
 
       clearSpeechTimeout();
+      activeTtsResponseKeyRef.current = null;
+      lastHandledTtsResponseKeyRef.current = null;
       lastAssistantSpeechRef.current = nextChunk;
       assistantEchoGuardUntilRef.current =
         Date.now() + estimateSpeechDurationMs(nextChunk);
@@ -684,6 +875,40 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       speechTimeout.current = setTimeout(() => {
         void finishAgentTurn();
       }, VOICE_TTS_TIMEOUT_MS);
+
+      if (exactTtsModeRef.current !== "realtime") {
+        const exactTtsResult = await playExactSpeechChunk(nextChunk);
+
+        if (exactTtsResult === "played") {
+          exactTtsModeRef.current = "exact";
+          clearSpeechTimeout();
+          ttsRequestInFlightRef.current = false;
+          voiceTurnTtsStateRef.current = completeVoiceTurnTtsChunk(
+            voiceTurnTtsStateRef.current,
+          );
+          setIsAssistantSpeaking(false);
+          syncSpeechActivityState();
+
+          if (voiceTurnTtsStateRef.current.queue.length > 0) {
+            await pumpVoiceTurnTts(resumeDelayMs);
+            return;
+          }
+
+          if (shouldFinishVoiceTurnTts(voiceTurnTtsStateRef.current)) {
+            await finishAgentTurn(
+              autoResumeListeningRef.current,
+              getPlaybackResumeDelayMs(),
+            );
+          }
+          return;
+        }
+
+        if (exactTtsResult === "aborted") {
+          return;
+        }
+
+        exactTtsModeRef.current = "realtime";
+      }
 
       sendRealtimeEvent({
         type: "response.create",
@@ -698,14 +923,31 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     [
       clearSpeechTimeout,
       finishAgentTurn,
+      getPlaybackResumeDelayMs,
+      playExactSpeechChunk,
       sendRealtimeEvent,
       syncSpeechActivityState,
     ],
   );
 
   const handleVoiceTurnTtsChunkComplete = useCallback(
-    async (resumeDelayMs = 0) => {
+    async (resumeDelayMs = 0, responseKey?: string) => {
       clearSpeechTimeout();
+      if (responseKey) {
+        const shouldHandle = shouldHandleRealtimeTtsCompletion({
+          eventKey: responseKey,
+          activeKey: activeTtsResponseKeyRef.current,
+          lastHandledKey: lastHandledTtsResponseKeyRef.current,
+        });
+
+        if (!shouldHandle) {
+          return;
+        }
+
+        lastHandledTtsResponseKeyRef.current = responseKey;
+      }
+
+      activeTtsResponseKeyRef.current = null;
       ttsRequestInFlightRef.current = false;
 
       if (!voiceTurnTtsStateRef.current.inFlightChunk) {
@@ -922,6 +1164,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       clearSpeechTimeout();
       voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
       ttsRequestInFlightRef.current = false;
+      activeTtsResponseKeyRef.current = null;
+      lastHandledTtsResponseKeyRef.current = null;
       setIsSynthesizingSpeech(false);
       setIsAssistantSpeaking(false);
       setError(null);
@@ -1071,6 +1315,15 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         }
         case "response.audio.delta":
         case "response.output_audio.delta": {
+          if (
+            voiceTurnTtsStateRef.current.inFlightChunk &&
+            !activeTtsResponseKeyRef.current
+          ) {
+            activeTtsResponseKeyRef.current = buildRealtimeResponseKey({
+              responseId: event.response_id,
+              itemId: event.item_id,
+            });
+          }
           playWebSocketAudioDelta(event.delta).catch((playbackError) => {
             console.error("voice websocket playback error", playbackError);
           });
@@ -1081,9 +1334,18 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           break;
         }
         case "response.audio.done":
-        case "response.output_audio.done":
+        case "response.output_audio.done": {
+          void handleVoiceTurnTtsChunkComplete(
+            getPlaybackResumeDelayMs(),
+            buildRealtimeResponseKey({
+              responseId: event.response_id,
+              itemId: event.item_id,
+            }),
+          );
+          break;
+        }
         case "output_audio_buffer.stopped": {
-          void handleVoiceTurnTtsChunkComplete(getPlaybackResumeDelayMs());
+          setIsAssistantSpeaking(false);
           break;
         }
         case "input_audio_buffer.speech_stopped": {
@@ -1182,6 +1444,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           clearSpeechTimeout();
           voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
           ttsRequestInFlightRef.current = false;
+          cleanupExactTtsPlayback();
+          activeTtsResponseKeyRef.current = null;
+          lastHandledTtsResponseKeyRef.current = null;
           setIsActive(false);
           isActiveRef.current = false;
           isListeningRef.current = false;
@@ -1197,6 +1462,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       ensureAudioStream,
       handleServerEvent,
       startWebSocketAudioCapture,
+      cleanupExactTtsPlayback,
       stopWebSocketAudioCapture,
     ],
   );
@@ -1217,6 +1483,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     clearSpeechTimeout();
     voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
     ttsRequestInFlightRef.current = false;
+    cleanupExactTtsPlayback();
+    exactTtsModeRef.current = "auto";
+    activeTtsResponseKeyRef.current = null;
+    lastHandledTtsResponseKeyRef.current = null;
     setIsSynthesizingSpeech(false);
     setIsAssistantSpeaking(false);
     setMessages([]);
@@ -1227,6 +1497,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       webSocket.current?.close();
       webSocket.current = null;
       const session = await createSession();
+      exactTtsModeRef.current = session.supportsExactSpeech
+        ? "auto"
+        : "realtime";
       const sessionToken = session.client_secret.value;
       const realtimeEndpointUrl: string =
         session.realtimeEndpointUrl || "https://api.openai.com/v1/realtime";
@@ -1369,6 +1642,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         clearSpeechTimeout();
         voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
         ttsRequestInFlightRef.current = false;
+        cleanupExactTtsPlayback();
+        activeTtsResponseKeyRef.current = null;
+        lastHandledTtsResponseKeyRef.current = null;
         setIsActive(false);
         isActiveRef.current = false;
         setIsListening(false);
@@ -1385,6 +1661,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         clearSpeechTimeout();
         voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
         ttsRequestInFlightRef.current = false;
+        cleanupExactTtsPlayback();
+        activeTtsResponseKeyRef.current = null;
+        lastHandledTtsResponseKeyRef.current = null;
         setError(
           errorEvent instanceof Error
             ? errorEvent
@@ -1528,6 +1807,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     }
   }, [
     clearSpeechTimeout,
+    cleanupExactTtsPlayback,
     createSession,
     ensureAudioElement,
     ensureAudioStream,
@@ -1624,6 +1904,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       tracks.current = [];
       voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
       ttsRequestInFlightRef.current = false;
+      cleanupExactTtsPlayback();
+      exactTtsModeRef.current = "auto";
+      activeTtsResponseKeyRef.current = null;
+      lastHandledTtsResponseKeyRef.current = null;
       speechStartedAtRef.current = null;
       lastAutoResumeAtRef.current = 0;
       listeningEnabledAtRef.current = 0;
@@ -1641,7 +1925,12 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         stopError instanceof Error ? stopError : new Error(String(stopError)),
       );
     }
-  }, [clearSpeechTimeout, stopChatResponse, stopWebSocketAudioCapture]);
+  }, [
+    cleanupExactTtsPlayback,
+    clearSpeechTimeout,
+    stopChatResponse,
+    stopWebSocketAudioCapture,
+  ]);
 
   useEffect(() => {
     if (!chatError) {
@@ -1657,6 +1946,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
     clearSpeechTimeout();
     ttsRequestInFlightRef.current = false;
+    cleanupExactTtsPlayback();
+    exactTtsModeRef.current = "auto";
+    activeTtsResponseKeyRef.current = null;
+    lastHandledTtsResponseKeyRef.current = null;
     setIsSynthesizingSpeech(false);
     setIsAssistantSpeaking(false);
     if (!threadId) {
@@ -1664,7 +1957,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       return;
     }
     setMessages([]);
-  }, [clearSpeechTimeout, setMessages, threadId]);
+  }, [cleanupExactTtsPlayback, clearSpeechTimeout, setMessages, threadId]);
 
   useEffect(() => {
     return () => {

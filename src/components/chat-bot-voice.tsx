@@ -47,7 +47,7 @@ import { Markdown } from "./markdown";
 import { EnabledTools, EnabledToolsDropdown } from "./enabled-tools-dropdown";
 import { appStore } from "@/app/store";
 import { useShallow } from "zustand/shallow";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { isShortcutEvent, Shortcuts } from "lib/keyboard-shortcuts";
 import { useAgent } from "@/hooks/queries/use-agent";
 import { useAgents } from "@/hooks/queries/use-agents";
@@ -80,6 +80,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
 
 export function ChatBotVoice() {
   const t = useTranslations("Chat");
+  const locale = useLocale();
   const [
     agentId,
     appStoreMutate,
@@ -135,6 +136,7 @@ export function ChatBotVoice() {
     allowedMcpServers,
     allowedAppDefaultToolkit,
     threadId: voiceChat.threadId,
+    transcriptionLanguage: locale,
     voice: voiceChat.options.voice,
   });
 

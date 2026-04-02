@@ -146,6 +146,16 @@ function buildGaClientSecretRequest({
   };
 }
 
+async function resolveExactSpeechSupport() {
+  const openAiProviderConfig =
+    await settingsRepository.getProviderByName("openai");
+
+  return Boolean(
+    (openAiProviderConfig?.enabled ?? true) &&
+      (openAiProviderConfig?.apiKey?.trim() || process.env.OPENAI_API_KEY),
+  );
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getSession();
@@ -222,6 +232,7 @@ export async function POST(request: NextRequest) {
 
     const azureProviderConfig =
       await settingsRepository.getProviderByName("azure");
+    const supportsExactSpeech = await resolveExactSpeechSupport();
     const apiKey =
       azureVoiceConfig?.apiKey?.trim() ||
       azureProviderConfig?.apiKey ||
@@ -262,6 +273,7 @@ export async function POST(request: NextRequest) {
             value: "proxy",
             expires_at: 0,
           },
+          supportsExactSpeech,
           realtimeEndpointUrl,
           proxySdpUrl,
           websocketEndpointUrl,
@@ -338,6 +350,7 @@ export async function POST(request: NextRequest) {
             value: gaData.value,
             expires_at: gaData.expires_at ?? 0,
           },
+          supportsExactSpeech,
           realtimeEndpointUrl: gaRealtimeEndpointUrl,
           websocketEndpointUrl,
           sdpAuthHeader: "Authorization",

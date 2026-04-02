@@ -54,9 +54,17 @@ describe("openai realtime route", () => {
       provider: "openai",
       model: "gpt-4.1",
     });
-    vi.mocked(settingsRepository.getProviderByName).mockResolvedValue({
-      apiKey: "provider-api-key",
-    } as any);
+    vi.mocked(settingsRepository.getProviderByName).mockImplementation(
+      async (providerName: string) => {
+        if (providerName === "azure") {
+          return {
+            apiKey: "provider-api-key",
+          } as any;
+        }
+
+        return null;
+      },
+    );
   });
 
   it("configures GA realtime sessions for transport-only audio input/output", async () => {
@@ -120,6 +128,7 @@ describe("openai realtime route", () => {
         value: "ephemeral-token",
         expires_at: 1234,
       },
+      supportsExactSpeech: false,
       pendingSessionUpdate: {
         audio: {
           input: {
@@ -189,6 +198,7 @@ describe("openai realtime route", () => {
       client_secret: {
         value: "proxy",
       },
+      supportsExactSpeech: false,
       proxySdpUrl:
         "/api/chat/openai-realtime-sdp?endpoint=https%3A%2F%2Fvoice-resource.openai.azure.com%2Fopenai%2Frealtime%3Fapi-version%3D2024-10-01-preview%26deployment%3Dmy-realtime-preview",
       pendingSessionUpdate: {
