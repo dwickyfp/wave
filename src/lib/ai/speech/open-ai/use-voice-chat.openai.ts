@@ -38,6 +38,7 @@ import {
   shouldFinishVoiceTurnTts,
 } from "./voice-turn-tts";
 import { getVoiceInputBufferAction } from "./voice-input-buffer";
+import { buildSpeechInstructions } from "./voice-speech-instructions";
 
 export const OPENAI_VOICE = {
   Alloy: "alloy",
@@ -253,10 +254,6 @@ function createEmptyAudioTrack(): MediaStreamTrack {
   const audioContext = new AudioContext();
   const destination = audioContext.createMediaStreamDestination();
   return destination.stream.getAudioTracks()[0];
-}
-
-function buildSpeechInstructions(text: string) {
-  return `Say exactly the following text out loud. Do not add, remove, or paraphrase anything.\n\n${text}`;
 }
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
