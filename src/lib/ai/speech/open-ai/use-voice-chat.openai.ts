@@ -5,7 +5,6 @@ import { useGenerateThreadTitle } from "@/hooks/queries/use-generate-thread-titl
 import { useChat } from "@ai-sdk/react";
 import {
   DefaultChatTransport,
-  isToolUIPart,
   lastAssistantMessageIsCompleteWithToolCalls,
   type UIMessage,
 } from "ai";
@@ -27,6 +26,17 @@ import {
   OpenAIRealtimeServerEvent,
   OpenAIRealtimeSession,
 } from "./openai-realtime-event";
+import {
+  clearVoiceTurnTtsState,
+  completeVoiceTurnTtsChunk,
+  createVoiceTurnTtsState,
+  deriveVoiceTurnTtsState,
+  getLatestTurnAssistantSpeechText,
+  hasActiveVoiceTurnTtsWork,
+  hasPendingVoiceToolCalls,
+  shiftVoiceTurnTtsQueue,
+  shouldFinishVoiceTurnTts,
+} from "./voice-turn-tts";
 
 export const OPENAI_VOICE = {
   Alloy: "alloy",
@@ -189,68 +199,8 @@ function createEmptyAudioTrack(): MediaStreamTrack {
   return destination.stream.getAudioTracks()[0];
 }
 
-function stripMarkdownForSpeech(text: string) {
-  return text
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
-    .replace(/^\|/gm, "")
-    .replace(/\|$/gm, "")
-    .replace(/\|/g, ", ")
-    .replace(/^\s*[-:,\s]+\s*$/gm, " ")
-    .replace(/^#{1,6}\s+/gm, "")
-    .replace(/^>\s+/gm, "")
-    .replace(/\*\*/g, "")
-    .replace(/__/g, "")
-    .replace(/~~/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function getAssistantSpeechText(message: UIMessage) {
-  const rawText = message.parts
-    .filter(
-      (part): part is Extract<UIMessage["parts"][number], { type: "text" }> =>
-        part.type === "text",
-    )
-    .map((part) => part.text || "")
-    .join("\n\n");
-
-  const speechText = stripMarkdownForSpeech(rawText);
-  return speechText.slice(0, 12_000).trim();
-}
-
 function buildSpeechInstructions(text: string) {
   return `Say exactly the following text out loud. Do not add, remove, or paraphrase anything.\n\n${text}`;
-}
-
-function hasPendingVoiceToolCalls(messages: UIMessage[]) {
-  const lastMessage = messages.at(-1);
-
-  if (!lastMessage || lastMessage.role !== "assistant") {
-    return false;
-  }
-
-  const lastStepStartIndex = lastMessage.parts.reduce(
-    (lastIndex, part, index) => {
-      return part.type === "step-start" ? index : lastIndex;
-    },
-    -1,
-  );
-
-  const lastStepToolInvocations = lastMessage.parts
-    .slice(lastStepStartIndex + 1)
-    .filter(isToolUIPart)
-    .filter((part) => !part.providerExecuted);
-
-  return (
-    lastStepToolInvocations.length > 0 &&
-    lastStepToolInvocations.some(
-      (part) =>
-        part.state !== "output-available" && part.state !== "output-error",
-    )
-  );
 }
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
@@ -327,6 +277,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const inputAudioSilenceGain = useRef<GainNode | null>(null);
   const outputAudioContext = useRef<AudioContext | null>(null);
   const outputAudioTime = useRef(0);
+  const voiceTurnTtsStateRef = useRef(createVoiceTurnTtsState());
+  const ttsRequestInFlightRef = useRef(false);
 
   useEffect(() => {
     latestOptionsRef.current = props;
@@ -565,15 +517,25 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     [ensureAudioStream, startWebSocketAudioCapture, stopWebSocketAudioCapture],
   );
 
+  const clearSpeechTimeout = useCallback(() => {
+    if (speechTimeout.current) {
+      clearTimeout(speechTimeout.current);
+      speechTimeout.current = null;
+    }
+  }, []);
+
+  const syncSpeechActivityState = useCallback(() => {
+    setIsSynthesizingSpeech(
+      hasActiveVoiceTurnTtsWork(voiceTurnTtsStateRef.current),
+    );
+  }, []);
+
   const finishAgentTurn = useCallback(
     async (
       resumeListening = autoResumeListeningRef.current,
       resumeDelayMs = 0,
     ) => {
-      if (speechTimeout.current) {
-        clearTimeout(speechTimeout.current);
-        speechTimeout.current = null;
-      }
+      clearSpeechTimeout();
       if (resumeListeningTimeoutRef.current) {
         clearTimeout(resumeListeningTimeoutRef.current);
         resumeListeningTimeoutRef.current = null;
@@ -581,6 +543,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
       turnLockedRef.current = false;
       autoResumeListeningRef.current = false;
+      voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+      ttsRequestInFlightRef.current = false;
       setIsSynthesizingSpeech(false);
       setIsAssistantSpeaking(false);
 
@@ -616,25 +580,40 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         await resumeListeningNow();
       }
     },
-    [setListeningState],
+    [clearSpeechTimeout, setListeningState],
   );
 
-  const speakAssistantText = useCallback(
-    async (text: string) => {
-      const speechText = getAssistantSpeechText({
-        id: "",
-        role: "assistant",
-        parts: [{ type: "text", text }],
-      } as UIMessage);
-
-      if (!speechText || !transportRef.current) {
+  const pumpVoiceTurnTts = useCallback(
+    async (resumeDelayMs = 0) => {
+      if (!transportRef.current) {
         await finishAgentTurn();
         return;
       }
 
-      lastAssistantSpeechRef.current = speechText;
+      let nextState = voiceTurnTtsStateRef.current;
+      if (nextState.inFlightChunk && ttsRequestInFlightRef.current) {
+        syncSpeechActivityState();
+        return;
+      }
+      if (!nextState.inFlightChunk) {
+        nextState = shiftVoiceTurnTtsQueue(nextState);
+        voiceTurnTtsStateRef.current = nextState;
+      }
+
+      const nextChunk = nextState.inFlightChunk?.trim();
+      if (!nextChunk) {
+        syncSpeechActivityState();
+        if (shouldFinishVoiceTurnTts(nextState)) {
+          await finishAgentTurn(autoResumeListeningRef.current, resumeDelayMs);
+        }
+        return;
+      }
+
+      clearSpeechTimeout();
+      lastAssistantSpeechRef.current = nextChunk;
       assistantEchoGuardUntilRef.current =
-        Date.now() + estimateSpeechDurationMs(speechText);
+        Date.now() + estimateSpeechDurationMs(nextChunk);
+      ttsRequestInFlightRef.current = true;
       setIsSynthesizingSpeech(true);
       speechTimeout.current = setTimeout(() => {
         void finishAgentTurn();
@@ -645,12 +624,52 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         response: {
           conversation: "none",
           input: [],
-          instructions: buildSpeechInstructions(speechText),
+          instructions: buildSpeechInstructions(nextChunk),
           output_modalities: ["audio"],
         },
       });
     },
-    [finishAgentTurn, sendRealtimeEvent],
+    [
+      clearSpeechTimeout,
+      finishAgentTurn,
+      sendRealtimeEvent,
+      syncSpeechActivityState,
+    ],
+  );
+
+  const handleVoiceTurnTtsChunkComplete = useCallback(
+    async (resumeDelayMs = 0) => {
+      clearSpeechTimeout();
+      ttsRequestInFlightRef.current = false;
+
+      if (!voiceTurnTtsStateRef.current.inFlightChunk) {
+        if (shouldFinishVoiceTurnTts(voiceTurnTtsStateRef.current)) {
+          await finishAgentTurn(autoResumeListeningRef.current, resumeDelayMs);
+        }
+        return;
+      }
+
+      voiceTurnTtsStateRef.current = completeVoiceTurnTtsChunk(
+        voiceTurnTtsStateRef.current,
+      );
+      setIsAssistantSpeaking(false);
+      syncSpeechActivityState();
+
+      if (voiceTurnTtsStateRef.current.queue.length > 0) {
+        await pumpVoiceTurnTts(resumeDelayMs);
+        return;
+      }
+
+      if (shouldFinishVoiceTurnTts(voiceTurnTtsStateRef.current)) {
+        await finishAgentTurn(autoResumeListeningRef.current, resumeDelayMs);
+      }
+    },
+    [
+      clearSpeechTimeout,
+      finishAgentTurn,
+      pumpVoiceTurnTts,
+      syncSpeechActivityState,
+    ],
   );
 
   const createSession =
@@ -735,9 +754,17 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     transport,
     generateId: generateUUID,
     experimental_throttle: 32,
-    onFinish: ({ message, messages: finishedMessages, isAbort }) => {
+    onFinish: ({ messages: finishedMessages, isAbort }) => {
       if (isAbort) {
-        void finishAgentTurn();
+        voiceTurnTtsStateRef.current = {
+          ...voiceTurnTtsStateRef.current,
+          queue: [],
+          streamCompleted: true,
+        };
+        syncSpeechActivityState();
+        if (!hasActiveVoiceTurnTtsWork(voiceTurnTtsStateRef.current)) {
+          void finishAgentTurn();
+        }
         return;
       }
 
@@ -755,32 +782,57 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           mutate("/api/thread");
         }
       }
-
-      if (hasPendingVoiceToolCalls(finishedMessages)) {
-        return;
-      }
-
-      if (
-        lastAssistantMessageIsCompleteWithToolCalls({
-          messages: finishedMessages,
-        })
-      ) {
-        return;
-      }
-
-      const speechText = getAssistantSpeechText(message);
-      if (!speechText) {
-        void finishAgentTurn();
-        return;
-      }
-
-      void speakAssistantText(speechText);
     },
   });
   const hasPendingToolCalls = useMemo(
     () => hasPendingVoiceToolCalls(messages),
     [messages],
   );
+  const shouldHoldSpeechForTools = useMemo(
+    () =>
+      hasPendingToolCalls ||
+      lastAssistantMessageIsCompleteWithToolCalls({
+        messages,
+      }),
+    [hasPendingToolCalls, messages],
+  );
+
+  useEffect(() => {
+    if (!turnLockedRef.current) {
+      return;
+    }
+
+    const assistantText = getLatestTurnAssistantSpeechText(messages);
+    const nextState = deriveVoiceTurnTtsState({
+      state: voiceTurnTtsStateRef.current,
+      assistantText,
+      shouldHoldForTools: shouldHoldSpeechForTools,
+      isStreamFinished: status === "ready",
+    });
+
+    voiceTurnTtsStateRef.current = nextState;
+    syncSpeechActivityState();
+
+    if (hasActiveVoiceTurnTtsWork(nextState)) {
+      void pumpVoiceTurnTts();
+      return;
+    }
+
+    if (
+      status === "ready" &&
+      !shouldHoldSpeechForTools &&
+      (shouldFinishVoiceTurnTts(nextState) || !assistantText)
+    ) {
+      void finishAgentTurn(autoResumeListeningRef.current);
+    }
+  }, [
+    finishAgentTurn,
+    messages,
+    pumpVoiceTurnTts,
+    shouldHoldSpeechForTools,
+    status,
+    syncSpeechActivityState,
+  ]);
 
   const sendVoiceTurn = useCallback(
     async (transcript: string) => {
@@ -801,6 +853,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       turnLockedRef.current = true;
       lastAutoResumeAtRef.current = 0;
       autoResumeListeningRef.current = isListeningRef.current;
+      clearSpeechTimeout();
+      voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+      ttsRequestInFlightRef.current = false;
+      setIsSynthesizingSpeech(false);
+      setIsAssistantSpeaking(false);
       setError(null);
 
       await setListeningState({
@@ -822,7 +879,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       setLiveInputTranscript("");
     },
-    [finishAgentTurn, sendMessage, setListeningState],
+    [clearSpeechTimeout, finishAgentTurn, sendMessage, setListeningState],
   );
 
   const shouldIgnoreTranscript = useCallback((transcript: string) => {
@@ -960,10 +1017,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         case "response.audio.done":
         case "response.output_audio.done":
         case "output_audio_buffer.stopped": {
-          void finishAgentTurn(
-            autoResumeListeningRef.current,
-            getPlaybackResumeDelayMs(),
-          );
+          void handleVoiceTurnTtsChunkComplete(getPlaybackResumeDelayMs());
           break;
         }
         case "input_audio_buffer.speech_stopped": {
@@ -983,8 +1037,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
     },
     [
-      finishAgentTurn,
       getPlaybackResumeDelayMs,
+      handleVoiceTurnTtsChunkComplete,
       playWebSocketAudioDelta,
       sendVoiceTurn,
       shouldIgnoreTranscript,
@@ -1059,15 +1113,21 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         socket.addEventListener("close", () => {
           webSocket.current = null;
           void stopWebSocketAudioCapture();
+          clearSpeechTimeout();
+          voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+          ttsRequestInFlightRef.current = false;
           setIsActive(false);
           isActiveRef.current = false;
           isListeningRef.current = false;
           setIsListening(false);
           setIsSessionLoading(false);
+          setIsSynthesizingSpeech(false);
+          setIsAssistantSpeaking(false);
         });
       });
     },
     [
+      clearSpeechTimeout,
       ensureAudioStream,
       handleServerEvent,
       startWebSocketAudioCapture,
@@ -1088,6 +1148,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
     setIsSessionLoading(true);
     setError(null);
+    clearSpeechTimeout();
+    voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+    ttsRequestInFlightRef.current = false;
+    setIsSynthesizingSpeech(false);
+    setIsAssistantSpeaking(false);
     setMessages([]);
 
     try {
@@ -1235,17 +1300,25 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           clearTimeout(connectTimeout.current);
           connectTimeout.current = null;
         }
+        clearSpeechTimeout();
+        voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+        ttsRequestInFlightRef.current = false;
         setIsActive(false);
         isActiveRef.current = false;
         setIsListening(false);
         isListeningRef.current = false;
         setIsSessionLoading(false);
+        setIsSynthesizingSpeech(false);
+        setIsAssistantSpeaking(false);
       });
       dc.addEventListener("error", (errorEvent) => {
         if (connectTimeout.current) {
           clearTimeout(connectTimeout.current);
           connectTimeout.current = null;
         }
+        clearSpeechTimeout();
+        voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+        ttsRequestInFlightRef.current = false;
         setError(
           errorEvent instanceof Error
             ? errorEvent
@@ -1256,6 +1329,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         setIsListening(false);
         isListeningRef.current = false;
         setIsSessionLoading(false);
+        setIsSynthesizingSpeech(false);
+        setIsAssistantSpeaking(false);
       });
 
       const offer = await pc.createOffer();
@@ -1386,6 +1461,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       setIsSessionLoading(false);
     }
   }, [
+    clearSpeechTimeout,
     createSession,
     ensureAudioElement,
     ensureAudioStream,
@@ -1442,10 +1518,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     try {
       autoResumeListeningRef.current = false;
       turnLockedRef.current = false;
-      if (speechTimeout.current) {
-        clearTimeout(speechTimeout.current);
-        speechTimeout.current = null;
-      }
+      clearSpeechTimeout();
       if (resumeListeningTimeoutRef.current) {
         clearTimeout(resumeListeningTimeoutRef.current);
         resumeListeningTimeoutRef.current = null;
@@ -1483,6 +1556,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       }
       outputAudioTime.current = 0;
       tracks.current = [];
+      voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+      ttsRequestInFlightRef.current = false;
       speechStartedAtRef.current = null;
       lastAutoResumeAtRef.current = 0;
       listeningEnabledAtRef.current = 0;
@@ -1500,7 +1575,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         stopError instanceof Error ? stopError : new Error(String(stopError)),
       );
     }
-  }, [stopChatResponse, stopWebSocketAudioCapture]);
+  }, [clearSpeechTimeout, stopChatResponse, stopWebSocketAudioCapture]);
 
   useEffect(() => {
     if (!chatError) {
@@ -1513,12 +1588,17 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   }, [chatError, finishAgentTurn]);
 
   useEffect(() => {
+    voiceTurnTtsStateRef.current = clearVoiceTurnTtsState();
+    clearSpeechTimeout();
+    ttsRequestInFlightRef.current = false;
+    setIsSynthesizingSpeech(false);
+    setIsAssistantSpeaking(false);
     if (!threadId) {
       setMessages([]);
       return;
     }
     setMessages([]);
-  }, [setMessages, threadId]);
+  }, [clearSpeechTimeout, setMessages, threadId]);
 
   useEffect(() => {
     return () => {
