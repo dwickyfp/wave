@@ -1,6 +1,5 @@
 import { getSession } from "auth/server";
 import { settingsRepository } from "lib/db/repository";
-import { buildSpeechStyleInstructions } from "lib/ai/speech/open-ai/voice-speech-instructions";
 import { z } from "zod";
 
 const VOICE_TTS_MODEL = "gpt-4o-mini-tts";
@@ -70,7 +69,6 @@ export async function POST(request: Request) {
           model: VOICE_TTS_MODEL,
           voice,
           input: text,
-          instructions: buildSpeechStyleInstructions(text),
           response_format: "wav",
         }),
         cache: "no-store",

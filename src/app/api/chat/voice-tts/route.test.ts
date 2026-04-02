@@ -73,9 +73,7 @@ describe("voice tts route", () => {
       input: "Halo, saya Emma.",
       response_format: "wav",
     });
-    expect(body.instructions).toContain(
-      "Voice Affect: Calm, composed, and reassuring.",
-    );
+    expect(body.instructions).toBeUndefined();
   });
 
   it("returns 503 when no OpenAI provider is configured for exact speech", async () => {
