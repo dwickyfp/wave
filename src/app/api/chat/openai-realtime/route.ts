@@ -179,7 +179,7 @@ export async function POST(request: NextRequest) {
 
     agentId && logger.info(`[${agentId}] Agent: ${agent?.name}`);
 
-    const resolvedVoice = voice || "alloy";
+    const resolvedVoice = voice || "marin";
     const legacySessionConfig = buildLegacyVoiceSessionConfig({
       voice: resolvedVoice,
       transcriptionLanguage,

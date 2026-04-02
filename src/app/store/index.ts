@@ -124,7 +124,7 @@ const initialState: AppState = {
   voiceChat: {
     isOpen: false,
     options: {
-      voice: OPENAI_VOICE["Ash"],
+      voice: OPENAI_VOICE["Coral"],
     },
   },
   pendingThreadMention: undefined,

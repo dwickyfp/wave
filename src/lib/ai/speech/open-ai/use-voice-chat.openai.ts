@@ -37,6 +37,7 @@ import {
   shiftVoiceTurnTtsQueue,
   shouldFinishVoiceTurnTts,
 } from "./voice-turn-tts";
+import { getVoiceInputBufferAction } from "./voice-input-buffer";
 
 export const OPENAI_VOICE = {
   Alloy: "alloy",
@@ -47,7 +48,62 @@ export const OPENAI_VOICE = {
   Echo: "echo",
   Coral: "coral",
   Ash: "ash",
+  Marin: "marin",
+  Cedar: "cedar",
 };
+
+export const OPENAI_VOICE_OPTIONS = [
+  {
+    value: OPENAI_VOICE.Alloy,
+    label: "Alloy",
+    description: "Neutral synthetic voice",
+  },
+  {
+    value: OPENAI_VOICE.Ash,
+    label: "Ash",
+    description: "Calm and low-register",
+  },
+  {
+    value: OPENAI_VOICE.Ballad,
+    label: "Ballad",
+    description: "Soft and conversational",
+  },
+  {
+    value: OPENAI_VOICE.Cedar,
+    label: "Cedar",
+    description: "Higher-quality expressive voice",
+  },
+  {
+    value: OPENAI_VOICE.Coral,
+    label: "Coral",
+    description: "Current app default",
+  },
+  {
+    value: OPENAI_VOICE.Echo,
+    label: "Echo",
+    description: "Crisp and brighter tone",
+  },
+  {
+    value: OPENAI_VOICE.Marin,
+    label: "Marin",
+    description: "Higher-quality expressive voice",
+  },
+  {
+    value: OPENAI_VOICE.Sage,
+    label: "Sage",
+    description: "Measured and steady",
+  },
+  {
+    value: OPENAI_VOICE.Shimmer,
+    label: "Shimmer",
+    description: "Lighter and more airy",
+  },
+  {
+    value: OPENAI_VOICE.Verse,
+    label: "Verse",
+    description: "Balanced narration style",
+  },
+] as const;
 
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   {
@@ -205,7 +261,7 @@ function buildSpeechInstructions(text: string) {
 
 export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const {
-    voice = OPENAI_VOICE.Ash,
+    voice = OPENAI_VOICE.Coral,
     threadId,
     transcriptionLanguage,
   } = props || {};
@@ -275,6 +331,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const inputAudioSource = useRef<MediaStreamAudioSourceNode | null>(null);
   const inputAudioProcessor = useRef<ScriptProcessorNode | null>(null);
   const inputAudioSilenceGain = useRef<GainNode | null>(null);
+  const websocketBufferedInputSamplesRef = useRef(0);
   const outputAudioContext = useRef<AudioContext | null>(null);
   const outputAudioTime = useRef(0);
   const voiceTurnTtsStateRef = useRef(createVoiceTurnTtsState());
@@ -373,6 +430,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
         const input = audioEvent.inputBuffer.getChannelData(0);
         const pcm16 = floatTo16BitPCM(input);
+        websocketBufferedInputSamplesRef.current += pcm16.length;
         socket.send(
           JSON.stringify({
             type: "input_audio_buffer.append",
@@ -467,6 +525,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       releaseStream: boolean;
     }) => {
       if (enabled) {
+        websocketBufferedInputSamplesRef.current = 0;
         const stream = await ensureAudioStream();
         if (
           transportRef.current === "websocket" &&
@@ -491,12 +550,22 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         transportRef.current === "websocket" &&
         webSocket.current?.readyState === WebSocket.OPEN
       ) {
+        const bufferAction = getVoiceInputBufferAction({
+          bufferedSamples: websocketBufferedInputSamplesRef.current,
+          sampleRate: VOICE_AUDIO_SAMPLE_RATE,
+        });
         webSocket.current.send(
-          JSON.stringify({ type: "input_audio_buffer.commit" }),
+          JSON.stringify({
+            type:
+              bufferAction === "commit"
+                ? "input_audio_buffer.commit"
+                : "input_audio_buffer.clear",
+          }),
         );
       }
 
       await stopWebSocketAudioCapture();
+      websocketBufferedInputSamplesRef.current = 0;
 
       if (releaseStream && audioStream.current) {
         audioStream.current.getTracks().forEach((track) => track.stop());
