@@ -41,7 +41,6 @@ import { Button } from "ui/button";
 
 import { Drawer, DrawerContent, DrawerPortal, DrawerTitle } from "ui/drawer";
 import { MessageLoading } from "ui/message-loading";
-import { ScrollArea } from "ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "ui/tooltip";
 import { KnowledgeImageMessagePart, ToolMessagePart } from "./message-parts";
 import { Markdown } from "./markdown";
@@ -501,7 +500,7 @@ export function ChatBotVoice() {
               </div>
               <DrawerTitle className="sr-only">Voice Chat</DrawerTitle>
             </div>
-            <div className="mx-auto flex-1 min-h-0 w-full max-w-[1760px] px-2 pb-40 md:px-4 xl:px-6">
+            <div className="mx-auto flex-1 min-h-0 w-full max-w-[1760px] px-2 pb-6 md:px-4 xl:px-6">
               {error ? (
                 <div className="max-w-3xl mx-auto">
                   <Alert variant={"destructive"}>
@@ -611,23 +610,6 @@ export function ChatBotVoice() {
   );
 }
 
-function buildVoiceStreamSignature(turn: VoiceLatestTurnModel) {
-  return [
-    turn.latestUserMessage?.id ?? "",
-    turn.floatingPromptText,
-    ...turn.renderableArtifacts.map((artifact) =>
-      artifact.kind === "tool"
-        ? `${artifact.kind}:${artifact.messageId}:${artifact.part.toolCallId}:${artifact.part.state}`
-        : artifact.kind === "knowledge-images"
-          ? `${artifact.kind}:${artifact.messageId}:${artifact.images.map((image) => image.imageId).join(",")}`
-          : artifact.kind === "markdown-table"
-            ? `${artifact.kind}:${artifact.messageId}:${artifact.markdown}`
-            : `${artifact.kind}:${artifact.messageId}:${artifact.part.url}`,
-    ),
-    ...turn.runningToolStates.map((tool) => `${tool.id}:${tool.state}`),
-  ].join("::");
-}
-
 function formatToolTitle(name: string) {
   return name
     .replace(/^tool-/, "")
@@ -649,19 +631,6 @@ function VoiceTurnStage({
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
 }) {
-  const bottomAnchorRef = useRef<HTMLDivElement>(null);
-  const streamSignature = useMemo(
-    () => buildVoiceStreamSignature(turn),
-    [turn],
-  );
-
-  useEffect(() => {
-    bottomAnchorRef.current?.scrollIntoView({
-      block: "end",
-      behavior: "smooth",
-    });
-  }, [streamSignature]);
-
   const callStateLabel = isAssistantSpeaking
     ? "Speaking"
     : isUserSpeaking
@@ -692,18 +661,17 @@ function VoiceTurnStage({
       </div>
 
       <div className="min-h-0 flex-1 pt-24 md:pt-28">
-        <ScrollArea className="h-full">
-          <div className="mx-auto min-h-full w-full px-0 pb-10 pt-2">
+        <div className="h-full overflow-hidden">
+          <div className="mx-auto w-full px-0 pt-2">
             {turn.hasRenderableArtifacts ? (
               <VoiceArtifactGrid artifacts={turn.renderableArtifacts} />
             ) : (
-              <div className="flex min-h-[420px] items-center justify-center">
+              <div className="flex items-center justify-center py-8 md:py-12">
                 <VoiceSoundBar mode={soundBarMode} />
               </div>
             )}
-            <div ref={bottomAnchorRef} />
           </div>
-        </ScrollArea>
+        </div>
       </div>
     </div>
   );
@@ -1060,22 +1028,22 @@ function getVoiceArtifactTileHeightClassName(
   artifactCount: number,
 ) {
   if (layout.density === "feature") {
-    return "h-[420px] md:h-[560px] xl:h-[640px]";
+    return "h-[340px] md:h-[420px] xl:h-[480px]";
   }
 
   if (layout.density === "split") {
-    return "h-[360px] md:h-[460px] xl:h-[520px]";
+    return "h-[280px] md:h-[360px] xl:h-[420px]";
   }
 
   if (layout.density === "triad") {
-    return "h-[320px] md:h-[360px] xl:h-[420px]";
+    return "h-[240px] md:h-[290px] xl:h-[340px]";
   }
 
   if (artifactCount === 4) {
-    return "h-[320px] md:h-[400px] xl:h-[460px]";
+    return "h-[240px] md:h-[300px] xl:h-[360px]";
   }
 
-  return "h-[300px] md:h-[340px] xl:h-[400px]";
+  return "h-[220px] md:h-[270px] xl:h-[320px]";
 }
 
 function VoiceArtifactGrid({
@@ -1086,7 +1054,7 @@ function VoiceArtifactGrid({
   const layout = getVoiceArtifactGridLayout(artifacts.length);
 
   return (
-    <div className="flex min-h-[420px] items-start justify-center">
+    <div className="flex items-start justify-center">
       <div
         className={cn(
           "mx-auto w-full",
@@ -1095,10 +1063,8 @@ function VoiceArtifactGrid({
       >
         <div
           className={cn(
-            "grid grid-cols-1 items-start gap-4 md:gap-5 xl:gap-6",
+            "grid grid-cols-1 items-start gap-3 md:gap-4 xl:gap-5",
             getVoiceArtifactGridClassName(layout),
-            layout.overflow &&
-              "max-h-[calc(100vh-16.5rem)] overflow-y-auto overscroll-contain pr-1 md:pr-2",
           )}
         >
           {artifacts.map((artifact) => (
@@ -1203,7 +1169,7 @@ function VoiceArtifactView({
       return <VoiceToolArtifact part={artifact.part} density={density} />;
     case "knowledge-images":
       return (
-        <div className="h-full min-h-0 overflow-auto">
+        <div className="h-full min-h-0 overflow-hidden">
           <KnowledgeImageMessagePart images={artifact.images} />
         </div>
       );
