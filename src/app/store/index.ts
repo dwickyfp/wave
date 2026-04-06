@@ -8,6 +8,7 @@ import { AppDefaultToolkit } from "lib/ai/tools";
 import { AgentSummary } from "app-types/agent";
 import { ArchiveWithItemCount } from "app-types/archive";
 import { KnowledgeSummary } from "app-types/knowledge";
+import type { VoiceSessionMode } from "lib/ai/speech/open-ai/openai-realtime-event";
 
 export interface UploadedFile {
   id: string;
@@ -67,6 +68,7 @@ export interface AppState {
     threadId?: string;
     options: {
       voice?: string;
+      mode?: VoiceSessionMode;
     };
   };
   pendingThreadMention?: ChatMention;
@@ -125,6 +127,7 @@ const initialState: AppState = {
     isOpen: false,
     options: {
       voice: OPENAI_VOICE["Ash"],
+      mode: "realtime_native",
     },
   },
   pendingThreadMention: undefined,

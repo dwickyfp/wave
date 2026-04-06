@@ -121,6 +121,7 @@ export function ChatBotVoice() {
     isAssistantSpeaking,
     isLoading,
     isProcessingTurn,
+    phase,
     isActive,
     isUserSpeaking,
     messages,
@@ -137,6 +138,7 @@ export function ChatBotVoice() {
     allowedAppDefaultToolkit,
     threadId: voiceChat.threadId,
     voice: voiceChat.options.voice,
+    voiceMode: voiceChat.options.mode,
   });
 
   const startWithSound = useCallback(() => {
@@ -525,6 +527,7 @@ export function ChatBotVoice() {
                   isProcessingTurn={isProcessingTurn}
                   isAssistantSpeaking={isAssistantSpeaking}
                   isUserSpeaking={isUserSpeaking}
+                  phase={phase}
                 />
               )}
               <VoiceHiddenToolRunner
@@ -643,11 +646,13 @@ function VoiceTurnStage({
   isProcessingTurn,
   isAssistantSpeaking,
   isUserSpeaking,
+  phase,
 }: {
   turn: VoiceLatestTurnModel;
   isProcessingTurn: boolean;
   isAssistantSpeaking: boolean;
   isUserSpeaking: boolean;
+  phase: string;
 }) {
   const bottomAnchorRef = useRef<HTMLDivElement>(null);
   const streamSignature = useMemo(
@@ -662,20 +667,28 @@ function VoiceTurnStage({
     });
   }, [streamSignature]);
 
-  const callStateLabel = isAssistantSpeaking
-    ? "Speaking"
-    : isUserSpeaking
-      ? "Listening"
-      : isProcessingTurn
-        ? "Thinking"
-        : "Ready";
-  const soundBarMode = isAssistantSpeaking
-    ? "speaking"
-    : isUserSpeaking
-      ? "listening"
-      : isProcessingTurn
-        ? "thinking"
-        : "ready";
+  const callStateLabel =
+    phase === "connecting"
+      ? "Connecting"
+      : phase === "muted"
+        ? "Muted"
+        : phase === "tool-call"
+          ? "Working"
+          : isAssistantSpeaking
+            ? "Speaking"
+            : isUserSpeaking
+              ? "Listening"
+              : isProcessingTurn || phase === "thinking"
+                ? "Thinking"
+                : "Ready";
+  const soundBarMode: VoiceSoundBarMode =
+    isAssistantSpeaking || phase === "speaking"
+      ? "speaking"
+      : isUserSpeaking || phase === "listening"
+        ? "listening"
+        : isProcessingTurn || phase === "tool-call" || phase === "thinking"
+          ? "thinking"
+          : "ready";
 
   return (
     <div className="relative flex h-full min-h-0 flex-col pb-4">
@@ -1152,6 +1165,10 @@ function VoiceHiddenToolRunner({
   messages: UIMessage[];
   addToolResult?: UseChatHelpers<UIMessage>["addToolResult"];
 }) {
+  if (!addToolResult) {
+    return null;
+  }
+
   const pendingParts = useMemo(
     () =>
       messages.flatMap((message) =>

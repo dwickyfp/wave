@@ -46,6 +46,7 @@ import { NodeKind } from "lib/ai/workflow/workflow.interface";
 import { mcpClientsManager } from "lib/ai/mcp/mcp-manager";
 import { APP_DEFAULT_TOOL_KIT } from "lib/ai/tools/tool-kit";
 import { AppDefaultToolkit } from "lib/ai/tools";
+import { executeBoundToolCall } from "lib/ai/tool-executor";
 
 export function filterMCPToolsByMentions(
   tools: Record<string, VercelAIMcpTool>,
@@ -121,7 +122,7 @@ export function manualToolExecuteByLastMessage(
   part: ToolUIPart,
   tools: Record<string, VercelAIMcpTool | VercelAIWorkflowTool | Tool>,
   abortSignal?: AbortSignal,
-  usageContext?: AdminDashboardUsageContext,
+  _usageContext?: AdminDashboardUsageContext,
 ) {
   const { input } = part;
 
@@ -134,33 +135,17 @@ export function manualToolExecuteByLastMessage(
       throw new Error("manual tool confirm not found");
     return part.output;
   })
-    .map(({ confirm }) => {
-      if (!confirm) return MANUAL_REJECT_RESPONSE_PROMPT;
-      if (VercelAIWorkflowToolTag.isMaybe(tool)) {
-        return tool.execute!(input, {
-          toolCallId: part.toolCallId,
-          abortSignal: abortSignal ?? new AbortController().signal,
-          messages: [],
-        });
-      } else if (VercelAIMcpToolTag.isMaybe(tool)) {
-        return mcpClientsManager.toolCall(
-          tool._mcpServerId,
-          tool._originToolName,
-          input,
-          usageContext,
-        );
-      }
-      return tool.execute!(input, {
-        toolCallId: part.toolCallId,
-        abortSignal: abortSignal ?? new AbortController().signal,
-        messages: [],
-      });
-    })
-    .ifFail((error) => ({
-      isError: true,
-      statusMessage: `tool call fail: ${toolName}`,
-      error: errorToString(error),
-    }))
+    .map(({ confirm }) =>
+      confirm
+        ? executeBoundToolCall({
+            toolName,
+            tool,
+            args: input,
+            toolCallId: part.toolCallId,
+            abortSignal,
+          })
+        : MANUAL_REJECT_RESPONSE_PROMPT,
+    )
     .unwrap();
 }
 

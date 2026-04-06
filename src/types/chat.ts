@@ -147,6 +147,8 @@ export type ChatMetadata = {
   chatModel?: ChatModel;
   toolChoice?: "auto" | "none" | "manual";
   toolCount?: number;
+  responseMode?: "default" | "voice";
+  voiceMode?: "legacy" | "realtime_native";
   activatedSkills?: string[];
   agentId?: string;
   source?: "chat" | "emma_pilot";

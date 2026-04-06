@@ -9,15 +9,26 @@ import {
   lastAssistantMessageIsCompleteWithToolCalls,
   type UIMessage,
 } from "ai";
+import type { ChatMetadata } from "app-types/chat";
 import {
   isTranscriptCompatibleWithLanguage,
   pickVoiceLanguageHint,
 } from "lib/ai/speech/voice-language";
 import {
+  appendOrReplaceRealtimeMessageText,
+  getLatestVoiceTurnMessages,
+  upsertRealtimeToolPart,
+} from "./realtime-voice-state";
+import {
   isLikelyEchoTranscript,
   isLikelyGhostTranscript,
   shouldIgnoreShortAutoResumeTranscript,
 } from "lib/ai/speech/voice-transcript-guard";
+import {
+  buildVoiceFillerInstructions,
+  buildVoiceToolResumeInstructions,
+  type VoiceFillerStage,
+} from "./realtime-voice-tools";
 import { resolveThreadTitleFinishAction } from "lib/chat/thread-title-finish";
 import { generateUUID } from "lib/utils";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +37,7 @@ import { VoiceChatOptions, VoiceChatSession } from "..";
 import {
   OpenAIRealtimeServerEvent,
   OpenAIRealtimeSession,
+  type VoiceSessionMode,
 } from "./openai-realtime-event";
 
 export const OPENAI_VOICE = {
@@ -54,6 +66,19 @@ const VOICE_AUTO_RESUME_TRANSCRIPT_GRACE_MS = 2_600;
 const VOICE_SHORT_TRANSCRIPT_MAX_CHARS = 16;
 const VOICE_SHORT_TRANSCRIPT_MAX_WORDS = 2;
 const VOICE_SHORT_TRANSCRIPT_MAX_DURATION_MS = 900;
+
+type QueuedNativeResponseKind =
+  | {
+      kind: "filler";
+      callId: string;
+      toolName: string;
+      stage: VoiceFillerStage;
+    }
+  | {
+      kind: "tool-resume";
+      callId: string;
+      toolName: string;
+    };
 
 function estimateSpeechDurationMs(text: string) {
   const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
@@ -225,6 +250,18 @@ function buildSpeechInstructions(text: string) {
   return `Say exactly the following text out loud. Do not add, remove, or paraphrase anything.\n\n${text}`;
 }
 
+function parseRealtimeToolArguments(argumentsText?: string) {
+  if (!argumentsText?.trim()) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(argumentsText);
+  } catch {
+    return { raw: argumentsText };
+  }
+}
+
 function hasPendingVoiceToolCalls(messages: UIMessage[]) {
   const lastMessage = messages.at(-1);
 
@@ -258,6 +295,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     voice = OPENAI_VOICE.Ash,
     threadId,
     transcriptionLanguage,
+    voiceMode = "realtime_native",
   } = props || {};
   const generateTitle = useGenerateThreadTitle({
     threadId: threadId ?? "voice-chat-pending",
@@ -271,6 +309,19 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const [isSynthesizingSpeech, setIsSynthesizingSpeech] = useState(false);
   const [liveInputTranscript, setLiveInputTranscript] = useState("");
   const [error, setError] = useState<Error | null>(null);
+  const [sessionMode, setSessionMode] = useState<VoiceSessionMode>(voiceMode);
+  const [phase, setPhase] = useState<VoiceChatSession["phase"]>("idle");
+  const [transport, setTransport] =
+    useState<VoiceChatSession["transport"]>(null);
+  const [nativeMessages, setNativeMessages] = useState<UIMessage[]>([]);
+  const [activeResponseId, setActiveResponseId] = useState<string | null>(null);
+  const [lastAssistantItemId, setLastAssistantItemId] = useState<string | null>(
+    null,
+  );
+  const [pendingToolCalls, setPendingToolCalls] = useState<
+    VoiceChatSession["pendingToolCalls"]
+  >([]);
+  const [timeline, setTimeline] = useState<VoiceChatSession["timeline"]>([]);
 
   const preferredVoiceLanguage = useMemo(() => {
     const browserLanguages =
@@ -299,8 +350,38 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   const latestOptionsRef = useRef(props);
   const threadIdRef = useRef(threadId);
   const preferredVoiceLanguageRef = useRef(preferredVoiceLanguage);
+  const sessionModeRef = useRef<VoiceSessionMode>(voiceMode);
   const isListeningRef = useRef(false);
   const isActiveRef = useRef(false);
+  const activeResponseIdRef = useRef<string | null>(null);
+  const lastAssistantItemIdRef = useRef<string | null>(null);
+  const nativeMessagesRef = useRef<UIMessage[]>([]);
+  const pendingToolCallsRef = useRef<VoiceChatSession["pendingToolCalls"]>([]);
+  const timelineRef = useRef<VoiceChatSession["timeline"]>([]);
+  const sessionIdRef = useRef<string | null>(null);
+  const realtimeModelRef = useRef<string | null>(null);
+  const fillerDelayMsRef = useRef(200);
+  const progressDelayMsRef = useRef(1_800);
+  const longProgressDelayMsRef = useRef(4_500);
+  const voiceToolsByNameRef = useRef<
+    Record<string, NonNullable<OpenAIRealtimeSession["voiceTools"]>[number]>
+  >({});
+  const queuedClientResponseKindsRef = useRef<QueuedNativeResponseKind[]>([]);
+  const currentResponseKindRef = useRef<
+    QueuedNativeResponseKind | { kind: "model" } | null
+  >(null);
+  const fillerResponseIdRef = useRef<string | null>(null);
+  const toolProgressTimeoutsRef = useRef<
+    Map<string, ReturnType<typeof setTimeout>[]>
+  >(new Map());
+  const assistantPlaybackStartedAtRef = useRef<number | null>(null);
+  const lastPersistedAssistantMessageIdRef = useRef<string | null>(null);
+  const lastUserTranscriptCompletedAtRef = useRef<number | null>(null);
+  const lastToolResumeRequestedAtRef = useRef<{
+    callId: string;
+    toolName: string;
+    at: number;
+  } | null>(null);
   const transportRef = useRef<"webrtc" | "websocket" | null>(null);
   const fallbackAttemptedRef = useRef(false);
   const connectTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -347,6 +428,212 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   useEffect(() => {
     isActiveRef.current = isActive;
   }, [isActive]);
+
+  useEffect(() => {
+    nativeMessagesRef.current = nativeMessages;
+  }, [nativeMessages]);
+
+  useEffect(() => {
+    activeResponseIdRef.current = activeResponseId;
+  }, [activeResponseId]);
+
+  useEffect(() => {
+    lastAssistantItemIdRef.current = lastAssistantItemId;
+  }, [lastAssistantItemId]);
+
+  useEffect(() => {
+    pendingToolCallsRef.current = pendingToolCalls;
+  }, [pendingToolCalls]);
+
+  useEffect(() => {
+    timelineRef.current = timeline;
+  }, [timeline]);
+
+  const setSessionModeState = useCallback((nextMode: VoiceSessionMode) => {
+    sessionModeRef.current = nextMode;
+    setSessionMode(nextMode);
+  }, []);
+
+  const setTransportState = useCallback(
+    (nextTransport: VoiceChatSession["transport"]) => {
+      transportRef.current = nextTransport;
+      setTransport(nextTransport);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!isActiveRef.current) {
+      setSessionModeState(voiceMode);
+    }
+  }, [setSessionModeState, voiceMode]);
+
+  const pushTimeline = useCallback(
+    (type: string, details?: Record<string, unknown>) => {
+      setTimeline((current) => {
+        const next = [
+          ...current.slice(-79),
+          {
+            at: Date.now(),
+            type,
+            ...(details ? { details } : {}),
+          },
+        ];
+        timelineRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const replaceNativeMessages = useCallback(
+    (updater: UIMessage[] | ((current: UIMessage[]) => UIMessage[])) => {
+      setNativeMessages((current) => {
+        const next = typeof updater === "function" ? updater(current) : updater;
+        nativeMessagesRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const setPendingToolCallsState = useCallback(
+    (
+      updater:
+        | VoiceChatSession["pendingToolCalls"]
+        | ((
+            current: VoiceChatSession["pendingToolCalls"],
+          ) => VoiceChatSession["pendingToolCalls"]),
+    ) => {
+      setPendingToolCalls((current) => {
+        const next = typeof updater === "function" ? updater(current) : updater;
+        pendingToolCallsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const clearToolProgressTimers = useCallback((callId?: string) => {
+    if (!callId) {
+      toolProgressTimeoutsRef.current.forEach((timeouts) => {
+        timeouts.forEach((timeout) => clearTimeout(timeout));
+      });
+      toolProgressTimeoutsRef.current.clear();
+      return;
+    }
+
+    const timeouts = toolProgressTimeoutsRef.current.get(callId);
+    if (!timeouts?.length) {
+      return;
+    }
+
+    timeouts.forEach((timeout) => clearTimeout(timeout));
+    toolProgressTimeoutsRef.current.delete(callId);
+  }, []);
+
+  const clearNativeConversationState = useCallback(
+    (clearTimeline = true) => {
+      clearToolProgressTimers();
+      activeResponseIdRef.current = null;
+      lastAssistantItemIdRef.current = null;
+      pendingToolCallsRef.current = [];
+      nativeMessagesRef.current = [];
+      currentResponseKindRef.current = null;
+      fillerResponseIdRef.current = null;
+      lastUserTranscriptCompletedAtRef.current = null;
+      lastToolResumeRequestedAtRef.current = null;
+      setActiveResponseId(null);
+      setLastAssistantItemId(null);
+      setPendingToolCalls([]);
+      setNativeMessages([]);
+
+      if (clearTimeline) {
+        timelineRef.current = [];
+        setTimeline([]);
+      }
+    },
+    [clearToolProgressTimers],
+  );
+
+  const persistLatestNativeTurn = useCallback(async () => {
+    if (
+      sessionModeRef.current !== "realtime_native" ||
+      !threadIdRef.current ||
+      !nativeMessagesRef.current.length
+    ) {
+      return;
+    }
+
+    const latestTurnMessages = getLatestVoiceTurnMessages(
+      nativeMessagesRef.current,
+    );
+    const latestAssistantMessage = [...latestTurnMessages]
+      .reverse()
+      .find((message) => message.role === "assistant");
+
+    if (
+      !latestAssistantMessage ||
+      latestAssistantMessage.id === lastPersistedAssistantMessageIdRef.current
+    ) {
+      return;
+    }
+
+    lastPersistedAssistantMessageIdRef.current = latestAssistantMessage.id;
+
+    await fetch("/api/voice/persist-turn", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        threadId: threadIdRef.current,
+        messages: latestTurnMessages,
+        metadata: {
+          user: {
+            responseMode: "voice",
+            voiceMode: "realtime_native",
+            agentId: latestOptionsRef.current?.agentId,
+            source: "chat",
+          } satisfies ChatMetadata,
+          assistant: {
+            responseMode: "voice",
+            voiceMode: "realtime_native",
+            agentId: latestOptionsRef.current?.agentId,
+            source: "chat",
+            ...(realtimeModelRef.current
+              ? {
+                  chatModel: {
+                    provider: "openai",
+                    model: realtimeModelRef.current,
+                  },
+                }
+              : {}),
+          } satisfies ChatMetadata,
+        },
+      }),
+    }).catch(() => {});
+  }, []);
+
+  const flushSessionEvents = useCallback(async () => {
+    if (!threadIdRef.current || !timelineRef.current.length) {
+      return;
+    }
+
+    await fetch("/api/voice/session-events", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionId: sessionIdRef.current ?? threadIdRef.current,
+        threadId: threadIdRef.current,
+        agentId: latestOptionsRef.current?.agentId,
+        transport: transportRef.current,
+        events: timelineRef.current,
+      }),
+    }).catch(() => {});
+  }, []);
 
   const ensureAudioStream = useCallback(async () => {
     if (!navigator?.mediaDevices?.getUserMedia) {
@@ -663,7 +950,12 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         body: JSON.stringify({
           voice,
           agentId: latestOptionsRef.current?.agentId,
+          threadId: threadIdRef.current,
           transcriptionLanguage: preferredVoiceLanguageRef.current,
+          mentions: latestOptionsRef.current?.mentions,
+          allowedMcpServers: latestOptionsRef.current?.allowedMcpServers,
+          allowedAppDefaultToolkit:
+            latestOptionsRef.current?.allowedAppDefaultToolkit,
         }),
       });
       if (!response.ok) {
@@ -694,7 +986,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       return session;
     }, [voice]);
 
-  const transport = useMemo(
+  const legacyTransport = useMemo(
     () =>
       new DefaultChatTransport<UIMessage>({
         api: "/api/chat/voice-agent",
@@ -722,20 +1014,24 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   );
 
   const {
-    messages,
-    status,
-    sendMessage,
-    setMessages,
-    addToolResult,
+    messages: legacyMessages,
+    status: legacyStatus,
+    sendMessage: sendLegacyMessage,
+    setMessages: setLegacyMessages,
+    addToolResult: legacyAddToolResult,
     stop: stopChatResponse,
     error: chatError,
   } = useChat<UIMessage>({
     id: threadId ?? "voice-chat-pending",
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-    transport,
+    transport: legacyTransport,
     generateId: generateUUID,
     experimental_throttle: 32,
     onFinish: ({ message, messages: finishedMessages, isAbort }) => {
+      if (sessionModeRef.current === "realtime_native") {
+        return;
+      }
+
       if (isAbort) {
         void finishAgentTurn();
         return;
@@ -777,11 +1073,6 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       void speakAssistantText(speechText);
     },
   });
-  const hasPendingToolCalls = useMemo(
-    () => hasPendingVoiceToolCalls(messages),
-    [messages],
-  );
-
   const sendVoiceTurn = useCallback(
     async (transcript: string) => {
       const userText = transcript.trim();
@@ -810,7 +1101,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
 
       await Promise.resolve(
-        sendMessage({
+        sendLegacyMessage({
           role: "user",
           parts: [{ type: "text", text: userText }],
         }),
@@ -822,7 +1113,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       });
       setLiveInputTranscript("");
     },
-    [finishAgentTurn, sendMessage, setListeningState],
+    [finishAgentTurn, sendLegacyMessage, setListeningState],
   );
 
   const shouldIgnoreTranscript = useCallback((transcript: string) => {
@@ -879,6 +1170,669 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     return false;
   }, []);
 
+  const interruptActiveSpeech = useCallback(
+    (reason: string) => {
+      if (sessionModeRef.current !== "realtime_native") {
+        return;
+      }
+
+      queuedClientResponseKindsRef.current = [];
+      currentResponseKindRef.current = null;
+      sendRealtimeEvent({ type: "response.cancel" });
+      sendRealtimeEvent({ type: "output_audio_buffer.clear" });
+
+      if (lastAssistantItemIdRef.current) {
+        sendRealtimeEvent({
+          type: "conversation.item.truncate",
+          item_id: lastAssistantItemIdRef.current,
+          content_index: 0,
+          audio_end_ms: Math.max(
+            0,
+            assistantPlaybackStartedAtRef.current
+              ? Date.now() - assistantPlaybackStartedAtRef.current
+              : 0,
+          ),
+        });
+      }
+
+      audioElement.current?.pause();
+      assistantPlaybackStartedAtRef.current = null;
+      fillerResponseIdRef.current = null;
+      setIsAssistantSpeaking(false);
+      setIsSynthesizingSpeech(false);
+      activeResponseIdRef.current = null;
+      setActiveResponseId(null);
+      setPhase(isListeningRef.current ? "ready" : "muted");
+      pushTimeline("barge_in", { reason });
+    },
+    [pushTimeline, sendRealtimeEvent],
+  );
+
+  const cancelToolFiller = useCallback(() => {
+    if (fillerResponseIdRef.current) {
+      sendRealtimeEvent({ type: "response.cancel" });
+      sendRealtimeEvent({ type: "output_audio_buffer.clear" });
+      fillerResponseIdRef.current = null;
+      if (currentResponseKindRef.current?.kind === "filler") {
+        currentResponseKindRef.current = null;
+      }
+    }
+  }, [sendRealtimeEvent]);
+
+  const requestToolProgress = useCallback(
+    (input: {
+      toolName: string;
+      callId: string;
+      stage: VoiceFillerStage;
+    }) => {
+      const { toolName, callId, stage } = input;
+      const metadata = voiceToolsByNameRef.current[toolName];
+      if (!metadata || metadata.preferSilentExecution) {
+        return;
+      }
+
+      const toolRun = pendingToolCallsRef.current.find(
+        (tool) => tool.callId === callId && tool.status === "running",
+      );
+
+      if (!toolRun) {
+        clearToolProgressTimers(callId);
+        return;
+      }
+
+      if (
+        assistantPlaybackStartedAtRef.current ||
+        fillerResponseIdRef.current
+      ) {
+        pushTimeline("tool_progress_skipped", {
+          toolName,
+          callId,
+          stage,
+          reason: "audio_in_flight",
+        });
+        return;
+      }
+
+      const elapsedMs = Date.now() - toolRun.startedAt;
+      queuedClientResponseKindsRef.current.push({
+        kind: "filler",
+        callId,
+        toolName,
+        stage,
+      });
+      sendRealtimeEvent({
+        type: "response.create",
+        response: {
+          conversation: "none",
+          input: [],
+          instructions: buildVoiceFillerInstructions(metadata, {
+            stage,
+            seed: `${callId}:${stage}`,
+          }),
+          output_modalities: ["audio"],
+        },
+      });
+      pushTimeline("tool_progress_requested", {
+        toolName,
+        callId,
+        stage,
+        elapsedMs,
+      });
+    },
+    [clearToolProgressTimers, pushTimeline, sendRealtimeEvent],
+  );
+
+  const scheduleToolProgress = useCallback(
+    (toolName: string, callId: string) => {
+      clearToolProgressTimers(callId);
+
+      const stages: Array<{
+        stage: VoiceFillerStage;
+        delayMs: number;
+      }> = [
+        {
+          stage: "ack",
+          delayMs: fillerDelayMsRef.current,
+        },
+        {
+          stage: "progress",
+          delayMs: Math.max(
+            progressDelayMsRef.current,
+            fillerDelayMsRef.current,
+          ),
+        },
+        {
+          stage: "long-progress",
+          delayMs: Math.max(
+            longProgressDelayMsRef.current,
+            progressDelayMsRef.current,
+          ),
+        },
+      ];
+
+      const timeouts = stages.map(({ stage, delayMs }) =>
+        setTimeout(() => {
+          requestToolProgress({
+            toolName,
+            callId,
+            stage,
+          });
+        }, delayMs),
+      );
+
+      toolProgressTimeoutsRef.current.set(callId, timeouts);
+    },
+    [clearToolProgressTimers, requestToolProgress],
+  );
+
+  const executeNativeToolCall = useCallback(
+    async (event: {
+      itemId: string;
+      toolName: string;
+      callId: string;
+      args: unknown;
+    }) => {
+      if (
+        pendingToolCallsRef.current.some((tool) => tool.callId === event.callId)
+      ) {
+        return;
+      }
+
+      const toolStartedAt = Date.now();
+
+      replaceNativeMessages((current) =>
+        upsertRealtimeToolPart({
+          messages: current,
+          part: {
+            messageId: event.itemId,
+            toolName: event.toolName,
+            toolCallId: event.callId,
+            input: event.args,
+            state: "input-available",
+          },
+        }),
+      );
+      setPendingToolCallsState((current) => [
+        ...current.filter((tool) => tool.callId !== event.callId),
+        {
+          callId: event.callId,
+          toolName: event.toolName,
+          startedAt: toolStartedAt,
+          status: "running",
+        },
+      ]);
+      setPhase("tool-call");
+      pushTimeline("tool_started", {
+        toolName: event.toolName,
+        callId: event.callId,
+      });
+      scheduleToolProgress(event.toolName, event.callId);
+
+      try {
+        const response = await fetch("/api/voice/tool-exec", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sessionId: sessionIdRef.current ?? threadIdRef.current,
+            callId: event.callId,
+            toolName: event.toolName,
+            args: event.args,
+            threadId: threadIdRef.current,
+            agentId: latestOptionsRef.current?.agentId,
+            mentions: latestOptionsRef.current?.mentions,
+            allowedMcpServers: latestOptionsRef.current?.allowedMcpServers,
+            allowedAppDefaultToolkit:
+              latestOptionsRef.current?.allowedAppDefaultToolkit,
+          }),
+        });
+        const payload = await response.json();
+
+        clearToolProgressTimers(event.callId);
+        cancelToolFiller();
+
+        replaceNativeMessages((current) =>
+          upsertRealtimeToolPart({
+            messages: current,
+            part: {
+              messageId: event.itemId,
+              toolName: event.toolName,
+              toolCallId: event.callId,
+              input: event.args,
+              state:
+                response.ok && payload.ok ? "output-available" : "output-error",
+              output: payload.output,
+            },
+          }),
+        );
+        setPendingToolCallsState((current) =>
+          current.map((tool) =>
+            tool.callId === event.callId
+              ? {
+                  ...tool,
+                  status: response.ok && payload.ok ? "completed" : "failed",
+                }
+              : tool,
+          ),
+        );
+        pushTimeline("tool_finished", {
+          toolName: event.toolName,
+          callId: event.callId,
+          ok: response.ok && payload.ok,
+          durationMs: Date.now() - toolStartedAt,
+        });
+
+        sendRealtimeEvent({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: event.callId,
+            output: JSON.stringify({
+              output: payload.output,
+              spokenSummary: payload.spokenSummary,
+              tool: payload.tool,
+            }),
+          },
+        });
+        queuedClientResponseKindsRef.current.push({
+          kind: "tool-resume",
+          callId: event.callId,
+          toolName: event.toolName,
+        });
+        lastToolResumeRequestedAtRef.current = {
+          callId: event.callId,
+          toolName: event.toolName,
+          at: Date.now(),
+        };
+        pushTimeline("tool_resume_requested", {
+          toolName: event.toolName,
+          callId: event.callId,
+        });
+        sendRealtimeEvent({
+          type: "response.create",
+          response: {
+            instructions: buildVoiceToolResumeInstructions({
+              ok: response.ok && payload.ok,
+              spokenSummary: payload.spokenSummary,
+              tool: payload.tool,
+            }),
+            output_modalities: ["audio"],
+          },
+        });
+      } catch (toolError) {
+        const errorOutput = {
+          isError: true,
+          error:
+            toolError instanceof Error ? toolError.message : String(toolError),
+        };
+
+        clearToolProgressTimers(event.callId);
+        cancelToolFiller();
+        replaceNativeMessages((current) =>
+          upsertRealtimeToolPart({
+            messages: current,
+            part: {
+              messageId: event.itemId,
+              toolName: event.toolName,
+              toolCallId: event.callId,
+              input: event.args,
+              state: "output-error",
+              output: errorOutput,
+            },
+          }),
+        );
+        setPendingToolCallsState((current) =>
+          current.map((tool) =>
+            tool.callId === event.callId
+              ? {
+                  ...tool,
+                  status: "failed",
+                }
+              : tool,
+          ),
+        );
+        pushTimeline("tool_finished", {
+          toolName: event.toolName,
+          callId: event.callId,
+          ok: false,
+          durationMs: Date.now() - toolStartedAt,
+        });
+
+        sendRealtimeEvent({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: event.callId,
+            output: JSON.stringify({
+              output: errorOutput,
+              spokenSummary: null,
+              tool: voiceToolsByNameRef.current[event.toolName] ?? null,
+            }),
+          },
+        });
+        queuedClientResponseKindsRef.current.push({
+          kind: "tool-resume",
+          callId: event.callId,
+          toolName: event.toolName,
+        });
+        lastToolResumeRequestedAtRef.current = {
+          callId: event.callId,
+          toolName: event.toolName,
+          at: Date.now(),
+        };
+        pushTimeline("tool_resume_requested", {
+          toolName: event.toolName,
+          callId: event.callId,
+          ok: false,
+        });
+        sendRealtimeEvent({
+          type: "response.create",
+          response: {
+            instructions: buildVoiceToolResumeInstructions({
+              ok: false,
+              spokenSummary: null,
+              tool: voiceToolsByNameRef.current[event.toolName] ?? null,
+            }),
+            output_modalities: ["audio"],
+          },
+        });
+      }
+    },
+    [
+      clearToolProgressTimers,
+      cancelToolFiller,
+      pushTimeline,
+      replaceNativeMessages,
+      scheduleToolProgress,
+      sendRealtimeEvent,
+      setPendingToolCallsState,
+    ],
+  );
+
+  const handleNativeServerEvent = useCallback(
+    (event: OpenAIRealtimeServerEvent) => {
+      switch (event.type) {
+        case "response.created": {
+          const queuedKind = queuedClientResponseKindsRef.current.shift();
+          const resolvedResponseKind = queuedKind ?? { kind: "model" as const };
+          currentResponseKindRef.current = resolvedResponseKind;
+
+          if (resolvedResponseKind.kind === "filler") {
+            fillerResponseIdRef.current = event.response.id;
+            pushTimeline("response_created", {
+              responseId: event.response.id,
+              kind: "filler",
+              toolName: resolvedResponseKind.toolName,
+              callId: resolvedResponseKind.callId,
+              stage: resolvedResponseKind.stage,
+            });
+            break;
+          }
+
+          activeResponseIdRef.current = event.response.id;
+          setActiveResponseId(event.response.id);
+          setPhase("thinking");
+          pushTimeline("response_created", {
+            responseId: event.response.id,
+            kind: resolvedResponseKind.kind,
+            ...(resolvedResponseKind.kind === "tool-resume"
+              ? {
+                  toolName: resolvedResponseKind.toolName,
+                  callId: resolvedResponseKind.callId,
+                }
+              : {}),
+            ...(resolvedResponseKind.kind === "model" &&
+            lastUserTranscriptCompletedAtRef.current
+              ? {
+                  latencyMs:
+                    Date.now() - lastUserTranscriptCompletedAtRef.current,
+                }
+              : {}),
+          });
+          break;
+        }
+        case "input_audio_buffer.speech_started": {
+          speechStartedAtRef.current = Date.now();
+          setIsUserSpeaking(true);
+          setLiveInputTranscript("");
+          setPhase("listening");
+          if (
+            assistantPlaybackStartedAtRef.current ||
+            fillerResponseIdRef.current
+          ) {
+            interruptActiveSpeech("user_speech_started");
+          }
+          break;
+        }
+        case "conversation.item.input_audio_transcription.delta": {
+          setLiveInputTranscript((current) => `${current}${event.delta}`);
+          break;
+        }
+        case "conversation.item.input_audio_transcription.completed": {
+          setIsUserSpeaking(false);
+          speechStartedAtRef.current = null;
+          const transcript = event.transcript?.trim();
+          if (!transcript) {
+            setLiveInputTranscript("");
+            break;
+          }
+
+          if (shouldIgnoreTranscript(transcript)) {
+            setLiveInputTranscript("");
+            break;
+          }
+
+          replaceNativeMessages((current) => [
+            ...current.filter((message) => message.id !== event.item_id),
+            {
+              id: event.item_id,
+              role: "user",
+              parts: [{ type: "text", text: transcript }],
+            },
+          ]);
+          lastUserTranscriptCompletedAtRef.current = Date.now();
+          setLiveInputTranscript("");
+          setPhase("thinking");
+          pushTimeline("user_transcript_final", {
+            itemId: event.item_id,
+            transcript,
+          });
+          break;
+        }
+        case "response.output_audio.delta":
+        case "response.audio.delta": {
+          playWebSocketAudioDelta(event.delta).catch((playbackError) => {
+            console.error("voice websocket playback error", playbackError);
+          });
+          break;
+        }
+        case "output_audio_buffer.started": {
+          const responseKind = currentResponseKindRef.current;
+          const now = Date.now();
+          assistantPlaybackStartedAtRef.current = now;
+          setIsAssistantSpeaking(true);
+          setIsSynthesizingSpeech(false);
+          setPhase("speaking");
+          if (
+            responseKind?.kind === "model" &&
+            lastUserTranscriptCompletedAtRef.current
+          ) {
+            pushTimeline("assistant_audio_started", {
+              source: "user_turn",
+              latencyMs: now - lastUserTranscriptCompletedAtRef.current,
+            });
+          } else if (
+            responseKind?.kind === "tool-resume" &&
+            lastToolResumeRequestedAtRef.current?.callId === responseKind.callId
+          ) {
+            pushTimeline("assistant_audio_started", {
+              source: "tool_resume",
+              toolName: responseKind.toolName,
+              callId: responseKind.callId,
+              latencyMs: now - lastToolResumeRequestedAtRef.current.at,
+            });
+          } else if (responseKind?.kind === "filler") {
+            const runningTool = pendingToolCallsRef.current.find(
+              (tool) => tool.callId === responseKind.callId,
+            );
+            pushTimeline("assistant_audio_started", {
+              source: "tool_progress",
+              toolName: responseKind.toolName,
+              callId: responseKind.callId,
+              stage: responseKind.stage,
+              ...(runningTool
+                ? {
+                    latencyMs: now - runningTool.startedAt,
+                  }
+                : {}),
+            });
+          }
+          resumeAudioElementPlayback().catch(() => {});
+          break;
+        }
+        case "response.output_audio.done":
+        case "response.audio.done":
+        case "output_audio_buffer.stopped": {
+          if (currentResponseKindRef.current) {
+            pushTimeline("assistant_audio_completed", {
+              source: currentResponseKindRef.current.kind,
+              ...(currentResponseKindRef.current.kind === "filler"
+                ? {
+                    stage: currentResponseKindRef.current.stage,
+                    callId: currentResponseKindRef.current.callId,
+                    toolName: currentResponseKindRef.current.toolName,
+                  }
+                : currentResponseKindRef.current.kind === "tool-resume"
+                  ? {
+                      callId: currentResponseKindRef.current.callId,
+                      toolName: currentResponseKindRef.current.toolName,
+                    }
+                  : {}),
+            });
+          }
+          assistantPlaybackStartedAtRef.current = null;
+          setIsAssistantSpeaking(false);
+          if (pendingToolCallsRef.current.length > 0) {
+            setPhase("tool-call");
+          } else {
+            setPhase(isListeningRef.current ? "ready" : "muted");
+          }
+          break;
+        }
+        case "response.output_audio_transcript.delta":
+        case "response.output_text.delta": {
+          replaceNativeMessages((current) =>
+            appendOrReplaceRealtimeMessageText({
+              messages: current,
+              messageId: event.item_id,
+              role: "assistant",
+              text: event.delta,
+              append: true,
+            }),
+          );
+          break;
+        }
+        case "response.output_audio_transcript.done":
+        case "response.output_text.done": {
+          replaceNativeMessages((current) =>
+            appendOrReplaceRealtimeMessageText({
+              messages: current,
+              messageId: event.item_id,
+              role: "assistant",
+              text: event.transcript,
+              append: false,
+            }),
+          );
+          lastAssistantItemIdRef.current = event.item_id;
+          setLastAssistantItemId(event.item_id);
+          pushTimeline("assistant_text_final", { itemId: event.item_id });
+          break;
+        }
+        case "response.function_call_arguments.done":
+        case "response.mcp_call_arguments.done": {
+          void executeNativeToolCall({
+            itemId: event.item_id,
+            toolName: event.name,
+            callId: event.call_id,
+            args: parseRealtimeToolArguments(event.arguments),
+          });
+          break;
+        }
+        case "response.output_item.done": {
+          if (event.item.role === "assistant" && event.item.id) {
+            lastAssistantItemIdRef.current = event.item.id;
+            setLastAssistantItemId(event.item.id);
+          }
+
+          if (
+            event.item.type === "function_call" &&
+            event.item.call_id &&
+            event.item.name
+          ) {
+            void executeNativeToolCall({
+              itemId: event.item.id,
+              toolName: event.item.name,
+              callId: event.item.call_id,
+              args: parseRealtimeToolArguments(event.item.arguments),
+            });
+          }
+          break;
+        }
+        case "input_audio_buffer.speech_stopped": {
+          setIsUserSpeaking(false);
+          break;
+        }
+        case "response.done": {
+          if (event.response.id === fillerResponseIdRef.current) {
+            fillerResponseIdRef.current = null;
+            if (currentResponseKindRef.current?.kind === "filler") {
+              currentResponseKindRef.current = null;
+            }
+            break;
+          }
+
+          let nextPending = pendingToolCallsRef.current;
+          activeResponseIdRef.current = null;
+          currentResponseKindRef.current = null;
+          setActiveResponseId(null);
+          setPendingToolCallsState((current) => {
+            nextPending = current.filter((tool) => tool.status === "running");
+            return nextPending;
+          });
+          setPhase(
+            nextPending.some((tool) => tool.status === "running")
+              ? "tool-call"
+              : isListeningRef.current
+                ? "ready"
+                : "muted",
+          );
+          void persistLatestNativeTurn();
+          break;
+        }
+        case "session.error":
+        case "error":
+        case "invalid_request_error": {
+          setPhase("error");
+          setError(new Error(event.error.message));
+          break;
+        }
+      }
+    },
+    [
+      cancelToolFiller,
+      executeNativeToolCall,
+      interruptActiveSpeech,
+      persistLatestNativeTurn,
+      playWebSocketAudioDelta,
+      pushTimeline,
+      replaceNativeMessages,
+      resumeAudioElementPlayback,
+      setPendingToolCallsState,
+      shouldIgnoreTranscript,
+    ],
+  );
+
   const waitForIceGatheringComplete = useCallback(
     (pc: RTCPeerConnection, timeoutMs = 4000) =>
       new Promise<void>((resolve) => {
@@ -911,6 +1865,11 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
   const handleServerEvent = useCallback(
     (event: OpenAIRealtimeServerEvent) => {
+      if (sessionModeRef.current === "realtime_native") {
+        handleNativeServerEvent(event);
+        return;
+      }
+
       switch (event.type) {
         case "input_audio_buffer.speech_started": {
           speechStartedAtRef.current = Date.now();
@@ -985,6 +1944,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     [
       finishAgentTurn,
       getPlaybackResumeDelayMs,
+      handleNativeServerEvent,
       playWebSocketAudioDelta,
       sendVoiceTurn,
       shouldIgnoreTranscript,
@@ -993,12 +1953,15 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
   const startWebSocketFallback = useCallback(
     async (session: OpenAIRealtimeSession) => {
-      if (fallbackAttemptedRef.current || !session.websocketEndpointUrl) {
+      const websocketEndpointUrl = session.websocketEndpointUrl;
+
+      if (fallbackAttemptedRef.current || !websocketEndpointUrl) {
         throw new Error("Voice WebSocket fallback is not available.");
       }
 
       fallbackAttemptedRef.current = true;
-      transportRef.current = "websocket";
+      setTransportState("websocket");
+      setPhase("connecting");
 
       if (connectTimeout.current) {
         clearTimeout(connectTimeout.current);
@@ -1016,7 +1979,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       await ensureAudioStream();
 
       await new Promise<void>((resolve, reject) => {
-        const socket = new WebSocket(session.websocketEndpointUrl);
+        const socket = new WebSocket(websocketEndpointUrl);
         webSocket.current = socket;
 
         socket.addEventListener("open", async () => {
@@ -1035,6 +1998,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             isActiveRef.current = true;
             isListeningRef.current = true;
             setIsListening(true);
+            setPhase("ready");
             resolve();
           } catch (socketError) {
             reject(socketError);
@@ -1053,23 +2017,27 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         });
 
         socket.addEventListener("error", () => {
+          setPhase("error");
           reject(new Error("Voice WebSocket connection failed."));
         });
 
         socket.addEventListener("close", () => {
           webSocket.current = null;
           void stopWebSocketAudioCapture();
+          setTransportState(null);
           setIsActive(false);
           isActiveRef.current = false;
           isListeningRef.current = false;
           setIsListening(false);
           setIsSessionLoading(false);
+          setPhase("idle");
         });
       });
     },
     [
       ensureAudioStream,
       handleServerEvent,
+      setTransportState,
       startWebSocketAudioCapture,
       stopWebSocketAudioCapture,
     ],
@@ -1088,14 +2056,44 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
 
     setIsSessionLoading(true);
     setError(null);
-    setMessages([]);
+    setPhase("connecting");
+    setTransportState(null);
+    setLegacyMessages([]);
+    clearNativeConversationState(true);
+    sessionIdRef.current = threadIdRef.current;
+    realtimeModelRef.current = null;
+    voiceToolsByNameRef.current = {};
+    queuedClientResponseKindsRef.current = [];
+    currentResponseKindRef.current = null;
+    fillerResponseIdRef.current = null;
+    assistantPlaybackStartedAtRef.current = null;
+    lastUserTranscriptCompletedAtRef.current = null;
+    lastToolResumeRequestedAtRef.current = null;
+    lastPersistedAssistantMessageIdRef.current = null;
+    clearToolProgressTimers();
 
     try {
       fallbackAttemptedRef.current = false;
-      transportRef.current = null;
+      setSessionModeState(voiceMode);
       webSocket.current?.close();
       webSocket.current = null;
       const session = await createSession();
+      const resolvedSessionMode = session.voiceMode ?? voiceMode;
+      setSessionModeState(resolvedSessionMode);
+      sessionIdRef.current = session.id ?? threadIdRef.current;
+      realtimeModelRef.current = session.model ?? null;
+      fillerDelayMsRef.current = session.voicePolicy?.fillerDelayMs ?? 200;
+      progressDelayMsRef.current =
+        session.voicePolicy?.progressDelayMs ?? 1_800;
+      longProgressDelayMsRef.current =
+        session.voicePolicy?.longProgressDelayMs ?? 4_500;
+      voiceToolsByNameRef.current = Object.fromEntries(
+        (session.voiceTools ?? []).map((tool) => [tool.name, tool]),
+      );
+      pushTimeline("session_created", {
+        mode: resolvedSessionMode,
+        model: session.model ?? null,
+      });
       const sessionToken = session.client_secret.value;
       const realtimeEndpointUrl: string =
         session.realtimeEndpointUrl || "https://api.openai.com/v1/realtime";
@@ -1136,6 +2134,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           ) {
             startWebSocketFallback(session).catch((fallbackError) => {
               setIsSessionLoading(false);
+              setPhase("error");
               setError(
                 fallbackError instanceof Error
                   ? fallbackError
@@ -1145,7 +2144,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             return;
           }
           setIsSessionLoading(false);
+          setTransportState(null);
           if (state !== "closed") {
+            setPhase("error");
             setError(new Error(`Voice WebRTC connection ${state}.`));
           }
         }
@@ -1176,6 +2177,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             return;
           }
           setIsSessionLoading(false);
+          setTransportState(null);
+          setPhase("error");
           setError(new Error("Voice WebRTC ICE negotiation failed."));
         }
       };
@@ -1229,19 +2232,29 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         setIsListening(true);
         isListeningRef.current = true;
         setIsSessionLoading(false);
+        setTransportState("webrtc");
+        setPhase("ready");
       });
       dc.addEventListener("close", () => {
+        if (transportRef.current === "websocket") {
+          return;
+        }
         if (connectTimeout.current) {
           clearTimeout(connectTimeout.current);
           connectTimeout.current = null;
         }
+        setTransportState(null);
         setIsActive(false);
         isActiveRef.current = false;
         setIsListening(false);
         isListeningRef.current = false;
         setIsSessionLoading(false);
+        setPhase("idle");
       });
       dc.addEventListener("error", (errorEvent) => {
+        if (transportRef.current === "websocket") {
+          return;
+        }
         if (connectTimeout.current) {
           clearTimeout(connectTimeout.current);
           connectTimeout.current = null;
@@ -1251,6 +2264,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
             ? errorEvent
             : new Error(String(errorEvent)),
         );
+        setTransportState(null);
+        setPhase("error");
         setIsActive(false);
         isActiveRef.current = false;
         setIsListening(false);
@@ -1302,7 +2317,7 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         sdp: sdpResponseText,
       });
       peerConnection.current = pc;
-      transportRef.current = "webrtc";
+      setTransportState("webrtc");
 
       connectTimeout.current = setTimeout(() => {
         if (
@@ -1331,11 +2346,14 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
                       ? fallbackError
                       : new Error(String(fallbackError)),
                   );
+                  setPhase("error");
                   setIsSessionLoading(false);
                 });
                 return;
               }
 
+              setTransportState(null);
+              setPhase("error");
               setError(
                 new Error(
                   hasReachableCandidateHint
@@ -1356,10 +2374,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
                       ? fallbackError
                       : new Error(String(fallbackError)),
                   );
+                  setPhase("error");
                   setIsSessionLoading(false);
                 });
                 return;
               }
+              setTransportState(null);
+              setPhase("error");
               setError(
                 new Error(
                   "Voice connection timed out while waiting for the realtime data channel.",
@@ -1379,6 +2400,8 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           ? startError
           : new Error(String(startError)),
       );
+      setTransportState(null);
+      setPhase("error");
       setIsActive(false);
       isActiveRef.current = false;
       setIsListening(false);
@@ -1386,20 +2409,35 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       setIsSessionLoading(false);
     }
   }, [
+    clearToolProgressTimers,
+    clearNativeConversationState,
     createSession,
     ensureAudioElement,
     ensureAudioStream,
     handleServerEvent,
     isActive,
     isSessionLoading,
+    pushTimeline,
     resumeAudioElementPlayback,
-    setMessages,
+    setLegacyMessages,
+    setSessionModeState,
+    setTransportState,
     startWebSocketFallback,
     waitForIceGatheringComplete,
+    voiceMode,
   ]);
 
   const startListening = useCallback(async () => {
-    if (turnLockedRef.current || isSynthesizingSpeech || status !== "ready") {
+    if (!isActiveRef.current || isSessionLoading || isListeningRef.current) {
+      return;
+    }
+
+    if (
+      sessionModeRef.current === "legacy" &&
+      (turnLockedRef.current ||
+        isSynthesizingSpeech ||
+        legacyStatus !== "ready")
+    ) {
       return;
     }
 
@@ -1411,6 +2449,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         commitBuffer: false,
         releaseStream: false,
       });
+      if (sessionModeRef.current === "realtime_native") {
+        setPhase("ready");
+      }
     } catch (listenError) {
       setError(
         listenError instanceof Error
@@ -1418,9 +2459,13 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
           : new Error(String(listenError)),
       );
     }
-  }, [isSynthesizingSpeech, setListeningState, status]);
+  }, [isSessionLoading, isSynthesizingSpeech, legacyStatus, setListeningState]);
 
   const stopListening = useCallback(async () => {
+    if (!isActiveRef.current || !isListeningRef.current) {
+      return;
+    }
+
     try {
       autoResumeListeningRef.current = false;
       lastAutoResumeAtRef.current = 0;
@@ -1429,6 +2474,9 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         commitBuffer: true,
         releaseStream: true,
       });
+      if (sessionModeRef.current === "realtime_native") {
+        setPhase("muted");
+      }
     } catch (listenError) {
       setError(
         listenError instanceof Error
@@ -1442,6 +2490,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     try {
       autoResumeListeningRef.current = false;
       turnLockedRef.current = false;
+      clearToolProgressTimers();
+      queuedClientResponseKindsRef.current = [];
+      currentResponseKindRef.current = null;
+      fillerResponseIdRef.current = null;
       if (speechTimeout.current) {
         clearTimeout(speechTimeout.current);
         speechTimeout.current = null;
@@ -1451,7 +2503,10 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
         resumeListeningTimeoutRef.current = null;
       }
       stopChatResponse();
-      transportRef.current = null;
+      sendRealtimeEvent({ type: "response.cancel" });
+      sendRealtimeEvent({ type: "output_audio_buffer.clear" });
+      await flushSessionEvents().catch(() => {});
+      setTransportState(null);
       if (webSocket.current) {
         webSocket.current.close();
         webSocket.current = null;
@@ -1484,8 +2539,18 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       outputAudioTime.current = 0;
       tracks.current = [];
       speechStartedAtRef.current = null;
+      assistantPlaybackStartedAtRef.current = null;
       lastAutoResumeAtRef.current = 0;
       listeningEnabledAtRef.current = 0;
+      sessionIdRef.current = null;
+      realtimeModelRef.current = null;
+      voiceToolsByNameRef.current = {};
+      lastUserTranscriptCompletedAtRef.current = null;
+      lastToolResumeRequestedAtRef.current = null;
+      lastPersistedAssistantMessageIdRef.current = null;
+      clearNativeConversationState(true);
+      setLegacyMessages([]);
+      setSessionModeState(voiceMode);
       setIsActive(false);
       isActiveRef.current = false;
       setIsListening(false);
@@ -1495,17 +2560,30 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
       setIsAssistantSpeaking(false);
       setIsUserSpeaking(false);
       setLiveInputTranscript("");
+      setPhase("idle");
     } catch (stopError) {
       setError(
         stopError instanceof Error ? stopError : new Error(String(stopError)),
       );
     }
-  }, [stopChatResponse, stopWebSocketAudioCapture]);
+  }, [
+    clearToolProgressTimers,
+    clearNativeConversationState,
+    flushSessionEvents,
+    sendRealtimeEvent,
+    setLegacyMessages,
+    setSessionModeState,
+    setTransportState,
+    stopChatResponse,
+    stopWebSocketAudioCapture,
+    voiceMode,
+  ]);
 
   useEffect(() => {
-    if (!chatError) {
+    if (!chatError || sessionModeRef.current === "realtime_native") {
       return;
     }
+    setPhase("error");
     setError(
       chatError instanceof Error ? chatError : new Error(String(chatError)),
     );
@@ -1513,12 +2591,30 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
   }, [chatError, finishAgentTurn]);
 
   useEffect(() => {
-    if (!threadId) {
-      setMessages([]);
-      return;
+    setLegacyMessages([]);
+    clearNativeConversationState(true);
+    sessionIdRef.current = null;
+    realtimeModelRef.current = null;
+    voiceToolsByNameRef.current = {};
+    queuedClientResponseKindsRef.current = [];
+    currentResponseKindRef.current = null;
+    fillerResponseIdRef.current = null;
+    lastUserTranscriptCompletedAtRef.current = null;
+    lastToolResumeRequestedAtRef.current = null;
+    lastPersistedAssistantMessageIdRef.current = null;
+    if (!threadId && !isActiveRef.current) {
+      setTransportState(null);
+      setPhase("idle");
+      setSessionModeState(voiceMode);
     }
-    setMessages([]);
-  }, [setMessages, threadId]);
+  }, [
+    clearNativeConversationState,
+    setLegacyMessages,
+    setSessionModeState,
+    setTransportState,
+    threadId,
+    voiceMode,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -1526,17 +2622,34 @@ export function useOpenAIVoiceChat(props?: VoiceChatOptions): VoiceChatSession {
     };
   }, [stop]);
 
+  const messages =
+    sessionMode === "realtime_native" ? nativeMessages : legacyMessages;
+  const addToolResult =
+    sessionMode === "legacy" ? legacyAddToolResult : undefined;
+  const isProcessingTurn =
+    sessionMode === "realtime_native"
+      ? phase === "thinking" ||
+        phase === "tool-call" ||
+        isSynthesizingSpeech ||
+        pendingToolCalls.length > 0
+      : legacyStatus === "submitted" ||
+        legacyStatus === "streaming" ||
+        isSynthesizingSpeech ||
+        hasPendingVoiceToolCalls(legacyMessages);
+
   return {
     isActive,
     isUserSpeaking,
     isAssistantSpeaking,
     isListening,
     isLoading: isSessionLoading,
-    isProcessingTurn:
-      status === "submitted" ||
-      status === "streaming" ||
-      isSynthesizingSpeech ||
-      hasPendingToolCalls,
+    isProcessingTurn,
+    phase,
+    transport,
+    activeResponseId,
+    lastAssistantItemId,
+    pendingToolCalls,
+    timeline,
     liveInputTranscript,
     error,
     messages,
