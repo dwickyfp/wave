@@ -1,8 +1,7 @@
-import { getSession } from "auth/server";
-import { NextRequest } from "next/server";
-import { colorize } from "consola/utils";
 import type { ChatMention } from "app-types/chat";
 import type { AllowedMCPServer } from "app-types/mcp";
+import { getSession } from "auth/server";
+import { colorize } from "consola/utils";
 import {
   buildWaveAgentSystemPrompt,
   createNoopDataStream,
@@ -13,12 +12,13 @@ import {
   type OpenAIRealtimeSession,
 } from "lib/ai/speech/open-ai/openai-realtime-event";
 import { buildVoiceRealtimeToolDefinitions } from "lib/ai/speech/open-ai/realtime-voice-tools";
-import { buildVoiceResponseStylePrompt } from "lib/ai/speech/voice-response-style";
-import { buildVoiceTranscriptionBias } from "lib/ai/speech/voice-language";
 import { resolveVoiceAgentChatModel } from "lib/ai/speech/voice-agent-model";
+import { buildVoiceTranscriptionBias } from "lib/ai/speech/voice-language";
+import { buildVoiceResponseStylePrompt } from "lib/ai/speech/voice-response-style";
+import { ensureUserChatThread } from "lib/chat/chat-session";
 import { settingsRepository } from "lib/db/repository";
 import globalLogger from "lib/logger";
-import { ensureUserChatThread } from "lib/chat/chat-session";
+import { NextRequest } from "next/server";
 import { rememberAgentAction } from "../actions";
 
 const logger = globalLogger.withDefaults({
@@ -379,7 +379,6 @@ export async function POST(request: NextRequest) {
         transcriptionLanguage,
         voice: resolvedVoice,
       });
-
     const azureVoiceConfig = (await settingsRepository.getSetting(
       "voice-chat-azure",
     )) as {

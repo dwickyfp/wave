@@ -1,6 +1,6 @@
+import { OPENAI_REALTIME_URL } from "lib/ai/speech/open-ai/openai-realtime-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { OPENAI_REALTIME_URL } from "lib/ai/speech/open-ai/openai-realtime-event";
 
 vi.mock("auth/server", () => ({
   getSession: vi.fn(),
@@ -178,6 +178,8 @@ describe("openai realtime route", () => {
       voiceMode: "realtime_native",
       voicePolicy: {
         fillerDelayMs: 200,
+        progressDelayMs: 1800,
+        longProgressDelayMs: 4500,
         allowBargeIn: true,
         preferAudioReplies: true,
       },

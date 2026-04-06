@@ -1,5 +1,6 @@
 "use client";
 
+import { appStore } from "@/app/store";
 import { useEffect, useState, type ComponentType } from "react";
 import useSWR, { mutate as swrMutate } from "swr";
 import type { LlmProviderConfig } from "app-types/settings";
@@ -23,6 +24,13 @@ import { Label } from "ui/label";
 import { toast } from "sonner";
 import { Button } from "ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "ui/select";
 import { Switch } from "ui/switch";
 import {
   makeModelValue,
@@ -31,6 +39,11 @@ import {
   NONE_VALUE,
   parseModelValue,
 } from "@/components/knowledge/knowledge-model-selector";
+import {
+  OPENAI_VOICE,
+  OPENAI_VOICE_OPTIONS,
+} from "lib/ai/speech/open-ai/use-voice-chat.openai";
+import { useShallow } from "zustand/shallow";
 
 const PROVIDERS_KEY = "/api/settings/providers";
 const PARSE_MODEL_KEY = "/api/settings/knowledge-parse-model";
@@ -169,6 +182,12 @@ function SettingCard({
 export function EmmaModelSettingsButton() {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [persistedVoice, appStoreMutate] = appStore(
+    useShallow((state) => [
+      state.voiceChat.options.voice ?? OPENAI_VOICE.Coral,
+      state.mutate,
+    ]),
+  );
 
   const { data: providers } = useSWR<LlmProviderConfig[]>(
     PROVIDERS_KEY,
@@ -216,6 +235,7 @@ export function EmmaModelSettingsButton() {
   const [judgeValue, setJudgeValue] = useState(NONE_VALUE);
   const [embeddingValue, setEmbeddingValue] = useState(NONE_VALUE);
   const [voiceAgentModelValue, setVoiceAgentModelValue] = useState(NONE_VALUE);
+  const [voiceValue, setVoiceValue] = useState(OPENAI_VOICE.Coral);
   const [azureVoice, setAzureVoice] =
     useState<VoiceChatAzureConfig>(EMPTY_AZURE_VOICE);
 
@@ -248,6 +268,10 @@ export function EmmaModelSettingsButton() {
   }, [voiceAgentModelConfig]);
 
   useEffect(() => {
+    setVoiceValue(persistedVoice);
+  }, [persistedVoice]);
+
+  useEffect(() => {
     if (voiceChatAzureConfig) setAzureVoice(voiceChatAzureConfig);
     else setAzureVoice(EMPTY_AZURE_VOICE);
   }, [voiceChatAzureConfig]);
@@ -266,6 +290,7 @@ export function EmmaModelSettingsButton() {
   const currentJudgeValue = getConfiguredValue(judgeConfig);
   const currentEmbeddingValue = getConfiguredValue(embeddingConfig);
   const currentVoiceAgentModelValue = getConfiguredValue(voiceAgentModelConfig);
+  const currentVoiceValue = persistedVoice;
   const currentAzureVoice = voiceChatAzureConfig ?? EMPTY_AZURE_VOICE;
   const isAzureVoiceConfigured = !!(
     voiceChatAzureConfig?.baseUrl && voiceChatAzureConfig?.deploymentName
@@ -300,6 +325,7 @@ export function EmmaModelSettingsButton() {
     judgeValue !== currentJudgeValue ||
     embeddingValue !== currentEmbeddingValue ||
     voiceAgentModelValue !== currentVoiceAgentModelValue ||
+    voiceValue !== currentVoiceValue ||
     azureVoice.baseUrl !== currentAzureVoice.baseUrl ||
     azureVoice.apiVersion !== currentAzureVoice.apiVersion ||
     azureVoice.deploymentName !== currentAzureVoice.deploymentName ||
@@ -450,6 +476,16 @@ export function EmmaModelSettingsButton() {
       return;
     }
 
+    appStoreMutate((state) => ({
+      voiceChat: {
+        ...state.voiceChat,
+        options: {
+          ...state.voiceChat.options,
+          voice: voiceValue,
+        },
+      },
+    }));
+
     toast.success("Emma model settings updated");
     setSaving(false);
     setOpen(false);
@@ -478,8 +514,8 @@ export function EmmaModelSettingsButton() {
             <h4 className="font-medium text-sm">Emma Model Setup</h4>
             <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
               Configure knowledge parsing, chunk context, image analysis,
-              evaluation, self-learning embeddings, and Azure voice in one
-              place.
+              evaluation, self-learning embeddings, TTS voice, and Azure voice
+              in one place.
             </p>
           </div>
 
@@ -565,6 +601,46 @@ export function EmmaModelSettingsButton() {
               placeholder="Select default voice agent model"
               icon={Mic2}
             />
+            <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-md border border-border/70 bg-background p-2">
+                  <Mic2 className="size-4" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm">TTS Voice</div>
+                  <p className="mt-1 text-muted-foreground text-xs leading-relaxed">
+                    Chooses the OpenAI/Azure Realtime voice used when the app
+                    speaks streamed agent replies during voice calls.
+                  </p>
+                </div>
+              </div>
+
+              <Select value={voiceValue} onValueChange={setVoiceValue}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select voice" />
+                </SelectTrigger>
+                <SelectContent>
+                  {OPENAI_VOICE_OPTIONS.map((voiceOption) => (
+                    <SelectItem
+                      key={voiceOption.value}
+                      value={voiceOption.value}
+                      textValue={voiceOption.label}
+                    >
+                      {voiceOption.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <p className="text-muted-foreground text-xs">
+                Current:{" "}
+                <span className="font-mono">
+                  {OPENAI_VOICE_OPTIONS.find(
+                    (voiceOption) => voiceOption.value === currentVoiceValue,
+                  )?.label ?? currentVoiceValue}
+                </span>
+              </p>
+            </div>
             <div className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3">
               <div className="flex items-start gap-3">
                 <div className="mt-0.5 rounded-md border border-border/70 bg-background p-2">
